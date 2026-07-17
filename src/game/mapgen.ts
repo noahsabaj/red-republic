@@ -12,8 +12,8 @@ export interface Tile {
 export const MAP_W = 48;
 export const MAP_H = 48;
 
-// deterministic-ish rng
-function mulberry32(seed: number) {
+// deterministic rng (shared with the engine for economy drift)
+export function mulberry32(seed: number) {
   let a = seed >>> 0;
   return () => {
     a |= 0; a = (a + 0x6d2b79f5) | 0;

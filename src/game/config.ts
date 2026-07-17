@@ -323,8 +323,7 @@ export const BALANCE = {
   truckDaysPerTile: 0.18, // travel days per road tile
   maxActiveTrucksPerOffice: 6,
   buildersPerSite: 10,    // max builders on one site per day
-  shopRadius: 8,
-  serviceRadius: 8,
+  serviceRadius: 8,       // fallback when a building def has no serviceRadius
   pollutionRadius: 6,
   winterMonths: [10, 11, 12, 1, 2, 3], // heat required
   months: ['January','February','March','April','May','June','July','August','September','October','November','December'],
@@ -360,6 +359,6 @@ export const OBJECTIVES: ObjectiveDef[] = [
   { id: 'steel', title: 'Steel for the Motherland', description: 'Produce 15 steel in total', rewardDollars: 1000 },
   { id: 'foodchain', title: 'From Field to Table', description: 'Produce 25 food in total', rewardRubles: 2500 },
   { id: 'export', title: 'Foreign Currency', description: 'Export goods worth 5,000 ₽ total', rewardDollars: 1500 },
-  { id: 'pop300', title: 'A Growing Republic', description: 'Reach 150 citizens', rewardRubles: 5000 },
+  { id: 'pop150', title: 'A Growing Republic', description: 'Reach 150 citizens', rewardRubles: 5000 },
   { id: 'flourish', title: 'The Republic Flourishes', description: 'Reach 300 citizens with happiness ≥ 65%', rewardRubles: 10000, rewardDollars: 3000 },
 ];

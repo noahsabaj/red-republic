@@ -11,8 +11,14 @@ type PanelMode = 'building' | 'trade' | 'objectives';
 
 export default function App() {
   const engine = useMemo(() => {
-    const eng = new GameEngine();
-    if (window.location.search.includes('demo')) seedDemoTown(eng);
+    const params = new URLSearchParams(window.location.search);
+    const demo = params.has('demo');
+    const seedParam = params.get('seed');
+    const eng = new GameEngine({
+      // ?demo pins the classic map; ?seed=N reproduces a specific run
+      seed: demo ? 1961 : seedParam !== null ? Number(seedParam) >>> 0 : undefined,
+    });
+    if (demo) seedDemoTown(eng);
     return eng;
   }, []);
   useSyncExternalStore(

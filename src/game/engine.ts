@@ -3,11 +3,13 @@
 // ============================================================
 import {
   BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, FARM_SEASON,
-  DOLLAR_BUILD_RATE, OBJECTIVES,
+  DOLLAR_BUILD_RATE, IMPORT_MARKUP, OBJECTIVES,
 } from './config';
 import type { ResourceId } from './config';
-import { generateMap, MAP_W, MAP_H } from './mapgen';
-import type { Tile } from './mapgen';
+import { generateMap, mulberry32, MAP_W, MAP_H } from './mapgen';
+import type { MapData, Tile } from './mapgen';
+import { floodRoads, FloodResult } from './pathfind';
+import type { DistanceField } from './pathfind';
 
 export interface BuildingInst {
   id: number;
@@ -37,6 +39,7 @@ export interface Truck {
   daysDone: number;
   phase: 'go' | 'back';
   destId: number;
+  srcId: number; // undelivered cargo returns here
 }
 
 export interface Alert {
@@ -86,11 +89,11 @@ export class GameEngine {
   stats = {
     produced: Object.fromEntries(ALL_RESOURCES.map(r => [r, 0])) as Record<ResourceId, number>,
     exportedValue: 0,
-    roadTiles: 0,
+    roadsBuilt: 0, // cumulative player-built road tiles (objective metric; never decremented)
   };
   objectivesDone: string[] = [];
   alerts: Alert[] = [];
-  badDays = 0;
+  wagesUnpaid = false;
 
   private nextBuildingId = 1;
   private nextTruckId = 1;
@@ -102,10 +105,15 @@ export class GameEngine {
 
   readonly TICK_MS = 500; // one game day at 1x speed
 
-  constructor() {
-    const map = generateMap(1961);
+  readonly seed: number;
+  private rng: () => number;
+
+  constructor(opts: { seed?: number; map?: MapData; skipStartingBase?: boolean } = {}) {
+    this.seed = opts.seed ?? Math.floor(Math.random() * 2 ** 31);
+    this.rng = mulberry32(this.seed ^ 0x9e3779b9); // decorrelate from map generation
+    const map = opts.map ?? generateMap(this.seed);
     this.tiles = map.tiles;
-    this.setupStartingBase(map.startX, map.startY);
+    if (!opts.skipStartingBase) this.setupStartingBase(map.startX, map.startY);
   }
 
   // ---------------- setup ----------------
@@ -163,9 +171,13 @@ export class GameEngine {
     return def.storage[r] ?? 0;
   }
 
-  addStock(b: BuildingInst, r: ResourceId, amt: number) {
+  /** Add (or remove) stock, clamped to [0, cap]. Returns the actual change. */
+  addStock(b: BuildingInst, r: ResourceId, amt: number): number {
     const cap = this.capOf(b, r);
-    b.stock[r] = Math.max(0, Math.min(cap, this.stockOf(b, r) + amt));
+    const before = this.stockOf(b, r);
+    const after = Math.max(0, Math.min(cap, before + amt));
+    b.stock[r] = after;
+    return after - before;
   }
 
   adjacentRoads(b: BuildingInst): { x: number; y: number }[] {
@@ -173,7 +185,8 @@ export class GameEngine {
     for (let dy = -1; dy <= b.h; dy++) {
       for (let dx = -1; dx <= b.w; dx++) {
         const onEdge = dx === -1 || dx === b.w || dy === -1 || dy === b.h;
-        if (!onEdge) continue;
+        const onCorner = (dx === -1 || dx === b.w) && (dy === -1 || dy === b.h);
+        if (!onEdge || onCorner) continue; // corners touch only diagonally — no road access
         const tx = b.x + dx, ty = b.y + dy;
         if (this.tiles[ty]?.[tx]?.road) out.push({ x: tx, y: ty });
       }
@@ -181,42 +194,47 @@ export class GameEngine {
     return out;
   }
 
+  private floodFrom(sources: { x: number; y: number }[]): FloodResult {
+    return floodRoads((x, y) => !!this.tiles[y][x].road, sources);
+  }
+
   findPath(from: { x: number; y: number }[], to: { x: number; y: number }[]): { x: number; y: number }[] | null {
     if (!from.length || !to.length) return null;
-    const key = (x: number, y: number) => y * MAP_W + x;
-    const goals = new Set(to.map(t => key(t.x, t.y)));
-    const prev = new Int32Array(MAP_W * MAP_H).fill(-1);
-    const visited = new Uint8Array(MAP_W * MAP_H);
-    const q: number[] = [];
-    for (const s of from) {
-      const k = key(s.x, s.y);
-      if (!visited[k]) { visited[k] = 1; q.push(k); }
+    const flood = this.floodFrom(to);
+    let best: { x: number; y: number } | null = null;
+    let bestD = Infinity;
+    for (const f of from) {
+      const d = flood.distanceAt(f.x, f.y);
+      if (d >= 0 && d < bestD) { bestD = d; best = f; }
     }
-    let found = -1;
-    while (q.length) {
-      const cur = q.shift()!;
-      if (goals.has(cur)) { found = cur; break; }
-      const cx = cur % MAP_W, cy = Math.floor(cur / MAP_W);
-      const nb = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-      for (const [dx, dy] of nb) {
-        const nx = cx + dx, ny = cy + dy;
-        if (nx < 0 || ny < 0 || nx >= MAP_W || ny >= MAP_H) continue;
-        const nk = key(nx, ny);
-        if (visited[nk] || !this.tiles[ny][nx].road) continue;
-        visited[nk] = 1; prev[nk] = cur; q.push(nk);
-      }
-    }
-    if (found < 0) return null;
-    const path: { x: number; y: number }[] = [];
-    let cur = found;
-    while (cur >= 0) {
-      path.push({ x: cur % MAP_W, y: Math.floor(cur / MAP_W) });
-      cur = prev[cur];
-    }
-    return path.reverse();
+    return best ? flood.pathFrom(best.x, best.y) : null;
   }
 
   centerOf(b: BuildingInst) { return { x: b.x + b.w / 2, y: b.y + b.h / 2 }; }
+
+  /** Open grass tiles within the farm's work radius, excluding the (would-be) footprint. */
+  countFarmFields(x: number, y: number, w: number, h: number): number {
+    let fields = 0;
+    for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
+      const tx = x + dx, ty = y + dy;
+      if (tx >= x && tx < x + w && ty >= y && ty < y + h) continue;
+      const t = this.tiles[ty]?.[tx];
+      if (t && t.terrain === 'grass' && !t.buildingId && !t.road && !t.deposit) fields++;
+    }
+    return fields;
+  }
+
+  /** Unoccupied forest tiles within reach, excluding the (would-be) footprint. */
+  countForestTiles(x: number, y: number, w: number, h: number): number {
+    let forests = 0;
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      const tx = x + dx, ty = y + dy;
+      if (tx >= x && tx < x + w && ty >= y && ty < y + h) continue;
+      const t = this.tiles[ty]?.[tx];
+      if (t && t.terrain === 'forest' && !t.buildingId && !t.road) forests++;
+    }
+    return forests;
+  }
 
   // ---------------- placement ----------------
 
@@ -233,7 +251,6 @@ export class GameEngine {
     const [w, h] = def.size;
     if (x < 0 || y < 0 || x + w > MAP_W || y + h > MAP_H) return { ok: false, reason: 'Out of bounds' };
     let depositOk = !def.requiresDeposit;
-    let fieldCount = 0;
     for (let dy = 0; dy < h; dy++) {
       for (let dx = 0; dx < w; dx++) {
         const t = this.tiles[y + dy][x + dx];
@@ -244,19 +261,11 @@ export class GameEngine {
       }
     }
     if (!depositOk) return { ok: false, reason: `Requires a ${def.requiresDeposit === 'ironOre' ? 'iron ore' : def.requiresDeposit} deposit` };
-    if (def.requiresForest) {
-      let forests = 0;
-      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
-        if (this.tiles[y + dy]?.[x + dx]?.terrain === 'forest') forests++;
-      }
-      if (forests < 3) return { ok: false, reason: 'Needs at least 3 forest tiles nearby' };
+    if (def.requiresForest && this.countForestTiles(x, y, w, h) < 3) {
+      return { ok: false, reason: 'Needs at least 3 forest tiles nearby' };
     }
-    if (def.isFarm) {
-      for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
-        const t = this.tiles[y + dy]?.[x + dx];
-        if (t && t.terrain === 'grass' && !t.buildingId && !t.road && !t.deposit) fieldCount++;
-      }
-      if (fieldCount < 6) return { ok: false, reason: 'Needs at least 6 open grass tiles around (fields)' };
+    if (def.isFarm && this.countFarmFields(x, y, w, h) < 6) {
+      return { ok: false, reason: 'Needs at least 6 open grass tiles around (fields)' };
     }
     return { ok: true };
   }
@@ -271,7 +280,7 @@ export class GameEngine {
       this.dollars -= cost;
       if (defId === 'road') {
         this.tiles[y][x].road = true;
-        this.stats.roadTiles++;
+        this.stats.roadsBuilt++;
       } else {
         this.placeFree(defId, x, y);
       }
@@ -282,7 +291,7 @@ export class GameEngine {
     this.rubles -= def.costRubles;
     if (defId === 'road') {
       this.tiles[y][x].road = true;
-      this.stats.roadTiles++;
+      this.stats.roadsBuilt++;
       this.bump();
       return { ok: true };
     }
@@ -313,8 +322,13 @@ export class GameEngine {
       for (let dy = 0; dy < b.h; dy++)
         for (let dx = 0; dx < b.w; dx++)
           this.tiles[b.y + dy][b.x + dx].buildingId = undefined;
-      // cancel trucks heading there
-      this.trucks = this.trucks.filter(tr => tr.destId !== b.id);
+      // trucks en route turn around and return their cargo to the source
+      for (const tr of this.trucks) {
+        if (tr.destId === b.id && tr.phase === 'go') {
+          tr.phase = 'back';
+          tr.daysDone = Math.max(0, tr.daysTotal - tr.daysDone);
+        }
+      }
       this.buildings.delete(b.id);
       this.bump();
       return true;
@@ -330,23 +344,57 @@ export class GameEngine {
     return base * (currency === 'east' ? this.priceFactorEast : this.priceFactorWest);
   }
 
-  customsConnectedStock(r: ResourceId): { b: BuildingInst; amt: number }[] {
-    const customs = [...this.buildings.values()].filter(b => this.def(b).isCustoms && b.constructed);
-    if (!customs.length) return [];
-    const customsRoads = customs.flatMap(c => this.adjacentRoads(c));
+  importPriceOf(r: ResourceId, currency: 'east' | 'west') {
+    return this.priceOf(r, currency) * IMPORT_MARKUP;
+  }
+
+  private customsCache: { version: number; field: DistanceField | null } | null = null;
+
+  /** Road distances from the customs network, cached per engine version. */
+  private customsField(): DistanceField | null {
+    if (!this.customsCache || this.customsCache.version !== this.version) {
+      const customs = [...this.buildings.values()].filter(b => this.def(b).isCustoms && b.constructed);
+      const roads = customs.flatMap(c => this.adjacentRoads(c));
+      this.customsCache = {
+        version: this.version,
+        field: roads.length ? this.floodFrom(roads).snapshot() : null,
+      };
+    }
+    return this.customsCache.field;
+  }
+
+  /** Customs-connected buildings and how much each is willing to sell (supplyOf-protected). */
+  private sellableSources(r: ResourceId): { b: BuildingInst; amt: number }[] {
+    const field = this.customsField();
+    if (!field) return [];
     const out: { b: BuildingInst; amt: number }[] = [];
     for (const b of this.buildings.values()) {
       if (!b.constructed) continue;
-      const amt = this.stockOf(b, r);
+      const amt = this.supplyOf(b, r);
       if (amt < 0.01) continue;
-      if (this.findPath(this.adjacentRoads(b), customsRoads)) out.push({ b, amt });
+      if (this.adjacentRoads(b).some(t => field.reachable(t.x, t.y))) out.push({ b, amt });
     }
     return out;
   }
 
+  private sellableCache: { version: number; map: Map<ResourceId, number> } = { version: -1, map: new Map() };
+
+  /** Stock that sell() could actually export right now. Cached per version. */
+  sellableStock(r: ResourceId): number {
+    if (this.sellableCache.version !== this.version) {
+      this.sellableCache = { version: this.version, map: new Map() };
+    }
+    let v = this.sellableCache.map.get(r);
+    if (v === undefined) {
+      v = this.sellableSources(r).reduce((s, x) => s + x.amt, 0);
+      this.sellableCache.map.set(r, v);
+    }
+    return v;
+  }
+
   sell(r: ResourceId, amount: number, currency: 'east' | 'west'): { ok: boolean; msg: string } {
-    const sources = this.customsConnectedStock(r);
-    if (!sources.length) return { ok: false, msg: 'No goods connected to a Customs House' };
+    const sources = this.sellableSources(r);
+    if (!sources.length) return { ok: false, msg: 'No sellable goods connected to a Customs House' };
     let remaining = amount;
     for (const s of sources) {
       const take = Math.min(remaining, s.amt);
@@ -367,13 +415,13 @@ export class GameEngine {
   buy(r: ResourceId, amount: number, currency: 'east' | 'west'): { ok: boolean; msg: string } {
     const customs = [...this.buildings.values()].find(b => this.def(b).isCustoms && b.constructed);
     if (!customs) return { ok: false, msg: 'Build a Customs House first' };
-    const price = this.priceOf(r, currency) * 1.6;
-    const cost = amount * price;
-    if (currency === 'east' && this.rubles < cost) return { ok: false, msg: 'Not enough rubles' };
-    if (currency === 'west' && this.dollars < cost) return { ok: false, msg: 'Not enough dollars' };
+    const price = this.importPriceOf(r, currency);
     const free = this.capOf(customs, r) - this.stockOf(customs, r) - this.incomingOf(customs, r);
-    const delivered = Math.min(amount, Math.max(0, free));
-    if (delivered <= 0) return { ok: false, msg: 'Customs storage is full' };
+    if (free < 1) return { ok: false, msg: 'Customs storage is full' };
+    const funds = currency === 'east' ? this.rubles : this.dollars;
+    const affordable = Math.floor(funds / price);
+    if (affordable < 1) return { ok: false, msg: currency === 'east' ? 'Not enough rubles' : 'Not enough dollars' };
+    const delivered = Math.min(amount, Math.floor(free), affordable);
     if (currency === 'east') this.rubles -= delivered * price;
     else this.dollars -= delivered * price;
     this.addStock(customs, r, delivered);
@@ -407,12 +455,17 @@ export class GameEngine {
         if (t.phase === 'go') {
           const dest = this.buildings.get(t.destId);
           if (dest) {
-            this.addStock(dest, t.cargo, t.amount);
+            const delivered = this.addStock(dest, t.cargo, t.amount);
             dest.incoming[t.cargo] = Math.max(0, this.incomingOf(dest, t.cargo) - t.amount);
+            t.amount -= delivered; // whatever didn't fit rides back to the source
           }
           t.phase = 'back';
           t.daysDone = 0;
         } else {
+          if (t.amount > 0.001) {
+            const src = this.buildings.get(t.srcId);
+            if (src) this.addStock(src, t.cargo, t.amount);
+          }
           arrived.push(t);
         }
       }
@@ -448,7 +501,7 @@ export class GameEngine {
   }
 
   private monthlyEconomy() {
-    const drift = (v: number) => Math.min(1.15, Math.max(0.85, v + (Math.random() - 0.5) * 0.1));
+    const drift = (v: number) => Math.min(1.15, Math.max(0.85, v + (this.rng() - 0.5) * 0.1));
     this.priceFactorEast = drift(this.priceFactorEast);
     this.priceFactorWest = drift(this.priceFactorWest);
   }
@@ -457,29 +510,11 @@ export class GameEngine {
 
   private updateConnectivity() {
     // a building "works" only if its road reaches the council depot network
-    const reachable = new Uint8Array(MAP_W * MAP_H);
     const depots = [...this.buildings.values()].filter(b => this.def(b).isDepot && b.constructed);
-    const starts = depots.flatMap(d => this.adjacentRoads(d));
-    const q: number[] = [];
-    for (const st of starts) {
-      const k = st.y * MAP_W + st.x;
-      if (!reachable[k]) { reachable[k] = 1; q.push(k); }
-    }
-    while (q.length) {
-      const cur = q.shift()!;
-      const cx = cur % MAP_W, cy = Math.floor(cur / MAP_W);
-      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const nx = cx + dx, ny = cy + dy;
-        if (nx < 0 || ny < 0 || nx >= MAP_W || ny >= MAP_H) continue;
-        const nk = ny * MAP_W + nx;
-        if (reachable[nk] || !this.tiles[ny][nx].road) continue;
-        reachable[nk] = 1; q.push(nk);
-      }
-    }
-    const hasDepot = depots.length > 0;
+    const flood = depots.length ? this.floodFrom(depots.flatMap(d => this.adjacentRoads(d))) : null;
     for (const b of this.buildings.values()) {
       const adj = this.adjacentRoads(b);
-      b.connected = adj.length > 0 && (!hasDepot || adj.some(t => reachable[t.y * MAP_W + t.x] === 1));
+      b.connected = adj.length > 0 && (!flood || adj.some(t => flood.distanceAt(t.x, t.y) >= 0));
     }
   }
 
@@ -506,7 +541,7 @@ export class GameEngine {
     const rem = list.map(b => this.def(b).workers - b.staff);
     const remTotal = rem.reduce((x, y) => x + y, 0);
     if (pool > 0 && remTotal > 0) {
-      list.forEach((b, i) => { b.staff += Math.floor((pool * rem[i]) / remTotal); });
+      list.forEach((b, i) => { b.staff += Math.min(rem[i], Math.floor((pool * rem[i]) / remTotal)); });
       let used = list.reduce((x, b) => x + b.staff, 0);
       let left = this.workers - used;
       for (const b of list) {
@@ -517,26 +552,29 @@ export class GameEngine {
     this.employed = list.reduce((x, b) => x + b.staff, 0);
   }
 
+  private baseEff(b: BuildingInst): number {
+    const def = this.def(b);
+    const staffRatio = def.workers > 0 ? b.staff / def.workers : 1;
+    const powerFactor = def.power > 0 && !b.powered ? 0.5 : 1;
+    return staffRatio * powerFactor;
+  }
+
   private updatePowerHeat() {
-    // power plants: coal availability factor
+    // Plants: fix eff & coalFactor for the whole day (powerFactor uses the
+    // previous day's allocation). production() burns coal via productionRates()
+    // with these same stored factors, so output and fuel always agree.
     this.powerProduced = 0;
     this.heatProduced = 0;
     for (const b of this.buildings.values()) {
       const def = this.def(b);
-      if (!b.constructed) continue;
-      const staffRatio = def.workers > 0 ? b.staff / def.workers : 1;
-      if (def.powerOutput) {
-        const need = (def.inputs?.coal ?? 0) * staffRatio;
-        const have = this.stockOf(b, 'coal');
-        b.coalFactor = need <= 0 ? 1 : Math.min(1, have / need);
-        this.powerProduced += def.powerOutput * staffRatio * b.coalFactor;
-      }
-      if (def.heatOutput) {
-        const need = (def.inputs?.coal ?? 0) * staffRatio;
-        const have = this.stockOf(b, 'coal');
-        b.coalFactor = need <= 0 ? 1 : Math.min(1, have / need);
-        this.heatProduced += def.heatOutput * staffRatio * b.coalFactor;
-      }
+      if (!b.constructed || (!def.powerOutput && !def.heatOutput)) continue;
+      const eff = this.baseEff(b);
+      const need = (def.inputs?.coal ?? 0) * eff;
+      const have = this.stockOf(b, 'coal');
+      b.coalFactor = need <= 0 ? 1 : Math.min(1, have / need);
+      b.eff = eff;
+      if (def.powerOutput) this.powerProduced += def.powerOutput * eff * b.coalFactor;
+      if (def.heatOutput) this.heatProduced += def.heatOutput * eff * b.coalFactor;
     }
     // demand & allocation (priority order)
     this.powerDemand = 0;
@@ -578,63 +616,66 @@ export class GameEngine {
     }
   }
 
+  /**
+   * Actual per-day resource flows for a building under current conditions.
+   * production() applies exactly these deltas, and the UI displays them, so
+   * the simulation and the inspector cannot diverge.
+   */
+  productionRates(b: BuildingInst): { inputs: Partial<Record<ResourceId, number>>; outputs: Partial<Record<ResourceId, number>> } {
+    const rates: { inputs: Partial<Record<ResourceId, number>>; outputs: Partial<Record<ResourceId, number>> } = { inputs: {}, outputs: {} };
+    const def = this.def(b);
+    if (!b.constructed) return rates;
+
+    // fuel burners: eff & coalFactor were fixed by updatePowerHeat this day
+    if (def.powerOutput || def.heatOutput) {
+      const burn = (def.inputs?.coal ?? 0) * b.eff * b.coalFactor;
+      if (burn > 0) rates.inputs.coal = burn;
+      return rates;
+    }
+    if (!def.outputs) return rates;
+
+    const eff = this.baseEff(b);
+    let outMul = eff;
+    if (def.isFarm) {
+      const fields = Math.min(12, this.countFarmFields(b.x, b.y, b.w, b.h));
+      outMul = eff * (fields / 12) * (FARM_SEASON[this.month] ?? 0) * 2.2;
+    }
+    if (def.requiresForest) {
+      outMul = eff * Math.min(1, this.countForestTiles(b.x, b.y, b.w, b.h) / 6);
+    }
+
+    // input-limited?
+    let inputFactor = 1;
+    if (def.inputs) {
+      for (const [r, amt] of Object.entries(def.inputs) as [ResourceId, number][]) {
+        const need = amt * outMul;
+        if (need > 0) inputFactor = Math.min(inputFactor, this.stockOf(b, r) / need);
+      }
+      inputFactor = Math.min(1, inputFactor);
+    }
+    const finalMul = outMul * inputFactor;
+    if (finalMul <= 0) return rates;
+    if (def.inputs) {
+      for (const [r, amt] of Object.entries(def.inputs) as [ResourceId, number][]) rates.inputs[r] = amt * finalMul;
+    }
+    for (const [r, amt] of Object.entries(def.outputs) as [ResourceId, number][]) rates.outputs[r] = amt * finalMul;
+    return rates;
+  }
+
   private production() {
     for (const b of this.buildings.values()) {
       const def = this.def(b);
       if (!b.constructed) continue;
-      const staffRatio = def.workers > 0 ? b.staff / def.workers : 1;
-      const powerFactor = def.power > 0 && !b.powered ? 0.5 : 1;
-      let eff = staffRatio * powerFactor;
-      b.eff = eff;
-
-      // fuel burners (power/heat plants)
-      if (def.powerOutput || def.heatOutput) {
-        const coalNeed = (def.inputs?.coal ?? 0) * eff * b.coalFactor;
-        if (coalNeed > 0) this.addStock(b, 'coal', -coalNeed);
-        continue;
+      if (!def.powerOutput && !def.heatOutput) {
+        b.eff = this.baseEff(b); // plants keep the eff set by updatePowerHeat
+        if (def.isFarm) b.farmFields = Math.min(12, this.countFarmFields(b.x, b.y, b.w, b.h));
       }
-      if (!def.outputs) continue;
-
-      let outMul = eff;
-      if (def.isFarm) {
-        // count open field tiles
-        let fields = 0;
-        for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
-          const t = this.tiles[b.y + dy]?.[b.x + dx];
-          if (t && t.terrain === 'grass' && !t.buildingId && !t.road && !t.deposit) fields++;
-        }
-        b.farmFields = Math.min(12, fields);
-        outMul = eff * (b.farmFields / 12) * (FARM_SEASON[this.month] ?? 0) * 2.2;
+      const rates = this.productionRates(b);
+      for (const [r, amt] of Object.entries(rates.inputs) as [ResourceId, number][]) {
+        this.addStock(b, r, -amt);
       }
-      if (def.requiresForest) {
-        let forests = 0;
-        for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
-          if (this.tiles[b.y + dy]?.[b.x + dx]?.terrain === 'forest') forests++;
-        }
-        outMul = eff * Math.min(1, forests / 6);
-      }
-
-      // input-limited?
-      let inputFactor = 1;
-      if (def.inputs) {
-        for (const [r, amt] of Object.entries(def.inputs) as [ResourceId, number][]) {
-          const need = amt * outMul;
-          if (need > 0) inputFactor = Math.min(inputFactor, this.stockOf(b, r) / need);
-        }
-        inputFactor = Math.min(1, inputFactor);
-      }
-      const finalMul = outMul * inputFactor;
-      if (finalMul <= 0) continue;
-      if (def.inputs) {
-        for (const [r, amt] of Object.entries(def.inputs) as [ResourceId, number][]) {
-          this.addStock(b, r, -amt * finalMul);
-        }
-      }
-      for (const [r, amt] of Object.entries(def.outputs) as [ResourceId, number][]) {
-        const produced = amt * finalMul;
-        const before = this.stockOf(b, r);
-        this.addStock(b, r, produced);
-        this.stats.produced[r] += this.stockOf(b, r) - before;
+      for (const [r, amt] of Object.entries(rates.outputs) as [ResourceId, number][]) {
+        this.stats.produced[r] += this.addStock(b, r, amt);
       }
     }
   }
@@ -676,8 +717,16 @@ export class GameEngine {
     let budget = maxT - this.trucks.filter(t => t.phase === 'go').length;
     if (budget <= 0) return;
 
-    interface Demand { b: BuildingInst; r: ResourceId; amt: number; prio: number; }
+    interface Demand { b: BuildingInst; r: ResourceId; amt: number; prio: number; from?: number }
     const demands: Demand[] = [];
+
+    // adjacentRoads is O(perimeter); cache per building for this pass
+    const adjCache = new Map<number, { x: number; y: number }[]>();
+    const adjOf = (b: BuildingInst) => {
+      let a = adjCache.get(b.id);
+      if (!a) { a = this.adjacentRoads(b); adjCache.set(b.id, a); }
+      return a;
+    };
 
     for (const b of this.buildings.values()) {
       const def = this.def(b);
@@ -689,10 +738,10 @@ export class GameEngine {
         }
         continue;
       }
-      // power & heating coal — critical
+      // power & heating coal — critical, more so for plants short on power
       if ((def.powerOutput || def.heatOutput) && def.inputs?.coal) {
         const free = this.capOf(b, 'coal') - this.stockOf(b, 'coal') - this.incomingOf(b, 'coal');
-        if (free >= 2) demands.push({ b, r: 'coal', amt: free, prio: b.powered || def.power === 0 ? 10 : 10 });
+        if (free >= 2) demands.push({ b, r: 'coal', amt: free, prio: b.powered || def.power === 0 ? 10 : 6 });
       }
       // store goods
       if (def.serviceType === 'shop') {
@@ -711,20 +760,34 @@ export class GameEngine {
       }
     }
 
-    // overflow hauling to storage buildings
+    // overflow hauling: pin the overflowing producer as the supplier and
+    // target the nearest storage with room, so the producer actually drains
     const storages = [...this.buildings.values()].filter(b =>
       (this.def(b).isDepot || this.def(b).isCustoms || b.defId === 'warehouse') && b.constructed);
     for (const b of this.buildings.values()) {
       const def = this.def(b);
       if (!b.constructed || !def.outputs || def.serviceType) continue;
+      const srcRoads = adjOf(b);
+      if (!srcRoads.length) continue;
+      let flood: FloodResult | null = null;
       for (const [r] of Object.entries(def.outputs) as [ResourceId, number][]) {
         const cap = this.capOf(b, r);
-        if (cap > 0 && this.stockOf(b, r) > cap * 0.8) {
-          for (const s of storages) {
-            if (s.id === b.id) continue;
-            const free = this.capOf(s, r) - this.stockOf(s, r) - this.incomingOf(s, r);
-            if (free >= 4) { demands.push({ b: s, r, amt: Math.min(free, this.stockOf(b, r) - cap * 0.3), prio: 40 }); break; }
+        if (cap <= 0 || this.stockOf(b, r) <= cap * 0.8) continue;
+        flood ??= this.floodFrom(srcRoads);
+        let best: BuildingInst | null = null;
+        let bestD = Infinity;
+        for (const s of storages) {
+          if (s.id === b.id) continue;
+          const free = this.capOf(s, r) - this.stockOf(s, r) - this.incomingOf(s, r);
+          if (free < 4) continue;
+          for (const t of adjOf(s)) {
+            const d = flood.distanceAt(t.x, t.y);
+            if (d >= 0 && d < bestD) { bestD = d; best = s; }
           }
+        }
+        if (best) {
+          const free = this.capOf(best, r) - this.stockOf(best, r) - this.incomingOf(best, r);
+          demands.push({ b: best, r, amt: Math.min(free, this.stockOf(b, r) - cap * 0.3), prio: 40, from: b.id });
         }
       }
     }
@@ -733,24 +796,29 @@ export class GameEngine {
 
     for (const d of demands) {
       if (budget <= 0) break;
-      // find supplier
-      const destRoads = this.adjacentRoads(d.b);
+      const destRoads = adjOf(d.b);
       if (!destRoads.length) continue;
       const destFree = d.b.constructed
         ? this.capOf(d.b, d.r) - this.stockOf(d.b, d.r) - this.incomingOf(d.b, d.r)
         : (this.def(d.b).materials[d.r] ?? 0) - this.stockOf(d.b, d.r) - this.incomingOf(d.b, d.r);
       if (destFree < 1) continue;
 
-      let bestPath: { x: number; y: number }[] | null = null;
+      // one flood from the destination ranks every candidate supplier by road distance
+      const flood = this.floodFrom(destRoads);
       let bestSupplier: BuildingInst | null = null;
+      let bestTile: { x: number; y: number } | null = null;
+      let bestD = Infinity;
       for (const s of this.buildings.values()) {
         if (s.id === d.b.id) continue;
-        const avail = this.supplyOf(s, d.r);
-        if (avail < 1) continue;
-        const path = this.findPath(this.adjacentRoads(s), destRoads);
-        if (path) { bestPath = path; bestSupplier = s; break; }
+        if (d.from !== undefined && s.id !== d.from) continue;
+        if (this.supplyOf(s, d.r) < 1) continue;
+        for (const t of adjOf(s)) {
+          const dd = flood.distanceAt(t.x, t.y);
+          if (dd >= 0 && dd < bestD) { bestD = dd; bestSupplier = s; bestTile = t; }
+        }
       }
-      if (!bestSupplier || !bestPath) continue;
+      if (!bestSupplier || !bestTile) continue;
+      const bestPath = flood.pathFrom(bestTile.x, bestTile.y)!;
 
       const amount = Math.min(d.amt, destFree, this.supplyOf(bestSupplier, d.r), BALANCE.truckCapacity);
       if (amount < 1) continue;
@@ -762,7 +830,7 @@ export class GameEngine {
       const daysTotal = Math.max(0.6, bestPath.length * BALANCE.truckDaysPerTile);
       this.trucks.push({
         id: this.nextTruckId++, points: pts, cargo: d.r, amount,
-        daysTotal, daysDone: 0, phase: 'go', destId: d.b.id,
+        daysTotal, daysDone: 0, phase: 'go', destId: d.b.id, srcId: bestSupplier.id,
       });
       budget--;
     }
@@ -825,7 +893,7 @@ export class GameEngine {
         const hc = this.centerOf(h);
         const ok = svcs.some(s => {
           const sc = this.centerOf(s);
-          return Math.max(Math.abs(hc.x - sc.x), Math.abs(hc.y - sc.y)) <= (this.def(s).serviceRadius ?? 8);
+          return Math.max(Math.abs(hc.x - sc.x), Math.abs(hc.y - sc.y)) <= (this.def(s).serviceRadius ?? BALANCE.serviceRadius);
         });
         if (ok) covered += this.def(h).housingCapacity!;
       }
@@ -907,14 +975,16 @@ export class GameEngine {
     const wages = this.employed * BALANCE.wagePerWorker;
     if (this.rubles >= wages) {
       this.rubles -= wages;
+      this.wagesUnpaid = false;
     } else {
+      this.wagesUnpaid = true;
       target *= 0.85;
     }
     this.happiness = this.lerp(this.happiness, Math.max(0, Math.min(100, target)), 0.2);
 
-    // migration
+    // migration — settlers only (re)found the republic while its reputation holds
     const freeBeds = this.capacity - this.pop;
-    if (this.pop === 0 && freeBeds > 0) {
+    if (this.pop === 0 && freeBeds > 0 && this.happiness >= 48) {
       this.pop = Math.min(freeBeds, 6);
       this.pushEvent('👷 First settlers arrived to your republic!', 'good');
     } else if (this.happiness >= 48 && freeBeds > 0) {
@@ -945,7 +1015,7 @@ export class GameEngine {
       if (this.objectivesDone.includes(o.id)) continue;
       let done = false;
       switch (o.id) {
-        case 'roads': done = this.stats.roadTiles >= 10; break;
+        case 'roads': done = this.stats.roadsBuilt >= 10; break;
         case 'housing': done = this.pop >= 20; break;
         case 'shop': done = [...this.buildings.values()].some(b => this.def(b).serviceType === 'shop' && b.constructed && this.stockOf(b, 'food') >= 5); break;
         case 'sow': done = [...this.buildings.values()].some(b => this.def(b).isFarm && b.constructed); break;
@@ -956,7 +1026,7 @@ export class GameEngine {
         case 'steel': done = this.stats.produced.steel >= 15; break;
         case 'foodchain': done = this.stats.produced.food >= 25; break;
         case 'export': done = this.stats.exportedValue >= 5000; break;
-        case 'pop300': done = this.pop >= 150; break;
+        case 'pop150': done = this.pop >= 150; break;
         case 'flourish': done = this.pop >= 300 && this.happiness >= 65; break;
       }
       if (done) {
@@ -971,7 +1041,7 @@ export class GameEngine {
 
   private updateAlerts() {
     const a: Alert[] = [];
-    if (this.rubles < 0) a.push({ id: 'debt', icon: '💸', text: 'The republic is in debt!', level: 'bad' });
+    if (this.wagesUnpaid) a.push({ id: 'wages', icon: '💸', text: 'Treasury empty — wages unpaid!', level: 'bad' });
     if (this.pop > 5 && this.sat.food < 0.5) a.push({ id: 'food', icon: '🍞', text: 'Food shortage — citizens are hungry', level: 'bad' });
     const hasPlant = [...this.buildings.values()].some(b => this.def(b).powerOutput && b.constructed);
     if (this.powerDemand > this.powerProduced + 0.01 && (hasPlant || this.pop > 0)) a.push({ id: 'power', icon: '⚡', text: `Power deficit (${this.powerDemand.toFixed(1)} MW needed, ${this.powerProduced.toFixed(1)} MW generated)`, level: 'warn' });
@@ -985,6 +1055,14 @@ export class GameEngine {
     const customs = [...this.buildings.values()].some(b => this.def(b).isCustoms && b.constructed);
     if (!customs) a.push({ id: 'customs', icon: '🛃', text: 'No Customs House — foreign trade impossible', level: 'warn' });
     this.alerts = a;
+  }
+
+  /** Flip a building's staffing priority (UI action — keeps mutation + notification in the engine). */
+  toggleStaffPriority(id: number) {
+    const b = this.buildings.get(id);
+    if (!b) return;
+    b.priorityHigh = !b.priorityHigh;
+    this.bump();
   }
 
   // ---------------- events / subscription ----------------

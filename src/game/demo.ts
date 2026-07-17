@@ -1,6 +1,5 @@
 // Demo town seeder — opens a developed republic via ?demo in the URL
 import type { GameEngine } from './engine';
-import { MAP_W, MAP_H } from './mapgen';
 
 export function seedDemoTown(e: GameEngine) {
   const depot = [...e.buildings.values()].find(b => b.defId === 'depot')!;
@@ -45,28 +44,27 @@ export function seedDemoTown(e: GameEngine) {
     return null;
   };
   const connectMine = (spot: { x: number; y: number }, defId: string) => {
-    const b = put(defId, spot.x, spot.y);
-    const inst = [...e.buildings.values()].reduce((m, bb) => (bb.id > m.id ? bb : m));
+    const res = put(defId, spot.x, spot.y);
+    if (!res.ok) return res; // placement failed — don't build roads to nothing
+    const inst = e.buildingAt(spot.x, spot.y)!;
     const tryRoute = (route: 'col' | 'row') => {
       if (route === 'col') for (let y = Math.min(spot.y, sy + 8); y <= Math.max(spot.y, sy + 8); y++) road(spot.x + 1, y);
       else for (let x = Math.min(spot.x, sx + 12); x <= Math.max(spot.x, sx + 12); x++) road(x, spot.y + 1);
     };
     tryRoute('col');
     if (!e.findPath(e.adjacentRoads(inst), e.adjacentRoads(depot))) tryRoute('row');
-    return b;
+    return res;
   };
   const coal = findDeposit('coal');
   if (coal) connectMine(coal, 'coalMine');
   const oil = findDeposit('oil');
   if (oil) connectMine(oil, 'oilPump');
 
-  // stock the depot so the economy hums immediately
-  depot.stock = { planks: 100, bricks: 100, steel: 40, food: 100, coal: 200, clothes: 20, crops: 40 };
+  // stock the depot so the economy hums immediately (within its storage caps)
+  depot.stock = { planks: 100, bricks: 100, steel: 40, food: 100, coal: 120, clothes: 20, crops: 40 };
 
   // simulate ~100 days to settle workers, trucks and citizens
   for (let i = 0; i < 100; i++) e.advance(500);
   e.dollars = 5000;
   e.rubles = 60000;
-  // camera hint: center already on base
-  void MAP_W; void MAP_H;
 }
