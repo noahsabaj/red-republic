@@ -542,7 +542,7 @@ export class GameEngine {
     const remTotal = rem.reduce((x, y) => x + y, 0);
     if (pool > 0 && remTotal > 0) {
       list.forEach((b, i) => { b.staff += Math.min(rem[i], Math.floor((pool * rem[i]) / remTotal)); });
-      let used = list.reduce((x, b) => x + b.staff, 0);
+      const used = list.reduce((x, b) => x + b.staff, 0);
       let left = this.workers - used;
       for (const b of list) {
         while (left > 0 && b.staff < this.def(b).workers) { b.staff++; left--; }

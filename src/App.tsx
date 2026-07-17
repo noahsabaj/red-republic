@@ -59,6 +59,7 @@ export default function App() {
         selectedId={selectedId}
         setSelectedId={handleSelect}
         instantBuild={instantBuild}
+        hotkeysEnabled={!showIntro && !showHelp}
         onError={(msg) => push(msg, 'bad')}
       />
 
