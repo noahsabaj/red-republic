@@ -20,6 +20,7 @@ export interface NormPointerEvent {
   isTouch: boolean;
   button: number;     // 0/1/2 on down/up; -1 on moves
   onCanvas: boolean;  // topmost element at this point is the canvas
+  additive: boolean;  // shift/ctrl/meta held — multi-select modifier
 }
 
 export interface NormKeyEvent { key: string; code: string; repeat: boolean }
@@ -32,7 +33,7 @@ export interface InputCallbacks {
   placeAt(sx: number, sy: number): void;  // build tool, non-road, single-shot
   beginPaint(): void;                     // reset paint dedupe before a stroke
   paintAt(sx: number, sy: number): void;  // road / bulldoze stroke step
-  selectAt(sx: number, sy: number): void;
+  selectAt(sx: number, sy: number, additive: boolean): void;
   setHover(sx: number, sy: number): void;
   clearHover(): void;
   cancelTool(): void;
@@ -161,7 +162,7 @@ export class InputController {
     }
 
     if (e.pointerId === this.gestureId) {
-      if (this.mode === 'maybeSelect' && !this.dragged) this.cb.selectAt(e.x, e.y);
+      if (this.mode === 'maybeSelect' && !this.dragged) this.cb.selectAt(e.x, e.y, e.additive);
       this.mode = 'idle';
       this.gestureId = -1;
     }

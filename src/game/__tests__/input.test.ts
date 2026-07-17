@@ -15,7 +15,7 @@ function makeCtrl(overrides: { tool?: Tool; hotkeys?: boolean } = {}) {
     placeAt: (x, y) => log.calls.push(['placeAt', x, y]),
     beginPaint: () => log.calls.push(['beginPaint']),
     paintAt: (x, y) => log.calls.push(['paintAt', x, y]),
-    selectAt: (x, y) => log.calls.push(['selectAt', x, y]),
+    selectAt: (x, y, additive) => log.calls.push(['selectAt', x, y, additive]),
     setHover: (x, y) => log.calls.push(['setHover', x, y]),
     clearHover: () => log.calls.push(['clearHover']),
     cancelTool: () => log.calls.push(['cancelTool']),
@@ -33,7 +33,7 @@ function makeCtrl(overrides: { tool?: Tool; hotkeys?: boolean } = {}) {
 }
 
 const ev = (partial: Partial<NormPointerEvent>): NormPointerEvent => ({
-  x: 0, y: 0, pointerId: 1, isTouch: false, button: -1, onCanvas: true, ...partial,
+  x: 0, y: 0, pointerId: 1, isTouch: false, button: -1, onCanvas: true, additive: false, ...partial,
 });
 
 let t: ReturnType<typeof makeCtrl>;
@@ -71,7 +71,13 @@ describe('select vs drag', () => {
     t.ctrl.pointerMove(ev({ x: 102, y: 101 }));
     t.ctrl.pointerUp(ev({ x: 102, y: 101, button: 0 }));
     expect(t.of('panBy')).toHaveLength(0);
-    expect(t.of('selectAt')).toEqual([['selectAt', 102, 101]]);
+    expect(t.of('selectAt')).toEqual([['selectAt', 102, 101, false]]);
+  });
+
+  it('shift/ctrl taps pass the additive flag through', () => {
+    t.ctrl.pointerDown(ev({ x: 50, y: 50, button: 0, additive: true }));
+    t.ctrl.pointerUp(ev({ x: 50, y: 50, button: 0, additive: true }));
+    expect(t.of('selectAt')).toEqual([['selectAt', 50, 50, true]]);
   });
 });
 

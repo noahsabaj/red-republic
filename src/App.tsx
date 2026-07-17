@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { GameEngine } from './game/engine';
 import { seedDemoTown } from './game/demo';
-import GameCanvas, { type Selection, type Tool } from './components/GameCanvas';
+import GameCanvas, { type SelectionItem, type Tool } from './components/GameCanvas';
+import { updateSelection } from './game/selection';
 import HUD from './components/HUD';
 import BuildMenu from './components/BuildMenu';
 import SidePanel from './components/SidePanel';
@@ -23,7 +24,7 @@ export default function App() {
     return eng;
   }, []);
   const [tool, setTool] = useState<Tool>({ kind: 'select' });
-  const [selected, setSelected] = useState<Selection>(null);
+  const [selection, setSelection] = useState<SelectionItem[]>([]);
   const [instantBuild, setInstantBuild] = useState(false);
   const [panel, setPanel] = useState<PanelMode | null>(null);
   const [showIntro, setShowIntro] = useState(true);
@@ -42,10 +43,13 @@ export default function App() {
     return engine.subscribe(drain);
   }, [engine, push]);
 
-  const handleSelect = (sel: Selection) => {
-    setSelected(sel);
-    if (sel) setPanel('building');
-    else setPanel(p => (p === 'building' ? null : p));
+  const handleSelect = (item: SelectionItem | null, additive: boolean) => {
+    setSelection(cur => {
+      const next = updateSelection(cur, item, additive);
+      if (next.length) setPanel('building');
+      else setPanel(p => (p === 'building' ? null : p));
+      return next;
+    });
   };
 
   const togglePanel = (m: PanelMode) => setPanel(p => (p === m ? null : m));
@@ -56,8 +60,8 @@ export default function App() {
         engine={engine}
         tool={tool}
         setTool={setTool}
-        selected={selected}
-        setSelected={handleSelect}
+        selection={selection}
+        onSelect={handleSelect}
         instantBuild={instantBuild}
         hotkeysEnabled={!showIntro && !showHelp}
         onError={(msg) => push(msg, 'bad')}
@@ -82,7 +86,7 @@ export default function App() {
         <SidePanel
           engine={engine}
           mode={panel}
-          selected={selected}
+          selection={selection}
           onClose={() => setPanel(null)}
           onOpenTrade={() => setPanel('trade')}
           onArmBuild={(defId) => setTool({ kind: 'build', defId })}

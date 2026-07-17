@@ -8,17 +8,14 @@ import type { GameEngine, BuildingInst, Season, Truck } from './engine';
 export const TILE_W = 64;
 export const TILE_H = 32;
 
-export interface Camera { x: number; y: number; z: number; }
+import type { SelectionItem } from './selection';
 
-export type Selection =
-  | { kind: 'building'; id: number }
-  | { kind: 'deposit'; x: number; y: number }
-  | null;
+export interface Camera { x: number; y: number; z: number; }
 
 export interface UIState {
   hoverTile: { x: number; y: number } | null;
   tool: { kind: 'select' } | { kind: 'build'; defId: string } | { kind: 'bulldoze' };
-  selection: Selection;
+  selection: SelectionItem[];
   time: number; // ms, for animation
 }
 
@@ -306,27 +303,28 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
     }
   }
 
-  // selection highlight (deliberate overlay — a dashed outline reads as UI)
-  if (ui.selection) {
-    let rect: { x: number; y: number; w: number; h: number } | null = null;
-    if (ui.selection.kind === 'building') {
-      const b = engine.buildings.get(ui.selection.id);
-      if (b) rect = b;
-    } else {
-      rect = { x: ui.selection.x, y: ui.selection.y, w: 1, h: 1 };
-    }
-    if (rect) {
+  // selection highlights (deliberate overlay — dashed outlines read as UI)
+  if (ui.selection.length) {
+    ctx.setLineDash([6, 4]);
+    ctx.lineDashOffset = -ui.time / 60;
+    ctx.strokeStyle = '#ffd94d';
+    ctx.lineWidth = 2;
+    for (const sel of ui.selection) {
+      let rect: { x: number; y: number; w: number; h: number } | null = null;
+      if (sel.kind === 'building') {
+        const b = engine.buildings.get(sel.id);
+        if (b) rect = b;
+      } else {
+        rect = { x: sel.x, y: sel.y, w: 1, h: 1 };
+      }
+      if (!rect) continue;
       const c0 = toScreen(rect.x, rect.y, cam), c1 = toScreen(rect.x + rect.w, rect.y, cam);
       const c2 = toScreen(rect.x + rect.w, rect.y + rect.h, cam), c3 = toScreen(rect.x, rect.y + rect.h, cam);
-      ctx.setLineDash([6, 4]);
-      ctx.lineDashOffset = -ui.time / 60;
-      ctx.strokeStyle = '#ffd94d';
-      ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(c0.x, c0.y); ctx.lineTo(c1.x, c1.y); ctx.lineTo(c2.x, c2.y); ctx.lineTo(c3.x, c3.y);
       ctx.closePath(); ctx.stroke();
-      ctx.setLineDash([]);
     }
+    ctx.setLineDash([]);
   }
 
 }

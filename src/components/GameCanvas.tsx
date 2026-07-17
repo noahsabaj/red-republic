@@ -1,28 +1,30 @@
 import { useEffect, useRef } from 'react';
 import type { GameEngine } from '@/game/engine';
-import { render, screenToTile, pickBuilding, type Camera, type Selection, type UIState } from '@/game/render';
+import { render, screenToTile, pickBuilding, type Camera, type UIState } from '@/game/render';
 import { InputController, type NormPointerEvent, type Tool } from '@/game/input';
+import type { SelectionItem } from '@/game/selection';
 import { MAP_W, MAP_H } from '@/game/mapgen';
 
-export type { Selection, Tool };
+export type { SelectionItem, Tool };
 
 interface Props {
   engine: GameEngine;
   tool: Tool;
   setTool: (t: Tool) => void;
-  selected: Selection;
-  setSelected: (s: Selection) => void;
+  selection: SelectionItem[];
+  /** item = null means empty ground was clicked */
+  onSelect: (item: SelectionItem | null, additive: boolean) => void;
   instantBuild: boolean;
   hotkeysEnabled: boolean;
   onError: (msg: string) => void;
 }
 
-export default function GameCanvas({ engine, tool, setTool, selected, setSelected, instantBuild, hotkeysEnabled, onError }: Props) {
+export default function GameCanvas({ engine, tool, setTool, selection, onSelect, instantBuild, hotkeysEnabled, onError }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const camRef = useRef<Camera>({ x: 0, y: 0, z: 0.8 });
-  const uiRef = useRef<UIState>({ hoverTile: null, tool, selection: selected, time: 0 });
+  const uiRef = useRef<UIState>({ hoverTile: null, tool, selection, time: 0 });
   const engineRef = useRef(engine);
-  const cbRef = useRef({ setTool, setSelected, onError });
+  const cbRef = useRef({ setTool, onSelect, onError });
   const instantRef = useRef(instantBuild);
   const hotkeysRef = useRef(hotkeysEnabled);
 
@@ -30,9 +32,9 @@ export default function GameCanvas({ engine, tool, setTool, selected, setSelecte
   // illegal under React 19 concurrent rendering)
   useEffect(() => {
     uiRef.current.tool = tool;
-    uiRef.current.selection = selected;
+    uiRef.current.selection = selection;
     engineRef.current = engine;
-    cbRef.current = { setTool, setSelected, onError };
+    cbRef.current = { setTool, onSelect, onError };
     instantRef.current = instantBuild;
     hotkeysRef.current = hotkeysEnabled;
   });
@@ -118,24 +120,24 @@ export default function GameCanvas({ engine, tool, setTool, selected, setSelecte
         if (tl.kind === 'build' && tl.defId === 'road') {
           eng.tryPlace('road', t.x, t.y, instantRef.current);
         } else if (tl.kind === 'bulldoze') {
-          if (eng.bulldozeAt(t.x, t.y)) cbRef.current.setSelected(null);
+          if (eng.bulldozeAt(t.x, t.y)) cbRef.current.onSelect(null, false);
         }
       },
-      selectAt: (sx, sy) => {
+      selectAt: (sx, sy, additive) => {
         const eng = engineRef.current;
         const b = pickBuilding(eng, sx, sy, camRef.current);
         if (b) {
-          cbRef.current.setSelected({ kind: 'building', id: b.id });
+          cbRef.current.onSelect({ kind: 'building', id: b.id }, additive);
           return;
         }
         // bare ground: deposit tiles are inspectable too
         const t = tileOf(sx, sy);
         const tile = eng.tiles[t.y]?.[t.x];
         if (tile?.deposit && !tile.buildingId) {
-          cbRef.current.setSelected({ kind: 'deposit', x: t.x, y: t.y });
+          cbRef.current.onSelect({ kind: 'deposit', x: t.x, y: t.y }, additive);
           return;
         }
-        cbRef.current.setSelected(null);
+        cbRef.current.onSelect(null, additive);
       },
       setHover: (sx, sy) => { uiRef.current.hoverTile = tileOf(sx, sy); },
       clearHover: () => { uiRef.current.hoverTile = null; },
@@ -155,6 +157,7 @@ export default function GameCanvas({ engine, tool, setTool, selected, setSelecte
         isTouch: e.pointerType === 'touch',
         button: e.button,
         onCanvas: el === canvas,
+        additive: e.shiftKey || e.ctrlKey || e.metaKey,
       };
     };
 

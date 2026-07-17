@@ -1107,6 +1107,19 @@ export class GameEngine {
     this.bump();
   }
 
+  /** Set staffing priority for several buildings at once (multi-selection action). */
+  setStaffPriorityMany(ids: number[], on: boolean) {
+    let changed = false;
+    for (const id of ids) {
+      const b = this.buildings.get(id);
+      if (b && (b.priorityHigh ?? false) !== on) {
+        b.priorityHigh = on;
+        changed = true;
+      }
+    }
+    if (changed) this.bump();
+  }
+
   // ---------------- events / subscription ----------------
 
   private pushEvent(text: string, kind: GameEvent['kind']) {

@@ -1,26 +1,28 @@
 import { useState } from 'react';
 import type { GameEngine, BuildingInst } from '@/game/engine';
 import { BUILDINGS, RESOURCES, ALL_RESOURCES, OBJECTIVES, FARM_SEASON } from '@/game/config';
-import type { ResourceId } from '@/game/config';
-import type { Selection } from '@/game/render';
+import type { DepositType, ResourceId } from '@/game/config';
+import type { SelectionItem } from '@/game/selection';
 import { useEngineVersion } from '@/hooks/use-engine';
 
 interface Props {
   engine: GameEngine;
   mode: 'building' | 'trade' | 'objectives';
-  selected: Selection;
+  selection: SelectionItem[];
   onClose: () => void;
   onOpenTrade: () => void;
   onArmBuild: (defId: string) => void;
   notify: (msg: string, kind: 'good' | 'bad' | 'info') => void;
 }
 
-export default function SidePanel({ engine, mode, selected, onClose, onOpenTrade, onArmBuild, notify }: Props) {
+export default function SidePanel({ engine, mode, selection, onClose, onOpenTrade, onArmBuild, notify }: Props) {
   // the open detail panel mirrors live engine state — re-render on every bump
   useEngineVersion(engine);
+  const single = selection.length === 1 ? selection[0] : null;
   const title = mode === 'trade' ? '🛃 Foreign Trade'
     : mode === 'objectives' ? '🎯 Five-Year Plan'
-    : selected?.kind === 'deposit' ? 'Deposit' : 'Building';
+    : selection.length > 1 ? `${selection.length} selected`
+    : single?.kind === 'deposit' ? 'Deposit' : 'Building';
   return (
     <div className="absolute right-0 top-24 bottom-0 z-10 flex pointer-events-none">
       <div className="pointer-events-auto flex flex-col w-72 m-2 rounded-lg border-2 border-yellow-600/60 bg-red-950/95 text-yellow-50 shadow-2xl overflow-hidden">
@@ -29,13 +31,136 @@ export default function SidePanel({ engine, mode, selected, onClose, onOpenTrade
           <button onClick={onClose} className="text-yellow-200/60 hover:text-yellow-100 font-bold">✕</button>
         </div>
         <div className="flex-1 overflow-y-auto soviet-scroll p-3">
-          {mode === 'building' && (selected?.kind === 'deposit'
-            ? <DepositInfo engine={engine} x={selected.x} y={selected.y} onArmBuild={onArmBuild} />
-            : <BuildingInfo engine={engine} id={selected?.kind === 'building' ? selected.id : null} onOpenTrade={onOpenTrade} />)}
+          {mode === 'building' && (
+            selection.length > 1
+              ? <MultiInfo engine={engine} items={selection} onArmBuild={onArmBuild} />
+              : single?.kind === 'deposit'
+                ? <DepositInfo engine={engine} x={single.x} y={single.y} onArmBuild={onArmBuild} />
+                : <BuildingInfo engine={engine} id={single?.kind === 'building' ? single.id : null} onOpenTrade={onOpenTrade} />
+          )}
           {mode === 'trade' && <TradePanel engine={engine} notify={notify} />}
           {mode === 'objectives' && <ObjectivesPanel engine={engine} />}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
+
+function MultiInfo({ engine, items, onArmBuild }: { engine: GameEngine; items: SelectionItem[]; onArmBuild: (defId: string) => void }) {
+  const buildings = items
+    .filter((i): i is Extract<SelectionItem, { kind: 'building' }> => i.kind === 'building')
+    .map(i => engine.buildings.get(i.id))
+    .filter((b): b is BuildingInst => !!b);
+
+  // deposit tiles grouped by kind; "free" tiles can each host one extractor
+  const depositKinds = new Map<DepositType, { total: number; free: number }>();
+  for (const i of items) {
+    if (i.kind !== 'deposit') continue;
+    const t = engine.tiles[i.y]?.[i.x];
+    if (!t?.deposit) continue;
+    const g = depositKinds.get(t.deposit) ?? { total: 0, free: 0 };
+    g.total++;
+    if (!t.buildingId && !t.road) g.free++;
+    depositKinds.set(t.deposit, g);
+  }
+
+  // building group counts + live totals
+  const typeCounts = new Map<string, number>();
+  let staff = 0, jobs = 0, powerDraw = 0;
+  const flowIn: Partial<Record<ResourceId, number>> = {};
+  const flowOut: Partial<Record<ResourceId, number>> = {};
+  for (const b of buildings) {
+    const def = BUILDINGS[b.defId];
+    typeCounts.set(b.defId, (typeCounts.get(b.defId) ?? 0) + 1);
+    if (b.constructed) {
+      staff += b.staff;
+      jobs += def.workers;
+      powerDraw += def.power;
+      const rates = engine.productionRates(b);
+      for (const [r, a] of Object.entries(rates.inputs) as [ResourceId, number][]) flowIn[r] = (flowIn[r] ?? 0) + a;
+      for (const [r, a] of Object.entries(rates.outputs) as [ResourceId, number][]) flowOut[r] = (flowOut[r] ?? 0) + a;
+    }
+  }
+  const staffed = buildings.filter(b => b.constructed && BUILDINGS[b.defId].workers > 0);
+  const allPriority = staffed.length > 0 && staffed.every(b => b.priorityHigh);
+  const fmt = (n: number) => (n < 10 ? n.toFixed(1) : String(Math.round(n)));
+  const ins = Object.entries(flowIn) as [ResourceId, number][];
+  const outs = Object.entries(flowOut) as [ResourceId, number][];
+
+  return (
+    <div className="space-y-3">
+      {buildings.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400">Buildings ({buildings.length})</div>
+          <div className="space-y-0.5">
+            {[...typeCounts.entries()].map(([defId, n]) => (
+              <Row key={defId} label={`${BUILDINGS[defId].icon} ${BUILDINGS[defId].name}`} value={`×${n}`} />
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-x-2">
+            {jobs > 0 && <Row label="👷 Staff" value={`${staff}/${jobs}`} ok={staff >= jobs * 0.8} />}
+            {powerDraw > 0 && <Row label="⚡ Draw" value={`${powerDraw.toFixed(1)} MW`} />}
+          </div>
+          {(ins.length > 0 || outs.length > 0) && (
+            <div className="rounded bg-red-900/40 p-2">
+              <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400 mb-1">Combined production / day</div>
+              <div className="text-xs">
+                {ins.map(([r, a]) => `${RESOURCES[r].icon}${fmt(a)}`).join(' + ')}
+                {ins.length > 0 && outs.length > 0 && ' → '}
+                {outs.map(([r, a]) => `${RESOURCES[r].icon}${fmt(a)}`).join(' + ')}
+              </div>
+            </div>
+          )}
+          {staffed.length > 0 && (
+            <button
+              onClick={() => engine.setStaffPriorityMany(staffed.map(b => b.id), !allPriority)}
+              className={`w-full rounded font-bold text-xs py-1.5 ${allPriority ? 'bg-yellow-500 text-red-950' : 'bg-red-900/70 hover:bg-red-800'}`}
+              title="High-priority buildings are staffed first when workers are scarce"
+            >
+              {allPriority ? '⭐ Priority staffing: ON for all' : `☆ Set priority staffing for ${staffed.length} building${staffed.length > 1 ? 's' : ''}`}
+            </button>
+          )}
+        </div>
+      )}
+
+      {depositKinds.size > 0 && (
+        <div className="space-y-2">
+          <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400">Deposits</div>
+          {[...depositKinds.entries()].map(([kind, g]) => {
+            const res = RESOURCES[kind];
+            const miner = Object.values(BUILDINGS).find(d => d.requiresDeposit === kind)!;
+            const outputsPerMine = Object.entries(miner.outputs ?? {}) as [ResourceId, number][];
+            return (
+              <div key={kind} className="rounded bg-red-900/40 p-2 space-y-1">
+                <div className="flex justify-between text-xs font-bold">
+                  <span>{res.icon} {res.name}</span>
+                  <span>{g.total} tile{g.total > 1 ? 's' : ''}{g.free < g.total ? ` · ${g.free} free` : ''}</span>
+                </div>
+                {g.free > 0 && (
+                  <>
+                    <div className="text-[11px] text-yellow-200/80">
+                      One {miner.name} per free tile: {outputsPerMine.map(([r, a]) => `${RESOURCES[r].icon}${fmt(a * g.free)}/day`).join(' ')}
+                      <span className="text-yellow-200/60"> · 👷{miner.workers * g.free} · ₽{(miner.costRubles * g.free).toLocaleString()} total</span>
+                    </div>
+                    <button
+                      onClick={() => onArmBuild(miner.id)}
+                      className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1 hover:bg-yellow-400"
+                    >
+                      🏗️ Build {miner.name} (₽{miner.costRubles} each)
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {buildings.length === 0 && depositKinds.size === 0 && (
+        <div className="text-xs text-yellow-200/60">The selection no longer exists.</div>
+      )}
     </div>
   );
 }
