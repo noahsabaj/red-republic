@@ -183,6 +183,15 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
     }
   }
 
+  // the placement/bulldoze ghost participates in depth sorting like a
+  // building would — otherwise it paints over structures that occlude
+  // its tile (hovering a tile behind a tall building)
+  let ghostRow = -1;
+  if (ui.hoverTile && (ui.tool.kind === 'build' || ui.tool.kind === 'bulldoze')) {
+    const h = ui.tool.kind === 'build' ? BUILDINGS[ui.tool.defId].size[1] : 1;
+    ghostRow = Math.max(0, Math.min(MAP_H - 1, ui.hoverTile.y + h - 1));
+  }
+
   const hwz = (TILE_W / 2) * cam.z;
   const hhz = (TILE_H / 2) * cam.z;
   for (let y = 0; y < MAP_H; y++) {
@@ -259,6 +268,8 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
         ctx.fill();
       }
     }
+
+    if (y === ghostRow) drawGhost(ctx, engine, cam, ui);
   }
 
   // selection highlight
@@ -278,8 +289,13 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
     }
   }
 
-  // build ghost / bulldoze
-  if (ui.hoverTile && ui.tool.kind === 'build') {
+}
+
+// build/bulldoze placement ghost — drawn from within the row scan at its
+// depth position (see ghostRow in render())
+function drawGhost(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: Camera, ui: UIState) {
+  if (!ui.hoverTile) return;
+  if (ui.tool.kind === 'build') {
     const defId = ui.tool.defId;
     const def = BUILDINGS[defId];
     const [w, h] = def.size;
@@ -297,8 +313,7 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
       ctx.fillText(def.icon, c2.x, c2.y - 18 * cam.z);
       ctx.globalAlpha = 1;
     }
-  }
-  if (ui.hoverTile && ui.tool.kind === 'bulldoze') {
+  } else if (ui.tool.kind === 'bulldoze') {
     const c0 = toScreen(ui.hoverTile.x, ui.hoverTile.y, cam);
     const c1 = toScreen(ui.hoverTile.x + 1, ui.hoverTile.y, cam);
     const c2 = toScreen(ui.hoverTile.x + 1, ui.hoverTile.y + 1, cam);
