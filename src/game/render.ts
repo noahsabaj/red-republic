@@ -10,10 +10,15 @@ export const TILE_H = 32;
 
 export interface Camera { x: number; y: number; z: number; }
 
+export type Selection =
+  | { kind: 'building'; id: number }
+  | { kind: 'deposit'; x: number; y: number }
+  | null;
+
 export interface UIState {
   hoverTile: { x: number; y: number } | null;
   tool: { kind: 'select' } | { kind: 'build'; defId: string } | { kind: 'bulldoze' };
-  selectedId: number | null;
+  selection: Selection;
   time: number; // ms, for animation
 }
 
@@ -301,12 +306,18 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
     }
   }
 
-  // selection highlight
-  if (ui.selectedId) {
-    const b = engine.buildings.get(ui.selectedId);
-    if (b) {
-      const c0 = toScreen(b.x, b.y, cam), c1 = toScreen(b.x + b.w, b.y, cam);
-      const c2 = toScreen(b.x + b.w, b.y + b.h, cam), c3 = toScreen(b.x, b.y + b.h, cam);
+  // selection highlight (deliberate overlay — a dashed outline reads as UI)
+  if (ui.selection) {
+    let rect: { x: number; y: number; w: number; h: number } | null = null;
+    if (ui.selection.kind === 'building') {
+      const b = engine.buildings.get(ui.selection.id);
+      if (b) rect = b;
+    } else {
+      rect = { x: ui.selection.x, y: ui.selection.y, w: 1, h: 1 };
+    }
+    if (rect) {
+      const c0 = toScreen(rect.x, rect.y, cam), c1 = toScreen(rect.x + rect.w, rect.y, cam);
+      const c2 = toScreen(rect.x + rect.w, rect.y + rect.h, cam), c3 = toScreen(rect.x, rect.y + rect.h, cam);
       ctx.setLineDash([6, 4]);
       ctx.lineDashOffset = -ui.time / 60;
       ctx.strokeStyle = '#ffd94d';

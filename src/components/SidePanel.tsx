@@ -2,35 +2,91 @@ import { useState } from 'react';
 import type { GameEngine, BuildingInst } from '@/game/engine';
 import { BUILDINGS, RESOURCES, ALL_RESOURCES, OBJECTIVES, FARM_SEASON } from '@/game/config';
 import type { ResourceId } from '@/game/config';
+import type { Selection } from '@/game/render';
 import { useEngineVersion } from '@/hooks/use-engine';
 
 interface Props {
   engine: GameEngine;
   mode: 'building' | 'trade' | 'objectives';
-  selectedId: number | null;
+  selected: Selection;
   onClose: () => void;
   onOpenTrade: () => void;
+  onArmBuild: (defId: string) => void;
   notify: (msg: string, kind: 'good' | 'bad' | 'info') => void;
 }
 
-export default function SidePanel({ engine, mode, selectedId, onClose, onOpenTrade, notify }: Props) {
+export default function SidePanel({ engine, mode, selected, onClose, onOpenTrade, onArmBuild, notify }: Props) {
   // the open detail panel mirrors live engine state — re-render on every bump
   useEngineVersion(engine);
+  const title = mode === 'trade' ? '🛃 Foreign Trade'
+    : mode === 'objectives' ? '🎯 Five-Year Plan'
+    : selected?.kind === 'deposit' ? 'Deposit' : 'Building';
   return (
     <div className="absolute right-0 top-24 bottom-0 z-10 flex pointer-events-none">
       <div className="pointer-events-auto flex flex-col w-72 m-2 rounded-lg border-2 border-yellow-600/60 bg-red-950/95 text-yellow-50 shadow-2xl overflow-hidden">
         <div className="flex items-center justify-between px-3 py-2 bg-red-900/60 border-b border-yellow-600/30">
-          <span className="text-xs font-black uppercase tracking-widest text-yellow-400">
-            {mode === 'building' ? 'Building' : mode === 'trade' ? '🛃 Foreign Trade' : '🎯 Five-Year Plan'}
-          </span>
+          <span className="text-xs font-black uppercase tracking-widest text-yellow-400">{title}</span>
           <button onClick={onClose} className="text-yellow-200/60 hover:text-yellow-100 font-bold">✕</button>
         </div>
         <div className="flex-1 overflow-y-auto soviet-scroll p-3">
-          {mode === 'building' && <BuildingInfo engine={engine} id={selectedId} onOpenTrade={onOpenTrade} />}
+          {mode === 'building' && (selected?.kind === 'deposit'
+            ? <DepositInfo engine={engine} x={selected.x} y={selected.y} onArmBuild={onArmBuild} />
+            : <BuildingInfo engine={engine} id={selected?.kind === 'building' ? selected.id : null} onOpenTrade={onOpenTrade} />)}
           {mode === 'trade' && <TradePanel engine={engine} notify={notify} />}
           {mode === 'objectives' && <ObjectivesPanel engine={engine} />}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
+
+const DEPOSIT_NAMES: Record<string, string> = { coal: 'Coal', ironOre: 'Iron Ore', oil: 'Oil', gravel: 'Gravel' };
+
+function DepositInfo({ engine, x, y, onArmBuild }: { engine: GameEngine; x: number; y: number; onArmBuild: (defId: string) => void }) {
+  const cluster = engine.depositClusterAt(x, y);
+  if (!cluster) return <div className="text-xs text-yellow-200/60">Nothing of value here.</div>;
+  const res = RESOURCES[cluster.kind];
+  const miner = Object.values(BUILDINGS).find(d => d.requiresDeposit === cluster.kind)!;
+  const exploited = cluster.exploitedBy;
+  const outputs = Object.entries(miner.outputs ?? {}) as [ResourceId, number][];
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <span className="text-2xl">{res.icon}</span>
+        <div>
+          <div className="font-bold text-sm">{DEPOSIT_NAMES[cluster.kind]} Deposit</div>
+          <div className="text-[10px] text-yellow-200/50">
+            {exploited ? `Worked by a ${BUILDINGS[exploited.defId].name}.` : 'Unexploited mineral wealth of the republic.'}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-x-2">
+        <Row label={`${res.icon} Resource`} value={res.name} />
+        <Row label="🗺️ Cluster" value={`${cluster.tiles.length} tile${cluster.tiles.length > 1 ? 's' : ''}`} />
+        <Row label="⛏️ Status" value={exploited ? 'Exploited' : 'Unexploited'} ok={!!exploited} />
+      </div>
+
+      <div className="rounded bg-red-900/40 p-2">
+        <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400 mb-1">{miner.name}</div>
+        <div className="text-xs">
+          {outputs.map(([r, a]) => `${RESOURCES[r].icon}${a}/day at full staff`).join(' ')}
+          <span className="text-yellow-200/60"> · 👷{miner.workers}{miner.power > 0 ? ` · ⚡${miner.power} MW` : ''}</span>
+        </div>
+      </div>
+
+      {!exploited && (
+        <button
+          onClick={() => onArmBuild(miner.id)}
+          className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1.5 hover:bg-yellow-400"
+          title={`Arm the build tool — place the ${miner.name} on one of this cluster's tiles`}
+        >
+          🏗️ Build {miner.name} (₽{miner.costRubles})
+        </button>
+      )}
     </div>
   );
 }

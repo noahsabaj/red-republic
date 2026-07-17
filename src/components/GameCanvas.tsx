@@ -1,28 +1,28 @@
 import { useEffect, useRef } from 'react';
 import type { GameEngine } from '@/game/engine';
-import { render, screenToTile, pickBuilding, type Camera, type UIState } from '@/game/render';
+import { render, screenToTile, pickBuilding, type Camera, type Selection, type UIState } from '@/game/render';
 import { InputController, type NormPointerEvent, type Tool } from '@/game/input';
 import { MAP_W, MAP_H } from '@/game/mapgen';
 
-export type { Tool };
+export type { Selection, Tool };
 
 interface Props {
   engine: GameEngine;
   tool: Tool;
   setTool: (t: Tool) => void;
-  selectedId: number | null;
-  setSelectedId: (id: number | null) => void;
+  selected: Selection;
+  setSelected: (s: Selection) => void;
   instantBuild: boolean;
   hotkeysEnabled: boolean;
   onError: (msg: string) => void;
 }
 
-export default function GameCanvas({ engine, tool, setTool, selectedId, setSelectedId, instantBuild, hotkeysEnabled, onError }: Props) {
+export default function GameCanvas({ engine, tool, setTool, selected, setSelected, instantBuild, hotkeysEnabled, onError }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const camRef = useRef<Camera>({ x: 0, y: 0, z: 0.8 });
-  const uiRef = useRef<UIState>({ hoverTile: null, tool, selectedId, time: 0 });
+  const uiRef = useRef<UIState>({ hoverTile: null, tool, selection: selected, time: 0 });
   const engineRef = useRef(engine);
-  const cbRef = useRef({ setTool, setSelectedId, onError });
+  const cbRef = useRef({ setTool, setSelected, onError });
   const instantRef = useRef(instantBuild);
   const hotkeysRef = useRef(hotkeysEnabled);
 
@@ -30,9 +30,9 @@ export default function GameCanvas({ engine, tool, setTool, selectedId, setSelec
   // illegal under React 19 concurrent rendering)
   useEffect(() => {
     uiRef.current.tool = tool;
-    uiRef.current.selectedId = selectedId;
+    uiRef.current.selection = selected;
     engineRef.current = engine;
-    cbRef.current = { setTool, setSelectedId, onError };
+    cbRef.current = { setTool, setSelected, onError };
     instantRef.current = instantBuild;
     hotkeysRef.current = hotkeysEnabled;
   });
@@ -117,12 +117,24 @@ export default function GameCanvas({ engine, tool, setTool, selectedId, setSelec
         if (tl.kind === 'build' && tl.defId === 'road') {
           eng.tryPlace('road', t.x, t.y, instantRef.current);
         } else if (tl.kind === 'bulldoze') {
-          if (eng.bulldozeAt(t.x, t.y)) cbRef.current.setSelectedId(null);
+          if (eng.bulldozeAt(t.x, t.y)) cbRef.current.setSelected(null);
         }
       },
       selectAt: (sx, sy) => {
-        const b = pickBuilding(engineRef.current, sx, sy, camRef.current);
-        cbRef.current.setSelectedId(b ? b.id : null);
+        const eng = engineRef.current;
+        const b = pickBuilding(eng, sx, sy, camRef.current);
+        if (b) {
+          cbRef.current.setSelected({ kind: 'building', id: b.id });
+          return;
+        }
+        // bare ground: deposit tiles are inspectable too
+        const t = tileOf(sx, sy);
+        const tile = eng.tiles[t.y]?.[t.x];
+        if (tile?.deposit && !tile.buildingId) {
+          cbRef.current.setSelected({ kind: 'deposit', x: t.x, y: t.y });
+          return;
+        }
+        cbRef.current.setSelected(null);
       },
       setHover: (sx, sy) => { uiRef.current.hoverTile = tileOf(sx, sy); },
       clearHover: () => { uiRef.current.hoverTile = null; },

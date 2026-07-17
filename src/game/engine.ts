@@ -5,7 +5,7 @@ import {
   BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, FARM_SEASON,
   DOLLAR_BUILD_RATE, IMPORT_MARKUP, OBJECTIVES,
 } from './config';
-import type { ResourceId } from './config';
+import type { DepositType, ResourceId } from './config';
 import { generateMap, mulberry32, MAP_W, MAP_H } from './mapgen';
 import type { MapData, Tile } from './mapgen';
 import { floodRoads, FloodResult } from './pathfind';
@@ -1066,6 +1066,37 @@ export class GameEngine {
     const customs = [...this.buildings.values()].some(b => this.def(b).isCustoms && b.constructed);
     if (!customs) a.push({ id: 'customs', icon: '🛃', text: 'No Customs House — foreign trade impossible', level: 'warn' });
     this.alerts = a;
+  }
+
+  /**
+   * The contiguous (8-way) deposit cluster at a tile, and the mine working
+   * it if any. Null when the tile has no deposit. Inspection API for the UI.
+   */
+  depositClusterAt(x: number, y: number): { kind: DepositType; tiles: { x: number; y: number }[]; exploitedBy: BuildingInst | null } | null {
+    const start = this.tiles[y]?.[x];
+    if (!start?.deposit) return null;
+    const kind = start.deposit;
+    const seen = new Set<number>([y * MAP_W + x]);
+    const stack = [{ x, y }];
+    const tiles: { x: number; y: number }[] = [];
+    let exploitedBy: BuildingInst | null = null;
+    while (stack.length) {
+      const cur = stack.pop()!;
+      tiles.push(cur);
+      const bid = this.tiles[cur.y][cur.x].buildingId;
+      if (bid) {
+        const b = this.buildings.get(bid);
+        if (b && this.def(b).requiresDeposit === kind) exploitedBy ??= b;
+      }
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const nx = cur.x + dx, ny = cur.y + dy;
+        const k = ny * MAP_W + nx;
+        if (seen.has(k)) continue;
+        if (this.tiles[ny]?.[nx]?.deposit === kind) { seen.add(k); stack.push({ x: nx, y: ny }); }
+      }
+    }
+    return { kind, tiles, exploitedBy };
   }
 
   /** Flip a building's staffing priority (UI action — keeps mutation + notification in the engine). */
