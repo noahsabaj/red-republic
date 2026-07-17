@@ -64,6 +64,32 @@ describe('migration', () => {
   });
 });
 
+describe('togglePause', () => {
+  it('resumes at the speed the game was last running at', () => {
+    const e = makeEngine();
+    e.setSpeed(4);
+    e.togglePause();
+    expect(e.speed).toBe(0);
+    e.togglePause();
+    expect(e.speed).toBe(4); // not 1
+  });
+
+  it('resumes the last running speed even when paused via setSpeed(0)', () => {
+    const e = makeEngine();
+    e.setSpeed(2);
+    e.setSpeed(0); // HUD pause button
+    e.togglePause(); // Space
+    expect(e.speed).toBe(2);
+  });
+
+  it('defaults to 1x on a fresh game', () => {
+    const e = makeEngine();
+    e.setSpeed(0); // intro pause
+    e.togglePause();
+    expect(e.speed).toBe(1);
+  });
+});
+
 describe('wages', () => {
   it('flags unpaid wages instead of the unreachable debt alert', () => {
     const e = makeEngine();

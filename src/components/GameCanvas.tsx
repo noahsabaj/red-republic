@@ -127,10 +127,7 @@ export default function GameCanvas({ engine, tool, setTool, selectedId, setSelec
       setHover: (sx, sy) => { uiRef.current.hoverTile = tileOf(sx, sy); },
       clearHover: () => { uiRef.current.hoverTile = null; },
       cancelTool: () => cbRef.current.setTool({ kind: 'select' }),
-      togglePause: () => {
-        const eng = engineRef.current;
-        eng.setSpeed(eng.speed === 0 ? 1 : 0);
-      },
+      togglePause: () => engineRef.current.togglePause(),
       setSpeed: (s) => engineRef.current.setSpeed(s),
     });
 

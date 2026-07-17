@@ -431,7 +431,18 @@ export class GameEngine {
 
   // ---------------- main loop ----------------
 
-  setSpeed(s: 0 | 1 | 2 | 4) { this.speed = s; this.bump(); }
+  private lastRunSpeed: 1 | 2 | 4 = 1;
+
+  setSpeed(s: 0 | 1 | 2 | 4) {
+    if (s !== 0) this.lastRunSpeed = s;
+    this.speed = s;
+    this.bump();
+  }
+
+  /** Pause, or resume at the speed the game was last running at. */
+  togglePause() {
+    this.setSpeed(this.speed === 0 ? this.lastRunSpeed : 0);
+  }
 
   advance(dtMs: number) {
     if (this.speed === 0) return;
