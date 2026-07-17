@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { InputController, type InputCallbacks, type NormPointerEvent, type Tool } from '../input';
+import { InputController, KEY_PAN_SPEED, type InputCallbacks, type NormPointerEvent, type Tool } from '../input';
 
 interface Log { calls: [string, ...unknown[]][] }
 
@@ -143,6 +143,61 @@ describe('hotkeys', () => {
     t.ctrl.key({ key: '3', code: 'Digit3', repeat: false });
     expect(t.of('cancelTool')).toHaveLength(1);
     expect(t.of('setSpeed')).toEqual([['setSpeed', 4]]);
+  });
+});
+
+describe('WASD panning', () => {
+  const key = (code: string) => ({ key: code.slice(3).toLowerCase(), code, repeat: false });
+
+  it('holding W pans the view north at the configured speed', () => {
+    expect(t.ctrl.key(key('KeyW'))).toBe(true);
+    t.ctrl.tick(1000);
+    // north = map content moves down = positive y pan (same as dragging the map down)
+    expect(t.of('panBy')).toEqual([['panBy', 0, KEY_PAN_SPEED]]);
+    t.ctrl.tick(500);
+    expect(t.of('panBy')[1]).toEqual(['panBy', 0, KEY_PAN_SPEED / 2]); // dt-scaled
+  });
+
+  it('diagonals are normalized and released keys stop panning', () => {
+    t.ctrl.key(key('KeyW'));
+    t.ctrl.key(key('KeyD'));
+    t.ctrl.tick(1000);
+    const [, dx, dy] = t.of('panBy')[0] as [string, number, number];
+    expect(Math.hypot(dx, dy)).toBeCloseTo(KEY_PAN_SPEED, 6); // not sqrt(2) faster
+    expect(dx).toBeLessThan(0); // D pulls the view east → content west
+    t.ctrl.keyUp(key('KeyW'));
+    t.ctrl.keyUp(key('KeyD'));
+    t.ctrl.tick(1000);
+    expect(t.of('panBy')).toHaveLength(1); // nothing further
+  });
+
+  it('opposing keys cancel out', () => {
+    t.ctrl.key(key('KeyW'));
+    t.ctrl.key(key('KeyS'));
+    t.ctrl.tick(1000);
+    expect(t.of('panBy')).toHaveLength(0);
+  });
+
+  it('is dead behind modals, and held keys clear when one opens mid-hold', () => {
+    t.setHotkeys(false);
+    expect(t.ctrl.key(key('KeyW'))).toBe(false);
+    t.ctrl.tick(1000);
+    expect(t.of('panBy')).toHaveLength(0);
+
+    t.setHotkeys(true);
+    t.ctrl.key(key('KeyW'));
+    t.setHotkeys(false); // modal opens while W is held
+    t.ctrl.tick(1000);
+    t.setHotkeys(true);  // modal closes — the stale hold must not resume
+    t.ctrl.tick(1000);
+    expect(t.of('panBy')).toHaveLength(0);
+  });
+
+  it('reset() (window blur) drops held keys', () => {
+    t.ctrl.key(key('KeyW'));
+    t.ctrl.reset();
+    t.ctrl.tick(1000);
+    expect(t.of('panBy')).toHaveLength(0);
   });
 });
 

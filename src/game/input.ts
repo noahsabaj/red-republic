@@ -44,6 +44,14 @@ type Mode = 'idle' | 'pan' | 'maybeSelect' | 'paint' | 'pinch';
 
 interface PointerInfo { x: number; y: number; startX: number; startY: number; isTouch: boolean }
 
+// physical key positions (works on AZERTY etc.) → screen-space pan direction.
+// Pressing W scrolls the view north: the map content moves down, i.e. the
+// same panBy a downward MMB drag produces.
+const PAN_KEYS: Record<string, readonly [number, number]> = {
+  KeyW: [0, 1], KeyS: [0, -1], KeyA: [1, 0], KeyD: [-1, 0],
+};
+export const KEY_PAN_SPEED = 550; // screen px per second
+
 export class InputController {
   private cb: InputCallbacks;
   private mode: Mode = 'idle';
@@ -181,9 +189,30 @@ export class InputController {
     this.cb.zoomAt(e.x, e.y, e.deltaY < 0 ? 1.15 : 0.87);
   }
 
+  private heldPan = new Set<string>();
+
+  /** Per-frame update — applies held-WASD panning. Call from the rAF loop. */
+  tick(dtMs: number): void {
+    if (this.heldPan.size === 0) return;
+    if (!this.cb.hotkeysEnabled()) { this.heldPan.clear(); return; }
+    let dx = 0, dy = 0;
+    for (const code of this.heldPan) {
+      const dir = PAN_KEYS[code];
+      dx += dir[0]; dy += dir[1];
+    }
+    if (dx === 0 && dy === 0) return; // opposing keys cancel
+    const v = (KEY_PAN_SPEED * dtMs) / 1000 / Math.hypot(dx, dy); // diagonals not faster
+    this.cb.panBy(dx * v, dy * v);
+  }
+
+  keyUp(e: NormKeyEvent): void {
+    this.heldPan.delete(e.code);
+  }
+
   /** Returns true when the key was consumed (adapter should preventDefault). */
   key(e: NormKeyEvent): boolean {
     if (!this.cb.hotkeysEnabled()) return false;
+    if (e.code in PAN_KEYS) { this.heldPan.add(e.code); return true; }
     if (e.key === 'Escape') { this.cb.cancelTool(); return true; }
     if (e.code === 'Space') {
       if (!e.repeat) this.cb.togglePause(); // auto-repeat must not rapid-toggle
@@ -195,13 +224,14 @@ export class InputController {
     return false;
   }
 
-  /** Abort any gesture (unmount / blur). */
+  /** Abort any gesture and held keys (unmount / window blur). */
   reset(): void {
     this.pointers.clear();
     this.pinchIds = null;
     this.mode = 'idle';
     this.gestureId = -1;
     this.dragged = false;
+    this.heldPan.clear();
     this.cb.clearHover();
   }
 }

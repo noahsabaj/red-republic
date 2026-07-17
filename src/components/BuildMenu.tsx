@@ -91,7 +91,7 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
             🚜 Bulldoze
           </button>
           <div className="text-[9px] text-yellow-200/40 leading-tight">
-            Left-click: place · drag: paint roads · right-drag: pan · wheel: zoom · Esc: cancel · Space: pause
+            Left-click: place · drag: paint roads · right-drag/WASD: pan · wheel: zoom · Esc: cancel · Space: pause
           </div>
         </div>
       </div>

@@ -104,7 +104,7 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
           </section>
           <section>
             <div className="font-bold text-yellow-300 mb-1">⌨️ Controls</div>
-            Left-click place/select · drag to paint roads · right-drag or left-drag to pan · mouse wheel to zoom · <b>Esc</b> cancel tool · <b>Space</b> pause · <b>1/2/3</b> game speed.
+            Left-click place/select · drag to paint roads · right-drag, left-drag or <b>WASD</b> to pan · mouse wheel to zoom · <b>Esc</b> cancel tool · <b>Space</b> pause · <b>1/2/3</b> game speed.
           </section>
         </div>
       </div>

@@ -76,6 +76,7 @@ export default function GameCanvas({ engine, tool, setTool, selected, setSelecte
     const loop = (now: number) => {
       const dt = Math.min(120, now - last);
       last = now;
+      ctrl.tick(dt); // held-key (WASD) panning
       engineRef.current.advance(dt);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       uiRef.current.time = now;
@@ -179,6 +180,8 @@ export default function GameCanvas({ engine, tool, setTool, selected, setSelecte
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       if (ctrl.key({ key: e.key, code: e.code, repeat: e.repeat })) e.preventDefault();
     };
+    const onKeyUp = (e: KeyboardEvent) => ctrl.keyUp({ key: e.key, code: e.code, repeat: false });
+    const onBlur = () => ctrl.reset(); // keyup can be missed while unfocused — no stuck keys
     const onCtx = (e: Event) => e.preventDefault();
 
     if (import.meta.env.DEV) {
@@ -186,6 +189,7 @@ export default function GameCanvas({ engine, tool, setTool, selected, setSelecte
       (window as unknown as Record<string, unknown>).__redRepublic = {
         engine: engineRef.current,
         cam: camRef.current,
+        ctrl,
       };
     }
 
@@ -196,6 +200,8 @@ export default function GameCanvas({ engine, tool, setTool, selected, setSelecte
     canvas.addEventListener('pointerleave', onLeave);
     canvas.addEventListener('wheel', onWheel, { passive: false });
     window.addEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
     canvas.addEventListener('contextmenu', onCtx);
 
     return () => {
@@ -209,6 +215,8 @@ export default function GameCanvas({ engine, tool, setTool, selected, setSelecte
       canvas.removeEventListener('pointerleave', onLeave);
       canvas.removeEventListener('wheel', onWheel);
       window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
       canvas.removeEventListener('contextmenu', onCtx);
       ctrl.reset();
     };
