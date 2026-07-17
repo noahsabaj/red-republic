@@ -53,6 +53,14 @@ function shade(hex: string, f: number): string {
   return `rgb(${r},${g},${b})`;
 }
 
+function tint(hex: string, f: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.round(((n >> 16) & 255) * (1 - f) + 255 * f);
+  const g = Math.round(((n >> 8) & 255) * (1 - f) + 255 * f);
+  const b = Math.round((n & 255) * (1 - f) + 255 * f);
+  return `rgb(${r},${g},${b})`;
+}
+
 function poly(ctx: CanvasRenderingContext2D, pts: { x: number; y: number }[], fill: string, stroke?: string) {
   ctx.beginPath();
   ctx.moveTo(pts[0].x, pts[0].y);
@@ -174,13 +182,20 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
   const [g1, g2] = GRASS[season];
   // per-frame caches: shaded colors and font strings are invariant per frame
   const forest1 = shade(g1, 0.92), forest2 = shade(g2, 0.92);
+  const wBase = WATER[season];
   const frame: FrameStyle = {
     time: ui.time,
+    season,
     fontIcon: `${Math.round(15 * cam.z)}px sans-serif`,
     fontStatus: `${Math.round(10 * cam.z)}px sans-serif`,
     fontSite: `bold ${Math.max(9, Math.round(10 * cam.z))}px sans-serif`,
     fontDeposit: `${Math.max(6, Math.round(9 * cam.z))}px sans-serif`,
     treeShade0: '', treeShade1: '',
+    waterA: wBase,
+    waterB: shade(wBase, 0.94),
+    waterDeepA: shade(wBase, 0.86),
+    waterDeepB: shade(wBase, 0.81),
+    waterEdge: tint(wBase, 0.5),
   };
   const treeCol = TREE[season];
   frame.treeShade0 = shade(treeCol, 0.85);
@@ -225,20 +240,14 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
       const t = engine.tiles[y][x];
       const c0 = toScreen(x, y, cam), c1 = toScreen(x + 1, y, cam);
       const c2 = toScreen(x + 1, y + 1, cam), c3 = toScreen(x, y + 1, cam);
-      const pts = [c0, c1, c2, c3];
 
-      let fill = (x + y) % 2 === 0 ? g1 : g2;
-      if (t.terrain === 'water') fill = WATER[season];
-      else if (t.terrain === 'rock') fill = (x + y) % 2 === 0 ? '#8b8b8b' : '#949494';
-      else if (t.terrain === 'forest') fill = (x + y) % 2 === 0 ? forest1 : forest2;
-      poly(ctx, pts, fill);
-
-      // water shimmer
       if (t.terrain === 'water') {
-        const wave = Math.sin(ui.time / 700 + x * 0.8 + y * 0.5) * 0.5 + 0.5;
-        ctx.globalAlpha = 0.15 + wave * 0.1;
-        poly(ctx, [lerpP(c0, c3, 0.3), lerpP(c1, c2, 0.3), lerpP(c1, c2, 0.45), lerpP(c0, c3, 0.45)], '#ffffff');
-        ctx.globalAlpha = 1;
+        drawWater(ctx, engine, x, y, c0, c1, c2, c3, cam, frame);
+      } else {
+        let fill = (x + y) % 2 === 0 ? g1 : g2;
+        if (t.terrain === 'rock') fill = (x + y) % 2 === 0 ? '#8b8b8b' : '#949494';
+        else if (t.terrain === 'forest') fill = (x + y) % 2 === 0 ? forest1 : forest2;
+        poly(ctx, [c0, c1, c2, c3], fill);
       }
 
       // farm fields
@@ -364,15 +373,65 @@ function lerpP(a: { x: number; y: number }, b: { x: number; y: number }, t: numb
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }
 
+function drawWater(ctx: CanvasRenderingContext2D, engine: GameEngine, x: number, y: number, c0: Pt, c1: Pt, c2: Pt, c3: Pt, cam: Camera, frame: FrameStyle) {
+  const isWater = (tx: number, ty: number) => engine.tiles[ty]?.[tx]?.terrain === 'water';
+  const nN = isWater(x, y - 1), nE = isWater(x + 1, y), nS = isWater(x, y + 1), nW = isWater(x - 1, y);
+  const even = (x + y) % 2 === 0;
+  const deep = nN && nE && nS && nW; // fully surrounded reads as depth
+  poly(ctx, [c0, c1, c2, c3], deep ? (even ? frame.waterDeepA : frame.waterDeepB) : (even ? frame.waterA : frame.waterB));
+
+  // shallow bank + foam line along every edge that touches land — this is
+  // what visually rounds the tile staircase into a shoreline
+  const bank = (a: Pt, b: Pt, aIn: Pt, bIn: Pt) => {
+    ctx.globalAlpha = 0.3;
+    poly(ctx, [a, b, lerpP(b, bIn, 0.26), lerpP(a, aIn, 0.26)], frame.waterEdge);
+    ctx.globalAlpha = 0.55;
+    ctx.strokeStyle = frame.waterEdge;
+    ctx.lineWidth = Math.max(1, 1.2 * cam.z);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.globalAlpha = 1;
+  };
+  if (!nN) bank(c0, c1, c3, c2);
+  if (!nE) bank(c1, c2, c0, c3);
+  if (!nS) bank(c3, c2, c0, c1);
+  if (!nW) bank(c0, c3, c1, c2);
+
+  // calm glints that breathe in and out (the river freezes still in winter)
+  if (frame.season !== 'winter') {
+    const v = engine.tiles[y][x].variant;
+    for (let i = 0; i < 2; i++) {
+      const fx = 0.18 + ((v * 37 + i * 0.43) % 0.5);
+      const fy = 0.18 + ((v * 53 + i * 0.31) % 0.5);
+      const ph = (frame.time / 1700 + v * 9 + i * 0.5) % 1;
+      ctx.globalAlpha = 0.04 + 0.08 * (0.5 + 0.5 * Math.sin(ph * Math.PI * 2));
+      const top = lerpP(c0, c1, fx), bot = lerpP(c3, c2, fx);
+      const p = lerpP(top, bot, fy);
+      ctx.strokeStyle = '#eaf6ff';
+      ctx.lineWidth = Math.max(1, 1.2 * cam.z);
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x + (c1.x - c0.x) * 0.16, p.y + (c1.y - c0.y) * 0.16);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
 // per-frame invariants (fonts scale with zoom; shades depend on season)
 interface FrameStyle {
   time: number;
+  season: Season;
   fontIcon: string;
   fontStatus: string;
   fontSite: string;
   fontDeposit: string;
   treeShade0: string;
   treeShade1: string;
+  waterA: string;
+  waterB: string;
+  waterDeepA: string;
+  waterDeepB: string;
+  waterEdge: string;
 }
 
 function drawDeposit(ctx: CanvasRenderingContext2D, kind: string, c0: Pt, c1: Pt, c2: Pt, c3: Pt, v: number, frame: FrameStyle) {

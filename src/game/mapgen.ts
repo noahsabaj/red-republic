@@ -40,15 +40,27 @@ export function generateMap(seed = 1961): MapData {
     tiles.push(row);
   }
 
-  // --- River along west edge with wiggle ---
-  let rx = 2;
+  // --- Meandering river along the west side ---
+  // The center follows a damped random walk (momentum, not per-row jitter)
+  // and the width breathes between 2 and ~3.5 tiles. Consecutive rows are
+  // forced to overlap orthogonally, so bends widen into smooth curves
+  // instead of stepping diagonally.
+  let center = 3 + rnd() * 2;
+  let vel = 0;
+  let width = 2 + rnd();
+  let prevL = -1, prevR = -1;
   for (let y = 0; y < MAP_H; y++) {
-    rx += Math.floor(rnd() * 3) - 1;
-    rx = Math.max(1, Math.min(4, rx));
-    for (let w = 0; w < 2; w++) {
-      const x = rx + w;
-      if (x >= 0 && x < MAP_W) tiles[y][x].terrain = 'water';
+    vel = Math.max(-0.8, Math.min(0.8, (vel + (rnd() - 0.5) * 0.5) * 0.85));
+    center = Math.max(2, Math.min(6.5, center + vel));
+    width = Math.max(2, Math.min(3.5, width + (rnd() - 0.5) * 0.3));
+    let L = Math.round(center - width / 2);
+    let R = Math.round(center + width / 2);
+    if (prevL >= 0) {
+      if (L > prevR) L = prevR; // keep the channel 4-connected row to row
+      if (R < prevL) R = prevL;
     }
+    for (let x = Math.max(0, L); x <= Math.min(MAP_W - 1, R); x++) tiles[y][x].terrain = 'water';
+    prevL = L; prevR = R;
   }
 
   // --- Forest patches (blobby) ---
