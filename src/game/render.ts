@@ -3,7 +3,7 @@
 // ============================================================
 import { BUILDINGS, RESOURCES } from './config';
 import { MAP_W, MAP_H } from './mapgen';
-import type { GameEngine, BuildingInst, Season } from './engine';
+import type { GameEngine, BuildingInst, Season, Truck } from './engine';
 
 export const TILE_W = 64;
 export const TILE_H = 32;
@@ -100,38 +100,108 @@ function pointInPoly(x: number, y: number, pts: { x: number; y: number }[]) {
 
 // ------------------------------------------------------------
 
-export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: Camera, ui: UIState, vw: number, vh: number) {
-  const season = engine.season();
-  ctx.fillStyle = '#1a2028';
-  ctx.fillRect(0, 0, vw, vh);
+// farm-field membership only changes when the world changes — cache per engine version
+let fieldCache: { version: number; tiles: Set<number> } | null = null;
 
-  // farm field tiles lookup
-  const fieldTiles = new Set<number>();
+function fieldTilesOf(engine: GameEngine): Set<number> {
+  if (fieldCache && fieldCache.version === engine.getVersion()) return fieldCache.tiles;
+  const tiles = new Set<number>();
   for (const b of engine.buildings.values()) {
     const def = BUILDINGS[b.defId];
     if (!def.isFarm || !b.constructed) continue;
     for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
       const tx = b.x + dx, ty = b.y + dy;
       const t = engine.tiles[ty]?.[tx];
-      if (t && t.terrain === 'grass' && !t.buildingId && !t.road && !t.deposit) fieldTiles.add(ty * MAP_W + tx);
+      if (t && t.terrain === 'grass' && !t.buildingId && !t.road && !t.deposit) tiles.add(ty * MAP_W + tx);
+    }
+  }
+  fieldCache = { version: engine.getVersion(), tiles };
+  return tiles;
+}
+
+export function truckWorldPos(tr: Truck): { wx: number; wy: number } {
+  const pts = tr.phase === 'go' ? tr.points : [...tr.points].reverse();
+  const frac = Math.min(1, tr.daysDone / tr.daysTotal);
+  const segs = pts.length - 1;
+  if (segs <= 0) return { wx: pts[0]?.x ?? 0, wy: pts[0]?.y ?? 0 };
+  const f = frac * segs;
+  const i = Math.min(segs - 1, Math.floor(f));
+  const t = f - i;
+  return {
+    wx: pts[i].x + (pts[i + 1].x - pts[i].x) * t,
+    wy: pts[i].y + (pts[i + 1].y - pts[i].y) * t,
+  };
+}
+
+export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: Camera, ui: UIState, vw: number, vh: number) {
+  const season = engine.season();
+  ctx.fillStyle = '#1a2028';
+  ctx.fillRect(0, 0, vw, vh);
+
+  const fieldTiles = fieldTilesOf(engine);
+
+  const [g1, g2] = GRASS[season];
+  // per-frame caches: shaded colors and font strings are invariant per frame
+  const forest1 = shade(g1, 0.92), forest2 = shade(g2, 0.92);
+  const frame: FrameStyle = {
+    time: ui.time,
+    fontIcon: `${Math.round(15 * cam.z)}px sans-serif`,
+    fontStatus: `${Math.round(10 * cam.z)}px sans-serif`,
+    fontSite: `bold ${Math.max(9, Math.round(10 * cam.z))}px sans-serif`,
+    fontDeposit: `${Math.max(6, Math.round(9 * cam.z))}px sans-serif`,
+    treeShade0: '', treeShade1: '',
+  };
+  const treeCol = TREE[season];
+  frame.treeShade0 = shade(treeCol, 0.85);
+  frame.treeShade1 = shade(treeCol, 1.0);
+
+  // moving sprites bucketed by tile row so buildings in later (nearer) rows
+  // correctly occlude them
+  const truckRows = new Map<number, { wx: number; wy: number; tr: Truck }[]>();
+  for (const tr of engine.trucks) {
+    const p = truckWorldPos(tr);
+    const row = Math.max(0, Math.min(MAP_H - 1, Math.floor(p.wy)));
+    let list = truckRows.get(row);
+    if (!list) { list = []; truckRows.set(row, list); }
+    list.push({ wx: p.wx, wy: p.wy, tr });
+  }
+  const citizenRows = new Map<number, { wx: number; wy: number }[]>();
+  if (engine.pop > 0 && cam.z >= 0.5) {
+    for (const b of engine.buildings.values()) {
+      const def = BUILDINGS[b.defId];
+      if (!def.housingCapacity || !b.constructed) continue;
+      const n = Math.min(3, Math.ceil(def.housingCapacity / 12));
+      for (let i = 0; i < n; i++) {
+        const ph = ui.time / 1400 + b.id * 1.7 + i * 2.1;
+        const wx = b.x + b.w / 2 + Math.sin(ph) * (b.w / 2 + 0.6);
+        const wy = b.y + b.h / 2 + Math.cos(ph * 0.8) * (b.h / 2 + 0.6);
+        const row = Math.max(0, Math.min(MAP_H - 1, Math.floor(wy)));
+        let list = citizenRows.get(row);
+        if (!list) { list = []; citizenRows.set(row, list); }
+        list.push({ wx, wy });
+      }
     }
   }
 
-  const [g1, g2] = GRASS[season];
+  const hwz = (TILE_W / 2) * cam.z;
+  const hhz = (TILE_H / 2) * cam.z;
   for (let y = 0; y < MAP_H; y++) {
     for (let x = 0; x < MAP_W; x++) {
+      // allocation-free viewport cull (corner extremes in closed form)
+      const minX = (x - y - 1) * hwz + cam.x;
+      if (minX > vw + 80 || minX + 2 * hwz < -80) continue;
+      const minY = (x + y) * hhz + cam.y;
+      if (minY > vh + 80 || minY + 2 * hhz < -120) continue;
+
       const t = engine.tiles[y][x];
       const c0 = toScreen(x, y, cam), c1 = toScreen(x + 1, y, cam);
       const c2 = toScreen(x + 1, y + 1, cam), c3 = toScreen(x, y + 1, cam);
-      // viewport cull
-      if (Math.max(c0.x, c1.x, c2.x, c3.x) < -80 || Math.min(c0.x, c1.x, c2.x, c3.x) > vw + 80) continue;
-      if (Math.max(c0.y, c1.y, c2.y, c3.y) < -120 || Math.min(c0.y, c1.y, c2.y, c3.y) > vh + 80) continue;
       const pts = [c0, c1, c2, c3];
 
       let fill = (x + y) % 2 === 0 ? g1 : g2;
       if (t.terrain === 'water') fill = WATER[season];
       else if (t.terrain === 'rock') fill = (x + y) % 2 === 0 ? '#8b8b8b' : '#949494';
-      else if (t.terrain === 'forest') fill = (x + y) % 2 === 0 ? shade(g1, 0.92) : shade(g2, 0.92);
+      else if (t.terrain === 'forest') fill = (x + y) % 2 === 0 ? forest1 : forest2;
       poly(ctx, pts, fill);
 
       // water shimmer
@@ -161,10 +231,10 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
       }
 
       // deposits
-      if (t.deposit && t.terrain !== 'water') drawDeposit(ctx, t.deposit, c0, c1, c2, c3, t.variant);
+      if (t.deposit && t.terrain !== 'water') drawDeposit(ctx, t.deposit, c0, c1, c2, c3, t.variant, frame);
 
       // forest trees
-      if (t.terrain === 'forest') drawTrees(ctx, x, y, t.variant, cam, season);
+      if (t.terrain === 'forest') drawTrees(ctx, x, y, t.variant, cam, frame);
 
       // road
       if (t.road) drawRoad(ctx, engine, x, y, c0, c1, c2, c3, cam);
@@ -172,16 +242,24 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
       // building (draw at its front corner)
       if (t.buildingId) {
         const b = engine.buildings.get(t.buildingId);
-        if (b && x === b.x + b.w - 1 && y === b.y + b.h - 1) drawBuilding(ctx, engine, b, cam, ui);
+        if (b && x === b.x + b.w - 1 && y === b.y + b.h - 1) drawBuilding(ctx, b, cam, frame);
+      }
+    }
+
+    // moving sprites of this row — later (nearer) rows paint over them
+    const rowTrucks = truckRows.get(y);
+    if (rowTrucks) for (const s of rowTrucks) drawTruck(ctx, s.tr, s.wx, s.wy, cam);
+    const rowCitizens = citizenRows.get(y);
+    if (rowCitizens) {
+      ctx.fillStyle = '#22303c';
+      for (const c of rowCitizens) {
+        const p = toScreen(c.wx, c.wy, cam);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y - 2 * cam.z, 1.6 * cam.z, 0, Math.PI * 2);
+        ctx.fill();
       }
     }
   }
-
-  // trucks
-  for (const tr of engine.trucks) drawTruck(ctx, tr, cam);
-
-  // citizens near housing
-  drawCitizens(ctx, engine, cam, ui.time);
 
   // selection highlight
   if (ui.selectedId) {
@@ -233,20 +311,33 @@ function lerpP(a: { x: number; y: number }, b: { x: number; y: number }, t: numb
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }
 
-function drawDeposit(ctx: CanvasRenderingContext2D, kind: string, c0: Pt, c1: Pt, c2: Pt, c3: Pt, v: number) {
+// per-frame invariants (fonts scale with zoom; shades depend on season)
+interface FrameStyle {
+  time: number;
+  fontIcon: string;
+  fontStatus: string;
+  fontSite: string;
+  fontDeposit: string;
+  treeShade0: string;
+  treeShade1: string;
+}
+
+function drawDeposit(ctx: CanvasRenderingContext2D, kind: string, c0: Pt, c1: Pt, c2: Pt, c3: Pt, v: number, frame: FrameStyle) {
   const colors: Record<string, string> = { coal: '#26262a', ironOre: '#8a4b2f', oil: '#15181c', gravel: '#cfcfcf' };
   ctx.fillStyle = colors[kind] ?? '#000';
+  const zoom = (c1.x - c0.x) / TILE_W * 2; // cam.z recovered from the corners
+  const dotR = Math.max(1.2, 2.2 * zoom);
   for (let i = 0; i < 6; i++) {
     const fx = ((v * 97 + i * 0.37) % 0.7) + 0.15;
     const fy = ((v * 57 + i * 0.23) % 0.7) + 0.15;
     const p = lerpP(lerpP(c0, c1, fx), lerpP(c3, c2, fx), fy);
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 2.2, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, dotR, 0, Math.PI * 2);
     ctx.fill();
   }
   // marker icon
   const mid = lerpP(c0, c2, 0.5);
-  ctx.font = '9px sans-serif';
+  ctx.font = frame.fontDeposit;
   ctx.textAlign = 'center';
   ctx.globalAlpha = 0.85;
   ctx.fillStyle = '#fff';
@@ -257,9 +348,8 @@ function drawDeposit(ctx: CanvasRenderingContext2D, kind: string, c0: Pt, c1: Pt
 
 type Pt = { x: number; y: number };
 
-function drawTrees(ctx: CanvasRenderingContext2D, x: number, y: number, v: number, cam: Camera, season: Season) {
+function drawTrees(ctx: CanvasRenderingContext2D, x: number, y: number, v: number, cam: Camera, frame: FrameStyle) {
   const n = 2 + Math.floor(v * 2);
-  const col = TREE[season];
   for (let i = 0; i < n; i++) {
     const fx = 0.2 + ((v * 31 + i * 0.4) % 0.6);
     const fy = 0.2 + ((v * 17 + i * 0.29) % 0.6);
@@ -269,7 +359,7 @@ function drawTrees(ctx: CanvasRenderingContext2D, x: number, y: number, v: numbe
     ctx.fillStyle = '#5b4028';
     ctx.fillRect(p.x - s * 0.12, p.y - s * 0.5, s * 0.24, s * 0.6);
     // canopy (two triangles)
-    ctx.fillStyle = shade(col, 0.85 + (i % 2) * 0.15);
+    ctx.fillStyle = i % 2 === 0 ? frame.treeShade0 : frame.treeShade1;
     ctx.beginPath();
     ctx.moveTo(p.x, p.y - s * 2.2);
     ctx.lineTo(p.x - s * 0.9, p.y - s * 0.9);
@@ -306,7 +396,7 @@ function drawRoad(ctx: CanvasRenderingContext2D, engine: GameEngine, x: number, 
 
 const CHIMNEY_DEFS = new Set(['powerPlant', 'steelMill', 'refinery', 'heatingPlant', 'brickworks']);
 
-function drawBuilding(ctx: CanvasRenderingContext2D, engine: GameEngine, b: BuildingInst, cam: Camera, ui: UIState) {
+function drawBuilding(ctx: CanvasRenderingContext2D, b: BuildingInst, cam: Camera, frame: FrameStyle) {
   const def = BUILDINGS[b.defId];
   const ps = buildingPolys(b, cam);
 
@@ -320,7 +410,7 @@ function drawBuilding(ctx: CanvasRenderingContext2D, engine: GameEngine, b: Buil
     poly(ctx, [shift(ps.left[0]), shift(ps.left[1]), ps.left[2], ps.left[3]], '#a5804e');
     poly(ctx, [shift(ps.right[0]), shift(ps.right[1]), ps.right[2], ps.right[3]], '#8a6a3e');
     poly(ctx, [shift(ps.top[0]), shift(ps.top[1]), shift(ps.top[2]), shift(ps.top[3])], '#c19a63', '#7a5a30');
-    ctx.font = `bold ${Math.max(9, Math.round(10 * cam.z))}px sans-serif`;
+    ctx.font = frame.fontSite;
     ctx.textAlign = 'center';
     ctx.fillStyle = '#fff';
     ctx.strokeStyle = 'rgba(0,0,0,0.7)';
@@ -361,10 +451,10 @@ function drawBuilding(ctx: CanvasRenderingContext2D, engine: GameEngine, b: Buil
       ctx.fillRect(tp.x - cw / 2, tp.y - ch, cw, ch);
       ctx.fillStyle = '#5a2b1e';
       ctx.fillRect(tp.x - cw / 2 - 1, tp.y - ch - 2, cw + 2, 3);
-      // smoke
-      if (b.eff > 0.05 && engine.powerProduced >= 0) {
+      // smoke while the plant is actually running
+      if (b.eff > 0.05) {
         for (let s = 0; s < 3; s++) {
-          const ph = ((ui.time / 1800 + s * 0.33 + i * 0.5 + b.id * 0.17) % 1);
+          const ph = ((frame.time / 1800 + s * 0.33 + i * 0.5 + b.id * 0.17) % 1);
           ctx.globalAlpha = 0.28 * (1 - ph);
           ctx.fillStyle = '#cccccc';
           ctx.beginPath();
@@ -378,29 +468,20 @@ function drawBuilding(ctx: CanvasRenderingContext2D, engine: GameEngine, b: Buil
 
   // icon
   const mid = lerpP(ps.top[0], ps.top[2], 0.5);
-  ctx.font = `${Math.round(15 * cam.z)}px sans-serif`;
+  ctx.font = frame.fontIcon;
   ctx.textAlign = 'center';
   ctx.fillText(def.icon, mid.x, mid.y + 5 * cam.z);
 
   // status icons
   let sx = mid.x;
   const sy = mid.y - 14 * cam.z;
-  ctx.font = `${Math.round(10 * cam.z)}px sans-serif`;
+  ctx.font = frame.fontStatus;
   if (unpowered) { ctx.fillText('⚡', sx, sy); sx += 12 * cam.z; }
   if (!b.connected) { ctx.fillText('🚫', sx, sy); sx += 12 * cam.z; }
   if (def.heat > 0 && !b.heated) { ctx.fillText('🥶', sx, sy); }
 }
 
-function drawTruck(ctx: CanvasRenderingContext2D, tr: { points: Pt[]; daysDone: number; daysTotal: number; phase: string; cargo: keyof typeof RESOURCES }, cam: Camera) {
-  const pts = tr.phase === 'go' ? tr.points : [...tr.points].reverse();
-  const frac = Math.min(1, tr.daysDone / tr.daysTotal);
-  const segs = pts.length - 1;
-  if (segs <= 0) return;
-  const f = frac * segs;
-  const i = Math.min(segs - 1, Math.floor(f));
-  const t = f - i;
-  const wx = pts[i].x + (pts[i + 1].x - pts[i].x) * t;
-  const wy = pts[i].y + (pts[i + 1].y - pts[i].y) * t;
+function drawTruck(ctx: CanvasRenderingContext2D, tr: Truck, wx: number, wy: number, cam: Camera) {
   const p = toScreen(wx, wy, cam);
   const s = cam.z;
   // body
@@ -412,23 +493,4 @@ function drawTruck(ctx: CanvasRenderingContext2D, tr: { points: Pt[]; daysDone: 
   // cab light
   ctx.fillStyle = '#e8e04a';
   ctx.fillRect(p.x + 3 * s, p.y - 8 * s, 2 * s, 2 * s);
-}
-
-function drawCitizens(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: Camera, time: number) {
-  if (engine.pop === 0 || cam.z < 0.5) return;
-  ctx.fillStyle = '#22303c';
-  for (const b of engine.buildings.values()) {
-    const def = BUILDINGS[b.defId];
-    if (!def.housingCapacity || !b.constructed) continue;
-    const n = Math.min(3, Math.ceil(def.housingCapacity / 12));
-    for (let i = 0; i < n; i++) {
-      const ph = time / 1400 + b.id * 1.7 + i * 2.1;
-      const wx = b.x + b.w / 2 + Math.sin(ph) * (b.w / 2 + 0.6);
-      const wy = b.y + b.h / 2 + Math.cos(ph * 0.8) * (b.h / 2 + 0.6);
-      const p = toScreen(wx, wy, cam);
-      ctx.beginPath();
-      ctx.arc(p.x, p.y - 2 * cam.z, 1.6 * cam.z, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
 }
