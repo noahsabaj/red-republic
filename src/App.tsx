@@ -1,0 +1,92 @@
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { GameEngine } from './game/engine';
+import { seedDemoTown } from './game/demo';
+import GameCanvas, { type Tool } from './components/GameCanvas';
+import HUD from './components/HUD';
+import BuildMenu from './components/BuildMenu';
+import SidePanel from './components/SidePanel';
+import { IntroOverlay, HelpOverlay, ToastStack, useToasts } from './components/Overlays';
+
+type PanelMode = 'building' | 'trade' | 'objectives';
+
+export default function App() {
+  const engine = useMemo(() => {
+    const eng = new GameEngine();
+    if (window.location.search.includes('demo')) seedDemoTown(eng);
+    return eng;
+  }, []);
+  useSyncExternalStore(
+    (cb) => engine.subscribe(cb),
+    () => engine.getVersion(),
+  );
+
+  const [tool, setTool] = useState<Tool>({ kind: 'select' });
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [instantBuild, setInstantBuild] = useState(false);
+  const [panel, setPanel] = useState<PanelMode | null>(null);
+  const [showIntro, setShowIntro] = useState(true);
+  const [showHelp, setShowHelp] = useState(false);
+  const { toasts, push } = useToasts();
+
+  // pause while intro is up
+  useEffect(() => { engine.setSpeed(0); }, [engine]);
+
+  // drain engine events into toasts on every state bump
+  useEffect(() => {
+    for (const e of engine.drainEvents()) push(e.text, e.kind);
+  });
+
+  const handleSelect = (id: number | null) => {
+    setSelectedId(id);
+    if (id) setPanel('building');
+    else setPanel(p => (p === 'building' ? null : p));
+  };
+
+  const togglePanel = (m: PanelMode) => setPanel(p => (p === m ? null : m));
+
+  return (
+    <div className="relative h-screen w-screen overflow-hidden bg-[#1a2028] select-none">
+      <GameCanvas
+        engine={engine}
+        tool={tool}
+        setTool={setTool}
+        selectedId={selectedId}
+        setSelectedId={handleSelect}
+        instantBuild={instantBuild}
+        onError={(msg) => push(msg, 'bad')}
+      />
+
+      <HUD
+        engine={engine}
+        onOpenObjectives={() => togglePanel('objectives')}
+        onOpenTrade={() => togglePanel('trade')}
+        onOpenHelp={() => setShowHelp(true)}
+      />
+
+      <BuildMenu
+        engine={engine}
+        tool={tool}
+        setTool={setTool}
+        instantBuild={instantBuild}
+        setInstantBuild={setInstantBuild}
+      />
+
+      {panel && (
+        <SidePanel
+          engine={engine}
+          mode={panel}
+          selectedId={selectedId}
+          onClose={() => setPanel(null)}
+          onOpenTrade={() => setPanel('trade')}
+          notify={push}
+        />
+      )}
+
+      <ToastStack toasts={toasts} />
+      {showIntro && (
+        <IntroOverlay onStart={() => { setShowIntro(false); engine.setSpeed(1); }} />
+      )}
+      {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
+    </div>
+  );
+}
