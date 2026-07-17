@@ -66,10 +66,10 @@ describe('productionRates', () => {
     expect(rates.inputs.wood).toBeCloseTo(0.5, 9);          // consumes only what exists
     expect(rates.outputs.planks).toBeCloseTo(3 * (0.5 / 2), 9);
 
-    const beforeWood = mill.stock.wood!;
+    const beforeWood = mill.stock.wood;
     const beforePlanks = mill.stock.planks ?? 0;
     runDays(e, 1);
-    expect(beforeWood - mill.stock.wood!).toBeCloseTo(rates.inputs.wood!, 9);
+    expect(beforeWood - mill.stock.wood).toBeCloseTo(rates.inputs.wood!, 9);
     expect((mill.stock.planks ?? 0) - beforePlanks).toBeCloseTo(rates.outputs.planks!, 9);
   });
 

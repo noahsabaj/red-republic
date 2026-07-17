@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { GameEngine, BuildingInst } from '@/game/engine';
 import { BUILDINGS, RESOURCES, ALL_RESOURCES, OBJECTIVES, FARM_SEASON } from '@/game/config';
 import type { ResourceId } from '@/game/config';
+import { useEngineVersion } from '@/hooks/use-engine';
 
 interface Props {
   engine: GameEngine;
@@ -13,6 +14,8 @@ interface Props {
 }
 
 export default function SidePanel({ engine, mode, selectedId, onClose, onOpenTrade, notify }: Props) {
+  // the open detail panel mirrors live engine state — re-render on every bump
+  useEngineVersion(engine);
   return (
     <div className="absolute right-0 top-24 bottom-0 z-10 flex pointer-events-none">
       <div className="pointer-events-auto flex flex-col w-72 m-2 rounded-lg border-2 border-yellow-600/60 bg-red-950/95 text-yellow-50 shadow-2xl overflow-hidden">
@@ -75,7 +78,7 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
                 key={r}
                 label={`${RESOURCES[r as ResourceId].icon} ${RESOURCES[r as ResourceId].name}`}
                 value={`${Math.floor(stock)}${inc > 0.05 ? ` (+${Math.floor(inc)}🚚)` : ''} / ${amt}`}
-                ok={stock >= (amt as number)}
+                ok={stock >= (amt)}
               />
             );
           })}

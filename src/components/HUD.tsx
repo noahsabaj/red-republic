@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { GameEngine } from '@/game/engine';
 import { ALL_RESOURCES, RESOURCES, BALANCE } from '@/game/config';
+import { useEngineSignature } from '@/hooks/use-engine';
 
 interface Props {
   engine: GameEngine;
@@ -14,6 +15,19 @@ const SEASON_ICON: Record<string, string> = { winter: '❄️', spring: '🌱', 
 export default function HUD({ engine, onOpenObjectives, onOpenTrade, onOpenHelp }: Props) {
   const [resOpen, setResOpen] = useState(false);
   const resRef = useRef<HTMLDivElement>(null);
+
+  // re-render only when something the HUD actually displays changes
+  useEngineSignature(engine, (e) => [
+    e.day, e.month, e.year, e.speed,
+    Math.floor(e.rubles), Math.floor(e.dollars), e.wagesUnpaid,
+    e.pop, e.capacity, e.workers, e.employed,
+    Math.round(e.happiness),
+    e.powerProduced.toFixed(1), e.powerDemand.toFixed(1),
+    e.isHeatingSeason(), e.heatProduced.toFixed(1), e.heatDemand.toFixed(1),
+    e.alerts.map(a => a.id + a.text).join('|'),
+    resOpen ? ALL_RESOURCES.map(r => Math.floor(e.totals[r])).join(',') : '',
+  ]);
+
   const season = engine.season();
 
   // dismiss the stockpile popover on outside click or Escape

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export interface Toast { id: number; text: string; kind: 'good' | 'bad' | 'info' }
 
@@ -12,7 +12,8 @@ export function useToasts() {
     return () => { for (const t of pending) clearTimeout(t); };
   }, []);
 
-  const push = (text: string, kind: Toast['kind'] = 'info') => {
+  // stable identity — safe to hold in long-lived subscriptions
+  const push = useCallback((text: string, kind: Toast['kind'] = 'info') => {
     const id = nextId.current++;
     setToasts(ts => [...ts.slice(-4), { id, text, kind }]);
     const timer = setTimeout(() => {
@@ -20,6 +21,6 @@ export function useToasts() {
       setToasts(ts => ts.filter(t => t.id !== id));
     }, 4200);
     timers.current.add(timer);
-  };
+  }, []);
   return { toasts, push };
 }

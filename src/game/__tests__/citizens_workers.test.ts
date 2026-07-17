@@ -30,9 +30,9 @@ describe('heating plant', () => {
     plant.stock.coal = 20;
     e.pop = 20; // fully staffs the plant
 
-    const before = plant.stock.coal!;
+    const before = plant.stock.coal;
     runDays(e, 1);
-    const burned = before - plant.stock.coal!;
+    const burned = before - plant.stock.coal;
 
     // unpowered (no power plant): eff = 1 (staff) * 0.5 (unpowered)
     expect(plant.eff).toBeCloseTo(0.5, 9);

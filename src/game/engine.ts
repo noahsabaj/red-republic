@@ -708,7 +708,7 @@ export class GameEngine {
     const def = this.def(b);
     if (!b.constructed) return 0;
     if (def.serviceType === 'shop' && (r === 'food' || r === 'clothes')) return 0;
-    const keep = def.inputs?.[r] ? def.inputs[r]! * 3 : 0;
+    const keep = def.inputs?.[r] ? def.inputs[r] * 3 : 0;
     return Math.max(0, this.stockOf(b, r) - keep);
   }
 

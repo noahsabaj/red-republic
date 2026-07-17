@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { BUILDINGS, BUILD_LIST, CATEGORY_NAMES, RESOURCES, type Category, type ResourceId } from '@/game/config';
 import type { GameEngine } from '@/game/engine';
+import { useEngineSignature } from '@/hooks/use-engine';
 import type { Tool } from './GameCanvas';
 
 interface Props {
@@ -21,6 +22,12 @@ const CATS: { id: Category; icon: string }[] = [
 
 export default function BuildMenu({ engine, tool, setTool, instantBuild, setInstantBuild }: Props) {
   const [cat, setCat] = useState<Category>('infra');
+
+  // only affordability flags matter here — re-render when one flips
+  useEngineSignature(engine, (e) => [
+    BUILD_LIST.map(id => (instantBuild ? e.dollars >= e.instantCost(id) : e.rubles >= BUILDINGS[id].costRubles) ? 1 : 0).join(''),
+  ]);
+
   const items = BUILD_LIST.filter(id => BUILDINGS[id].category === cat);
 
   return (

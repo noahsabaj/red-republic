@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import type { Toast } from '@/hooks/use-toasts';
+import { useFocusTrap } from '@/hooks/use-focus-trap';
 
 // ------------------------------------------------------------
 // Toasts
@@ -25,9 +26,10 @@ export function ToastStack({ toasts }: { toasts: Toast[] }) {
 // ------------------------------------------------------------
 
 export function IntroOverlay({ onStart }: { onStart: () => void }) {
+  const trapRef = useFocusTrap<HTMLDivElement>();
   return (
     <div role="dialog" aria-modal="true" aria-label="Welcome to Red Republic" className="absolute inset-0 z-40 flex items-center justify-center bg-black/80 backdrop-blur-sm">
-      <div className="max-w-lg w-full mx-4 rounded-xl border-4 border-yellow-600 bg-gradient-to-b from-red-900 to-red-950 p-8 text-center shadow-2xl">
+      <div ref={trapRef} tabIndex={-1} className="max-w-lg w-full mx-4 rounded-xl border-4 border-yellow-600 bg-gradient-to-b from-red-900 to-red-950 p-8 text-center shadow-2xl outline-none">
         <div className="text-6xl text-yellow-400 mb-2">★</div>
         <h1 className="text-3xl font-black uppercase tracking-[0.3em] text-yellow-100">Red Republic</h1>
         <div className="text-[11px] uppercase tracking-widest text-yellow-400/80 mt-1 mb-5">A planned-economy city builder · inspired by Workers &amp; Resources: Soviet Republic</div>
@@ -58,6 +60,7 @@ export function IntroOverlay({ onStart }: { onStart: () => void }) {
 // ------------------------------------------------------------
 
 export function HelpOverlay({ onClose }: { onClose: () => void }) {
+  const trapRef = useFocusTrap<HTMLDivElement>();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -65,7 +68,7 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
   }, [onClose]);
   return (
     <div role="dialog" aria-modal="true" aria-label="Commissar's Manual" className="absolute inset-0 z-40 flex items-center justify-center bg-black/70" onClick={onClose}>
-      <div className="max-w-xl w-full mx-4 max-h-[80vh] overflow-y-auto soviet-scroll rounded-xl border-2 border-yellow-600 bg-red-950 p-6 text-yellow-50 shadow-2xl" onClick={e => e.stopPropagation()}>
+      <div ref={trapRef} tabIndex={-1} className="max-w-xl w-full mx-4 max-h-[80vh] overflow-y-auto soviet-scroll rounded-xl border-2 border-yellow-600 bg-red-950 p-6 text-yellow-50 shadow-2xl outline-none" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-black uppercase tracking-widest text-yellow-400">Commissar's Manual</h2>
           <button onClick={onClose} className="font-bold text-yellow-200/60 hover:text-yellow-100">✕</button>

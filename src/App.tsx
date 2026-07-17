@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { GameEngine } from './game/engine';
 import { seedDemoTown } from './game/demo';
 import GameCanvas, { type Tool } from './components/GameCanvas';
@@ -22,11 +22,6 @@ export default function App() {
     if (demo) seedDemoTown(eng);
     return eng;
   }, []);
-  useSyncExternalStore(
-    (cb) => engine.subscribe(cb),
-    () => engine.getVersion(),
-  );
-
   const [tool, setTool] = useState<Tool>({ kind: 'select' });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [instantBuild, setInstantBuild] = useState(false);
@@ -38,10 +33,14 @@ export default function App() {
   // pause while intro is up
   useEffect(() => { engine.setSpeed(0); }, [engine]);
 
-  // drain engine events into toasts on every state bump
+  // drain engine events into toasts whenever the engine changes. App itself
+  // holds no global engine subscription — HUD/BuildMenu/SidePanel subscribe
+  // to their own slices via the use-engine hooks.
   useEffect(() => {
-    for (const e of engine.drainEvents()) push(e.text, e.kind);
-  });
+    const drain = () => { for (const e of engine.drainEvents()) push(e.text, e.kind); };
+    drain();
+    return engine.subscribe(drain);
+  }, [engine, push]);
 
   const handleSelect = (id: number | null) => {
     setSelectedId(id);
