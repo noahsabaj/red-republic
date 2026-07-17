@@ -149,7 +149,11 @@ export default function GameCanvas({ engine, tool, setTool, selectedId, setSelec
     };
 
     const onDown = (e: PointerEvent) => {
-      canvas.setPointerCapture(e.pointerId);
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch {
+        // pointer already released (or synthetic) — gesture still works, uncaptured
+      }
       ctrl.pointerDown(norm(e));
     };
     const onMove = (e: PointerEvent) => ctrl.pointerMove(norm(e));
@@ -167,6 +171,14 @@ export default function GameCanvas({ engine, tool, setTool, selectedId, setSelec
       if (ctrl.key({ key: e.key, code: e.code, repeat: e.repeat })) e.preventDefault();
     };
     const onCtx = (e: Event) => e.preventDefault();
+
+    if (import.meta.env.DEV) {
+      // debug hook for the console and automated verification
+      (window as unknown as Record<string, unknown>).__redRepublic = {
+        engine: engineRef.current,
+        cam: camRef.current,
+      };
+    }
 
     canvas.addEventListener('pointerdown', onDown);
     canvas.addEventListener('pointermove', onMove);
