@@ -79,6 +79,11 @@ html, body, #root {
   overflow: hidden;
 }
 
+.soviet-scroll {
+  /* Firefox — WebKit browsers use the ::-webkit-scrollbar rules below */
+  scrollbar-width: thin;
+  scrollbar-color: #a1842a rgba(0, 0, 0, 0.35);
+}
 .soviet-scroll::-webkit-scrollbar {
   width: 8px;
 }

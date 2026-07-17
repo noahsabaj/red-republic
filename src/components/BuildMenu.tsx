@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BUILDINGS, BUILD_LIST, CATEGORY_NAMES, type Category } from '@/game/config';
+import { BUILDINGS, BUILD_LIST, CATEGORY_NAMES, RESOURCES, type Category, type ResourceId } from '@/game/config';
 import type { GameEngine } from '@/game/engine';
 import type { Tool } from './GameCanvas';
 
@@ -50,7 +50,10 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
               <button
                 key={id}
                 onClick={() => setTool(active ? { kind: 'select' } : { kind: 'build', defId: id })}
-                className={`w-full text-left px-2 py-1.5 flex items-start gap-2 border-b border-yellow-600/10 group ${active ? 'bg-yellow-500/25' : 'hover:bg-red-900/50'} ${!afford ? 'opacity-50' : ''}`}
+                disabled={!afford && !active}
+                aria-disabled={!afford && !active}
+                title={!afford ? `Cannot afford (${instantBuild ? `$${engine.instantCost(id)}` : `₽${def.costRubles}`})` : undefined}
+                className={`w-full text-left px-2 py-1.5 flex items-start gap-2 border-b border-yellow-600/10 group ${active ? 'bg-yellow-500/25' : 'hover:bg-red-900/50'} ${!afford ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 <span className="text-lg leading-5">{def.icon}</span>
                 <span className="flex-1 min-w-0">
@@ -59,7 +62,7 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
                     {instantBuild ? `$${engine.instantCost(id)}` : `₽${def.costRubles}`}
                     {def.workers > 0 && ` · 👷${def.workers}`}
                     {Object.keys(def.materials).length > 0 && !instantBuild && (
-                      <span> · {Object.entries(def.materials).map(([r, a]) => `${a}${({planks:'🟫',bricks:'🧱',steel:'🔩'} as Record<string,string>)[r] ?? r}`).join(' ')}</span>
+                      <span> · {Object.entries(def.materials).map(([r, a]) => `${a}${RESOURCES[r as ResourceId].icon}`).join(' ')}</span>
                     )}
                   </span>
                   <span className="hidden group-hover:block text-[10px] text-yellow-100/80 leading-tight mt-0.5">{def.description}</span>

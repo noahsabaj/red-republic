@@ -5,7 +5,8 @@ import GameCanvas, { type Tool } from './components/GameCanvas';
 import HUD from './components/HUD';
 import BuildMenu from './components/BuildMenu';
 import SidePanel from './components/SidePanel';
-import { IntroOverlay, HelpOverlay, ToastStack, useToasts } from './components/Overlays';
+import { IntroOverlay, HelpOverlay, ToastStack } from './components/Overlays';
+import { useToasts } from './hooks/use-toasts';
 
 type PanelMode = 'building' | 'trade' | 'objectives';
 

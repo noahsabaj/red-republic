@@ -1,10 +1,9 @@
-import { useState } from 'react';
+import { useEffect } from 'react';
+import type { Toast } from '@/hooks/use-toasts';
 
 // ------------------------------------------------------------
 // Toasts
 // ------------------------------------------------------------
-
-export interface Toast { id: number; text: string; kind: 'good' | 'bad' | 'info' }
 
 export function ToastStack({ toasts }: { toasts: Toast[] }) {
   return (
@@ -27,7 +26,7 @@ export function ToastStack({ toasts }: { toasts: Toast[] }) {
 
 export function IntroOverlay({ onStart }: { onStart: () => void }) {
   return (
-    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+    <div role="dialog" aria-modal="true" aria-label="Welcome to Red Republic" className="absolute inset-0 z-40 flex items-center justify-center bg-black/80 backdrop-blur-sm">
       <div className="max-w-lg w-full mx-4 rounded-xl border-4 border-yellow-600 bg-gradient-to-b from-red-900 to-red-950 p-8 text-center shadow-2xl">
         <div className="text-6xl text-yellow-400 mb-2">★</div>
         <h1 className="text-3xl font-black uppercase tracking-[0.3em] text-yellow-100">Red Republic</h1>
@@ -59,8 +58,13 @@ export function IntroOverlay({ onStart }: { onStart: () => void }) {
 // ------------------------------------------------------------
 
 export function HelpOverlay({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
   return (
-    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/70" onClick={onClose}>
+    <div role="dialog" aria-modal="true" aria-label="Commissar's Manual" className="absolute inset-0 z-40 flex items-center justify-center bg-black/70" onClick={onClose}>
       <div className="max-w-xl w-full mx-4 max-h-[80vh] overflow-y-auto soviet-scroll rounded-xl border-2 border-yellow-600 bg-red-950 p-6 text-yellow-50 shadow-2xl" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-black uppercase tracking-widest text-yellow-400">Commissar's Manual</h2>
@@ -105,16 +109,3 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
   );
 }
 
-// ------------------------------------------------------------
-// hook for toasts
-// ------------------------------------------------------------
-
-export function useToasts() {
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const push = (text: string, kind: Toast['kind'] = 'info') => {
-    const id = Date.now() + Math.random();
-    setToasts(ts => [...ts.slice(-4), { id, text, kind }]);
-    setTimeout(() => setToasts(ts => ts.filter(t => t.id !== id)), 4200);
-  };
-  return { toasts, push };
-}

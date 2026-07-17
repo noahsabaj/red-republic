@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { GameEngine } from '@/game/engine';
 import { ALL_RESOURCES, RESOURCES, BALANCE } from '@/game/config';
 
@@ -13,11 +13,30 @@ const SEASON_ICON: Record<string, string> = { winter: '❄️', spring: '🌱', 
 
 export default function HUD({ engine, onOpenObjectives, onOpenTrade, onOpenHelp }: Props) {
   const [resOpen, setResOpen] = useState(false);
+  const resRef = useRef<HTMLDivElement>(null);
   const season = engine.season();
-  const speedBtn = (s: 0 | 1 | 2 | 4, label: string) => (
+
+  // dismiss the stockpile popover on outside click or Escape
+  useEffect(() => {
+    if (!resOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (resRef.current && !resRef.current.contains(e.target as Node)) setResOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setResOpen(false); };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [resOpen]);
+
+  const speedBtn = (s: 0 | 1 | 2 | 4, label: string, name: string) => (
     <button
       key={label}
       onClick={() => engine.setSpeed(s)}
+      aria-label={name}
+      aria-pressed={engine.speed === s}
       className={`px-2 py-0.5 rounded text-xs font-bold ${engine.speed === s ? 'bg-yellow-500 text-red-950' : 'bg-red-950/60 text-yellow-100/70 hover:bg-red-900'}`}
     >
       {label}
@@ -39,16 +58,16 @@ export default function HUD({ engine, onOpenObjectives, onOpenTrade, onOpenHelp 
         </div>
 
         <div className="flex items-center gap-1">
-          {speedBtn(0, '⏸')}
-          {speedBtn(1, '▶')}
-          {speedBtn(2, '▶▶')}
-          {speedBtn(4, '▶▶▶')}
+          {speedBtn(0, '⏸', 'Pause')}
+          {speedBtn(1, '▶', 'Normal speed')}
+          {speedBtn(2, '▶▶', 'Double speed')}
+          {speedBtn(4, '▶▶▶', 'Quadruple speed')}
         </div>
 
         <div className="h-5 w-px bg-yellow-600/40" />
 
         <div className="flex items-center gap-3 text-xs font-bold">
-          <span title="Rubles — earned from wages of trade with the East" className={engine.rubles < 0 ? 'text-red-300' : ''}>₽ {Math.floor(engine.rubles).toLocaleString()}</span>
+          <span title="Rubles — earned from trade with the East; pays wages and construction" className={engine.wagesUnpaid ? 'text-red-300' : ''}>₽ {Math.floor(engine.rubles).toLocaleString()}</span>
           <span title="Dollars — hard currency from the West" className="text-green-300">$ {Math.floor(engine.dollars).toLocaleString()}</span>
           <span title={`Citizens: ${engine.pop} / housing ${engine.capacity} · workers ${engine.workers} · employed ${engine.employed}`}>
             👥 {engine.pop}<span className="text-yellow-200/50">/{engine.capacity}</span>
@@ -56,21 +75,21 @@ export default function HUD({ engine, onOpenObjectives, onOpenTrade, onOpenHelp 
           <span title="Happiness" className={engine.happiness < 40 ? 'text-red-300' : engine.happiness > 65 ? 'text-green-300' : ''}>
             😊 {Math.round(engine.happiness)}%
           </span>
-          <span title={`Power: ${engine.powerProduced.toFixed(1)} / ${engine.powerDemand.toFixed(1)} MW`} className={engine.powerDemand > engine.powerProduced ? 'text-red-300' : ''}>
+          <span title={`Power: ${engine.powerProduced.toFixed(1)} / ${engine.powerDemand.toFixed(1)} MW`} className={engine.powerDemand > engine.powerProduced + 0.01 ? 'text-red-300' : ''}>
             ⚡ {engine.powerProduced.toFixed(0)}/{engine.powerDemand.toFixed(0)}
           </span>
           {engine.isHeatingSeason() && (
-            <span title={`Heat: ${engine.heatProduced.toFixed(1)} / ${engine.heatDemand.toFixed(1)}`} className={engine.heatDemand > engine.heatProduced ? 'text-red-300' : ''}>
+            <span title={`Heat: ${engine.heatProduced.toFixed(1)} / ${engine.heatDemand.toFixed(1)}`} className={engine.heatDemand > engine.heatProduced + 0.01 ? 'text-red-300' : ''}>
               🔥 {engine.heatProduced.toFixed(0)}/{engine.heatDemand.toFixed(0)}
             </span>
           )}
         </div>
 
-        <div className="ml-auto flex items-center gap-1.5 relative">
-          <button onClick={() => setResOpen(!resOpen)} className="bg-red-950/60 hover:bg-red-800 rounded px-2 py-1 text-xs font-bold" title="Stockpiles">📦</button>
-          <button onClick={onOpenObjectives} className="bg-red-950/60 hover:bg-red-800 rounded px-2 py-1 text-xs font-bold" title="Five-Year Plan">🎯</button>
-          <button onClick={onOpenTrade} className="bg-red-950/60 hover:bg-red-800 rounded px-2 py-1 text-xs font-bold" title="Foreign Trade">🛃</button>
-          <button onClick={onOpenHelp} className="bg-red-950/60 hover:bg-red-800 rounded px-2 py-1 text-xs font-bold" title="Help">❓</button>
+        <div ref={resRef} className="ml-auto flex items-center gap-1.5 relative">
+          <button onClick={() => setResOpen(!resOpen)} aria-label="Stockpiles" aria-expanded={resOpen} className="bg-red-950/60 hover:bg-red-800 rounded px-2 py-1 text-xs font-bold" title="Stockpiles">📦</button>
+          <button onClick={onOpenObjectives} aria-label="Five-Year Plan" className="bg-red-950/60 hover:bg-red-800 rounded px-2 py-1 text-xs font-bold" title="Five-Year Plan">🎯</button>
+          <button onClick={onOpenTrade} aria-label="Foreign Trade" className="bg-red-950/60 hover:bg-red-800 rounded px-2 py-1 text-xs font-bold" title="Foreign Trade">🛃</button>
+          <button onClick={onOpenHelp} aria-label="Help" className="bg-red-950/60 hover:bg-red-800 rounded px-2 py-1 text-xs font-bold" title="Help">❓</button>
 
           {resOpen && (
             <div className="absolute right-0 top-9 w-64 rounded-lg border-2 border-yellow-600/60 bg-red-950/97 p-3 shadow-2xl">
@@ -89,9 +108,11 @@ export default function HUD({ engine, onOpenObjectives, onOpenTrade, onOpenHelp 
       </div>
 
       {engine.alerts.length > 0 && (
-        <div className="pointer-events-auto flex flex-wrap gap-1.5 px-3 py-1.5">
+        // the strip itself stays click-through so the gaps between chips
+        // don't block panning/zooming the canvas underneath
+        <div className="pointer-events-none flex flex-wrap gap-1.5 px-3 py-1.5">
           {engine.alerts.map(a => (
-            <span key={a.id} className={`rounded px-2 py-0.5 text-[11px] font-bold shadow ${a.level === 'bad' ? 'bg-red-600/90 text-white' : 'bg-amber-500/90 text-amber-950'}`}>
+            <span key={a.id} className={`pointer-events-auto rounded px-2 py-0.5 text-[11px] font-bold shadow ${a.level === 'bad' ? 'bg-red-600/90 text-white' : 'bg-amber-500/90 text-amber-950'}`}>
               {a.icon} {a.text}
             </span>
           ))}

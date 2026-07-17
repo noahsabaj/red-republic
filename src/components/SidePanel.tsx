@@ -68,9 +68,15 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
             Labor: {Math.floor(b.progress)} / {def.labor} worker-days
           </div>
           {Object.entries(def.materials).map(([r, amt]) => {
-            const have = (b.stock[r as ResourceId] ?? 0) + (b.incoming[r as ResourceId] ?? 0);
+            const stock = b.stock[r as ResourceId] ?? 0;
+            const inc = b.incoming[r as ResourceId] ?? 0;
             return (
-              <Row key={r} label={`${RESOURCES[r as ResourceId].icon} ${RESOURCES[r as ResourceId].name}`} value={`${Math.floor(have)} / ${amt}`} ok={have >= (amt as number)} />
+              <Row
+                key={r}
+                label={`${RESOURCES[r as ResourceId].icon} ${RESOURCES[r as ResourceId].name}`}
+                value={`${Math.floor(stock)}${inc > 0.05 ? ` (+${Math.floor(inc)}🚚)` : ''} / ${amt}`}
+                ok={stock >= (amt as number)}
+              />
             );
           })}
           <div className="text-[10px] text-yellow-200/50">Materials arrive by truck. Builders come from a staffed Construction Office.</div>
@@ -90,16 +96,28 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
             {def.workers > 0 && <Row label="⚙️ Efficiency" value={`${Math.round(b.eff * 100)}%`} ok={b.eff > 0.6} />}
           </div>
 
-          {(def.inputs || def.outputs) && (
-            <div className="rounded bg-red-900/40 p-2">
-              <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400 mb-1">Production / day</div>
-              <div className="text-xs">
-                {def.inputs && Object.entries(def.inputs).map(([r, a]) => `${RESOURCES[r as ResourceId].icon}${(a as number) * b.eff < 10 ? ((a as number) * b.eff).toFixed(1) : Math.round((a as number) * b.eff)}`).join(' + ')}
-                {def.inputs && def.outputs && ' → '}
-                {def.outputs && Object.entries(def.outputs).map(([r, a]) => `${RESOURCES[r as ResourceId].icon}${((a as number) * b.eff).toFixed(1)}`).join(' + ')}
+          {(def.inputs || def.outputs) && (() => {
+            // the engine's own numbers — includes season, fields, forest and
+            // input starvation, so this always matches what actually happens
+            const rates = engine.productionRates(b);
+            const fmt = (n: number) => (n < 10 ? n.toFixed(1) : String(Math.round(n)));
+            const ins = Object.entries(rates.inputs) as [ResourceId, number][];
+            const outs = Object.entries(rates.outputs) as [ResourceId, number][];
+            return (
+              <div className="rounded bg-red-900/40 p-2">
+                <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400 mb-1">Production / day</div>
+                <div className="text-xs">
+                  {ins.length === 0 && outs.length === 0
+                    ? <span className="text-yellow-200/50">idle</span>
+                    : <>
+                        {ins.map(([r, a]) => `${RESOURCES[r].icon}${fmt(a)}`).join(' + ')}
+                        {ins.length > 0 && outs.length > 0 && ' → '}
+                        {outs.map(([r, a]) => `${RESOURCES[r].icon}${fmt(a)}`).join(' + ')}
+                      </>}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {Object.keys(def.storage).length > 0 && (
             <div>
@@ -132,7 +150,7 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
 
           {def.workers > 0 && (
             <button
-              onClick={() => { b.priorityHigh = !b.priorityHigh; engine.setSpeed(engine.speed); }}
+              onClick={() => engine.toggleStaffPriority(b.id)}
               className={`w-full rounded font-bold text-xs py-1.5 ${b.priorityHigh ? 'bg-yellow-500 text-red-950' : 'bg-red-900/70 hover:bg-red-800'}`}
               title="High-priority buildings are staffed first when workers are scarce"
             >
@@ -165,36 +183,51 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
         ))}
       </div>
       <div className="space-y-1">
-        {ALL_RESOURCES.map(r => {
-          const def = RESOURCES[r];
-          const stock = engine.totals[r];
-          return (
-            <div key={r} className="rounded bg-red-900/40 px-2 py-1">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold">{def.icon} {def.name}</span>
-                <span className="text-yellow-200/70">stock {Math.floor(stock)}</span>
+        {(() => {
+          const customs = [...engine.buildings.values()].find(b => BUILDINGS[b.defId].isCustoms && b.constructed);
+          return ALL_RESOURCES.map(r => {
+            const def = RESOURCES[r];
+            const total = engine.totals[r];
+            const sellable = engine.sellableStock(r);
+            const customsFree = customs
+              ? engine.capOf(customs, r) - engine.stockOf(customs, r) - engine.incomingOf(customs, r)
+              : 0;
+            const canSell = !!customs && sellable >= 1;
+            const canBuy = (cur: 'east' | 'west') => {
+              if (!customs || customsFree < 1) return false;
+              const funds = cur === 'east' ? engine.rubles : engine.dollars;
+              return funds >= engine.importPriceOf(r, cur); // at least one unit
+            };
+            return (
+              <div key={r} className="rounded bg-red-900/40 px-2 py-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold">{def.icon} {def.name}</span>
+                  <span className="text-yellow-200/70" title="sellable = customs-connected stock minus what shops and industry keep for themselves">
+                    sellable {Math.floor(sellable)} / {Math.floor(total)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1 mt-1">
+                  <button onClick={() => doTrade(() => engine.sell(r, amount, 'east'))} disabled={!canSell}
+                    className="flex-1 rounded bg-red-800 hover:bg-red-700 disabled:opacity-30 text-[10px] font-bold py-0.5" title={`Sell to East at ₽${engine.priceOf(r, 'east').toFixed(1)}`}>
+                    ➜₽{engine.priceOf(r, 'east').toFixed(1)}
+                  </button>
+                  <button onClick={() => doTrade(() => engine.sell(r, amount, 'west'))} disabled={!canSell}
+                    className="flex-1 rounded bg-green-900 hover:bg-green-800 disabled:opacity-30 text-[10px] font-bold py-0.5" title={`Sell to West at $${engine.priceOf(r, 'west').toFixed(1)}`}>
+                    ➜${engine.priceOf(r, 'west').toFixed(1)}
+                  </button>
+                  <button onClick={() => doTrade(() => engine.buy(r, amount, 'east'))} disabled={!canBuy('east')}
+                    className="flex-1 rounded bg-red-950 hover:bg-red-800 disabled:opacity-30 text-[10px] font-bold py-0.5 border border-yellow-600/30" title="Import from East">
+                    ₽{engine.importPriceOf(r, 'east').toFixed(1)}
+                  </button>
+                  <button onClick={() => doTrade(() => engine.buy(r, amount, 'west'))} disabled={!canBuy('west')}
+                    className="flex-1 rounded bg-red-950 hover:bg-red-800 disabled:opacity-30 text-[10px] font-bold py-0.5 border border-green-600/30" title="Import from West">
+                    ${engine.importPriceOf(r, 'west').toFixed(1)}
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center gap-1 mt-1">
-                <button onClick={() => doTrade(() => engine.sell(r, amount, 'east'))} disabled={stock < 1}
-                  className="flex-1 rounded bg-red-800 hover:bg-red-700 disabled:opacity-30 text-[10px] font-bold py-0.5" title={`Sell to East at ₽${engine.priceOf(r, 'east').toFixed(1)}`}>
-                  ➜₽{engine.priceOf(r, 'east').toFixed(1)}
-                </button>
-                <button onClick={() => doTrade(() => engine.sell(r, amount, 'west'))} disabled={stock < 1}
-                  className="flex-1 rounded bg-green-900 hover:bg-green-800 disabled:opacity-30 text-[10px] font-bold py-0.5" title={`Sell to West at $${engine.priceOf(r, 'west').toFixed(1)}`}>
-                  ➜${engine.priceOf(r, 'west').toFixed(1)}
-                </button>
-                <button onClick={() => doTrade(() => engine.buy(r, amount, 'east'))}
-                  className="flex-1 rounded bg-red-950 hover:bg-red-800 text-[10px] font-bold py-0.5 border border-yellow-600/30" title={`Import from East`}>
-                  ₽{(engine.priceOf(r, 'east') * 1.6).toFixed(1)}
-                </button>
-                <button onClick={() => doTrade(() => engine.buy(r, amount, 'west'))}
-                  className="flex-1 rounded bg-red-950 hover:bg-red-800 text-[10px] font-bold py-0.5 border border-green-600/30" title={`Import from West`}>
-                  ${(engine.priceOf(r, 'west') * 1.6).toFixed(1)}
-                </button>
-              </div>
-            </div>
-          );
-        })}
+            );
+          });
+        })()}
       </div>
     </div>
   );
