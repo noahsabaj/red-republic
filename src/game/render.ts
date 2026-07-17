@@ -78,11 +78,31 @@ export function buildingPolys(b: BuildingInst, cam: Camera) {
   };
 }
 
+/**
+ * True isometric occlusion order for axis-aligned footprints (rects and
+ * points; points have w = h = 0). Footprints never overlap, so any two are
+ * separated on the x or the y axis: being east or south of something means
+ * being in front of it. Returns < 0 when `a` draws first (is behind).
+ * The final tie-break only fires for genuinely overlapping footprints
+ * (e.g. a wandering citizen inside another building's footprint).
+ */
+export function isoCompare(
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number },
+): number {
+  if (a.x >= b.x + b.w) return 1;   // a entirely east of b → in front
+  if (b.x >= a.x + a.w) return -1;
+  if (a.y >= b.y + b.h) return 1;   // a entirely south of b → in front
+  if (b.y >= a.y + a.h) return -1;
+  return (a.x + a.y + a.w + a.h) - (b.x + b.y + b.w + b.h);
+}
+
 export function pickBuilding(engine: GameEngine, sx: number, sy: number, cam: Camera): BuildingInst | null {
-  const list = [...engine.buildings.values()].sort((a, b) =>
-    (b.x + b.y + b.w + b.h) - (a.x + a.y + a.w + a.h)); // front-most first
-  for (const b of list) {
-    if (BUILDINGS[b.defId].boxHeight === 0) continue;
+  const list = [...engine.buildings.values()]
+    .filter(b => BUILDINGS[b.defId].boxHeight > 0)
+    .sort(isoCompare); // draw order — walk it back-to-front reversed
+  for (let i = list.length - 1; i >= 0; i--) {
+    const b = list[i];
     const ps = buildingPolys(b, cam);
     if (pointInPoly(sx, sy, ps.top) || pointInPoly(sx, sy, ps.left) || pointInPoly(sx, sy, ps.right)) return b;
   }
@@ -99,6 +119,15 @@ function pointInPoly(x: number, y: number, pts: { x: number; y: number }[]) {
 }
 
 // ------------------------------------------------------------
+
+interface DepthItem {
+  x: number; y: number; w: number; h: number; // footprint (points: w = h = 0)
+  kind: 'building' | 'trees' | 'truck' | 'citizen' | 'ghost';
+  b?: BuildingInst;
+  tr?: Truck;
+  wx?: number; wy?: number;
+  variant?: number;
+}
 
 // farm-field membership only changes when the world changes — cache per engine version
 let fieldCache: { version: number; tiles: Set<number> } | null = null;
@@ -155,17 +184,14 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
   frame.treeShade0 = shade(treeCol, 0.85);
   frame.treeShade1 = shade(treeCol, 1.0);
 
-  // moving sprites bucketed by tile row so buildings in later (nearer) rows
-  // correctly occlude them
-  const truckRows = new Map<number, { wx: number; wy: number; tr: Truck }[]>();
+  // Everything raised above the ground plane draws in one depth-sorted pass
+  // ordered by isoCompare — scan-row order is NOT the occlusion relation
+  // (a 1x1 building east of a 2x2 sits in front of it despite an earlier row).
+  const items: DepthItem[] = [];
   for (const tr of engine.trucks) {
     const p = truckWorldPos(tr);
-    const row = Math.max(0, Math.min(MAP_H - 1, Math.floor(p.wy)));
-    let list = truckRows.get(row);
-    if (!list) { list = []; truckRows.set(row, list); }
-    list.push({ wx: p.wx, wy: p.wy, tr });
+    items.push({ x: p.wx, y: p.wy, w: 0, h: 0, kind: 'truck', tr, wx: p.wx, wy: p.wy });
   }
-  const citizenRows = new Map<number, { wx: number; wy: number }[]>();
   if (engine.pop > 0 && cam.z >= 0.5) {
     for (const b of engine.buildings.values()) {
       const def = BUILDINGS[b.defId];
@@ -175,21 +201,13 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
         const ph = ui.time / 1400 + b.id * 1.7 + i * 2.1;
         const wx = b.x + b.w / 2 + Math.sin(ph) * (b.w / 2 + 0.6);
         const wy = b.y + b.h / 2 + Math.cos(ph * 0.8) * (b.h / 2 + 0.6);
-        const row = Math.max(0, Math.min(MAP_H - 1, Math.floor(wy)));
-        let list = citizenRows.get(row);
-        if (!list) { list = []; citizenRows.set(row, list); }
-        list.push({ wx, wy });
+        items.push({ x: wx, y: wy, w: 0, h: 0, kind: 'citizen', wx, wy });
       }
     }
   }
-
-  // the placement/bulldoze ghost participates in depth sorting like a
-  // building would — otherwise it paints over structures that occlude
-  // its tile (hovering a tile behind a tall building)
-  let ghostRow = -1;
   if (ui.hoverTile && (ui.tool.kind === 'build' || ui.tool.kind === 'bulldoze')) {
-    const h = ui.tool.kind === 'build' ? BUILDINGS[ui.tool.defId].size[1] : 1;
-    ghostRow = Math.max(0, Math.min(MAP_H - 1, ui.hoverTile.y + h - 1));
+    const [gw, gh] = ui.tool.kind === 'build' ? BUILDINGS[ui.tool.defId].size : [1, 1];
+    items.push({ x: ui.hoverTile.x, y: ui.hoverTile.y, w: gw, h: gh, kind: 'ghost' });
   }
 
   const hwz = (TILE_W / 2) * cam.z;
@@ -242,34 +260,45 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
       // deposits
       if (t.deposit && t.terrain !== 'water') drawDeposit(ctx, t.deposit, c0, c1, c2, c3, t.variant, frame);
 
-      // forest trees
-      if (t.terrain === 'forest') drawTrees(ctx, x, y, t.variant, cam, frame);
+      // raised things at this tile join the depth pass (visible tiles only)
+      if (t.terrain === 'forest') items.push({ x, y, w: 1, h: 1, kind: 'trees', variant: t.variant });
+      if (t.buildingId) {
+        const b = engine.buildings.get(t.buildingId);
+        if (b && x === b.x + b.w - 1 && y === b.y + b.h - 1) {
+          items.push({ x: b.x, y: b.y, w: b.w, h: b.h, kind: 'building', b });
+        }
+      }
 
       // road
       if (t.road) drawRoad(ctx, engine, x, y, c0, c1, c2, c3, cam);
-
-      // building (draw at its front corner)
-      if (t.buildingId) {
-        const b = engine.buildings.get(t.buildingId);
-        if (b && x === b.x + b.w - 1 && y === b.y + b.h - 1) drawBuilding(ctx, b, cam, frame);
-      }
     }
+  }
 
-    // moving sprites of this row — later (nearer) rows paint over them
-    const rowTrucks = truckRows.get(y);
-    if (rowTrucks) for (const s of rowTrucks) drawTruck(ctx, s.tr, s.wx, s.wy, cam);
-    const rowCitizens = citizenRows.get(y);
-    if (rowCitizens) {
-      ctx.fillStyle = '#22303c';
-      for (const c of rowCitizens) {
-        const p = toScreen(c.wx, c.wy, cam);
+  // depth pass: back to front
+  items.sort(isoCompare);
+  for (const it of items) {
+    switch (it.kind) {
+      case 'building':
+        drawBuilding(ctx, it.b!, cam, frame);
+        break;
+      case 'trees':
+        drawTrees(ctx, it.x, it.y, it.variant!, cam, frame);
+        break;
+      case 'truck':
+        drawTruck(ctx, it.tr!, it.wx!, it.wy!, cam);
+        break;
+      case 'citizen': {
+        const p = toScreen(it.wx!, it.wy!, cam);
+        ctx.fillStyle = '#22303c';
         ctx.beginPath();
         ctx.arc(p.x, p.y - 2 * cam.z, 1.6 * cam.z, 0, Math.PI * 2);
         ctx.fill();
+        break;
       }
+      case 'ghost':
+        drawGhost(ctx, engine, cam, ui);
+        break;
     }
-
-    if (y === ghostRow) drawGhost(ctx, engine, cam, ui);
   }
 
   // selection highlight
