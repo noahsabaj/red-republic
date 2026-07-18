@@ -10,6 +10,8 @@ import { generateMap, mulberry32, MAP_W, MAP_H } from './mapgen';
 import type { MapData, Tile } from './mapgen';
 import { floodRoads, FloodResult } from './pathfind';
 import type { DistanceField } from './pathfind';
+import { WeatherTimeline } from './weather';
+import type { DayWeather } from './weather';
 
 export interface BuildingInst {
   id: number;
@@ -119,10 +121,17 @@ export class GameEngine {
 
   readonly seed: number;
   private rng: () => number;
+  private timeline: WeatherTimeline;
+  /** Test/debug seam: overlays the deterministic timeline (helpers force calm weather). */
+  weatherScript?: (dayIndex: number) => Partial<DayWeather>;
+  weather: DayWeather;
 
-  constructor(opts: { seed?: number; map?: MapData; skipStartingBase?: boolean } = {}) {
+  constructor(opts: { seed?: number; map?: MapData; skipStartingBase?: boolean; weatherScript?: (dayIndex: number) => Partial<DayWeather> } = {}) {
     this.seed = opts.seed ?? Math.floor(Math.random() * 2 ** 31);
     this.rng = mulberry32(this.seed ^ 0x9e3779b9); // decorrelate from map generation
+    this.timeline = new WeatherTimeline(this.seed);
+    this.weatherScript = opts.weatherScript;
+    this.weather = this.weatherAt(this.dayIndex());
     const map = opts.map ?? generateMap(this.seed);
     this.tiles = map.tiles;
     if (!opts.skipStartingBase) this.setupStartingBase(map.startX, map.startY);
@@ -169,6 +178,23 @@ export class GameEngine {
   }
 
   isHeatingSeason() { return BALANCE.winterMonths.includes(this.month); }
+
+  /** Absolute day index into the weather timeline (0 = March 1, 1960). */
+  private dayIndex(): number {
+    return (this.year - 1960) * 360 + (this.month - 1) * 30 + (this.day - 1);
+  }
+
+  private weatherAt(index: number): DayWeather {
+    const w = this.timeline.at(index);
+    const o = this.weatherScript?.(index);
+    return { ...w, ...o }; // copy: memoized timeline entries stay pristine
+  }
+
+  /** Exact upcoming weather — the timeline is deterministic, so the State Hydrometeorological Service never misses. */
+  forecast(days = 5): DayWeather[] {
+    const idx = this.dayIndex();
+    return Array.from({ length: days }, (_, i) => this.weatherAt(idx + 1 + i));
+  }
 
   buildingAt(x: number, y: number): BuildingInst | undefined {
     const id = this.tiles[y]?.[x]?.buildingId;
@@ -542,6 +568,7 @@ export class GameEngine {
       if (this.month === 4) this.pushEvent('Spring sowing season begins.', 'info', 'spring');
     }
 
+    this.updateWeather();
     this.updateConnectivity();
     this.assignWorkers();
     this.updatePowerHeat();
@@ -563,6 +590,10 @@ export class GameEngine {
   }
 
   // ---------------- systems ----------------
+
+  private updateWeather() {
+    this.weather = this.weatherAt(this.dayIndex());
+  }
 
   private updateConnectivity() {
     // a building "works" only if its road reaches the council depot network

@@ -2,6 +2,11 @@ import { GameEngine } from '../engine';
 import type { ResourceId } from '../config';
 import type { MapData, Tile } from '../mapgen';
 import { MAP_W, MAP_H } from '../mapgen';
+import type { DayWeather } from '../weather';
+
+/** Calm weather for deterministic tests: no slowdowns, no frost, no heating need. */
+export const CALM_WEATHER = (): Partial<DayWeather> =>
+  ({ tempC: 15, condition: 'clear', snowDepth: 0, riverFrozen: false });
 
 /** All-grass map with no water/forest/deposits — deterministic test terrain. */
 export function flatMap(): MapData {
@@ -14,9 +19,12 @@ export function flatMap(): MapData {
   return { tiles, startX: Math.floor(MAP_W / 2), startY: Math.floor(MAP_H / 2) };
 }
 
-/** Engine on a flat map with no pre-seeded starting base (unless asked for). */
-export function makeEngine(opts: { withBase?: boolean } = {}): GameEngine {
-  return new GameEngine({ seed: 1, map: flatMap(), skipStartingBase: !opts.withBase });
+/** Engine on a flat map, calm weather, no pre-seeded starting base (unless asked for). */
+export function makeEngine(opts: { withBase?: boolean; weather?: (dayIndex: number) => Partial<DayWeather> } = {}): GameEngine {
+  return new GameEngine({
+    seed: 1, map: flatMap(), skipStartingBase: !opts.withBase,
+    weatherScript: opts.weather ?? CALM_WEATHER,
+  });
 }
 
 /** Instant-build a constructed building, throwing on invalid placement. */

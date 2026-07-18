@@ -2,6 +2,7 @@
 // Red Republic — Planned Economy Builder
 // Game configuration: resources, buildings, prices, objectives
 // ============================================================
+import type { WeatherCondition } from './weather';
 
 export type ResourceId =
   | 'coal' | 'ironOre' | 'steel'
@@ -337,14 +338,41 @@ export const BALANCE = {
   buildersPerSite: 10,    // max builders on one site per day
   serviceRadius: 8,       // fallback when a building def has no serviceRadius
   pollutionRadius: 6,
-  winterMonths: [10, 11, 12, 1, 2, 3], // heat required
+  winterMonths: [10, 11, 12, 1, 2, 3], // flavor calendar (events); heat need is temperature-driven
   months: ['January','February','March','April','May','June','July','August','September','October','November','December'],
+  heatThresholdC: 8,      // outdoor °C below which buildings need heat
+  heatDesignTempC: -15,   // heat demand reaches 100% at this temp; colder over-drives it
+  droughtAfterDays: 10,   // consecutive rainless warm days before crops start to wither
 };
 
 // Farm seasonal factor by month (1-12): sowing, growth, harvest
 export const FARM_SEASON: Record<number, number> = {
   1: 0, 2: 0, 3: 0.2, 4: 0.3, 5: 0.35, 6: 0.5,
   7: 0.7, 8: 1.0, 9: 1.2, 10: 1.0, 11: 0.15, 12: 0,
+};
+
+// ------------------------------------------------------------
+// Weather gameplay effects (the timeline itself lives in weather.ts)
+// ------------------------------------------------------------
+
+export interface WeatherFx {
+  label: string;
+  icon: string;       // GameIcon name
+  truckMult: number;  // road speed multiplier
+  boatMult: number;   // barge speed multiplier; 0 also grounds new sailings
+  buildMult: number;  // construction crew effectiveness
+  farmMult: number;   // crop growth multiplier
+  morale: -1 | 0 | 1; // daily mood contribution (streaks nudge happiness slightly)
+}
+
+export const WEATHER: Record<WeatherCondition, WeatherFx> = {
+  clear:    { label: 'Clear',    icon: 'clear',    truckMult: 1,    boatMult: 1,   buildMult: 1,    farmMult: 1,    morale: 1 },
+  overcast: { label: 'Overcast', icon: 'overcast', truckMult: 1,    boatMult: 1,   buildMult: 1,    farmMult: 1,    morale: 0 },
+  rain:     { label: 'Rain',     icon: 'rain',     truckMult: 0.85, boatMult: 0.9, buildMult: 0.85, farmMult: 1.15, morale: -1 },
+  snow:     { label: 'Snowfall', icon: 'snow',     truckMult: 0.7,  boatMult: 0.8, buildMult: 0.8,  farmMult: 1,    morale: 0 },
+  storm:    { label: 'Storm',    icon: 'storm',    truckMult: 0.6,  boatMult: 0,   buildMult: 0.5,  farmMult: 1,    morale: -1 },
+  blizzard: { label: 'Blizzard', icon: 'blizzard', truckMult: 0.45, boatMult: 0,   buildMult: 0.3,  farmMult: 1,    morale: -1 },
+  fog:      { label: 'Fog',      icon: 'fog',      truckMult: 0.75, boatMult: 0,   buildMult: 1,    farmMult: 1,    morale: 0 },
 };
 
 // ------------------------------------------------------------
