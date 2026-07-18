@@ -29,6 +29,96 @@ export interface MapData {
   startY: number;
 }
 
+function carveDisk(tiles: Tile[][], cx: number, cy: number, r: number) {
+  for (let y = Math.floor(cy - r); y <= Math.ceil(cy + r); y++) {
+    for (let x = Math.floor(cx - r); x <= Math.ceil(cx + r); x++) {
+      const t = tiles[y]?.[x];
+      if (t && Math.hypot(x + 0.5 - cx, y + 0.5 - cy) <= r) t.terrain = 'water';
+    }
+  }
+}
+
+/**
+ * A river with a genuinely random course: it enters at one random map edge,
+ * exits at a different one, and meanders between them on a momentum walk
+ * (repelled from the starting base). Once per river it may briefly fork
+ * into a second channel, leaving an island between the two arms.
+ */
+function carveRiver(tiles: Tile[][], rnd: () => number, sx: number, sy: number) {
+  const edgePoint = (edge: number) =>
+    edge === 0 ? { x: 3 + rnd() * (MAP_W - 6), y: -1 }
+    : edge === 1 ? { x: 3 + rnd() * (MAP_W - 6), y: MAP_H }
+    : edge === 2 ? { x: -1, y: 3 + rnd() * (MAP_H - 6) }
+    : { x: MAP_W, y: 3 + rnd() * (MAP_H - 6) };
+  const e1 = Math.floor(rnd() * 4);
+  let e2 = Math.floor(rnd() * 4);
+  while (e2 === e1) e2 = Math.floor(rnd() * 4);
+  const a = edgePoint(e1), b = edgePoint(e2);
+
+  let px = a.x, py = a.y, vx = 0, vy = 0;
+  let width = 1.5 + rnd() * 0.6;
+  let forkUsed = false, forkRemaining = 0, forkTotal = 0;
+
+  for (let step = 0; step < 400; step++) {
+    const dx = b.x - px, dy = b.y - py;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 1) break;
+    // steer: pull toward the exit + wander + keep clear of the starting base
+    let ax = (dx / dist) * 0.4 + (rnd() - 0.5) * 0.55;
+    let ay = (dy / dist) * 0.4 + (rnd() - 0.5) * 0.55;
+    const cdx = px - sx, cdy = py - sy;
+    const cd = Math.hypot(cdx, cdy) || 1;
+    if (cd < 12) { ax += (cdx / cd) * (12 - cd) * 0.12; ay += (cdy / cd) * (12 - cd) * 0.12; }
+    vx = (vx + ax) * 0.7;
+    vy = (vy + ay) * 0.7;
+    const vlen = Math.hypot(vx, vy) || 1;
+    px += (vx / vlen) * 0.8;
+    py += (vy / vlen) * 0.8;
+    width = Math.max(1.3, Math.min(2.4, width + (rnd() - 0.5) * 0.12));
+    carveDisk(tiles, px, py, width);
+
+    if (!forkUsed && rnd() < 0.025 && dist > 12) {
+      forkUsed = true;
+      forkTotal = 12 + Math.floor(rnd() * 6);
+      forkRemaining = forkTotal;
+    }
+    if (forkRemaining > 0) {
+      // side channel that rejoins: gap follows a half-sine so the arms
+      // merge at both ends and enclose an island at the widest point
+      const t = 1 - forkRemaining / forkTotal;
+      const gap = Math.sin(Math.PI * t) * (width + 2.6);
+      const nx = -vy / vlen, ny = vx / vlen;
+      carveDisk(tiles, px + nx * gap, py + ny * gap, Math.max(1.1, width * 0.8));
+      forkRemaining--;
+    }
+  }
+}
+
+/** A blobby lake (wobbled radius); big ones sometimes hold an island. */
+function carveLake(tiles: Tile[][], rnd: () => number, sx: number, sy: number) {
+  for (let tries = 0; tries < 20; tries++) {
+    const cx = 5 + rnd() * (MAP_W - 10);
+    const cy = 5 + rnd() * (MAP_H - 10);
+    if (Math.hypot(cx - sx, cy - sy) < 13) continue;
+    const R = 2.4 + rnd() * 2.6;
+    const phase = rnd() * Math.PI * 2;
+    const lobes = 2 + Math.floor(rnd() * 3);
+    const island = R > 3.4 && rnd() < 0.5;
+    const iR = island ? 0.9 + rnd() * (R - 2.6) * 0.5 : 0;
+    for (let y = Math.floor(cy - R - 1); y <= Math.ceil(cy + R + 1); y++) {
+      for (let x = Math.floor(cx - R - 1); x <= Math.ceil(cx + R + 1); x++) {
+        const t = tiles[y]?.[x];
+        if (!t) continue;
+        const dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+        const d = Math.hypot(dx, dy);
+        const rr = R * (0.78 + 0.22 * Math.sin(Math.atan2(dy, dx) * lobes + phase));
+        if (d <= rr && d >= iR) t.terrain = 'water';
+      }
+    }
+    return;
+  }
+}
+
 export function generateMap(seed = 1961): MapData {
   const rnd = mulberry32(seed);
   const tiles: Tile[][] = [];
@@ -40,28 +130,12 @@ export function generateMap(seed = 1961): MapData {
     tiles.push(row);
   }
 
-  // --- Meandering river along the west side ---
-  // The center follows a damped random walk (momentum, not per-row jitter)
-  // and the width breathes between 2 and ~3.5 tiles. Consecutive rows are
-  // forced to overlap orthogonally, so bends widen into smooth curves
-  // instead of stepping diagonally.
-  let center = 3 + rnd() * 2;
-  let vel = 0;
-  let width = 2 + rnd();
-  let prevL = -1, prevR = -1;
-  for (let y = 0; y < MAP_H; y++) {
-    vel = Math.max(-0.8, Math.min(0.8, (vel + (rnd() - 0.5) * 0.5) * 0.85));
-    center = Math.max(2, Math.min(6.5, center + vel));
-    width = Math.max(2, Math.min(3.5, width + (rnd() - 0.5) * 0.3));
-    let L = Math.round(center - width / 2);
-    let R = Math.round(center + width / 2);
-    if (prevL >= 0) {
-      if (L > prevR) L = prevR; // keep the channel 4-connected row to row
-      if (R < prevL) R = prevL;
-    }
-    for (let x = Math.max(0, L); x <= Math.min(MAP_W - 1, R); x++) tiles[y][x].terrain = 'water';
-    prevL = L; prevR = R;
-  }
+  // --- Water: a river with a random course, plus 0-2 lakes ---
+  const startX = Math.floor(MAP_W / 2);
+  const startY = Math.floor(MAP_H / 2);
+  carveRiver(tiles, rnd, startX, startY);
+  const lakeCount = Math.floor(rnd() * 3);
+  for (let i = 0; i < lakeCount; i++) carveLake(tiles, rnd, startX, startY);
 
   // --- Forest patches (blobby) ---
   const forestSpots = 16;
@@ -71,7 +145,7 @@ export function generateMap(seed = 1961): MapData {
     const r = 2 + Math.floor(rnd() * 3);
     for (let y = cy - r; y <= cy + r; y++) {
       for (let x = cx - r; x <= cx + r; x++) {
-        if (x < 5 || x >= MAP_W || y < 0 || y >= MAP_H) continue;
+        if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) continue;
         const d = Math.hypot(x - cx, y - cy);
         if (d <= r && rnd() > 0.25 && tiles[y][x].terrain === 'grass') {
           tiles[y][x].terrain = 'forest';
@@ -112,15 +186,19 @@ export function generateMap(seed = 1961): MapData {
   placeDeposits('gravel', 4, 4);
 
   // --- Clear a starting area near center ---
-  const startX = Math.floor(MAP_W / 2);
-  const startY = Math.floor(MAP_H / 2);
+  // The carvers are repelled from the base, so the inner hard-guarantee
+  // (water -> grass within ±4) is a safety net that almost never fires.
   for (let y = startY - 6; y <= startY + 6; y++) {
     for (let x = startX - 6; x <= startX + 6; x++) {
       const t = tiles[y]?.[x];
-      if (t && t.terrain !== 'water') {
-        if (rnd() > 0.15) t.terrain = 'grass';
-        t.deposit = undefined;
+      if (!t) continue;
+      const inner = Math.abs(x - startX) <= 4 && Math.abs(y - startY) <= 4;
+      if (t.terrain === 'water') {
+        if (inner) t.terrain = 'grass';
+        continue;
       }
+      if (rnd() > 0.15) t.terrain = 'grass';
+      t.deposit = undefined;
     }
   }
 

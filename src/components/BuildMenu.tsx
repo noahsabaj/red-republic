@@ -3,6 +3,7 @@ import { BUILDINGS, BUILD_LIST, CATEGORY_NAMES, RESOURCES, type Category, type R
 import type { GameEngine } from '@/game/engine';
 import { useEngineSignature } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
+import { buildCostText, canAffordBuild } from '@/ui/build-cost';
 import type { Tool } from './GameCanvas';
 
 interface Props {
@@ -26,7 +27,7 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
 
   // only affordability flags matter here — re-render when one flips
   useEngineSignature(engine, (e) => [
-    BUILD_LIST.map(id => (instantBuild ? e.dollars >= e.instantCost(id) : e.rubles >= BUILDINGS[id].costRubles) ? 1 : 0).join(''),
+    BUILD_LIST.map(id => (canAffordBuild(e, id, instantBuild) ? 1 : 0)).join(''),
   ]);
 
   const items = BUILD_LIST.filter(id => BUILDINGS[id].category === cat);
@@ -54,21 +55,21 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
           {items.map(id => {
             const def = BUILDINGS[id];
             const active = tool.kind === 'build' && tool.defId === id;
-            const afford = instantBuild ? engine.dollars >= engine.instantCost(id) : engine.rubles >= def.costRubles;
+            const afford = canAffordBuild(engine, id, instantBuild);
             return (
               <button
                 key={id}
                 onClick={() => setTool(active ? { kind: 'select' } : { kind: 'build', defId: id })}
                 disabled={!afford && !active}
                 aria-disabled={!afford && !active}
-                title={!afford ? `Cannot afford (${instantBuild ? `$${engine.instantCost(id)}` : `₽${def.costRubles}`})` : undefined}
+                title={!afford ? `Cannot afford (${buildCostText(engine, id, instantBuild)})` : undefined}
                 className={`w-full text-left px-2 py-1.5 flex items-start gap-2 border-b border-yellow-600/10 group ${active ? 'bg-yellow-500/25' : 'hover:bg-red-900/50'} ${!afford ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 <GameIcon name={def.icon} size={18} className="mt-0.5 text-yellow-200" />
                 <span className="flex-1 min-w-0">
                   <span className="block text-xs font-bold truncate">{def.name}</span>
                   <span className="block text-[10px] text-yellow-200/60">
-                    {instantBuild ? `$${engine.instantCost(id)}` : `₽${def.costRubles}`}
+                    {buildCostText(engine, id, instantBuild)}
                     {def.workers > 0 && <span> · <GameIcon name="staff" size={10} />{def.workers}</span>}
                     {Object.keys(def.materials).length > 0 && !instantBuild && (
                       <span> · {Object.entries(def.materials).map(([r, a]) => (

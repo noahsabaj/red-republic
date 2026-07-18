@@ -86,6 +86,7 @@ export interface BuildingDef {
   isConstructionOffice?: boolean;
   isCustoms?: boolean;
   isDepot?: boolean;
+  isPort?: boolean; // dockside freight hub — must touch water; barges link ports
   pollution?: number; // 0..5 intensity
   boxHeight: number; // render height
   color: string;     // roof color
@@ -101,7 +102,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     id: 'road', name: 'Road', icon: 'road', category: 'infra', size: [1, 1],
     costRubles: 6, materials: {}, labor: 2, workers: 0, power: 0, heat: 0,
     storage: {}, boxHeight: 0, color: '#5c5c5c', wallColor: '#5c5c5c',
-    description: 'Gravel road. Buildings must touch a road to receive deliveries. Trucks haul goods along roads.',
+    description: 'Gravel road. Buildings must touch a road to receive deliveries. Placed over water it becomes a bridge at ₽90 per tile.',
   }),
 
   // ---------- Housing ----------
@@ -285,6 +286,14 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     boxHeight: 12, color: '#b0802a', wallColor: '#d0aa5a',
     description: 'Employs builders and operates trucks. No office, no construction, no haulage.',
   }),
+  port: B({
+    id: 'port', name: 'River Port', icon: 'port', category: 'trade', size: [2, 2],
+    costRubles: 1600, materials: { planks: 14, bricks: 10, steel: 4 }, labor: 160,
+    workers: 6, power: 0.5, heat: 0, isPort: true,
+    storage: { coal: 50, ironOre: 50, steel: 50, oil: 50, fuel: 50, wood: 50, planks: 50, gravel: 50, bricks: 50, crops: 50, food: 50, clothes: 50 },
+    boxHeight: 14, color: '#3a6b8a', wallColor: '#7a99ad',
+    description: 'Dockside freight hub — must be built on the shore. Barges ferry goods between ports across water, far cheaper than long bridges.',
+  }),
   customs: B({
     id: 'customs', name: 'Customs House', icon: 'customs', category: 'trade', size: [2, 2],
     costRubles: 2000, materials: { bricks: 20, steel: 6, planks: 8 }, labor: 200,
@@ -302,7 +311,7 @@ export const BUILD_LIST: string[] = [
   'coalMine', 'ironMine', 'steelMill', 'oilPump', 'refinery',
   'powerPlant', 'heatingPlant', 'farm', 'foodFactory', 'textileMill',
   'store', 'clinic', 'pub',
-  'warehouse', 'depot', 'customs',
+  'warehouse', 'depot', 'port', 'customs',
 ];
 
 // Instant-build with western dollars: costs this multiplier vs rubles
@@ -322,6 +331,9 @@ export const BALANCE = {
   truckCapacity: 6,
   truckDaysPerTile: 0.18, // travel days per road tile
   maxActiveTrucksPerOffice: 6,
+  bridgeCostRubles: 90,   // per water tile — long crossings get expensive fast
+  boatCapacity: 24,       // one barge hauls four truckloads
+  boatDaysPerTile: 0.22,  // barges are slower per tile but shortcut the water
   buildersPerSite: 10,    // max builders on one site per day
   serviceRadius: 8,       // fallback when a building def has no serviceRadius
   pollutionRadius: 6,

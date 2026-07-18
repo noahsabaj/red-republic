@@ -15,35 +15,69 @@ describe('generateMap', () => {
     expect(a.tiles).not.toEqual(b.tiles);
   });
 
-  it('generates one orthogonally-connected river in the west margin', () => {
+  it('carves varied, well-formed water: a river spanning edges, no puddles, land start', () => {
     for (const seed of [1, 42, 1961, 987654]) {
       const m = generateMap(seed);
-      const water: { x: number; y: number }[] = [];
       const isWater = new Set<number>();
       for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) {
-        if (m.tiles[y][x].terrain === 'water') { water.push({ x, y }); isWater.add(y * MAP_W + x); }
+        if (m.tiles[y][x].terrain === 'water') isWater.add(y * MAP_W + x);
       }
-      // a real channel: at least 2 tiles per row, confined to the west side
-      expect(water.length).toBeGreaterThanOrEqual(MAP_H * 2);
-      expect(water.every(t => t.x <= 9)).toBe(true);
-      for (let y = 0; y < MAP_H; y++) {
-        const rowW = water.filter(t => t.y === y).length;
-        expect(rowW).toBeGreaterThanOrEqual(2);
-        expect(rowW).toBeLessThanOrEqual(6);
-      }
-      // fully 4-connected — no diagonal-only steps or orphan puddles
-      const queue = [water[0].y * MAP_W + water[0].x];
-      const seen = new Set(queue);
-      while (queue.length) {
-        const k = queue.pop()!;
-        const x = k % MAP_W, y = Math.floor(k / MAP_W);
-        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const nk = (y + dy) * MAP_W + (x + dx);
-          if (isWater.has(nk) && !seen.has(nk)) { seen.add(nk); queue.push(nk); }
+      expect(isWater.size).toBeGreaterThanOrEqual(40);
+
+      // 4-connected components: none may be a puddle
+      const seen = new Set<number>();
+      const components: number[][] = [];
+      for (const start of isWater) {
+        if (seen.has(start)) continue;
+        const comp: number[] = [];
+        const queue = [start];
+        seen.add(start);
+        while (queue.length) {
+          const k = queue.pop()!;
+          comp.push(k);
+          const x = k % MAP_W, y = Math.floor(k / MAP_W);
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nk = (y + dy) * MAP_W + (x + dx);
+            if (isWater.has(nk) && !seen.has(nk)) { seen.add(nk); queue.push(nk); }
+          }
         }
+        components.push(comp);
       }
-      expect(seen.size).toBe(water.length);
+      for (const comp of components) expect(comp.length, `seed ${seed}`).toBeGreaterThanOrEqual(5);
+
+      // the largest component is the river: it must touch two different map edges
+      const river = components.sort((a, b) => b.length - a.length)[0];
+      const edges = new Set<string>();
+      for (const k of river) {
+        const x = k % MAP_W, y = Math.floor(k / MAP_W);
+        if (y === 0) edges.add('N');
+        if (y === MAP_H - 1) edges.add('S');
+        if (x === 0) edges.add('W');
+        if (x === MAP_W - 1) edges.add('E');
+      }
+      expect(edges.size, `seed ${seed} river touches ${[...edges].join()}`).toBeGreaterThanOrEqual(2);
+
+      // guaranteed buildable starting zone
+      for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
+        expect(m.tiles[m.startY + dy][m.startX + dx].terrain).not.toBe('water');
+      }
     }
+  });
+
+  it('water geography genuinely differs between seeds', () => {
+    const mask = (seed: number) => {
+      const s = new Set<number>();
+      const m = generateMap(seed);
+      for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) {
+        if (m.tiles[y][x].terrain === 'water') s.add(y * MAP_W + x);
+      }
+      return s;
+    };
+    const a = mask(7), b = mask(8);
+    let diff = 0;
+    for (const k of a) if (!b.has(k)) diff++;
+    for (const k of b) if (!a.has(k)) diff++;
+    expect(diff).toBeGreaterThanOrEqual(20); // not just a nudge of the same river
   });
 
   it('always yields a full-size grid with every deposit type', () => {

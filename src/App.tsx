@@ -88,6 +88,7 @@ export default function App() {
           engine={engine}
           mode={panel}
           selection={selection}
+          instantBuild={instantBuild}
           onClose={() => setPanel(null)}
           onOpenTrade={() => setPanel('trade')}
           onArmBuild={(defId) => setTool({ kind: 'build', defId })}

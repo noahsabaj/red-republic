@@ -42,6 +42,12 @@ export interface Truck {
   srcId: number; // undelivered cargo returns here
 }
 
+/** A barge sailing between ports — same lifecycle as a truck, on water. */
+export type Boat = Truck;
+
+/** Standing freight order: sail `amt` of `r` from one port to another once the goods arrive portside. */
+interface BoatOrder { srcId: number; destId: number; r: ResourceId; amt: number }
+
 export interface Alert {
   id: string;
   icon: string;
@@ -58,17 +64,20 @@ export interface GameEvent {
 
 export type Season = 'winter' | 'spring' | 'summer' | 'autumn';
 
+interface LogisticsDemand { b: BuildingInst; r: ResourceId; amt: number; prio: number; from?: number }
+
 const JOB_PRIORITY = [
   'powerPlant', 'heatingPlant', 'store', 'foodFactory',
   'clinic', 'pub', 'customs', 'farm', 'textileMill', 'sawmill', 'brickworks',
   'woodcutter', 'gravelQuarry', 'coalMine', 'ironMine', 'steelMill',
-  'oilPump', 'refinery', 'depot', 'warehouse', 'constructionOffice',
+  'oilPump', 'refinery', 'port', 'depot', 'warehouse', 'constructionOffice',
 ];
 
 export class GameEngine {
   tiles: Tile[][];
   buildings = new Map<number, BuildingInst>();
   trucks: Truck[] = [];
+  boats: Boat[] = [];
   day = 1; month = 3; year = 1960;
   rubles = BALANCE.startRubles;
   dollars = BALANCE.startDollars;
@@ -98,7 +107,9 @@ export class GameEngine {
 
   private nextBuildingId = 1;
   private nextTruckId = 1;
+  private nextBoatId = 1;
   private nextEventId = 1;
+  private boatOrders: BoatOrder[] = [];
   private acc = 0;
   private events: GameEvent[] = [];
   private listeners = new Set<() => void>();
@@ -199,6 +210,25 @@ export class GameEngine {
     return floodRoads((x, y) => !!this.tiles[y][x].road, sources);
   }
 
+  /** Water tiles orthogonally touching a building's footprint (its docks). */
+  adjacentWater(b: BuildingInst): { x: number; y: number }[] {
+    const out: { x: number; y: number }[] = [];
+    for (let dy = -1; dy <= b.h; dy++) {
+      for (let dx = -1; dx <= b.w; dx++) {
+        const onEdge = dx === -1 || dx === b.w || dy === -1 || dy === b.h;
+        const onCorner = (dx === -1 || dx === b.w) && (dy === -1 || dy === b.h);
+        if (!onEdge || onCorner) continue;
+        const tx = b.x + dx, ty = b.y + dy;
+        if (this.tiles[ty]?.[tx]?.terrain === 'water') out.push({ x: tx, y: ty });
+      }
+    }
+    return out;
+  }
+
+  private waterFlood(sources: { x: number; y: number }[]): FloodResult {
+    return floodRoads((x, y) => this.tiles[y][x].terrain === 'water', sources);
+  }
+
   findPath(from: { x: number; y: number }[], to: { x: number; y: number }[]): { x: number; y: number }[] | null {
     if (!from.length || !to.length) return null;
     const flood = this.floodFrom(to);
@@ -239,15 +269,19 @@ export class GameEngine {
 
   // ---------------- placement ----------------
 
+  /** Roads over water are bridges — same tile flag, steeper price. */
+  roadCostAt(x: number, y: number): number {
+    return this.tiles[y]?.[x]?.terrain === 'water' ? BALANCE.bridgeCostRubles : BUILDINGS.road.costRubles;
+  }
+
   canPlace(defId: string, x: number, y: number): { ok: boolean; reason?: string } {
     const def = BUILDINGS[defId];
     if (defId === 'road') {
       const t = this.tiles[y]?.[x];
       if (!t) return { ok: false, reason: 'Out of bounds' };
-      if (t.terrain === 'water') return { ok: false, reason: 'Cannot build on water' };
       if (t.road) return { ok: false, reason: 'Road already here' };
       if (t.buildingId) return { ok: false, reason: 'Occupied by a building' };
-      return { ok: true };
+      return { ok: true }; // on water this becomes a bridge
     }
     const [w, h] = def.size;
     if (x < 0 || y < 0 || x + w > MAP_W || y + h > MAP_H) return { ok: false, reason: 'Out of bounds' };
@@ -268,6 +302,16 @@ export class GameEngine {
     if (def.isFarm && this.countFarmFields(x, y, w, h) < 6) {
       return { ok: false, reason: 'Needs at least 6 open grass tiles around (fields)' };
     }
+    if (def.isPort) {
+      let shore = false;
+      for (let dy = -1; dy <= h && !shore; dy++) for (let dx = -1; dx <= w && !shore; dx++) {
+        const onEdge = dx === -1 || dx === w || dy === -1 || dy === h;
+        const onCorner = (dx === -1 || dx === w) && (dy === -1 || dy === h);
+        if (!onEdge || onCorner) continue;
+        if (this.tiles[y + dy]?.[x + dx]?.terrain === 'water') shore = true;
+      }
+      if (!shore) return { ok: false, reason: 'Must be built on the shore, touching water' };
+    }
     return { ok: true };
   }
 
@@ -275,8 +319,9 @@ export class GameEngine {
     const chk = this.canPlace(defId, x, y);
     if (!chk.ok) return chk;
     const def = BUILDINGS[defId];
+    const rubleCost = defId === 'road' ? this.roadCostAt(x, y) : def.costRubles;
     if (instant) {
-      const cost = this.instantCost(defId);
+      const cost = Math.max(1, Math.ceil(rubleCost * DOLLAR_BUILD_RATE));
       if (this.dollars < cost) return { ok: false, reason: `Not enough dollars ($${cost})` };
       this.dollars -= cost;
       if (defId === 'road') {
@@ -288,8 +333,8 @@ export class GameEngine {
       this.bump();
       return { ok: true };
     }
-    if (this.rubles < def.costRubles) return { ok: false, reason: `Not enough rubles (₽${def.costRubles})` };
-    this.rubles -= def.costRubles;
+    if (this.rubles < rubleCost) return { ok: false, reason: `Not enough rubles (₽${rubleCost})` };
+    this.rubles -= rubleCost;
     if (defId === 'road') {
       this.tiles[y][x].road = true;
       this.stats.roadsBuilt++;
@@ -323,13 +368,14 @@ export class GameEngine {
       for (let dy = 0; dy < b.h; dy++)
         for (let dx = 0; dx < b.w; dx++)
           this.tiles[b.y + dy][b.x + dx].buildingId = undefined;
-      // trucks en route turn around and return their cargo to the source
-      for (const tr of this.trucks) {
+      // trucks and barges en route turn around and return their cargo
+      for (const tr of [...this.trucks, ...this.boats]) {
         if (tr.destId === b.id && tr.phase === 'go') {
           tr.phase = 'back';
           tr.daysDone = Math.max(0, tr.daysTotal - tr.daysDone);
         }
       }
+      this.boatOrders = this.boatOrders.filter(o => o.srcId !== b.id && o.destId !== b.id);
       this.buildings.delete(b.id);
       this.bump();
       return true;
@@ -448,8 +494,9 @@ export class GameEngine {
   advance(dtMs: number) {
     if (this.speed === 0) return;
     const daysDelta = (dtMs / this.TICK_MS) * this.speed;
-    // trucks move continuously
-    this.moveTrucks(daysDelta);
+    // trucks and barges move continuously
+    this.moveFleet(this.trucks, daysDelta);
+    this.moveFleet(this.boats, daysDelta);
     this.acc += dtMs * this.speed;
     let days = 0;
     while (this.acc >= this.TICK_MS && days < 20) {
@@ -459,32 +506,28 @@ export class GameEngine {
     }
   }
 
-  private moveTrucks(daysDelta: number) {
-    const arrived: Truck[] = [];
-    for (const t of this.trucks) {
+  /** Shared truck/barge lifecycle: deliver, return undelivered cargo, retire. */
+  private moveFleet(fleet: Truck[], daysDelta: number) {
+    for (let i = fleet.length - 1; i >= 0; i--) {
+      const t = fleet[i];
       t.daysDone += daysDelta;
-      if (t.daysDone >= t.daysTotal) {
-        if (t.phase === 'go') {
-          const dest = this.buildings.get(t.destId);
-          if (dest) {
-            const delivered = this.addStock(dest, t.cargo, t.amount);
-            dest.incoming[t.cargo] = Math.max(0, this.incomingOf(dest, t.cargo) - t.amount);
-            t.amount -= delivered; // whatever didn't fit rides back to the source
-          }
-          t.phase = 'back';
-          t.daysDone = 0;
-        } else {
-          if (t.amount > 0.001) {
-            const src = this.buildings.get(t.srcId);
-            if (src) this.addStock(src, t.cargo, t.amount);
-          }
-          arrived.push(t);
+      if (t.daysDone < t.daysTotal) continue;
+      if (t.phase === 'go') {
+        const dest = this.buildings.get(t.destId);
+        if (dest) {
+          const delivered = this.addStock(dest, t.cargo, t.amount);
+          dest.incoming[t.cargo] = Math.max(0, this.incomingOf(dest, t.cargo) - t.amount);
+          t.amount -= delivered; // whatever didn't fit rides back to the source
         }
+        t.phase = 'back';
+        t.daysDone = 0;
+      } else {
+        if (t.amount > 0.001) {
+          const src = this.buildings.get(t.srcId);
+          if (src) this.addStock(src, t.cargo, t.amount);
+        }
+        fleet.splice(i, 1);
       }
-    }
-    if (arrived.length) {
-      const ids = new Set(arrived.map(t => t.id));
-      this.trucks = this.trucks.filter(t => !ids.has(t.id));
     }
   }
 
@@ -504,6 +547,7 @@ export class GameEngine {
     this.updatePowerHeat();
     this.production();
     this.logistics();
+    this.dispatchBoats();
     this.construction();
     this.citizens();
     this.computeTotals();
@@ -729,8 +773,7 @@ export class GameEngine {
     let budget = maxT - this.trucks.filter(t => t.phase === 'go').length;
     if (budget <= 0) return;
 
-    interface Demand { b: BuildingInst; r: ResourceId; amt: number; prio: number; from?: number }
-    const demands: Demand[] = [];
+    const demands: LogisticsDemand[] = [];
 
     // adjacentRoads is O(perimeter); cache per building for this pass
     const adjCache = new Map<number, { x: number; y: number }[]>();
@@ -829,7 +872,12 @@ export class GameEngine {
           if (dd >= 0 && dd < bestD) { bestD = dd; bestSupplier = s; bestTile = t; }
         }
       }
-      if (!bestSupplier || !bestTile) continue;
+      if (!bestSupplier || !bestTile) {
+        // nowhere on this road network can supply it — try relaying the goods
+        // across water: truck to a far port, barge over, truck onward later
+        if (d.from === undefined) this.relayViaPorts(d, flood, adjOf, demands);
+        continue;
+      }
       const bestPath = flood.pathFrom(bestTile.x, bestTile.y)!;
 
       const amount = Math.min(d.amt, destFree, this.supplyOf(bestSupplier, d.r), BALANCE.truckCapacity);
@@ -845,6 +893,99 @@ export class GameEngine {
         daysTotal, daysDone: 0, phase: 'go', destId: d.b.id, srcId: bestSupplier.id,
       });
       budget--;
+    }
+  }
+
+  /**
+   * A demand no road-connected supplier can serve may still be servable
+   * across water: register a twin demand at a far-shore port (trucks bring
+   * the goods portside) plus a standing barge order to the near-shore port.
+   * The original demand is then served from that port on a later day.
+   * Flood-buffer discipline: consume `destFlood` fully before flooding again.
+   */
+  private relayViaPorts(
+    d: LogisticsDemand,
+    destFlood: FloodResult,
+    adjOf: (b: BuildingInst) => { x: number; y: number }[],
+    demands: LogisticsDemand[],
+  ) {
+    const ports = [...this.buildings.values()].filter(p => this.def(p).isPort && p.constructed);
+    if (ports.length < 2) return;
+    const pDest = ports.find(p => p.id !== d.b.id && adjOf(p).some(t => destFlood.distanceAt(t.x, t.y) >= 0));
+    if (!pDest) return;
+    const pending = this.boatOrders.find(o => o.destId === pDest.id && o.r === d.r);
+    if (pending) {
+      // order already exists — keep the far-shore truck leg alive until the
+      // source port actually holds the goods (its truck may have lost the
+      // dispatch budget on earlier days)
+      const src = this.buildings.get(pending.srcId);
+      if (src) {
+        const short = pending.amt - this.stockOf(src, d.r) - this.incomingOf(src, d.r);
+        if (short >= 1) demands.push({ b: src, r: d.r, amt: short, prio: d.prio });
+      }
+      return;
+    }
+
+    const wf = this.waterFlood(this.adjacentWater(pDest));
+    const overWater = ports.filter(p =>
+      p.id !== pDest.id && this.adjacentWater(p).some(t => wf.distanceAt(t.x, t.y) >= 0));
+    for (const pSrc of overWater) {
+      // does pSrc's own road network reach any willing supplier?
+      const sf = this.floodFrom(this.adjacentRoads(pSrc));
+      const supplied = [...this.buildings.values()].some(s =>
+        s.id !== pSrc.id && this.supplyOf(s, d.r) >= 1 &&
+        this.adjacentRoads(s).some(t => sf.distanceAt(t.x, t.y) >= 0));
+      if (!supplied) continue;
+      const amt = Math.min(
+        d.amt,
+        BALANCE.boatCapacity,
+        this.capOf(pSrc, d.r) - this.stockOf(pSrc, d.r) - this.incomingOf(pSrc, d.r),
+        this.capOf(pDest, d.r) - this.stockOf(pDest, d.r) - this.incomingOf(pDest, d.r),
+      );
+      if (amt < 1) return;
+      demands.push({ b: pSrc, r: d.r, amt, prio: d.prio }); // truck leg on the far shore
+      this.boatOrders.push({ srcId: pSrc.id, destId: pDest.id, r: d.r, amt });
+      return;
+    }
+  }
+
+  /** Sail pending freight orders whose goods have reached the source port. */
+  private dispatchBoats() {
+    const ports = [...this.buildings.values()].filter(p => this.def(p).isPort && p.constructed);
+    if (!ports.length) { this.boatOrders = []; return; }
+    for (let i = this.boatOrders.length - 1; i >= 0; i--) {
+      if (this.boats.filter(b => b.phase === 'go').length >= ports.length) break;
+      const order = this.boatOrders[i];
+      const src = this.buildings.get(order.srcId);
+      const dest = this.buildings.get(order.destId);
+      if (!src?.constructed || !dest?.constructed) { this.boatOrders.splice(i, 1); continue; }
+      const avail = this.stockOf(src, order.r);
+      if (avail < 1) continue; // trucks are still bringing it portside
+
+      const wf = this.waterFlood(this.adjacentWater(dest));
+      let bestTile: { x: number; y: number } | null = null;
+      let bestD = Infinity;
+      for (const t of this.adjacentWater(src)) {
+        const dd = wf.distanceAt(t.x, t.y);
+        if (dd >= 0 && dd < bestD) { bestD = dd; bestTile = t; }
+      }
+      if (!bestTile) { this.boatOrders.splice(i, 1); continue; } // water link gone
+      const path = wf.pathFrom(bestTile.x, bestTile.y)!;
+
+      const amount = Math.min(order.amt, avail, BALANCE.boatCapacity,
+        this.capOf(dest, order.r) - this.stockOf(dest, order.r) - this.incomingOf(dest, order.r));
+      if (amount < 1) { this.boatOrders.splice(i, 1); continue; }
+      this.addStock(src, order.r, -amount);
+      dest.incoming[order.r] = this.incomingOf(dest, order.r) + amount;
+      this.boats.push({
+        id: this.nextBoatId++,
+        points: [this.centerOf(src), ...path, this.centerOf(dest)],
+        cargo: order.r, amount,
+        daysTotal: Math.max(1, path.length * BALANCE.boatDaysPerTile),
+        daysDone: 0, phase: 'go', destId: dest.id, srcId: src.id,
+      });
+      order.amt -= amount;
+      if (order.amt < 1) this.boatOrders.splice(i, 1);
     }
   }
 

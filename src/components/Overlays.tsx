@@ -88,6 +88,10 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
             Every building must touch a road. Trucks (from Construction Offices) automatically haul goods between buildings — coal to power plants, food to stores, materials to construction sites. No road, no deliveries, no workers.
           </section>
           <section>
+            <div className="font-bold text-yellow-300 mb-1"><GameIcon name="port" size={12} /> Water: bridges, ports &amp; barges</div>
+            Roads placed over water become <b>bridges</b> at ₽{90}/tile — short crossings are cheap, long ones are megaprojects. For wide water, build <b>River Ports</b> on each shore: barges automatically ferry goods between ports when a delivery can't be made by road, hauling four truckloads per trip.
+          </section>
+          <section>
             <div className="font-bold text-yellow-300 mb-1"><GameIcon name="factory" size={12} /> Production chains</div>
             Wood → Planks · Gravel → Bricks · Iron ore + Coal → Steel · Oil → Fuel · Crops → Food &amp; Clothes · Coal → Power &amp; Heat. Mines must sit on their deposit (look for COAL/IRON/OIL/GRAVEL labels).
           </section>

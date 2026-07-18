@@ -133,7 +133,7 @@ function pointInPoly(x: number, y: number, pts: { x: number; y: number }[]) {
 
 interface DepthItem {
   x: number; y: number; w: number; h: number; // footprint (points: w = h = 0)
-  kind: 'building' | 'trees' | 'truck' | 'citizen' | 'ghost';
+  kind: 'building' | 'trees' | 'truck' | 'boat' | 'citizen' | 'ghost';
   b?: BuildingInst;
   tr?: Truck;
   wx?: number; wy?: number;
@@ -207,6 +207,10 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
   for (const tr of engine.trucks) {
     const p = truckWorldPos(tr);
     items.push({ x: p.wx, y: p.wy, w: 0, h: 0, kind: 'truck', tr, wx: p.wx, wy: p.wy });
+  }
+  for (const bt of engine.boats) {
+    const p = truckWorldPos(bt);
+    items.push({ x: p.wx, y: p.wy, w: 0, h: 0, kind: 'boat', tr: bt, wx: p.wx, wy: p.wy });
   }
   if (engine.pop > 0 && cam.z >= 0.5) {
     for (const b of engine.buildings.values()) {
@@ -296,6 +300,9 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
         break;
       case 'truck':
         drawTruck(ctx, it.tr!, it.wx!, it.wy!, cam);
+        break;
+      case 'boat':
+        drawBoat(ctx, it.tr!, it.wx!, it.wy!, cam, ui.time);
         break;
       case 'citizen': {
         const p = toScreen(it.wx!, it.wy!, cam);
@@ -481,24 +488,91 @@ function drawTrees(ctx: CanvasRenderingContext2D, x: number, y: number, v: numbe
 }
 
 function drawRoad(ctx: CanvasRenderingContext2D, engine: GameEngine, x: number, y: number, c0: Pt, c1: Pt, c2: Pt, c3: Pt, cam: Camera) {
-  poly(ctx, [c0, c1, c2, c3], '#585858');
-  poly(ctx, [lerpP(c0, c2, 0.08), lerpP(c1, c3, 0.08), lerpP(c2, c0, 0.08), lerpP(c3, c1, 0.08)], '#6e6e6e');
-  // center line toward connected neighbors
+  const road = (tx: number, ty: number) => !!engine.tiles[ty]?.[tx]?.road;
+  const n = road(x, y - 1), e = road(x + 1, y), s = road(x, y + 1), w = road(x - 1, y);
+  const bridge = engine.tiles[y][x].terrain === 'water';
+
+  const edgeBand = (a: Pt, b: Pt, aIn: Pt, bIn: Pt, fill: string, line: string, inset: number) => {
+    poly(ctx, [a, b, lerpP(b, bIn, inset), lerpP(a, aIn, inset)], fill);
+    ctx.strokeStyle = line;
+    ctx.lineWidth = Math.max(1, 1.2 * cam.z);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  };
+
+  if (bridge) {
+    // timber deck over the water, pilings under the front edge
+    poly(ctx, [c0, c1, c2, c3], '#8a6f4d');
+    ctx.fillStyle = '#4a3821';
+    for (const f of [0.25, 0.75]) {
+      const p = lerpP(c3, c2, f);
+      ctx.fillRect(p.x - 1.5 * cam.z, p.y, 3 * cam.z, 4.5 * cam.z);
+    }
+    // rails along the sides that don't continue the road
+    if (!n) edgeBand(c0, c1, c3, c2, 'rgba(74,56,33,0.35)', '#4a3821', 0.1);
+    if (!e) edgeBand(c1, c2, c0, c3, 'rgba(74,56,33,0.35)', '#4a3821', 0.1);
+    if (!s) edgeBand(c3, c2, c0, c1, 'rgba(74,56,33,0.35)', '#4a3821', 0.1);
+    if (!w) edgeBand(c0, c3, c1, c2, 'rgba(74,56,33,0.35)', '#4a3821', 0.1);
+  } else {
+    // seamless asphalt: full-tile surface, shoulders ONLY where the road ends
+    poly(ctx, [c0, c1, c2, c3], '#6e6e6e');
+    if (!n) edgeBand(c0, c1, c3, c2, '#585858', '#4c4c4c', 0.14);
+    if (!e) edgeBand(c1, c2, c0, c3, '#585858', '#4c4c4c', 0.14);
+    if (!s) edgeBand(c3, c2, c0, c1, '#585858', '#4c4c4c', 0.14);
+    if (!w) edgeBand(c0, c3, c1, c2, '#585858', '#4c4c4c', 0.14);
+  }
+
+  // center markings run along the travel direction: through shared-edge
+  // MIDPOINTS (anchoring at corners pointed them screen-vertical/horizontal)
   const mid = lerpP(c0, c2, 0.5);
+  const em = {
+    n: lerpP(c0, c1, 0.5), // edge shared with (x, y-1)
+    e: lerpP(c1, c2, 0.5),
+    s: lerpP(c3, c2, 0.5),
+    w: lerpP(c0, c3, 0.5),
+  };
   ctx.strokeStyle = '#c9c25a';
   ctx.lineWidth = Math.max(1, 1.5 * cam.z);
   ctx.setLineDash([4 * cam.z, 4 * cam.z]);
-  const dirs: [number, number][] = [[1, 0], [0, 1], [-1, 0], [0, -1]];
-  for (const [dx, dy] of dirs) {
-    if (engine.tiles[y + dy]?.[x + dx]?.road) {
-      const edge = lerpP(dx === 1 ? c1 : dx === -1 ? c3 : dy === 1 ? c2 : c0, mid, 0.5);
-      ctx.beginPath();
-      ctx.moveTo(mid.x, mid.y);
-      ctx.lineTo(edge.x, edge.y);
-      ctx.stroke();
-    }
+  ctx.beginPath();
+  const seg = (a: Pt, b: Pt) => { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); };
+  if (n && s && !e && !w) seg(em.n, em.s);        // straight through
+  else if (e && w && !n && !s) seg(em.e, em.w);
+  else {
+    if (n) seg(mid, em.n);
+    if (e) seg(mid, em.e);
+    if (s) seg(mid, em.s);
+    if (w) seg(mid, em.w);
   }
+  ctx.stroke();
   ctx.setLineDash([]);
+}
+
+function drawBoat(ctx: CanvasRenderingContext2D, boat: Truck, wx: number, wy: number, cam: Camera, time: number) {
+  const p = toScreen(wx, wy, cam);
+  const s = cam.z;
+  const y = p.y + Math.sin(time / 600 + boat.id * 1.3) * 0.8 * s; // gentle bob
+  // wake
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = Math.max(1, 1.2 * s);
+  ctx.beginPath();
+  ctx.moveTo(p.x - 11 * s, y + 1.5 * s);
+  ctx.lineTo(p.x + 11 * s, y + 1.5 * s);
+  ctx.stroke();
+  // hull
+  ctx.fillStyle = '#54432f';
+  ctx.beginPath();
+  ctx.moveTo(p.x - 9 * s, y - 4 * s);
+  ctx.lineTo(p.x + 9 * s, y - 4 * s);
+  ctx.lineTo(p.x + 6 * s, y);
+  ctx.lineTo(p.x - 6 * s, y);
+  ctx.closePath();
+  ctx.fill();
+  // cargo
+  ctx.fillStyle = RESOURCES[boat.cargo].color;
+  ctx.fillRect(p.x - 5 * s, y - 8.5 * s, 10 * s, 4.5 * s);
+  // wheelhouse
+  ctx.fillStyle = '#d8d2c2';
+  ctx.fillRect(p.x + 5.5 * s, y - 7.5 * s, 2.5 * s, 3.5 * s);
 }
 
 const CHIMNEY_DEFS = new Set(['powerPlant', 'steelMill', 'refinery', 'heatingPlant', 'brickworks']);

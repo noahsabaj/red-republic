@@ -7,7 +7,7 @@
 // ============================================================
 import type { IconNode } from 'lucide';
 import {
-  Anvil, Axe, Ban, Beer, BrickWall, Building2, CircleCheck, CircleDot, CircleHelp,
+  Anchor, Anvil, Axe, Ban, Beer, BrickWall, Building2, CircleCheck, CircleDot, CircleHelp,
   Container, CookingPot, Coins, Droplet, Eraser, Factory, FlaskConical, Flame, Fuel,
   Gauge, Grip, HardHat, HeartPulse, Home, Keyboard, Landmark, Layers, Leaf, Magnet,
   Map as MapIcon, Package, Pause, Pickaxe, Route, Ruler, ShoppingBasket, Shirt, Shovel,
@@ -54,6 +54,7 @@ export const GAME_ICONS = {
   depot: Landmark,
   constructionOffice: HardHat,
   customs: Container,
+  port: Anchor,
   // build-menu categories
   'cat-infra': Route,
   'cat-housing': Home,

@@ -6,18 +6,20 @@ import type { SelectionItem } from '@/game/selection';
 import type { PanelMode } from './HUD';
 import { useEngineVersion } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
+import { buildCostText, buildCostTotalText } from '@/ui/build-cost';
 
 interface Props {
   engine: GameEngine;
   mode: PanelMode;
   selection: SelectionItem[];
+  instantBuild: boolean;
   onClose: () => void;
   onOpenTrade: () => void;
   onArmBuild: (defId: string) => void;
   notify: (msg: string, kind: 'good' | 'bad' | 'info') => void;
 }
 
-export default function SidePanel({ engine, mode, selection, onClose, onOpenTrade, onArmBuild, notify }: Props) {
+export default function SidePanel({ engine, mode, selection, instantBuild, onClose, onOpenTrade, onArmBuild, notify }: Props) {
   // the open detail panel mirrors live engine state — re-render on every bump
   useEngineVersion(engine);
   const single = selection.length === 1 ? selection[0] : null;
@@ -39,9 +41,9 @@ export default function SidePanel({ engine, mode, selection, onClose, onOpenTrad
         <div className="flex-1 overflow-y-auto soviet-scroll p-3">
           {mode === 'building' && (
             selection.length > 1
-              ? <MultiInfo engine={engine} items={selection} onArmBuild={onArmBuild} />
+              ? <MultiInfo engine={engine} items={selection} instant={instantBuild} onArmBuild={onArmBuild} />
               : single?.kind === 'deposit'
-                ? <DepositInfo engine={engine} x={single.x} y={single.y} onArmBuild={onArmBuild} />
+                ? <DepositInfo engine={engine} x={single.x} y={single.y} instant={instantBuild} onArmBuild={onArmBuild} />
                 : <BuildingInfo engine={engine} id={single?.kind === 'building' ? single.id : null} onOpenTrade={onOpenTrade} />
           )}
           {mode === 'trade' && <TradePanel engine={engine} notify={notify} />}
@@ -129,7 +131,7 @@ function StockpilesPanel({ engine }: { engine: GameEngine }) {
 
 // ------------------------------------------------------------
 
-function MultiInfo({ engine, items, onArmBuild }: { engine: GameEngine; items: SelectionItem[]; onArmBuild: (defId: string) => void }) {
+function MultiInfo({ engine, items, instant, onArmBuild }: { engine: GameEngine; items: SelectionItem[]; instant: boolean; onArmBuild: (defId: string) => void }) {
   const buildings = items
     .filter((i): i is Extract<SelectionItem, { kind: 'building' }> => i.kind === 'building')
     .map(i => engine.buildings.get(i.id))
@@ -221,13 +223,13 @@ function MultiInfo({ engine, items, onArmBuild }: { engine: GameEngine; items: S
                       {outputsPerMine.map(([r, a]) => (
                         <span key={r} className="inline-flex items-center gap-0.5"><GameIcon name={RESOURCES[r].icon} size={11} />{fmtRate(a * g.free)}/day</span>
                       ))}
-                      <span className="text-yellow-200/60"> · {miner.workers * g.free} workers · ₽{(miner.costRubles * g.free).toLocaleString()} total</span>
+                      <span className="text-yellow-200/60"> · {miner.workers * g.free} workers · {buildCostTotalText(engine, miner.id, g.free, instant)} total</span>
                     </div>
                     <button
                       onClick={() => onArmBuild(miner.id)}
                       className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1 hover:bg-yellow-400"
                     >
-                      <GameIcon name="builders" size={12} /> Build {miner.name} (₽{miner.costRubles} each)
+                      <GameIcon name="builders" size={12} /> Build {miner.name} ({buildCostText(engine, miner.id, instant)} each)
                     </button>
                   </>
                 )}
@@ -248,7 +250,7 @@ function MultiInfo({ engine, items, onArmBuild }: { engine: GameEngine; items: S
 
 const DEPOSIT_NAMES: Record<string, string> = { coal: 'Coal', ironOre: 'Iron Ore', oil: 'Oil', gravel: 'Gravel' };
 
-function DepositInfo({ engine, x, y, onArmBuild }: { engine: GameEngine; x: number; y: number; onArmBuild: (defId: string) => void }) {
+function DepositInfo({ engine, x, y, instant, onArmBuild }: { engine: GameEngine; x: number; y: number; instant: boolean; onArmBuild: (defId: string) => void }) {
   const cluster = engine.depositClusterAt(x, y);
   if (!cluster) return <div className="text-xs text-yellow-200/60">Nothing of value here.</div>;
   const res = RESOURCES[cluster.kind];
@@ -290,7 +292,7 @@ function DepositInfo({ engine, x, y, onArmBuild }: { engine: GameEngine; x: numb
           className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1.5 hover:bg-yellow-400"
           title={`Arm the build tool — place the ${miner.name} on one of this cluster's tiles`}
         >
-          <GameIcon name="builders" size={12} /> Build {miner.name} (₽{miner.costRubles})
+          <GameIcon name="builders" size={12} /> Build {miner.name} ({buildCostText(engine, miner.id, instant)})
         </button>
       )}
     </div>
