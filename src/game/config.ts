@@ -343,6 +343,7 @@ export const BALANCE = {
   heatThresholdC: 8,      // outdoor °C below which buildings need heat
   heatDesignTempC: -15,   // heat demand reaches 100% at this temp; colder over-drives it
   droughtAfterDays: 10,   // consecutive rainless warm days before crops start to wither
+  borderDepth: 2,         // tiles of foreign soil along the national-border map edge
 };
 
 // Farm seasonal factor by month (1-12): sowing, growth, harvest

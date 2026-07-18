@@ -1,7 +1,7 @@
 // ============================================================
 // Isometric canvas renderer
 // ============================================================
-import { BUILDINGS, RESOURCES } from './config';
+import { BALANCE, BUILDINGS, RESOURCES } from './config';
 import { MAP_W, MAP_H } from './mapgen';
 import { drawIcon } from '@/ui/icons';
 import type { GameEngine, BuildingInst, Season, Truck } from './engine';
@@ -71,6 +71,14 @@ function shade(col: string, f: number): string {
 function tint(col: string, f: number): string {
   const [r, g, b] = chan(col);
   return `rgb(${Math.round(r + (255 - r) * f)},${Math.round(g + (255 - g) * f)},${Math.round(b + (255 - b) * f)})`;
+}
+
+/** Desaturate + dim — foreign soil beyond the border reads as not-yours. */
+function dull(col: string, f: number): string {
+  const [r, g, b] = chan(col);
+  const l = 0.3 * r + 0.59 * g + 0.11 * b;
+  const mix = (c: number) => Math.round((c + (l - c) * f) * 0.9);
+  return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
 }
 
 function poly(ctx: CanvasRenderingContext2D, pts: { x: number; y: number }[], fill: string, stroke?: string) {
@@ -144,11 +152,12 @@ function pointInPoly(x: number, y: number, pts: { x: number; y: number }[]) {
 
 interface DepthItem {
   x: number; y: number; w: number; h: number; // footprint (points: w = h = 0)
-  kind: 'building' | 'trees' | 'truck' | 'boat' | 'citizen' | 'ghost';
+  kind: 'building' | 'trees' | 'truck' | 'boat' | 'citizen' | 'ghost' | 'borderpost';
   b?: BuildingInst;
   tr?: Truck;
   wx?: number; wy?: number;
   variant?: number;
+  foreign?: boolean;
 }
 
 // farm-field membership only changes when the world changes — cache per engine version
@@ -207,6 +216,7 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
     fontSite: `bold ${Math.max(9, Math.round(10 * cam.z))}px sans-serif`,
     fontDeposit: `${Math.max(6, Math.round(9 * cam.z))}px sans-serif`,
     treeShade0: '', treeShade1: '',
+    foreign: { g1: '', g2: '', f1: '', f2: '', r1: '', r2: '', tree0: '', tree1: '' },
     fieldCol: tint(FIELD[season], snowT),
     waterA: wBase,
     waterB: shade(wBase, 0.94),
@@ -217,6 +227,12 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
   const treeCol = tint(TREE[season], snowT * 0.9);
   frame.treeShade0 = shade(treeCol, 0.85);
   frame.treeShade1 = shade(treeCol, 1.0);
+  frame.foreign = {
+    g1: dull(g1, 0.5), g2: dull(g2, 0.5),
+    f1: dull(forest1, 0.5), f2: dull(forest2, 0.5),
+    r1: dull(rock1, 0.5), r2: dull(rock2, 0.5),
+    tree0: dull(frame.treeShade0, 0.5), tree1: dull(frame.treeShade1, 0.5),
+  };
 
   // Everything raised above the ground plane draws in one depth-sorted pass
   // ordered by isoCompare — scan-row order is NOT the occlusion relation
@@ -247,6 +263,9 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
     const [gw, gh] = ui.tool.kind === 'build' ? BUILDINGS[ui.tool.defId].size : [1, 1];
     items.push({ x: ui.hoverTile.x, y: ui.hoverTile.y, w: gw, h: gh, kind: 'ghost' });
   }
+  for (const bp of borderPosts(engine)) {
+    items.push({ x: bp.x, y: bp.y, w: 0, h: 0, kind: 'borderpost', wx: bp.x, wy: bp.y });
+  }
 
   const hwz = (TILE_W / 2) * cam.z;
   const hhz = (TILE_H / 2) * cam.z;
@@ -265,9 +284,18 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
       if (t.terrain === 'water') {
         drawWater(ctx, engine, x, y, c0, c1, c2, c3, cam, frame);
       } else {
-        let fill = (x + y) % 2 === 0 ? g1 : g2;
-        if (t.terrain === 'rock') fill = (x + y) % 2 === 0 ? rock1 : rock2;
-        else if (t.terrain === 'forest') fill = (x + y) % 2 === 0 ? forest1 : forest2;
+        const even = (x + y) % 2 === 0;
+        let fill: string;
+        if (t.foreign) {
+          const fs = frame.foreign;
+          fill = t.terrain === 'rock' ? (even ? fs.r1 : fs.r2)
+            : t.terrain === 'forest' ? (even ? fs.f1 : fs.f2)
+            : (even ? fs.g1 : fs.g2);
+        } else {
+          fill = even ? g1 : g2;
+          if (t.terrain === 'rock') fill = even ? rock1 : rock2;
+          else if (t.terrain === 'forest') fill = even ? forest1 : forest2;
+        }
         poly(ctx, [c0, c1, c2, c3], fill);
       }
 
@@ -292,7 +320,7 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
       if (t.deposit && t.terrain !== 'water') drawDeposit(ctx, t.deposit, c0, c1, c2, c3, t.variant, frame);
 
       // raised things at this tile join the depth pass (visible tiles only)
-      if (t.terrain === 'forest') items.push({ x, y, w: 1, h: 1, kind: 'trees', variant: t.variant });
+      if (t.terrain === 'forest') items.push({ x, y, w: 1, h: 1, kind: 'trees', variant: t.variant, foreign: t.foreign });
       if (t.buildingId) {
         const b = engine.buildings.get(t.buildingId);
         if (b && x === b.x + b.w - 1 && y === b.y + b.h - 1) {
@@ -302,6 +330,30 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
 
       // road
       if (t.road) drawRoad(ctx, engine, x, y, c0, c1, c2, c3, cam);
+
+      // the national border: a striped line along the homeland side of the strip
+      // (drawn over roads too — at the crossing it reads as the checkpoint bar)
+      if (!t.foreign) {
+        const segs: [Pt, Pt][] = [];
+        if (engine.tiles[y]?.[x - 1]?.foreign) segs.push([c0, c3]);
+        if (engine.tiles[y]?.[x + 1]?.foreign) segs.push([c1, c2]);
+        if (engine.tiles[y - 1]?.[x]?.foreign) segs.push([c0, c1]);
+        if (engine.tiles[y + 1]?.[x]?.foreign) segs.push([c3, c2]);
+        if (segs.length) {
+          ctx.lineWidth = Math.max(1.5, 2.2 * cam.z);
+          ctx.strokeStyle = 'rgba(140,34,26,0.85)';
+          ctx.beginPath();
+          for (const [a, b] of segs) { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
+          ctx.stroke();
+          ctx.lineWidth = Math.max(1, 1.1 * cam.z);
+          ctx.strokeStyle = 'rgba(232,226,212,0.7)';
+          ctx.setLineDash([3 * cam.z, 5 * cam.z]);
+          ctx.beginPath();
+          for (const [a, b] of segs) { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
     }
   }
 
@@ -313,7 +365,10 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
         drawBuilding(ctx, it.b!, cam, frame);
         break;
       case 'trees':
-        drawTrees(ctx, it.x, it.y, it.variant!, cam, frame);
+        drawTrees(ctx, it.x, it.y, it.variant!, cam, frame, it.foreign);
+        break;
+      case 'borderpost':
+        drawBorderPost(ctx, it.wx!, it.wy!, cam);
         break;
       case 'truck':
         drawTruck(ctx, it.tr!, it.wx!, it.wy!, cam);
@@ -551,6 +606,46 @@ interface FrameStyle {
   waterDeepA: string;
   waterDeepB: string;
   waterEdge: string;
+  foreign: { g1: string; g2: string; f1: string; f2: string; r1: string; r2: string; tree0: string; tree1: string };
+}
+
+/**
+ * Fence posts along the national border, every other tile corner. Gaps open
+ * where the crossing lane or the river passes. World-corner coordinates.
+ */
+function borderPosts(engine: GameEngine): Pt[] {
+  const edge = engine.borderEdge;
+  if (!edge) return [];
+  const D = BALANCE.borderDepth;
+  const posts: Pt[] = [];
+  const alongMax = edge === 'N' || edge === 'S' ? MAP_W : MAP_H;
+  for (let u = 0; u <= alongMax; u += 2) {
+    // the two foreign-side tiles flanking this corner
+    const f1 = edge === 'W' ? { x: D - 1, y: u } : edge === 'E' ? { x: MAP_W - D, y: u }
+      : edge === 'N' ? { x: u, y: D - 1 } : { x: u, y: MAP_H - D };
+    const f2 = edge === 'N' || edge === 'S' ? { x: f1.x - 1, y: f1.y } : { x: f1.x, y: f1.y - 1 };
+    const t1 = engine.tiles[f1.y]?.[f1.x], t2 = engine.tiles[f2.y]?.[f2.x];
+    if (t1 && (t1.road || t1.terrain === 'water')) continue;
+    if (t2 && (t2.road || t2.terrain === 'water')) continue;
+    posts.push(edge === 'W' ? { x: D, y: u } : edge === 'E' ? { x: MAP_W - D, y: u }
+      : edge === 'N' ? { x: u, y: D } : { x: u, y: MAP_H - D });
+  }
+  return posts;
+}
+
+function drawBorderPost(ctx: CanvasRenderingContext2D, wx: number, wy: number, cam: Camera) {
+  const p = toScreen(wx, wy, cam);
+  const s = cam.z;
+  const h = 13 * s;
+  const w = Math.max(1.5, 2 * s);
+  const stripes = ['#c8382e', '#e8e2d4', '#c8382e', '#e8e2d4'];
+  const seg = h / stripes.length;
+  for (let i = 0; i < stripes.length; i++) {
+    ctx.fillStyle = stripes[i];
+    ctx.fillRect(p.x - w / 2, p.y - h + i * seg, w, seg + 0.5);
+  }
+  ctx.fillStyle = '#8a1f18';
+  ctx.fillRect(p.x - w * 0.9, p.y - h - 1.8 * s, w * 1.8, 1.8 * s);
 }
 
 function drawDeposit(ctx: CanvasRenderingContext2D, kind: string, c0: Pt, c1: Pt, c2: Pt, c3: Pt, v: number, frame: FrameStyle) {
@@ -579,7 +674,7 @@ function drawDeposit(ctx: CanvasRenderingContext2D, kind: string, c0: Pt, c1: Pt
 
 type Pt = { x: number; y: number };
 
-function drawTrees(ctx: CanvasRenderingContext2D, x: number, y: number, v: number, cam: Camera, frame: FrameStyle) {
+function drawTrees(ctx: CanvasRenderingContext2D, x: number, y: number, v: number, cam: Camera, frame: FrameStyle, foreign?: boolean) {
   const n = 2 + Math.floor(v * 2);
   for (let i = 0; i < n; i++) {
     const fx = 0.2 + ((v * 31 + i * 0.4) % 0.6);
@@ -590,7 +685,9 @@ function drawTrees(ctx: CanvasRenderingContext2D, x: number, y: number, v: numbe
     ctx.fillStyle = '#5b4028';
     ctx.fillRect(p.x - s * 0.12, p.y - s * 0.5, s * 0.24, s * 0.6);
     // canopy (two triangles)
-    ctx.fillStyle = i % 2 === 0 ? frame.treeShade0 : frame.treeShade1;
+    ctx.fillStyle = foreign
+      ? (i % 2 === 0 ? frame.foreign.tree0 : frame.foreign.tree1)
+      : (i % 2 === 0 ? frame.treeShade0 : frame.treeShade1);
     ctx.beginPath();
     ctx.moveTo(p.x, p.y - s * 2.2);
     ctx.lineTo(p.x - s * 0.9, p.y - s * 0.9);

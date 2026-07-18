@@ -1,11 +1,15 @@
-// Map generation: terrain, forests, deposits, river
+// Map generation: terrain, forests, deposits, river, the national border
+import { BALANCE } from './config';
 import type { DepositType } from './config';
+
+export type BorderEdge = 'N' | 'S' | 'E' | 'W';
 
 export interface Tile {
   terrain: 'grass' | 'forest' | 'water' | 'rock';
   deposit?: DepositType;
   road?: boolean;
   buildingId?: number; // building occupying (footprint tiles all point to id)
+  foreign?: boolean;   // beyond the national border — the strip along the border edge
   variant: number;     // visual variation seed 0..1
 }
 
@@ -25,8 +29,11 @@ export function mulberry32(seed: number) {
 
 export interface MapData {
   tiles: Tile[][];
-  startX: number; // suggested starting area (near center, clear)
+  startX: number; // suggested starting area (a border town — a short walk inside the border)
   startY: number;
+  border?: BorderEdge; // which map edge is the national border (absent on bare test maps)
+  crossX?: number;     // top-left of the 2x2 border-crossing site (the starting customs house)
+  crossY?: number;
 }
 
 function carveDisk(tiles: Tile[][], cx: number, cy: number, r: number) {
@@ -130,9 +137,21 @@ export function generateMap(seed = 1961): MapData {
     tiles.push(row);
   }
 
+  // --- The national border: one map edge is foreign soil ---
+  // (v, u) border coords: u runs along the edge, v inward from it (v=0 outermost).
+  const border = (['N', 'S', 'E', 'W'] as const)[Math.floor(rnd() * 4)];
+  const D = BALANCE.borderDepth;
+  const toXY = (v: number, u: number) =>
+    border === 'W' ? { x: v, y: u }
+    : border === 'E' ? { x: MAP_W - 1 - v, y: u }
+    : border === 'N' ? { x: u, y: v }
+    : { x: u, y: MAP_H - 1 - v };
+  const alongMax = border === 'N' || border === 'S' ? MAP_W : MAP_H;
+
   // --- Water: a river with a random course, plus 0-2 lakes ---
-  const startX = Math.floor(MAP_W / 2);
-  const startY = Math.floor(MAP_H / 2);
+  // The town spawns a short walk inside the border — a border town, not a frontier outpost.
+  const startU = 14 + Math.floor(rnd() * (alongMax - 28));
+  const { x: startX, y: startY } = toXY(D + 8, startU);
   carveRiver(tiles, rnd, startX, startY);
   const lakeCount = Math.floor(rnd() * 3);
   for (let i = 0; i < lakeCount; i++) carveLake(tiles, rnd, startX, startY);
@@ -160,8 +179,8 @@ export function generateMap(seed = 1961): MapData {
     while (placed < count && guard++ < 500) {
       const cx = 8 + Math.floor(rnd() * (MAP_W - 10));
       const cy = 2 + Math.floor(rnd() * (MAP_H - 4));
-      // keep distance from start center
-      if (Math.hypot(cx - MAP_W / 2, cy - MAP_H / 2) < 6) continue;
+      // keep distance from the starting area
+      if (Math.hypot(cx - startX, cy - startY) < 6) continue;
       let ok = true;
       for (let y = cy - 3; y <= cy + 3 && ok; y++)
         for (let x = cx - 3; x <= cx + 3 && ok; x++)
@@ -202,5 +221,37 @@ export function generateMap(seed = 1961): MapData {
     }
   }
 
-  return { tiles, startX, startY };
+  // --- Foreign strip: flag the border edge, no deposits on the other side ---
+  for (let y = 0; y < MAP_H; y++) {
+    for (let x = 0; x < MAP_W; x++) {
+      const v = border === 'W' ? x : border === 'E' ? MAP_W - 1 - x : border === 'N' ? y : MAP_H - 1 - y;
+      if (v < D) { tiles[y][x].foreign = true; tiles[y][x].deposit = undefined; }
+    }
+  }
+
+  // --- Border crossing: a 2x2 customs site hugging the strip, near the town ---
+  // Site tiles: the customs footprint (v=D..D+1), its front-door road tile
+  // (v=D+2) and the crossing lane through the strip (v<D), all in lane u.
+  const siteTiles = (cu: number) => {
+    const pts = [toXY(D, cu), toXY(D, cu + 1), toXY(D + 1, cu), toXY(D + 1, cu + 1), toXY(D + 2, cu)];
+    for (let v = 0; v < D; v++) pts.push(toXY(v, cu));
+    return pts;
+  };
+  let crossU = startU;
+  let onLand = false;
+  for (let o = 0; o <= 12 && !onLand; o++) {
+    for (const cu of o === 0 ? [startU] : [startU - o, startU + o]) {
+      if (cu < 2 || cu + 3 > alongMax - 2) continue;
+      if (siteTiles(cu).every(p => tiles[p.y][p.x].terrain !== 'water')) { crossU = cu; onLand = true; break; }
+    }
+  }
+  // clear the site (if no dry lane exists within ±12 the fallback causeways the water)
+  for (const p of siteTiles(crossU)) {
+    const t = tiles[p.y][p.x];
+    t.terrain = 'grass';
+    t.deposit = undefined;
+  }
+  const c0 = toXY(D, crossU), c1 = toXY(D + 1, crossU + 1);
+
+  return { tiles, startX, startY, border, crossX: Math.min(c0.x, c1.x), crossY: Math.min(c0.y, c1.y) };
 }

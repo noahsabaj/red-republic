@@ -7,7 +7,7 @@ import {
 } from './config';
 import type { DepositType, ResourceId } from './config';
 import { generateMap, mulberry32, MAP_W, MAP_H } from './mapgen';
-import type { MapData, Tile } from './mapgen';
+import type { BorderEdge, MapData, Tile } from './mapgen';
 import { floodRoads, FloodResult } from './pathfind';
 import type { DistanceField } from './pathfind';
 import { WeatherTimeline } from './weather';
@@ -120,6 +120,8 @@ export class GameEngine {
   readonly TICK_MS = 500; // one game day at 1x speed
 
   readonly seed: number;
+  /** Which map edge is the national border; null on bare test maps (no border rules). */
+  readonly borderEdge: BorderEdge | null;
   private rng: () => number;
   private timeline: WeatherTimeline;
   /** Test/debug seam: overlays the deterministic timeline (helpers force calm weather). */
@@ -139,23 +141,53 @@ export class GameEngine {
     this.weather = this.weatherAt(this.dayIndex());
     const map = opts.map ?? generateMap(this.seed);
     this.tiles = map.tiles;
+    this.borderEdge = map.border ?? null;
     this.hasWater = this.tiles.some(row => row.some(t => t.terrain === 'water'));
-    if (!opts.skipStartingBase) this.setupStartingBase(map.startX, map.startY);
+    if (!opts.skipStartingBase) this.setupStartingBase(map);
   }
 
   // ---------------- setup ----------------
 
-  private setupStartingBase(sx: number, sy: number) {
+  private setupStartingBase(map: MapData) {
+    const sx = map.startX, sy = map.startY;
     // road line north of buildings
-    for (let x = sx - 2; x <= sx + 4; x++) {
+    for (let x = sx - 2; x <= sx + 1; x++) {
       this.tiles[sy - 1][x].road = true;
     }
     this.placeFree('depot', sx, sy);
     this.placeFree('constructionOffice', sx - 2, sy);
-    this.placeFree('customs', sx + 3, sy);
+    if (map.border && map.crossX !== undefined && map.crossY !== undefined) {
+      // the customs house is the border crossing itself
+      this.placeFree('customs', map.crossX, map.crossY);
+      this.layCrossingRoads(map.border, map.crossX, map.crossY, sx, sy);
+    } else {
+      // borderless (test) maps keep the legacy row layout
+      this.placeFree('customs', sx + 3, sy);
+      for (let x = sx + 2; x <= sx + 4; x++) this.tiles[sy - 1][x].road = true;
+    }
     const depot = [...this.buildings.values()].find(b => b.defId === 'depot')!;
     depot.stock = { planks: 120, bricks: 120, steel: 50, food: 100 };
     this.pushEvent('The Politburo has granted you this land. Build a thriving socialist republic!', 'info', 'star');
+  }
+
+  /** Border crossing: a lane through the foreign strip to the map edge, plus a domestic link to the base. */
+  private layCrossingRoads(edge: BorderEdge, cx: number, cy: number, sx: number, sy: number) {
+    const lay = (x: number, y: number) => {
+      const t = this.tiles[y]?.[x];
+      if (t && !t.buildingId) t.road = true; // over water this is a bridge
+    };
+    // through the strip to the edge (foreign soil — engine-laid; players cannot build here)
+    if (edge === 'W') for (let x = 0; x < cx; x++) lay(x, cy);
+    if (edge === 'E') for (let x = cx + 2; x < MAP_W; x++) lay(x, cy);
+    if (edge === 'N') for (let y = 0; y < cy; y++) lay(cx, y);
+    if (edge === 'S') for (let y = cy + 2; y < MAP_H; y++) lay(cx, y);
+    // domestic link: the front-door tile, then an L to the base road row
+    const front = edge === 'W' ? { x: cx + 2, y: cy }
+      : edge === 'E' ? { x: cx - 1, y: cy }
+      : edge === 'N' ? { x: cx, y: cy + 2 }
+      : { x: cx, y: cy - 1 };
+    for (let y = Math.min(front.y, sy - 1); y <= Math.max(front.y, sy - 1); y++) lay(front.x, y);
+    for (let x = Math.min(front.x, sx - 2); x <= Math.max(front.x, sx + 1); x++) lay(x, sy - 1);
   }
 
   private placeFree(defId: string, x: number, y: number) {
@@ -326,6 +358,7 @@ export class GameEngine {
     if (defId === 'road') {
       const t = this.tiles[y]?.[x];
       if (!t) return { ok: false, reason: 'Out of bounds' };
+      if (t.foreign) return { ok: false, reason: 'Beyond the state border' };
       if (t.road) return { ok: false, reason: 'Road already here' };
       if (t.buildingId) return { ok: false, reason: 'Occupied by a building' };
       return { ok: true }; // on water this becomes a bridge
@@ -336,11 +369,22 @@ export class GameEngine {
     for (let dy = 0; dy < h; dy++) {
       for (let dx = 0; dx < w; dx++) {
         const t = this.tiles[y + dy][x + dx];
+        if (t.foreign) return { ok: false, reason: 'Beyond the state border' };
         if (t.terrain === 'water') return { ok: false, reason: 'Cannot build on water' };
         if (t.buildingId) return { ok: false, reason: 'Tile occupied' };
         if (t.road) return { ok: false, reason: 'Tile has a road' };
         if (def.requiresDeposit && t.deposit === def.requiresDeposit) depositOk = true;
       }
+    }
+    if (def.isCustoms && this.borderEdge) {
+      let atBorder = false;
+      for (let dy = -1; dy <= h && !atBorder; dy++) for (let dx = -1; dx <= w && !atBorder; dx++) {
+        const onEdge = dx === -1 || dx === w || dy === -1 || dy === h;
+        const onCorner = (dx === -1 || dx === w) && (dy === -1 || dy === h);
+        if (!onEdge || onCorner) continue;
+        if (this.tiles[y + dy]?.[x + dx]?.foreign) atBorder = true;
+      }
+      if (!atBorder) return { ok: false, reason: 'A Customs House must stand at the national border' };
     }
     if (!depositOk) return { ok: false, reason: `Requires a ${def.requiresDeposit === 'ironOre' ? 'iron ore' : def.requiresDeposit} deposit` };
     if (def.requiresForest && this.countForestTiles(x, y, w, h) < 3) {
@@ -409,6 +453,7 @@ export class GameEngine {
   bulldozeAt(x: number, y: number): boolean {
     const t = this.tiles[y]?.[x];
     if (!t) return false;
+    if (t.foreign) return false; // foreign soil (incl. the crossing lane) is untouchable
     if (t.buildingId) {
       const b = this.buildings.get(t.buildingId);
       if (!b) return false;

@@ -1,4 +1,5 @@
 import { GameEngine } from '../engine';
+import { BALANCE } from '../config';
 import type { ResourceId } from '../config';
 import type { MapData, Tile } from '../mapgen';
 import { MAP_W, MAP_H } from '../mapgen';
@@ -17,6 +18,15 @@ export function flatMap(): MapData {
     tiles.push(row);
   }
   return { tiles, startX: Math.floor(MAP_W / 2), startY: Math.floor(MAP_H / 2) };
+}
+
+/** Flat map with a western national border strip — opts border tests into the border rules. */
+export function flatBorderMap(): MapData {
+  const map = flatMap();
+  for (let y = 0; y < MAP_H; y++) {
+    for (let x = 0; x < BALANCE.borderDepth; x++) map.tiles[y][x].foreign = true;
+  }
+  return { ...map, border: 'W', crossX: BALANCE.borderDepth, crossY: Math.floor(MAP_H / 2) };
 }
 
 /** Engine on a flat map, calm weather, no pre-seeded starting base (unless asked for). */

@@ -1,5 +1,6 @@
 // Demo town seeder — opens a developed republic via ?demo in the URL
 import type { GameEngine } from './engine';
+import { MAP_W, MAP_H } from './mapgen';
 
 export function seedDemoTown(e: GameEngine) {
   const depot = [...e.buildings.values()].find(b => b.defId === 'depot')!;
@@ -7,39 +8,50 @@ export function seedDemoTown(e: GameEngine) {
   e.dollars = 999999;
   e.rubles = 999999;
 
+  // The base hugs the national border, so the demo grid anchors further
+  // inland (its bounding box clears the base row, the customs crossing and
+  // both foreign strips) and a connector road ties it back to the depot.
+  const shift = e.borderEdge === 'W' ? [15, 0] : e.borderEdge === 'E' ? [-15, 0]
+    : e.borderEdge === 'N' ? [0, 8] : e.borderEdge === 'S' ? [0, -13] : [0, 0];
+  const gx = Math.max(14, Math.min(MAP_W - 15, sx + shift[0]));
+  const gy = Math.max(4, Math.min(MAP_H - 13, sy + shift[1]));
+
   const road = (x: number, y: number) => {
     const t = e.tiles[y]?.[x];
     if (t && !t.road && !t.buildingId && t.terrain !== 'water') t.road = true;
   };
-  // road grid around the base
-  for (let x = sx - 12; x <= sx + 12; x++) { road(x, sy - 1); road(x, sy + 3); road(x, sy + 8); }
-  for (let y = sy - 1; y <= sy + 8; y++) { road(sx - 12, y); road(sx + 12, y); road(sx - 6, y); road(sx + 5, y); }
+  // road grid around the town center
+  for (let x = gx - 12; x <= gx + 12; x++) { road(x, gy - 1); road(x, gy + 3); road(x, gy + 8); }
+  for (let y = gy - 1; y <= gy + 8; y++) { road(gx - 12, y); road(gx + 12, y); road(gx - 6, y); road(gx + 5, y); }
+  // connector: base road row to the grid (an L along the shift direction)
+  for (let x = Math.min(sx, gx); x <= Math.max(sx, gx); x++) road(x, sy - 1);
+  for (let y = Math.min(sy - 1, gy - 1); y <= Math.max(sy - 1, gy - 1); y++) road(gx, y);
 
   const put = (defId: string, x: number, y: number) => e.tryPlace(defId, x, y, true);
 
   // housing & services
-  put('house', sx - 11, sy);
-  put('house', sx - 10, sy);
-  put('house', sx - 9, sy);
-  put('apartment', sx - 11, sy + 4);
-  put('apartment', sx - 8, sy + 4);
-  put('store', sx - 5, sy + 4);
-  put('pub', sx - 4, sy);
-  put('clinic', sx - 5, sy);
-  put('heatingPlant', sx + 3, sy + 4);
-  put('powerPlant', sx + 6, sy + 4);
+  put('house', gx - 11, gy);
+  put('house', gx - 10, gy);
+  put('house', gx - 9, gy);
+  put('apartment', gx - 11, gy + 4);
+  put('apartment', gx - 8, gy + 4);
+  put('store', gx - 5, gy + 4);
+  put('pub', gx - 4, gy);
+  put('clinic', gx - 5, gy);
+  put('heatingPlant', gx + 3, gy + 4);
+  put('powerPlant', gx + 6, gy + 4);
   // industry row
-  put('farm', sx - 11, sy + 9);
-  put('foodFactory', sx - 8, sy + 9);
-  put('sawmill', sx - 5, sy + 9);
-  put('warehouse', sx - 3, sy + 9);
-  put('brickworks', sx + 1, sy + 9);
-  put('textileMill', sx + 3, sy + 9);
+  put('farm', gx - 11, gy + 9);
+  put('foodFactory', gx - 8, gy + 9);
+  put('sawmill', gx - 5, gy + 9);
+  put('warehouse', gx - 3, gy + 9);
+  put('brickworks', gx + 1, gy + 9);
+  put('textileMill', gx + 3, gy + 9);
   // mines on real deposits nearby
   const findDeposit = (kind: string) => {
     for (let rad = 4; rad < 24; rad++)
       for (let dy = -rad; dy <= rad; dy++) for (let dx = -rad; dx <= rad; dx++) {
-        if (e.tiles[sy + dy]?.[sx + dx]?.deposit === kind) return { x: sx + dx, y: sy + dy };
+        if (e.tiles[gy + dy]?.[gx + dx]?.deposit === kind) return { x: gx + dx, y: gy + dy };
       }
     return null;
   };
@@ -48,8 +60,8 @@ export function seedDemoTown(e: GameEngine) {
     if (!res.ok) return res; // placement failed — don't build roads to nothing
     const inst = e.buildingAt(spot.x, spot.y)!;
     const tryRoute = (route: 'col' | 'row') => {
-      if (route === 'col') for (let y = Math.min(spot.y, sy + 8); y <= Math.max(spot.y, sy + 8); y++) road(spot.x + 1, y);
-      else for (let x = Math.min(spot.x, sx + 12); x <= Math.max(spot.x, sx + 12); x++) road(x, spot.y + 1);
+      if (route === 'col') for (let y = Math.min(spot.y, gy + 8); y <= Math.max(spot.y, gy + 8); y++) road(spot.x + 1, y);
+      else for (let x = Math.min(spot.x, gx + 12); x <= Math.max(spot.x, gx + 12); x++) road(x, spot.y + 1);
     };
     tryRoute('col');
     if (!e.findPath(e.adjacentRoads(inst), e.adjacentRoads(depot))) tryRoute('row');
