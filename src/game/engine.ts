@@ -53,6 +53,7 @@ export interface GameEvent {
   id: number;
   text: string;
   kind: 'good' | 'bad' | 'info';
+  icon?: string; // game icon name (see src/ui/icons)
 }
 
 export type Season = 'winter' | 'spring' | 'summer' | 'autumn';
@@ -128,7 +129,7 @@ export class GameEngine {
     this.placeFree('customs', sx + 3, sy);
     const depot = [...this.buildings.values()].find(b => b.defId === 'depot')!;
     depot.stock = { planks: 120, bricks: 120, steel: 50, food: 100 };
-    this.pushEvent('The Politburo has granted you this land. Build a thriving socialist republic!', 'info');
+    this.pushEvent('The Politburo has granted you this land. Build a thriving socialist republic!', 'info', 'star');
   }
 
   private placeFree(defId: string, x: number, y: number) {
@@ -492,10 +493,10 @@ export class GameEngine {
     this.day++;
     if (this.day > 30) {
       this.day = 1; this.month++;
-      if (this.month > 12) { this.month = 1; this.year++; this.pushEvent(`Happy New Year ${this.year}, comrade!`, 'info'); }
+      if (this.month > 12) { this.month = 1; this.year++; this.pushEvent(`Happy New Year ${this.year}, comrade!`, 'info', 'star'); }
       this.monthlyEconomy();
-      if (this.month === 10) this.pushEvent('❄️ Winter approaches — make sure your Heating Plant works!', 'bad');
-      if (this.month === 4) this.pushEvent('🌱 Spring sowing season begins.', 'info');
+      if (this.month === 10) this.pushEvent('Winter approaches — make sure your Heating Plant works!', 'bad', 'winter');
+      if (this.month === 4) this.pushEvent('Spring sowing season begins.', 'info', 'spring');
     }
 
     this.updateConnectivity();
@@ -870,7 +871,7 @@ export class GameEngine {
         for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
           this.addStock(b, r, -amt);
         }
-        this.pushEvent(`✅ ${def.name} completed!`, 'good');
+        this.pushEvent(`${def.name} completed!`, 'good', 'check');
       }
     }
   }
@@ -997,15 +998,15 @@ export class GameEngine {
     const freeBeds = this.capacity - this.pop;
     if (this.pop === 0 && freeBeds > 0 && this.happiness >= 48) {
       this.pop = Math.min(freeBeds, 6);
-      this.pushEvent('👷 First settlers arrived to your republic!', 'good');
+      this.pushEvent('First settlers arrived to your republic!', 'good', 'users');
     } else if (this.happiness >= 48 && freeBeds > 0) {
       const arrivals = Math.min(freeBeds, 1 + Math.floor(this.happiness / 35));
       this.pop += arrivals;
-      if (arrivals > 1) this.pushEvent(`👥 ${arrivals} migrants joined your republic`, 'good');
+      if (arrivals > 1) this.pushEvent(`${arrivals} migrants joined your republic`, 'good', 'users');
     } else if (this.happiness < 30 && this.pop > 0) {
       const departures = Math.min(this.pop, Math.max(1, Math.min(Math.ceil(this.pop * 0.1), Math.ceil((30 - this.happiness) / 8))));
       this.pop -= departures;
-      this.pushEvent(`🚶 ${departures} citizens left the republic (unhappy)`, 'bad');
+      this.pushEvent(`${departures} citizens left the republic (unhappy)`, 'bad', 'users');
     }
     if (this.pop > this.capacity) this.pop = this.capacity;
   }
@@ -1045,26 +1046,26 @@ export class GameEngine {
         if (o.rewardRubles) this.rubles += o.rewardRubles;
         if (o.rewardDollars) this.dollars += o.rewardDollars;
         const rw = [o.rewardRubles ? `+₽${o.rewardRubles.toLocaleString()}` : '', o.rewardDollars ? `+$${o.rewardDollars.toLocaleString()}` : ''].filter(Boolean).join(' ');
-        this.pushEvent(`⭐ Objective complete: ${o.title}! ${rw}`, 'good');
+        this.pushEvent(`Objective complete: ${o.title}! ${rw}`, 'good', 'star');
       }
     }
   }
 
   private updateAlerts() {
     const a: Alert[] = [];
-    if (this.wagesUnpaid) a.push({ id: 'wages', icon: '💸', text: 'Treasury empty — wages unpaid!', level: 'bad' });
-    if (this.pop > 5 && this.sat.food < 0.5) a.push({ id: 'food', icon: '🍞', text: 'Food shortage — citizens are hungry', level: 'bad' });
+    if (this.wagesUnpaid) a.push({ id: 'wages', icon: 'coins', text: 'Treasury empty — wages unpaid!', level: 'bad' });
+    if (this.pop > 5 && this.sat.food < 0.5) a.push({ id: 'food', icon: 'food', text: 'Food shortage — citizens are hungry', level: 'bad' });
     const hasPlant = [...this.buildings.values()].some(b => this.def(b).powerOutput && b.constructed);
-    if (this.powerDemand > this.powerProduced + 0.01 && (hasPlant || this.pop > 0)) a.push({ id: 'power', icon: '⚡', text: `Power deficit (${this.powerDemand.toFixed(1)} MW needed, ${this.powerProduced.toFixed(1)} MW generated)`, level: 'warn' });
-    if (this.isHeatingSeason() && this.capacity > 0 && this.sat.heat < 0.8) a.push({ id: 'heat', icon: '🥶', text: 'Heating shortage — citizens are freezing', level: 'bad' });
+    if (this.powerDemand > this.powerProduced + 0.01 && (hasPlant || this.pop > 0)) a.push({ id: 'power', icon: 'power', text: `Power deficit (${this.powerDemand.toFixed(1)} MW needed, ${this.powerProduced.toFixed(1)} MW generated)`, level: 'warn' });
+    if (this.isHeatingSeason() && this.capacity > 0 && this.sat.heat < 0.8) a.push({ id: 'heat', icon: 'freeze', text: 'Heating shortage — citizens are freezing', level: 'bad' });
     const unconnected = [...this.buildings.values()].filter(b => b.constructed && !b.connected).length;
-    if (unconnected > 0) a.push({ id: 'roads', icon: '🛣️', text: `${unconnected} building${unconnected > 1 ? 's' : ''} not connected to a road`, level: 'warn' });
+    if (unconnected > 0) a.push({ id: 'roads', icon: 'road', text: `${unconnected} building${unconnected > 1 ? 's' : ''} not connected to a road`, level: 'warn' });
     const sites = [...this.buildings.values()].filter(b => !b.constructed);
-    if (sites.length > 0 && this.builderPool() === 0) a.push({ id: 'builders', icon: '🏗️', text: 'No builders available — construction halted', level: 'warn' });
-    if (this.maxTrucks() === 0) a.push({ id: 'trucks', icon: '🚚', text: 'No trucks — staff a Construction Office to haul goods', level: 'warn' });
-    if (this.jobs > this.workers && this.workers > 0) a.push({ id: 'labor', icon: '👷', text: 'Labor shortage — not enough workers for all jobs', level: 'warn' });
+    if (sites.length > 0 && this.builderPool() === 0) a.push({ id: 'builders', icon: 'builders', text: 'No builders available — construction halted', level: 'warn' });
+    if (this.maxTrucks() === 0) a.push({ id: 'trucks', icon: 'truck', text: 'No trucks — staff a Construction Office to haul goods', level: 'warn' });
+    if (this.jobs > this.workers && this.workers > 0) a.push({ id: 'labor', icon: 'users', text: 'Labor shortage — not enough workers for all jobs', level: 'warn' });
     const customs = [...this.buildings.values()].some(b => this.def(b).isCustoms && b.constructed);
-    if (!customs) a.push({ id: 'customs', icon: '🛃', text: 'No Customs House — foreign trade impossible', level: 'warn' });
+    if (!customs) a.push({ id: 'customs', icon: 'trade', text: 'No Customs House — foreign trade impossible', level: 'warn' });
     this.alerts = a;
   }
 
@@ -1107,6 +1108,13 @@ export class GameEngine {
     this.bump();
   }
 
+  /** Daily citizen demand for a resource (what stores would sell at full coverage). */
+  citizenDemandOf(r: ResourceId): number {
+    if (r === 'food') return this.pop * BALANCE.foodPerCitizen;
+    if (r === 'clothes') return this.pop * BALANCE.clothesPerCitizen;
+    return 0;
+  }
+
   /** Set staffing priority for several buildings at once (multi-selection action). */
   setStaffPriorityMany(ids: number[], on: boolean) {
     let changed = false;
@@ -1122,8 +1130,8 @@ export class GameEngine {
 
   // ---------------- events / subscription ----------------
 
-  private pushEvent(text: string, kind: GameEvent['kind']) {
-    this.events.push({ id: this.nextEventId++, text, kind });
+  private pushEvent(text: string, kind: GameEvent['kind'], icon?: string) {
+    this.events.push({ id: this.nextEventId++, text, kind, icon });
   }
 
   drainEvents(): GameEvent[] {

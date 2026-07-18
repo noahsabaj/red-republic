@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { BUILDINGS, BUILD_LIST, CATEGORY_NAMES, RESOURCES, type Category, type ResourceId } from '@/game/config';
 import type { GameEngine } from '@/game/engine';
 import { useEngineSignature } from '@/hooks/use-engine';
+import { GameIcon } from '@/ui/GameIcon';
 import type { Tool } from './GameCanvas';
 
 interface Props {
@@ -13,11 +14,11 @@ interface Props {
 }
 
 const CATS: { id: Category; icon: string }[] = [
-  { id: 'infra', icon: '🛣️' },
-  { id: 'housing', icon: '🏠' },
-  { id: 'industry', icon: '🏭' },
-  { id: 'services', icon: '🏪' },
-  { id: 'trade', icon: '📦' },
+  { id: 'infra', icon: 'cat-infra' },
+  { id: 'housing', icon: 'cat-housing' },
+  { id: 'industry', icon: 'cat-industry' },
+  { id: 'services', icon: 'cat-services' },
+  { id: 'trade', icon: 'cat-trade' },
 ];
 
 export default function BuildMenu({ engine, tool, setTool, instantBuild, setInstantBuild }: Props) {
@@ -41,9 +42,10 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
               key={c.id}
               onClick={() => setCat(c.id)}
               title={CATEGORY_NAMES[c.id]}
-              className={`flex-1 py-1.5 text-sm ${cat === c.id ? 'bg-yellow-500/20 border-b-2 border-yellow-400' : 'hover:bg-red-900/60'}`}
+              aria-pressed={cat === c.id}
+              className={`flex-1 py-1.5 ${cat === c.id ? 'bg-yellow-500/20 border-b-2 border-yellow-400 text-yellow-300' : 'hover:bg-red-900/60 text-yellow-100/70'}`}
             >
-              {c.icon}
+              <GameIcon name={c.icon} size={15} />
             </button>
           ))}
         </div>
@@ -62,14 +64,16 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
                 title={!afford ? `Cannot afford (${instantBuild ? `$${engine.instantCost(id)}` : `₽${def.costRubles}`})` : undefined}
                 className={`w-full text-left px-2 py-1.5 flex items-start gap-2 border-b border-yellow-600/10 group ${active ? 'bg-yellow-500/25' : 'hover:bg-red-900/50'} ${!afford ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
-                <span className="text-lg leading-5">{def.icon}</span>
+                <GameIcon name={def.icon} size={18} className="mt-0.5 text-yellow-200" />
                 <span className="flex-1 min-w-0">
                   <span className="block text-xs font-bold truncate">{def.name}</span>
                   <span className="block text-[10px] text-yellow-200/60">
                     {instantBuild ? `$${engine.instantCost(id)}` : `₽${def.costRubles}`}
-                    {def.workers > 0 && ` · 👷${def.workers}`}
+                    {def.workers > 0 && <span> · <GameIcon name="staff" size={10} />{def.workers}</span>}
                     {Object.keys(def.materials).length > 0 && !instantBuild && (
-                      <span> · {Object.entries(def.materials).map(([r, a]) => `${a}${RESOURCES[r as ResourceId].icon}`).join(' ')}</span>
+                      <span> · {Object.entries(def.materials).map(([r, a]) => (
+                        <span key={r} className="inline-flex items-center">{a}<GameIcon name={RESOURCES[r as ResourceId].icon} size={10} /></span>
+                      ))}</span>
                     )}
                   </span>
                   <span className="hidden group-hover:block text-[10px] text-yellow-100/80 leading-tight mt-0.5">{def.description}</span>
@@ -88,7 +92,7 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
             onClick={() => setTool(tool.kind === 'bulldoze' ? { kind: 'select' } : { kind: 'bulldoze' })}
             className={`w-full rounded px-2 py-1 text-xs font-bold ${tool.kind === 'bulldoze' ? 'bg-red-500 text-white' : 'bg-red-900/70 hover:bg-red-800'}`}
           >
-            🚜 Bulldoze
+            <GameIcon name="bulldoze" size={12} /> Bulldoze
           </button>
           <div className="text-[9px] text-yellow-200/40 leading-tight">
             Left-click: place · Shift/Ctrl+click: multi-select · drag: paint roads · right-drag/WASD: pan · wheel: zoom · Esc: cancel · Space: pause

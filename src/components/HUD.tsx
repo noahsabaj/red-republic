@@ -1,21 +1,21 @@
-import { useEffect, useRef, useState } from 'react';
 import type { GameEngine } from '@/game/engine';
-import { ALL_RESOURCES, RESOURCES, BALANCE } from '@/game/config';
+import { BALANCE } from '@/game/config';
 import { useEngineSignature } from '@/hooks/use-engine';
+import { GameIcon } from '@/ui/GameIcon';
+
+export type PanelMode = 'building' | 'trade' | 'objectives' | 'stockpiles';
 
 interface Props {
   engine: GameEngine;
+  activePanel: PanelMode | null;
+  helpOpen: boolean;
+  onOpenStockpiles: () => void;
   onOpenObjectives: () => void;
   onOpenTrade: () => void;
   onOpenHelp: () => void;
 }
 
-const SEASON_ICON: Record<string, string> = { winter: '❄️', spring: '🌱', summer: '☀️', autumn: '🍂' };
-
-export default function HUD({ engine, onOpenObjectives, onOpenTrade, onOpenHelp }: Props) {
-  const [resOpen, setResOpen] = useState(false);
-  const resRef = useRef<HTMLDivElement>(null);
-
+export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, onOpenObjectives, onOpenTrade, onOpenHelp }: Props) {
   // re-render only when something the HUD actually displays changes
   useEngineSignature(engine, (e) => [
     e.day, e.month, e.year, e.speed,
@@ -25,35 +25,30 @@ export default function HUD({ engine, onOpenObjectives, onOpenTrade, onOpenHelp 
     e.powerProduced.toFixed(1), e.powerDemand.toFixed(1),
     e.isHeatingSeason(), e.heatProduced.toFixed(1), e.heatDemand.toFixed(1),
     e.alerts.map(a => a.id + a.text).join('|'),
-    resOpen ? ALL_RESOURCES.map(r => Math.floor(e.totals[r])).join(',') : '',
   ]);
 
   const season = engine.season();
-
-  // dismiss the stockpile popover on outside click or Escape
-  useEffect(() => {
-    if (!resOpen) return;
-    const onDown = (e: PointerEvent) => {
-      if (resRef.current && !resRef.current.contains(e.target as Node)) setResOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setResOpen(false); };
-    document.addEventListener('pointerdown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [resOpen]);
-
-  const speedBtn = (s: 0 | 1 | 2 | 4, label: string, name: string) => (
+  const speedBtn = (s: 0 | 1 | 2 | 4, label: React.ReactNode, name: string) => (
     <button
-      key={label}
+      key={name}
       onClick={() => engine.setSpeed(s)}
       aria-label={name}
       aria-pressed={engine.speed === s}
       className={`px-2 py-0.5 rounded text-xs font-bold ${engine.speed === s ? 'bg-yellow-500 text-red-950' : 'bg-red-950/60 text-yellow-100/70 hover:bg-red-900'}`}
     >
       {label}
+    </button>
+  );
+
+  const panelBtn = (label: string, icon: string, active: boolean, onClick: () => void) => (
+    <button
+      onClick={onClick}
+      aria-label={label}
+      aria-pressed={active}
+      title={label}
+      className={`rounded px-2 py-1 text-xs font-bold ${active ? 'bg-yellow-500 text-red-950' : 'bg-red-950/60 hover:bg-red-800'}`}
+    >
+      <GameIcon name={icon} size={14} />
     </button>
   );
 
@@ -66,16 +61,16 @@ export default function HUD({ engine, onOpenObjectives, onOpenTrade, onOpenHelp 
         </div>
 
         <div className="flex items-center gap-1 bg-red-950/60 rounded px-2 py-0.5 text-xs">
-          <span>{SEASON_ICON[season]}</span>
+          <GameIcon name={season} size={12} className="text-yellow-300" />
           <span className="font-bold">{BALANCE.months[engine.month - 1]} {engine.year}</span>
           <span className="text-yellow-200/60">day {engine.day}</span>
         </div>
 
         <div className="flex items-center gap-1">
-          {speedBtn(0, '⏸', 'Pause')}
-          {speedBtn(1, '▶', 'Normal speed')}
-          {speedBtn(2, '▶▶', 'Double speed')}
-          {speedBtn(4, '▶▶▶', 'Quadruple speed')}
+          {speedBtn(0, <GameIcon name="pause" size={12} />, 'Pause')}
+          {speedBtn(1, '1×', 'Normal speed')}
+          {speedBtn(2, '2×', 'Double speed')}
+          {speedBtn(4, '4×', 'Quadruple speed')}
         </div>
 
         <div className="h-5 w-px bg-yellow-600/40" />
@@ -83,41 +78,27 @@ export default function HUD({ engine, onOpenObjectives, onOpenTrade, onOpenHelp 
         <div className="flex items-center gap-3 text-xs font-bold">
           <span title="Rubles — earned from trade with the East; pays wages and construction" className={engine.wagesUnpaid ? 'text-red-300' : ''}>₽ {Math.floor(engine.rubles).toLocaleString()}</span>
           <span title="Dollars — hard currency from the West" className="text-green-300">$ {Math.floor(engine.dollars).toLocaleString()}</span>
-          <span title={`Citizens: ${engine.pop} / housing ${engine.capacity} · workers ${engine.workers} · employed ${engine.employed}`}>
-            👥 {engine.pop}<span className="text-yellow-200/50">/{engine.capacity}</span>
+          <span title={`Citizens: ${engine.pop} / housing ${engine.capacity} · workers ${engine.workers} · employed ${engine.employed}`} className="flex items-center gap-1">
+            <GameIcon name="users" size={12} /> {engine.pop}<span className="text-yellow-200/50">/{engine.capacity}</span>
           </span>
-          <span title="Happiness" className={engine.happiness < 40 ? 'text-red-300' : engine.happiness > 65 ? 'text-green-300' : ''}>
-            😊 {Math.round(engine.happiness)}%
+          <span title="Happiness" className={`flex items-center gap-1 ${engine.happiness < 40 ? 'text-red-300' : engine.happiness > 65 ? 'text-green-300' : ''}`}>
+            <GameIcon name="happy" size={12} /> {Math.round(engine.happiness)}%
           </span>
-          <span title={`Power: ${engine.powerProduced.toFixed(1)} / ${engine.powerDemand.toFixed(1)} MW`} className={engine.powerDemand > engine.powerProduced + 0.01 ? 'text-red-300' : ''}>
-            ⚡ {engine.powerProduced.toFixed(0)}/{engine.powerDemand.toFixed(0)}
+          <span title={`Power: ${engine.powerProduced.toFixed(1)} / ${engine.powerDemand.toFixed(1)} MW`} className={`flex items-center gap-1 ${engine.powerDemand > engine.powerProduced + 0.01 ? 'text-red-300' : ''}`}>
+            <GameIcon name="power" size={12} /> {engine.powerProduced.toFixed(0)}/{engine.powerDemand.toFixed(0)}
           </span>
           {engine.isHeatingSeason() && (
-            <span title={`Heat: ${engine.heatProduced.toFixed(1)} / ${engine.heatDemand.toFixed(1)}`} className={engine.heatDemand > engine.heatProduced + 0.01 ? 'text-red-300' : ''}>
-              🔥 {engine.heatProduced.toFixed(0)}/{engine.heatDemand.toFixed(0)}
+            <span title={`Heat: ${engine.heatProduced.toFixed(1)} / ${engine.heatDemand.toFixed(1)}`} className={`flex items-center gap-1 ${engine.heatDemand > engine.heatProduced + 0.01 ? 'text-red-300' : ''}`}>
+              <GameIcon name="heat" size={12} /> {engine.heatProduced.toFixed(0)}/{engine.heatDemand.toFixed(0)}
             </span>
           )}
         </div>
 
-        <div ref={resRef} className="ml-auto flex items-center gap-1.5 relative">
-          <button onClick={() => setResOpen(!resOpen)} aria-label="Stockpiles" aria-expanded={resOpen} className="bg-red-950/60 hover:bg-red-800 rounded px-2 py-1 text-xs font-bold" title="Stockpiles">📦</button>
-          <button onClick={onOpenObjectives} aria-label="Five-Year Plan" className="bg-red-950/60 hover:bg-red-800 rounded px-2 py-1 text-xs font-bold" title="Five-Year Plan">🎯</button>
-          <button onClick={onOpenTrade} aria-label="Foreign Trade" className="bg-red-950/60 hover:bg-red-800 rounded px-2 py-1 text-xs font-bold" title="Foreign Trade">🛃</button>
-          <button onClick={onOpenHelp} aria-label="Help" className="bg-red-950/60 hover:bg-red-800 rounded px-2 py-1 text-xs font-bold" title="Help">❓</button>
-
-          {resOpen && (
-            <div className="absolute right-0 top-9 w-64 rounded-lg border-2 border-yellow-600/60 bg-red-950/97 p-3 shadow-2xl">
-              <div className="text-xs font-black uppercase tracking-wider text-yellow-400 mb-2">National Stockpiles</div>
-              <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-                {ALL_RESOURCES.map(r => (
-                  <div key={r} className="flex items-center justify-between text-xs">
-                    <span>{RESOURCES[r].icon} {RESOURCES[r].name}</span>
-                    <span className="font-bold">{Math.floor(engine.totals[r])}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+        <div className="ml-auto flex items-center gap-1.5">
+          {panelBtn('Stockpiles', 'stockpiles', activePanel === 'stockpiles', onOpenStockpiles)}
+          {panelBtn('Five-Year Plan', 'plan', activePanel === 'objectives', onOpenObjectives)}
+          {panelBtn('Foreign Trade', 'trade', activePanel === 'trade', onOpenTrade)}
+          {panelBtn('Help', 'help', helpOpen, onOpenHelp)}
         </div>
       </div>
 
@@ -126,8 +107,8 @@ export default function HUD({ engine, onOpenObjectives, onOpenTrade, onOpenHelp 
         // don't block panning/zooming the canvas underneath
         <div className="pointer-events-none flex flex-wrap gap-1.5 px-3 py-1.5">
           {engine.alerts.map(a => (
-            <span key={a.id} className={`pointer-events-auto rounded px-2 py-0.5 text-[11px] font-bold shadow ${a.level === 'bad' ? 'bg-red-600/90 text-white' : 'bg-amber-500/90 text-amber-950'}`}>
-              {a.icon} {a.text}
+            <span key={a.id} className={`pointer-events-auto flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-bold shadow ${a.level === 'bad' ? 'bg-red-600/90 text-white' : 'bg-amber-500/90 text-amber-950'}`}>
+              <GameIcon name={a.icon} size={11} /> {a.text}
             </span>
           ))}
         </div>

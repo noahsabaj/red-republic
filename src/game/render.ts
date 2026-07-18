@@ -3,6 +3,7 @@
 // ============================================================
 import { BUILDINGS, RESOURCES } from './config';
 import { MAP_W, MAP_H } from './mapgen';
+import { drawIcon } from '@/ui/icons';
 import type { GameEngine, BuildingInst, Season, Truck } from './engine';
 
 export const TILE_W = 64;
@@ -186,8 +187,6 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
   const frame: FrameStyle = {
     time: ui.time,
     season,
-    fontIcon: `${Math.round(15 * cam.z)}px sans-serif`,
-    fontStatus: `${Math.round(10 * cam.z)}px sans-serif`,
     fontSite: `bold ${Math.max(9, Math.round(10 * cam.z))}px sans-serif`,
     fontDeposit: `${Math.max(6, Math.round(9 * cam.z))}px sans-serif`,
     treeShade0: '', treeShade1: '',
@@ -354,10 +353,8 @@ function drawGhost(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: Camer
     const c3 = toScreen(ui.hoverTile.x, ui.hoverTile.y + h, cam);
     poly(ctx, [c0, c1, c2, c3], col, chk.ok ? '#4dff7a' : '#ff5050');
     if (chk.ok && defId !== 'road') {
-      ctx.font = `${Math.round(20 * cam.z)}px sans-serif`;
-      ctx.textAlign = 'center';
       ctx.globalAlpha = 0.9;
-      ctx.fillText(def.icon, c2.x, c2.y - 18 * cam.z);
+      drawIcon(ctx, def.icon, c2.x, c2.y - 18 * cam.z, 18 * cam.z);
       ctx.globalAlpha = 1;
     }
   } else if (ui.tool.kind === 'bulldoze') {
@@ -421,8 +418,6 @@ function drawWater(ctx: CanvasRenderingContext2D, engine: GameEngine, x: number,
 interface FrameStyle {
   time: number;
   season: Season;
-  fontIcon: string;
-  fontStatus: string;
   fontSite: string;
   fontDeposit: string;
   treeShade0: string;
@@ -522,14 +517,17 @@ function drawBuilding(ctx: CanvasRenderingContext2D, b: BuildingInst, cam: Camer
     poly(ctx, [shift(ps.left[0]), shift(ps.left[1]), ps.left[2], ps.left[3]], '#a5804e');
     poly(ctx, [shift(ps.right[0]), shift(ps.right[1]), ps.right[2], ps.right[3]], '#8a6a3e');
     poly(ctx, [shift(ps.top[0]), shift(ps.top[1]), shift(ps.top[2]), shift(ps.top[3])], '#c19a63', '#7a5a30');
+    const mid = lerpP(ps.top[0], ps.top[2], 0.5);
+    const ty = mid.y - 6 * cam.z;
+    drawIcon(ctx, def.icon, mid.x - 12 * cam.z, ty - 3.5 * cam.z, 11 * cam.z);
     ctx.font = frame.fontSite;
-    ctx.textAlign = 'center';
+    ctx.textAlign = 'left';
     ctx.fillStyle = '#fff';
     ctx.strokeStyle = 'rgba(0,0,0,0.7)';
     ctx.lineWidth = 3;
-    const mid = lerpP(ps.top[0], ps.top[2], 0.5);
-    ctx.strokeText(`${def.icon} ${pct}%`, mid.x, mid.y - 6 * cam.z);
-    ctx.fillText(`${def.icon} ${pct}%`, mid.x, mid.y - 6 * cam.z);
+    ctx.strokeText(`${pct}%`, mid.x - 4 * cam.z, ty);
+    ctx.fillText(`${pct}%`, mid.x - 4 * cam.z, ty);
+    ctx.textAlign = 'center';
     return;
   }
 
@@ -580,17 +578,19 @@ function drawBuilding(ctx: CanvasRenderingContext2D, b: BuildingInst, cam: Camer
 
   // icon
   const mid = lerpP(ps.top[0], ps.top[2], 0.5);
-  ctx.font = frame.fontIcon;
-  ctx.textAlign = 'center';
-  ctx.fillText(def.icon, mid.x, mid.y + 5 * cam.z);
+  drawIcon(ctx, def.icon, mid.x, mid.y, 14 * cam.z);
 
-  // status icons
-  let sx = mid.x;
-  const sy = mid.y - 14 * cam.z;
-  ctx.font = frame.fontStatus;
-  if (unpowered) { ctx.fillText('⚡', sx, sy); sx += 12 * cam.z; }
-  if (!b.connected) { ctx.fillText('🚫', sx, sy); sx += 12 * cam.z; }
-  if (def.heat > 0 && !b.heated) { ctx.fillText('🥶', sx, sy); }
+  // status badges above the roof
+  const badges: { icon: string; color: string }[] = [];
+  if (unpowered) badges.push({ icon: 'power', color: '#ffb02e' });
+  if (!b.connected) badges.push({ icon: 'ban', color: '#ff6b5e' });
+  if (def.heat > 0 && !b.heated) badges.push({ icon: 'freeze', color: '#bfe3ff' });
+  let sx = mid.x - ((badges.length - 1) * 12 * cam.z) / 2;
+  const sy = mid.y - 16 * cam.z;
+  for (const badge of badges) {
+    drawIcon(ctx, badge.icon, sx, sy, 10 * cam.z, badge.color);
+    sx += 12 * cam.z;
+  }
 }
 
 function drawTruck(ctx: CanvasRenderingContext2D, tr: Truck, wx: number, wy: number, cam: Camera) {

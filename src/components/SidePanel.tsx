@@ -1,13 +1,15 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { GameEngine, BuildingInst } from '@/game/engine';
 import { BUILDINGS, RESOURCES, ALL_RESOURCES, OBJECTIVES, FARM_SEASON } from '@/game/config';
 import type { DepositType, ResourceId } from '@/game/config';
 import type { SelectionItem } from '@/game/selection';
+import type { PanelMode } from './HUD';
 import { useEngineVersion } from '@/hooks/use-engine';
+import { GameIcon } from '@/ui/GameIcon';
 
 interface Props {
   engine: GameEngine;
-  mode: 'building' | 'trade' | 'objectives';
+  mode: PanelMode;
   selection: SelectionItem[];
   onClose: () => void;
   onOpenTrade: () => void;
@@ -19,16 +21,20 @@ export default function SidePanel({ engine, mode, selection, onClose, onOpenTrad
   // the open detail panel mirrors live engine state — re-render on every bump
   useEngineVersion(engine);
   const single = selection.length === 1 ? selection[0] : null;
-  const title = mode === 'trade' ? '🛃 Foreign Trade'
-    : mode === 'objectives' ? '🎯 Five-Year Plan'
+  const title = mode === 'trade' ? 'Foreign Trade'
+    : mode === 'objectives' ? 'Five-Year Plan'
+    : mode === 'stockpiles' ? 'National Stockpiles'
     : selection.length > 1 ? `${selection.length} selected`
     : single?.kind === 'deposit' ? 'Deposit' : 'Building';
+  const titleIcon = mode === 'trade' ? 'trade' : mode === 'objectives' ? 'plan' : mode === 'stockpiles' ? 'stockpiles' : null;
   return (
     <div className="absolute right-0 top-24 bottom-0 z-10 flex pointer-events-none">
       <div className="pointer-events-auto flex flex-col w-72 m-2 rounded-lg border-2 border-yellow-600/60 bg-red-950/95 text-yellow-50 shadow-2xl overflow-hidden">
         <div className="flex items-center justify-between px-3 py-2 bg-red-900/60 border-b border-yellow-600/30">
-          <span className="text-xs font-black uppercase tracking-widest text-yellow-400">{title}</span>
-          <button onClick={onClose} className="text-yellow-200/60 hover:text-yellow-100 font-bold">✕</button>
+          <span className="flex items-center gap-1.5 text-xs font-black uppercase tracking-widest text-yellow-400">
+            {titleIcon && <GameIcon name={titleIcon} size={13} />}{title}
+          </span>
+          <button onClick={onClose} aria-label="Close panel" className="text-yellow-200/60 hover:text-yellow-100"><GameIcon name="close" size={14} /></button>
         </div>
         <div className="flex-1 overflow-y-auto soviet-scroll p-3">
           {mode === 'building' && (
@@ -40,8 +46,83 @@ export default function SidePanel({ engine, mode, selection, onClose, onOpenTrad
           )}
           {mode === 'trade' && <TradePanel engine={engine} notify={notify} />}
           {mode === 'objectives' && <ObjectivesPanel engine={engine} />}
+          {mode === 'stockpiles' && <StockpilesPanel engine={engine} />}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
+
+function Row({ label, value, ok }: { label: ReactNode; value: ReactNode; ok?: boolean }) {
+  return (
+    <div className="flex justify-between text-xs py-0.5">
+      <span className="text-yellow-200/70 flex items-center gap-1">{label}</span>
+      <span className={`font-bold ${ok === false ? 'text-red-300' : ok === true ? 'text-green-300' : ''}`}>{value}</span>
+    </div>
+  );
+}
+
+const fmtRate = (n: number) => (n < 10 ? n.toFixed(1) : String(Math.round(n)));
+
+/** "iron 2.0 + coal 1.0 → steel 1.5" as icon-annotated JSX */
+function FlowLine({ ins, outs }: { ins: [ResourceId, number][]; outs: [ResourceId, number][] }) {
+  if (ins.length === 0 && outs.length === 0) return <span className="text-yellow-200/50">idle</span>;
+  const seg = ([r, a]: [ResourceId, number], i: number, arr: unknown[]) => (
+    <span key={r} className="inline-flex items-center gap-0.5">
+      <GameIcon name={RESOURCES[r].icon} size={12} />{fmtRate(a)}{i < arr.length - 1 ? <span className="text-yellow-200/50 px-0.5">+</span> : null}
+    </span>
+  );
+  return (
+    <span className="inline-flex items-center flex-wrap gap-y-0.5">
+      {ins.map(seg)}
+      {ins.length > 0 && outs.length > 0 && <span className="text-yellow-200/60 px-1">→</span>}
+      {outs.map(seg)}
+    </span>
+  );
+}
+
+// ------------------------------------------------------------
+
+function StockpilesPanel({ engine }: { engine: GameEngine }) {
+  // net production flow across the republic, from the engine's live rates
+  const flow: Partial<Record<ResourceId, number>> = {};
+  for (const b of engine.buildings.values()) {
+    if (!b.constructed) continue;
+    const rates = engine.productionRates(b);
+    for (const [r, a] of Object.entries(rates.outputs) as [ResourceId, number][]) flow[r] = (flow[r] ?? 0) + a;
+    for (const [r, a] of Object.entries(rates.inputs) as [ResourceId, number][]) flow[r] = (flow[r] ?? 0) - a;
+  }
+  return (
+    <div className="space-y-0.5">
+      <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 px-1 pb-1 text-[10px] font-black uppercase tracking-wider text-yellow-400">
+        <span>Resource</span><span className="text-right">Stock</span><span className="text-right">Net / day</span>
+      </div>
+      {ALL_RESOURCES.map(r => {
+        const def = RESOURCES[r];
+        const stock = Math.floor(engine.totals[r]);
+        const sellable = Math.floor(engine.sellableStock(r));
+        const net = (flow[r] ?? 0) - engine.citizenDemandOf(r);
+        const idle = Math.abs(net) < 0.05;
+        return (
+          <div
+            key={r}
+            className="grid grid-cols-[1fr_auto_auto] gap-x-3 items-center rounded px-1 py-0.5 text-xs hover:bg-red-900/40"
+            title={`${def.name}: production net ${(flow[r] ?? 0) >= 0 ? '+' : ''}${(flow[r] ?? 0).toFixed(1)}/day · citizen demand −${engine.citizenDemandOf(r).toFixed(1)}/day`}
+          >
+            <span className="flex items-center gap-1.5"><GameIcon name={def.icon} size={13} /> {def.name}</span>
+            <span className="text-right font-bold">{stock}<span className="text-yellow-200/40 font-normal"> ({sellable})</span></span>
+            <span className={`text-right font-bold ${idle ? 'text-yellow-200/40' : net > 0 ? 'text-green-300' : 'text-red-300'}`}>
+              {idle ? '—' : `${net > 0 ? '+' : ''}${net.toFixed(1)}`}
+            </span>
+          </div>
+        );
+      })}
+      <p className="pt-2 text-[10px] leading-snug text-yellow-200/50">
+        Stock (sellable): total inventory, with the customs-connected share industry can spare in parentheses.
+        Net/day is live production minus factory inputs and citizen demand.
+      </p>
     </div>
   );
 }
@@ -85,9 +166,6 @@ function MultiInfo({ engine, items, onArmBuild }: { engine: GameEngine; items: S
   }
   const staffed = buildings.filter(b => b.constructed && BUILDINGS[b.defId].workers > 0);
   const allPriority = staffed.length > 0 && staffed.every(b => b.priorityHigh);
-  const fmt = (n: number) => (n < 10 ? n.toFixed(1) : String(Math.round(n)));
-  const ins = Object.entries(flowIn) as [ResourceId, number][];
-  const outs = Object.entries(flowOut) as [ResourceId, number][];
 
   return (
     <div className="space-y-3">
@@ -96,20 +174,18 @@ function MultiInfo({ engine, items, onArmBuild }: { engine: GameEngine; items: S
           <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400">Buildings ({buildings.length})</div>
           <div className="space-y-0.5">
             {[...typeCounts.entries()].map(([defId, n]) => (
-              <Row key={defId} label={`${BUILDINGS[defId].icon} ${BUILDINGS[defId].name}`} value={`×${n}`} />
+              <Row key={defId} label={<><GameIcon name={BUILDINGS[defId].icon} size={12} /> {BUILDINGS[defId].name}</>} value={`×${n}`} />
             ))}
           </div>
           <div className="grid grid-cols-2 gap-x-2">
-            {jobs > 0 && <Row label="👷 Staff" value={`${staff}/${jobs}`} ok={staff >= jobs * 0.8} />}
-            {powerDraw > 0 && <Row label="⚡ Draw" value={`${powerDraw.toFixed(1)} MW`} />}
+            {jobs > 0 && <Row label={<><GameIcon name="staff" size={12} /> Staff</>} value={`${staff}/${jobs}`} ok={staff >= jobs * 0.8} />}
+            {powerDraw > 0 && <Row label={<><GameIcon name="power" size={12} /> Draw</>} value={`${powerDraw.toFixed(1)} MW`} />}
           </div>
-          {(ins.length > 0 || outs.length > 0) && (
+          {(Object.keys(flowIn).length > 0 || Object.keys(flowOut).length > 0) && (
             <div className="rounded bg-red-900/40 p-2">
               <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400 mb-1">Combined production / day</div>
               <div className="text-xs">
-                {ins.map(([r, a]) => `${RESOURCES[r].icon}${fmt(a)}`).join(' + ')}
-                {ins.length > 0 && outs.length > 0 && ' → '}
-                {outs.map(([r, a]) => `${RESOURCES[r].icon}${fmt(a)}`).join(' + ')}
+                <FlowLine ins={Object.entries(flowIn) as [ResourceId, number][]} outs={Object.entries(flowOut) as [ResourceId, number][]} />
               </div>
             </div>
           )}
@@ -119,7 +195,7 @@ function MultiInfo({ engine, items, onArmBuild }: { engine: GameEngine; items: S
               className={`w-full rounded font-bold text-xs py-1.5 ${allPriority ? 'bg-yellow-500 text-red-950' : 'bg-red-900/70 hover:bg-red-800'}`}
               title="High-priority buildings are staffed first when workers are scarce"
             >
-              {allPriority ? '⭐ Priority staffing: ON for all' : `☆ Set priority staffing for ${staffed.length} building${staffed.length > 1 ? 's' : ''}`}
+              <GameIcon name="star" size={12} /> {allPriority ? 'Priority staffing: ON for all' : `Set priority staffing for ${staffed.length} building${staffed.length > 1 ? 's' : ''}`}
             </button>
           )}
         </div>
@@ -135,20 +211,23 @@ function MultiInfo({ engine, items, onArmBuild }: { engine: GameEngine; items: S
             return (
               <div key={kind} className="rounded bg-red-900/40 p-2 space-y-1">
                 <div className="flex justify-between text-xs font-bold">
-                  <span>{res.icon} {res.name}</span>
+                  <span className="flex items-center gap-1"><GameIcon name={res.icon} size={12} /> {res.name}</span>
                   <span>{g.total} tile{g.total > 1 ? 's' : ''}{g.free < g.total ? ` · ${g.free} free` : ''}</span>
                 </div>
                 {g.free > 0 && (
                   <>
                     <div className="text-[11px] text-yellow-200/80">
-                      One {miner.name} per free tile: {outputsPerMine.map(([r, a]) => `${RESOURCES[r].icon}${fmt(a * g.free)}/day`).join(' ')}
-                      <span className="text-yellow-200/60"> · 👷{miner.workers * g.free} · ₽{(miner.costRubles * g.free).toLocaleString()} total</span>
+                      One {miner.name} per free tile:{' '}
+                      {outputsPerMine.map(([r, a]) => (
+                        <span key={r} className="inline-flex items-center gap-0.5"><GameIcon name={RESOURCES[r].icon} size={11} />{fmtRate(a * g.free)}/day</span>
+                      ))}
+                      <span className="text-yellow-200/60"> · {miner.workers * g.free} workers · ₽{(miner.costRubles * g.free).toLocaleString()} total</span>
                     </div>
                     <button
                       onClick={() => onArmBuild(miner.id)}
                       className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1 hover:bg-yellow-400"
                     >
-                      🏗️ Build {miner.name} (₽{miner.costRubles} each)
+                      <GameIcon name="builders" size={12} /> Build {miner.name} (₽{miner.costRubles} each)
                     </button>
                   </>
                 )}
@@ -180,7 +259,7 @@ function DepositInfo({ engine, x, y, onArmBuild }: { engine: GameEngine; x: numb
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <span className="text-2xl">{res.icon}</span>
+        <GameIcon name={res.icon} size={26} className="text-yellow-300" />
         <div>
           <div className="font-bold text-sm">{DEPOSIT_NAMES[cluster.kind]} Deposit</div>
           <div className="text-[10px] text-yellow-200/50">
@@ -190,16 +269,18 @@ function DepositInfo({ engine, x, y, onArmBuild }: { engine: GameEngine; x: numb
       </div>
 
       <div className="grid grid-cols-2 gap-x-2">
-        <Row label={`${res.icon} Resource`} value={res.name} />
-        <Row label="🗺️ Cluster" value={`${cluster.tiles.length} tile${cluster.tiles.length > 1 ? 's' : ''}`} />
-        <Row label="⛏️ Status" value={exploited ? 'Exploited' : 'Unexploited'} ok={!!exploited} />
+        <Row label={<><GameIcon name={res.icon} size={12} /> Resource</>} value={res.name} />
+        <Row label={<><GameIcon name="map" size={12} /> Cluster</>} value={`${cluster.tiles.length} tile${cluster.tiles.length > 1 ? 's' : ''}`} />
+        <Row label={<><GameIcon name="pick" size={12} /> Status</>} value={exploited ? 'Exploited' : 'Unexploited'} ok={!!exploited} />
       </div>
 
       <div className="rounded bg-red-900/40 p-2">
         <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400 mb-1">{miner.name}</div>
         <div className="text-xs">
-          {outputs.map(([r, a]) => `${RESOURCES[r].icon}${a}/day at full staff`).join(' ')}
-          <span className="text-yellow-200/60"> · 👷{miner.workers}{miner.power > 0 ? ` · ⚡${miner.power} MW` : ''}</span>
+          {outputs.map(([r, a]) => (
+            <span key={r} className="inline-flex items-center gap-0.5"><GameIcon name={RESOURCES[r].icon} size={12} />{a}/day at full staff</span>
+          ))}
+          <span className="text-yellow-200/60"> · {miner.workers} workers{miner.power > 0 ? ` · ${miner.power} MW` : ''}</span>
         </div>
       </div>
 
@@ -209,7 +290,7 @@ function DepositInfo({ engine, x, y, onArmBuild }: { engine: GameEngine; x: numb
           className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1.5 hover:bg-yellow-400"
           title={`Arm the build tool — place the ${miner.name} on one of this cluster's tiles`}
         >
-          🏗️ Build {miner.name} (₽{miner.costRubles})
+          <GameIcon name="builders" size={12} /> Build {miner.name} (₽{miner.costRubles})
         </button>
       )}
     </div>
@@ -217,15 +298,6 @@ function DepositInfo({ engine, x, y, onArmBuild }: { engine: GameEngine; x: numb
 }
 
 // ------------------------------------------------------------
-
-function Row({ label, value, ok }: { label: string; value: string; ok?: boolean }) {
-  return (
-    <div className="flex justify-between text-xs py-0.5">
-      <span className="text-yellow-200/70">{label}</span>
-      <span className={`font-bold ${ok === false ? 'text-red-300' : ok === true ? 'text-green-300' : ''}`}>{value}</span>
-    </div>
-  );
-}
 
 function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: number | null; onOpenTrade: () => void }) {
   const b: BuildingInst | undefined = id ? engine.buildings.get(id) : undefined;
@@ -235,7 +307,7 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <span className="text-2xl">{def.icon}</span>
+        <GameIcon name={def.icon} size={26} className="text-yellow-300" />
         <div>
           <div className="font-bold text-sm">{def.name}</div>
           <div className="text-[10px] text-yellow-200/50">{def.description}</div>
@@ -244,7 +316,9 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
 
       {!b.constructed ? (
         <div className="space-y-1.5">
-          <div className="text-xs font-bold text-yellow-400">🚧 Under construction — {Math.round((b.progress / def.labor) * 100)}%</div>
+          <div className="text-xs font-bold text-yellow-400 flex items-center gap-1">
+            <GameIcon name="builders" size={12} /> Under construction — {Math.round((b.progress / def.labor) * 100)}%
+          </div>
           <div className="h-2 rounded bg-red-900 overflow-hidden">
             <div className="h-full bg-yellow-500" style={{ width: `${(b.progress / def.labor) * 100}%` }} />
           </div>
@@ -257,9 +331,9 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
             return (
               <Row
                 key={r}
-                label={`${RESOURCES[r as ResourceId].icon} ${RESOURCES[r as ResourceId].name}`}
-                value={`${Math.floor(stock)}${inc > 0.05 ? ` (+${Math.floor(inc)}🚚)` : ''} / ${amt}`}
-                ok={stock >= (amt)}
+                label={<><GameIcon name={RESOURCES[r as ResourceId].icon} size={12} /> {RESOURCES[r as ResourceId].name}</>}
+                value={<>{Math.floor(stock)}{inc > 0.05 ? <span className="text-yellow-200/60"> (+{Math.floor(inc)} <GameIcon name="truck" size={11} />)</span> : null} / {amt}</>}
+                ok={stock >= amt}
               />
             );
           })}
@@ -268,36 +342,27 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
       ) : (
         <div className="space-y-2">
           <div className="grid grid-cols-2 gap-x-2">
-            {def.workers > 0 && <Row label="👷 Staff" value={`${b.staff}/${def.workers}`} ok={b.staff >= def.workers * 0.8} />}
-            <Row label="🛣️ Road" value={b.connected ? 'Connected' : 'No road!'} ok={b.connected} />
-            {def.power > 0 && <Row label="⚡ Power" value={b.powered ? `${def.power} MW` : 'No power!'} ok={b.powered} />}
-            {def.powerOutput !== undefined && <Row label="⚡ Output" value={`${(def.powerOutput * b.eff * b.coalFactor).toFixed(1)} MW`} />}
-            {def.heatOutput !== undefined && <Row label="🔥 Output" value={`${(def.heatOutput * b.eff * b.coalFactor).toFixed(1)}`} />}
-            {def.heat > 0 && <Row label="🔥 Heat" value={b.heated ? 'Warm' : 'Freezing!'} ok={b.heated} />}
-            {def.housingCapacity && <Row label="🛏️ Capacity" value={`${def.housingCapacity} citizens`} />}
-            {def.serviceRadius && <Row label="📏 Coverage" value={`${def.serviceRadius} tiles`} />}
-            {def.isFarm && <Row label="🌱 Fields" value={`${b.farmFields} plots · season ×${(FARM_SEASON[engine.month] ?? 0).toFixed(2)}`} />}
-            {def.workers > 0 && <Row label="⚙️ Efficiency" value={`${Math.round(b.eff * 100)}%`} ok={b.eff > 0.6} />}
+            {def.workers > 0 && <Row label={<><GameIcon name="staff" size={12} /> Staff</>} value={`${b.staff}/${def.workers}`} ok={b.staff >= def.workers * 0.8} />}
+            <Row label={<><GameIcon name="road" size={12} /> Road</>} value={b.connected ? 'Connected' : 'No road!'} ok={b.connected} />
+            {def.power > 0 && <Row label={<><GameIcon name="power" size={12} /> Power</>} value={b.powered ? `${def.power} MW` : 'No power!'} ok={b.powered} />}
+            {def.powerOutput !== undefined && <Row label={<><GameIcon name="power" size={12} /> Output</>} value={`${(def.powerOutput * b.eff * b.coalFactor).toFixed(1)} MW`} />}
+            {def.heatOutput !== undefined && <Row label={<><GameIcon name="heat" size={12} /> Output</>} value={(def.heatOutput * b.eff * b.coalFactor).toFixed(1)} />}
+            {def.heat > 0 && <Row label={<><GameIcon name="heat" size={12} /> Heat</>} value={b.heated ? 'Warm' : 'Freezing!'} ok={b.heated} />}
+            {def.housingCapacity && <Row label={<><GameIcon name="beds" size={12} /> Capacity</>} value={`${def.housingCapacity} citizens`} />}
+            {def.serviceRadius && <Row label={<><GameIcon name="coverage" size={12} /> Coverage</>} value={`${def.serviceRadius} tiles`} />}
+            {def.isFarm && <Row label={<><GameIcon name="fields" size={12} /> Fields</>} value={`${b.farmFields} plots · season ×${(FARM_SEASON[engine.month] ?? 0).toFixed(2)}`} />}
+            {def.workers > 0 && <Row label={<><GameIcon name="eff" size={12} /> Efficiency</>} value={`${Math.round(b.eff * 100)}%`} ok={b.eff > 0.6} />}
           </div>
 
           {(def.inputs || def.outputs) && (() => {
             // the engine's own numbers — includes season, fields, forest and
             // input starvation, so this always matches what actually happens
             const rates = engine.productionRates(b);
-            const fmt = (n: number) => (n < 10 ? n.toFixed(1) : String(Math.round(n)));
-            const ins = Object.entries(rates.inputs) as [ResourceId, number][];
-            const outs = Object.entries(rates.outputs) as [ResourceId, number][];
             return (
               <div className="rounded bg-red-900/40 p-2">
                 <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400 mb-1">Production / day</div>
                 <div className="text-xs">
-                  {ins.length === 0 && outs.length === 0
-                    ? <span className="text-yellow-200/50">idle</span>
-                    : <>
-                        {ins.map(([r, a]) => `${RESOURCES[r].icon}${fmt(a)}`).join(' + ')}
-                        {ins.length > 0 && outs.length > 0 && ' → '}
-                        {outs.map(([r, a]) => `${RESOURCES[r].icon}${fmt(a)}`).join(' + ')}
-                      </>}
+                  <FlowLine ins={Object.entries(rates.inputs) as [ResourceId, number][]} outs={Object.entries(rates.outputs) as [ResourceId, number][]} />
                 </div>
               </div>
             );
@@ -313,8 +378,8 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
                   return (
                     <div key={r} className="text-[11px]">
                       <div className="flex justify-between">
-                        <span>{RESOURCES[r].icon} {RESOURCES[r].name}</span>
-                        <span className="font-bold">{v.toFixed(1)}/{cap}{inc > 0.05 ? ` (+${inc.toFixed(0)}🚚)` : ''}</span>
+                        <span className="flex items-center gap-1"><GameIcon name={RESOURCES[r].icon} size={12} /> {RESOURCES[r].name}</span>
+                        <span className="font-bold">{v.toFixed(1)}/{cap}{inc > 0.05 ? <span className="text-yellow-200/60"> (+{inc.toFixed(0)} <GameIcon name="truck" size={11} />)</span> : null}</span>
                       </div>
                       <div className="h-1.5 rounded bg-red-900 overflow-hidden">
                         <div className="h-full bg-yellow-500/80" style={{ width: `${Math.min(100, (v / cap) * 100)}%` }} />
@@ -328,7 +393,7 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
 
           {def.isCustoms && (
             <button onClick={onOpenTrade} className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1.5 hover:bg-yellow-400">
-              🛃 Open Foreign Trade
+              <GameIcon name="trade" size={12} /> Open Foreign Trade
             </button>
           )}
 
@@ -338,7 +403,7 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
               className={`w-full rounded font-bold text-xs py-1.5 ${b.priorityHigh ? 'bg-yellow-500 text-red-950' : 'bg-red-900/70 hover:bg-red-800'}`}
               title="High-priority buildings are staffed first when workers are scarce"
             >
-              {b.priorityHigh ? '⭐ Priority staffing: ON' : '☆ Priority staffing: OFF'}
+              <GameIcon name="star" size={12} /> Priority staffing: {b.priorityHigh ? 'ON' : 'OFF'}
             </button>
           )}
         </div>
@@ -385,7 +450,7 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
             return (
               <div key={r} className="rounded bg-red-900/40 px-2 py-1">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="font-bold">{def.icon} {def.name}</span>
+                  <span className="font-bold flex items-center gap-1"><GameIcon name={def.icon} size={12} /> {def.name}</span>
                   <span className="text-yellow-200/70" title="sellable = customs-connected stock minus what shops and industry keep for themselves">
                     sellable {Math.floor(sellable)} / {Math.floor(total)}
                   </span>
@@ -393,19 +458,19 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
                 <div className="flex items-center gap-1 mt-1">
                   <button onClick={() => doTrade(() => engine.sell(r, amount, 'east'))} disabled={!canSell}
                     className="flex-1 rounded bg-red-800 hover:bg-red-700 disabled:opacity-30 text-[10px] font-bold py-0.5" title={`Sell to East at ₽${engine.priceOf(r, 'east').toFixed(1)}`}>
-                    ➜₽{engine.priceOf(r, 'east').toFixed(1)}
+                    +₽{engine.priceOf(r, 'east').toFixed(1)}
                   </button>
                   <button onClick={() => doTrade(() => engine.sell(r, amount, 'west'))} disabled={!canSell}
                     className="flex-1 rounded bg-green-900 hover:bg-green-800 disabled:opacity-30 text-[10px] font-bold py-0.5" title={`Sell to West at $${engine.priceOf(r, 'west').toFixed(1)}`}>
-                    ➜${engine.priceOf(r, 'west').toFixed(1)}
+                    +${engine.priceOf(r, 'west').toFixed(1)}
                   </button>
                   <button onClick={() => doTrade(() => engine.buy(r, amount, 'east'))} disabled={!canBuy('east')}
                     className="flex-1 rounded bg-red-950 hover:bg-red-800 disabled:opacity-30 text-[10px] font-bold py-0.5 border border-yellow-600/30" title="Import from East">
-                    ₽{engine.importPriceOf(r, 'east').toFixed(1)}
+                    −₽{engine.importPriceOf(r, 'east').toFixed(1)}
                   </button>
                   <button onClick={() => doTrade(() => engine.buy(r, amount, 'west'))} disabled={!canBuy('west')}
                     className="flex-1 rounded bg-red-950 hover:bg-red-800 disabled:opacity-30 text-[10px] font-bold py-0.5 border border-green-600/30" title="Import from West">
-                    ${engine.importPriceOf(r, 'west').toFixed(1)}
+                    −${engine.importPriceOf(r, 'west').toFixed(1)}
                   </button>
                 </div>
               </div>
@@ -430,7 +495,11 @@ function ObjectivesPanel({ engine }: { engine: GameEngine }) {
         return (
           <div key={o.id} className={`rounded px-2 py-1.5 border ${done ? 'border-green-700/50 bg-green-900/20' : isCurrent ? 'border-yellow-500/70 bg-yellow-500/10' : 'border-yellow-600/20 bg-red-900/30'}`}>
             <div className="flex items-center gap-1.5 text-xs font-bold">
-              <span>{done ? '✅' : isCurrent ? '⭐' : '▫️'}</span>
+              <GameIcon
+                name={done ? 'check' : isCurrent ? 'star' : 'square'}
+                size={13}
+                className={done ? 'text-green-400' : isCurrent ? 'text-yellow-400' : 'text-yellow-200/40'}
+              />
               <span className={done ? 'line-through text-yellow-200/50' : ''}>{o.title}</span>
             </div>
             <div className="text-[10px] text-yellow-200/60 ml-5">{o.description}</div>

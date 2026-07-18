@@ -3,13 +3,11 @@ import { GameEngine } from './game/engine';
 import { seedDemoTown } from './game/demo';
 import GameCanvas, { type SelectionItem, type Tool } from './components/GameCanvas';
 import { updateSelection } from './game/selection';
-import HUD from './components/HUD';
+import HUD, { type PanelMode } from './components/HUD';
 import BuildMenu from './components/BuildMenu';
 import SidePanel from './components/SidePanel';
 import { IntroOverlay, HelpOverlay, ToastStack } from './components/Overlays';
 import { useToasts } from './hooks/use-toasts';
-
-type PanelMode = 'building' | 'trade' | 'objectives';
 
 export default function App() {
   const engine = useMemo(() => {
@@ -38,7 +36,7 @@ export default function App() {
   // holds no global engine subscription — HUD/BuildMenu/SidePanel subscribe
   // to their own slices via the use-engine hooks.
   useEffect(() => {
-    const drain = () => { for (const e of engine.drainEvents()) push(e.text, e.kind); };
+    const drain = () => { for (const e of engine.drainEvents()) push(e.text, e.kind, e.icon); };
     drain();
     return engine.subscribe(drain);
   }, [engine, push]);
@@ -69,6 +67,9 @@ export default function App() {
 
       <HUD
         engine={engine}
+        activePanel={panel}
+        helpOpen={showHelp}
+        onOpenStockpiles={() => togglePanel('stockpiles')}
         onOpenObjectives={() => togglePanel('objectives')}
         onOpenTrade={() => togglePanel('trade')}
         onOpenHelp={() => setShowHelp(true)}

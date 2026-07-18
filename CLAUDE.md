@@ -22,5 +22,7 @@ Isometric city-builder (React 19 + Vite 7 + TypeScript, canvas renderer). Packag
 ## Rules
 
 - **UI never re-computes simulation math.** Panels display engine APIs — `productionRates()`, `importPriceOf()`, `sellableStock()` — and mutate via engine methods (`toggleStaffPriority()`), never by writing engine fields. This is what keeps display and simulation from diverging.
+- **One owner for persistent UI surfaces.** Every right-side view is a `PanelMode` owned by `App` (exclusive by construction). Never give a component its own open/close state for a persistent surface — that's how the stockpiles popover ended up overlaying the Five-Year Plan.
+- **No emoji; icons come from `src/ui/icons.ts`.** One Lucide-backed registry renders as SVG (`<GameIcon>`) and on canvas (`drawIcon`). config/engine reference icons by name string; `ui-guards.test.ts` fails the build on unknown names, emoji in first-party sources, or invalid Tailwind color-opacity steps (e.g. `bg-red-950/97` silently emits no CSS).
 - Every bug fix lands with a regression test in `src/game/__tests__/`. Engine tests build worlds with `helpers.ts` (`makeEngine()` = flat map, no starting base). Remember `pop` clamps to housing capacity at day end — place beds before setting `pop`.
 - Dev builds expose `window.__redRepublic = { engine, cam }` for console debugging and automated verification.

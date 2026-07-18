@@ -26,18 +26,18 @@ export interface ResourceDef {
 }
 
 export const RESOURCES: Record<ResourceId, ResourceDef> = {
-  coal:    { id: 'coal',    name: 'Coal',      icon: '⚫', color: '#3a3a3a', priceEast: 2.5,  priceWest: 1 },
-  ironOre: { id: 'ironOre', name: 'Iron Ore',  icon: '🟤', color: '#8a4b2f', priceEast: 3,    priceWest: 1.5 },
-  steel:   { id: 'steel',   name: 'Steel',     icon: '🔩', color: '#9aa5b1', priceEast: 14,   priceWest: 8 },
-  oil:     { id: 'oil',     name: 'Oil',       icon: '🛢️', color: '#22252a', priceEast: 5,    priceWest: 3 },
-  fuel:    { id: 'fuel',    name: 'Fuel',      icon: '⛽', color: '#c9a227', priceEast: 10,   priceWest: 6 },
-  wood:    { id: 'wood',    name: 'Wood',      icon: '🪵', color: '#7a5230', priceEast: 2,    priceWest: 1 },
-  planks:  { id: 'planks',  name: 'Planks',    icon: '🟫', color: '#a4713b', priceEast: 5,    priceWest: 2.5 },
-  gravel:  { id: 'gravel',  name: 'Gravel',    icon: '🪨', color: '#8d8d8d', priceEast: 1.5,  priceWest: 0.7 },
-  bricks:  { id: 'bricks',  name: 'Bricks',    icon: '🧱', color: '#b0472f', priceEast: 6,    priceWest: 3 },
-  crops:   { id: 'crops',   name: 'Crops',     icon: '🌾', color: '#d4b545', priceEast: 2,    priceWest: 1 },
-  food:    { id: 'food',    name: 'Food',      icon: '🍞', color: '#d98e4a', priceEast: 4.5,  priceWest: 2 },
-  clothes: { id: 'clothes', name: 'Clothes',   icon: '🧥', color: '#5b7fb5', priceEast: 9,    priceWest: 5 },
+  coal:    { id: 'coal',    name: 'Coal',      icon: 'coal', color: '#3a3a3a', priceEast: 2.5,  priceWest: 1 },
+  ironOre: { id: 'ironOre', name: 'Iron Ore',  icon: 'ironOre', color: '#8a4b2f', priceEast: 3,    priceWest: 1.5 },
+  steel:   { id: 'steel',   name: 'Steel',     icon: 'steel', color: '#9aa5b1', priceEast: 14,   priceWest: 8 },
+  oil:     { id: 'oil',     name: 'Oil',       icon: 'oil', color: '#22252a', priceEast: 5,    priceWest: 3 },
+  fuel:    { id: 'fuel',    name: 'Fuel',      icon: 'fuel', color: '#c9a227', priceEast: 10,   priceWest: 6 },
+  wood:    { id: 'wood',    name: 'Wood',      icon: 'wood', color: '#7a5230', priceEast: 2,    priceWest: 1 },
+  planks:  { id: 'planks',  name: 'Planks',    icon: 'planks', color: '#a4713b', priceEast: 5,    priceWest: 2.5 },
+  gravel:  { id: 'gravel',  name: 'Gravel',    icon: 'gravel', color: '#8d8d8d', priceEast: 1.5,  priceWest: 0.7 },
+  bricks:  { id: 'bricks',  name: 'Bricks',    icon: 'bricks', color: '#b0472f', priceEast: 6,    priceWest: 3 },
+  crops:   { id: 'crops',   name: 'Crops',     icon: 'crops', color: '#d4b545', priceEast: 2,    priceWest: 1 },
+  food:    { id: 'food',    name: 'Food',      icon: 'food', color: '#d98e4a', priceEast: 4.5,  priceWest: 2 },
+  clothes: { id: 'clothes', name: 'Clothes',   icon: 'clothes', color: '#5b7fb5', priceEast: 9,    priceWest: 5 },
 };
 
 export const IMPORT_MARKUP = 1.6; // buy price = sell price * markup
@@ -98,7 +98,7 @@ const B = (def: BuildingDef) => def;
 export const BUILDINGS: Record<string, BuildingDef> = {
   // ---------- Infrastructure ----------
   road: B({
-    id: 'road', name: 'Road', icon: '🛣️', category: 'infra', size: [1, 1],
+    id: 'road', name: 'Road', icon: 'road', category: 'infra', size: [1, 1],
     costRubles: 6, materials: {}, labor: 2, workers: 0, power: 0, heat: 0,
     storage: {}, boxHeight: 0, color: '#5c5c5c', wallColor: '#5c5c5c',
     description: 'Gravel road. Buildings must touch a road to receive deliveries. Trucks haul goods along roads.',
@@ -106,14 +106,14 @@ export const BUILDINGS: Record<string, BuildingDef> = {
 
   // ---------- Housing ----------
   house: B({
-    id: 'house', name: 'Small House', icon: '🏠', category: 'housing', size: [1, 1],
+    id: 'house', name: 'Small House', icon: 'house', category: 'housing', size: [1, 1],
     costRubles: 400, materials: { planks: 6, bricks: 4 }, labor: 60,
     workers: 0, power: 0.3, heat: 0.5, storage: {},
     housingCapacity: 8, boxHeight: 12, color: '#b0483a', wallColor: '#e2d3b3',
     description: 'A modest family house for 8 citizens. Needs power, heat in winter, and a shop nearby.',
   }),
   apartment: B({
-    id: 'apartment', name: 'Apartment Block', icon: '🏢', category: 'housing', size: [2, 2],
+    id: 'apartment', name: 'Apartment Block', icon: 'apartment', category: 'housing', size: [2, 2],
     costRubles: 2400, materials: { planks: 10, bricks: 30, steel: 6 }, labor: 300,
     workers: 0, power: 1.2, heat: 2, storage: {},
     housingCapacity: 40, boxHeight: 30, color: '#8f3d31', wallColor: '#c9b18a',
@@ -122,7 +122,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
 
   // ---------- Industry ----------
   woodcutter: B({
-    id: 'woodcutter', name: 'Woodcutter Post', icon: '🪓', category: 'industry', size: [1, 1],
+    id: 'woodcutter', name: 'Woodcutter Post', icon: 'woodcutter', category: 'industry', size: [1, 1],
     costRubles: 500, materials: { planks: 4 }, labor: 50,
     workers: 6, power: 0, heat: 0, storage: { wood: 30 },
     outputs: { wood: 4 }, requiresForest: true, pollution: 1,
@@ -130,7 +130,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Lumberjacks fell trees nearby. Place close to forest. Produces wood.',
   }),
   sawmill: B({
-    id: 'sawmill', name: 'Sawmill', icon: '🪚', category: 'industry', size: [1, 1],
+    id: 'sawmill', name: 'Sawmill', icon: 'sawmill', category: 'industry', size: [1, 1],
     costRubles: 900, materials: { bricks: 10, planks: 6, steel: 2 }, labor: 120,
     workers: 6, power: 1, heat: 0, storage: { wood: 20, planks: 30 },
     inputs: { wood: 2 }, outputs: { planks: 3 }, pollution: 1,
@@ -138,7 +138,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Saws 2 wood into 3 planks per day. Planks are a core construction material.',
   }),
   gravelQuarry: B({
-    id: 'gravelQuarry', name: 'Gravel Quarry', icon: '⛏️', category: 'industry', size: [1, 1],
+    id: 'gravelQuarry', name: 'Gravel Quarry', icon: 'gravelQuarry', category: 'industry', size: [1, 1],
     costRubles: 600, materials: { planks: 6, bricks: 4 }, labor: 80,
     workers: 8, power: 0.5, heat: 0, storage: { gravel: 40 },
     outputs: { gravel: 5 }, requiresDeposit: 'gravel', pollution: 2,
@@ -146,7 +146,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Must be built on a gravel deposit. Extracts gravel.',
   }),
   brickworks: B({
-    id: 'brickworks', name: 'Brickworks', icon: '🧱', category: 'industry', size: [1, 1],
+    id: 'brickworks', name: 'Brickworks', icon: 'brickworks', category: 'industry', size: [1, 1],
     costRubles: 1100, materials: { bricks: 12, steel: 4, planks: 4 }, labor: 130,
     workers: 10, power: 1.5, heat: 0, storage: { gravel: 25, bricks: 35 },
     inputs: { gravel: 3 }, outputs: { bricks: 4 }, pollution: 2,
@@ -154,7 +154,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Fires 3 gravel into 4 bricks per day. Bricks are needed for almost everything.',
   }),
   coalMine: B({
-    id: 'coalMine', name: 'Coal Mine', icon: '⚒️', category: 'industry', size: [1, 1],
+    id: 'coalMine', name: 'Coal Mine', icon: 'coalMine', category: 'industry', size: [1, 1],
     costRubles: 1500, materials: { bricks: 15, steel: 6, planks: 4 }, labor: 200,
     workers: 14, power: 2, heat: 0, storage: { coal: 60 },
     outputs: { coal: 6 }, requiresDeposit: 'coal', pollution: 3,
@@ -162,7 +162,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Must be built on a coal deposit. Coal feeds power and heating plants and the steel mill.',
   }),
   ironMine: B({
-    id: 'ironMine', name: 'Iron Ore Mine', icon: '⛏️', category: 'industry', size: [1, 1],
+    id: 'ironMine', name: 'Iron Ore Mine', icon: 'ironMine', category: 'industry', size: [1, 1],
     costRubles: 1700, materials: { bricks: 15, steel: 6, planks: 4 }, labor: 200,
     workers: 14, power: 2, heat: 0, storage: { ironOre: 60 },
     outputs: { ironOre: 5 }, requiresDeposit: 'ironOre', pollution: 3,
@@ -170,7 +170,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Must be built on an iron ore deposit.',
   }),
   steelMill: B({
-    id: 'steelMill', name: 'Steel Mill', icon: '🏭', category: 'industry', size: [2, 2],
+    id: 'steelMill', name: 'Steel Mill', icon: 'steelMill', category: 'industry', size: [2, 2],
     costRubles: 4000, materials: { bricks: 30, steel: 15, planks: 8 }, labor: 400,
     workers: 30, power: 6, heat: 0, storage: { ironOre: 40, coal: 40, steel: 40 },
     inputs: { ironOre: 2, coal: 1 }, outputs: { steel: 1.5 }, pollution: 4,
@@ -178,7 +178,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Smelts 2 iron ore + 1 coal into 1.5 steel daily. Steel sells well abroad.',
   }),
   oilPump: B({
-    id: 'oilPump', name: 'Oil Pump', icon: '🛢️', category: 'industry', size: [1, 1],
+    id: 'oilPump', name: 'Oil Pump', icon: 'oilPump', category: 'industry', size: [1, 1],
     costRubles: 2500, materials: { bricks: 12, steel: 10 }, labor: 220,
     workers: 10, power: 2, heat: 0, storage: { oil: 50 },
     outputs: { oil: 4 }, requiresDeposit: 'oil', pollution: 2,
@@ -186,7 +186,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Must be built on an oil deposit. Pumps crude oil.',
   }),
   refinery: B({
-    id: 'refinery', name: 'Oil Refinery', icon: '⚗️', category: 'industry', size: [2, 2],
+    id: 'refinery', name: 'Oil Refinery', icon: 'refinery', category: 'industry', size: [2, 2],
     costRubles: 4500, materials: { bricks: 30, steel: 18, planks: 6 }, labor: 420,
     workers: 25, power: 5, heat: 0, storage: { oil: 40, fuel: 40 },
     inputs: { oil: 3 }, outputs: { fuel: 2 }, pollution: 3,
@@ -194,7 +194,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Refines 3 oil into 2 fuel per day. Fuel earns hard currency in the West.',
   }),
   powerPlant: B({
-    id: 'powerPlant', name: 'Coal Power Plant', icon: '⚡', category: 'industry', size: [2, 2],
+    id: 'powerPlant', name: 'Coal Power Plant', icon: 'powerPlant', category: 'industry', size: [2, 2],
     costRubles: 3500, materials: { bricks: 25, steel: 12, planks: 6 }, labor: 350,
     workers: 15, power: 0, powerOutput: 12, heat: 0,
     storage: { coal: 50 }, inputs: { coal: 2 }, pollution: 3,
@@ -202,7 +202,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Burns 2 coal daily to generate 12 MW. Without power, industry stalls and homes go dark.',
   }),
   heatingPlant: B({
-    id: 'heatingPlant', name: 'Heating Plant', icon: '🔥', category: 'industry', size: [1, 1],
+    id: 'heatingPlant', name: 'Heating Plant', icon: 'heatingPlant', category: 'industry', size: [1, 1],
     costRubles: 1800, materials: { bricks: 18, steel: 8, planks: 4 }, labor: 180,
     workers: 8, power: 1, heatOutput: 8, heat: 0,
     storage: { coal: 40 }, inputs: { coal: 1 }, pollution: 2,
@@ -210,7 +210,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Burns 1 coal daily for 8 heat. Citizens freeze without it from October to March.',
   }),
   farm: B({
-    id: 'farm', name: 'Collective Farm', icon: '🌾', category: 'industry', size: [2, 2],
+    id: 'farm', name: 'Collective Farm', icon: 'farm', category: 'industry', size: [2, 2],
     costRubles: 1200, materials: { planks: 12, bricks: 8 }, labor: 150,
     workers: 10, power: 0.5, heat: 0, storage: { crops: 80 },
     outputs: { crops: 6 }, isFarm: true, pollution: 0,
@@ -218,7 +218,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Yields crops from open ground around it. Sowing in spring, harvest late summer–autumn. Nothing grows in winter!',
   }),
   foodFactory: B({
-    id: 'foodFactory', name: 'Food Factory', icon: '🍞', category: 'industry', size: [1, 1],
+    id: 'foodFactory', name: 'Food Factory', icon: 'foodFactory', category: 'industry', size: [1, 1],
     costRubles: 2000, materials: { bricks: 18, steel: 6, planks: 6 }, labor: 200,
     workers: 12, power: 2, heat: 0, storage: { crops: 40, food: 40 },
     inputs: { crops: 2.5 }, outputs: { food: 2.5 }, pollution: 1,
@@ -226,7 +226,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Bakes 2.5 crops into 2.5 food daily. Citizens without food will leave — or worse.',
   }),
   textileMill: B({
-    id: 'textileMill', name: 'Textile Mill', icon: '🧵', category: 'industry', size: [1, 1],
+    id: 'textileMill', name: 'Textile Mill', icon: 'textileMill', category: 'industry', size: [1, 1],
     costRubles: 1800, materials: { bricks: 16, steel: 5, planks: 6 }, labor: 180,
     workers: 12, power: 2, heat: 0, storage: { crops: 30, clothes: 30 },
     inputs: { crops: 2 }, outputs: { clothes: 1.2 }, pollution: 1,
@@ -236,7 +236,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
 
   // ---------- Services ----------
   store: B({
-    id: 'store', name: 'State Store', icon: '🏪', category: 'services', size: [1, 1],
+    id: 'store', name: 'State Store', icon: 'store', category: 'services', size: [1, 1],
     costRubles: 700, materials: { planks: 6, bricks: 8 }, labor: 80,
     workers: 3, power: 0.5, heat: 0, storage: { food: 40, clothes: 20 },
     serviceRadius: 8, serviceType: 'shop',
@@ -244,7 +244,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Sells food and clothes to citizens within 8 tiles. Keep it stocked by road!',
   }),
   clinic: B({
-    id: 'clinic', name: 'Polyclinic', icon: '🏥', category: 'services', size: [1, 1],
+    id: 'clinic', name: 'Polyclinic', icon: 'clinic', category: 'services', size: [1, 1],
     costRubles: 1500, materials: { bricks: 14, steel: 4, planks: 6 }, labor: 150,
     workers: 6, power: 1, heat: 0, storage: {},
     serviceRadius: 8, serviceType: 'health',
@@ -252,7 +252,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Free healthcare for citizens within 8 tiles. Healthy workers work harder.',
   }),
   pub: B({
-    id: 'pub', name: 'Culture Club', icon: '🍺', category: 'services', size: [1, 1],
+    id: 'pub', name: 'Culture Club', icon: 'pub', category: 'services', size: [1, 1],
     costRubles: 900, materials: { planks: 8, bricks: 10 }, labor: 100,
     workers: 4, power: 0.5, heat: 0, storage: {},
     serviceRadius: 8, serviceType: 'culture',
@@ -262,7 +262,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
 
   // ---------- Trade & Storage ----------
   warehouse: B({
-    id: 'warehouse', name: 'Warehouse', icon: '📦', category: 'trade', size: [1, 1],
+    id: 'warehouse', name: 'Warehouse', icon: 'warehouse', category: 'trade', size: [1, 1],
     costRubles: 800, materials: { planks: 8, bricks: 10 }, labor: 90,
     workers: 2, power: 0.2, heat: 0,
     storage: { coal: 40, ironOre: 40, steel: 40, oil: 40, fuel: 40, wood: 40, planks: 40, gravel: 40, bricks: 40, crops: 40, food: 40, clothes: 40 },
@@ -270,7 +270,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Open storage for 40 units of every good. Trucks haul surplus here.',
   }),
   depot: B({
-    id: 'depot', name: 'Council Depot', icon: '🏛️', category: 'trade', size: [2, 2],
+    id: 'depot', name: 'Council Depot', icon: 'depot', category: 'trade', size: [2, 2],
     costRubles: 1000, materials: { bricks: 15, planks: 10 }, labor: 120,
     workers: 4, power: 0.5, heat: 0, isDepot: true,
     storage: { coal: 120, ironOre: 120, steel: 120, oil: 120, fuel: 120, wood: 120, planks: 120, gravel: 120, bricks: 120, crops: 120, food: 120, clothes: 120 },
@@ -278,7 +278,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Central storage of the republic. Holds 120 of every good.',
   }),
   constructionOffice: B({
-    id: 'constructionOffice', name: 'Construction Office', icon: '🏗️', category: 'infra', size: [1, 1],
+    id: 'constructionOffice', name: 'Construction Office', icon: 'constructionOffice', category: 'infra', size: [1, 1],
     costRubles: 1200, materials: { bricks: 10, planks: 8 }, labor: 110,
     workers: 10, power: 0.5, heat: 0, storage: {},
     isConstructionOffice: true,
@@ -286,7 +286,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     description: 'Employs builders and operates trucks. No office, no construction, no haulage.',
   }),
   customs: B({
-    id: 'customs', name: 'Customs House', icon: '🛃', category: 'trade', size: [2, 2],
+    id: 'customs', name: 'Customs House', icon: 'customs', category: 'trade', size: [2, 2],
     costRubles: 2000, materials: { bricks: 20, steel: 6, planks: 8 }, labor: 200,
     workers: 8, power: 1, heat: 0, isCustoms: true,
     storage: { coal: 80, ironOre: 80, steel: 80, oil: 80, fuel: 80, wood: 80, planks: 80, gravel: 80, bricks: 80, crops: 80, food: 80, clothes: 80 },
