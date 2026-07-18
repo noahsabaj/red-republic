@@ -242,6 +242,10 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
     const p = truckWorldPos(tr);
     items.push({ x: p.wx, y: p.wy, w: 0, h: 0, kind: 'truck', tr, wx: p.wx, wy: p.wy });
   }
+  for (const tr of engine.foreignTrucks) {
+    const p = truckWorldPos(tr);
+    items.push({ x: p.wx, y: p.wy, w: 0, h: 0, kind: 'truck', tr, wx: p.wx, wy: p.wy, foreign: true });
+  }
   for (const bt of engine.boats) {
     const p = truckWorldPos(bt);
     items.push({ x: p.wx, y: p.wy, w: 0, h: 0, kind: 'boat', tr: bt, wx: p.wx, wy: p.wy });
@@ -371,7 +375,7 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
         drawBorderPost(ctx, it.wx!, it.wy!, cam);
         break;
       case 'truck':
-        drawTruck(ctx, it.tr!, it.wx!, it.wy!, cam);
+        drawTruck(ctx, it.tr!, it.wx!, it.wy!, cam, it.foreign);
         break;
       case 'boat':
         drawBoat(ctx, it.tr!, it.wx!, it.wy!, cam, ui.time);
@@ -883,12 +887,16 @@ function drawBuilding(ctx: CanvasRenderingContext2D, b: BuildingInst, cam: Camer
   }
 }
 
-function drawTruck(ctx: CanvasRenderingContext2D, tr: Truck, wx: number, wy: number, cam: Camera) {
+function drawTruck(ctx: CanvasRenderingContext2D, tr: Truck, wx: number, wy: number, cam: Camera, foreign?: boolean) {
   const p = toScreen(wx, wy, cam);
   const s = cam.z;
-  // body
-  ctx.fillStyle = '#2f3844';
+  // body — foreign lorries wear a pale international livery with a red band
+  ctx.fillStyle = foreign ? '#8a94a0' : '#2f3844';
   ctx.fillRect(p.x - 5 * s, p.y - 9 * s, 10 * s, 7 * s);
+  if (foreign) {
+    ctx.fillStyle = '#b03030';
+    ctx.fillRect(p.x - 5 * s, p.y - 6 * s, 10 * s, 1.4 * s);
+  }
   // cargo dot
   ctx.fillStyle = RESOURCES[tr.cargo].color;
   ctx.fillRect(p.x - 3 * s, p.y - 12 * s, 6 * s, 4 * s);

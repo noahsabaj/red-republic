@@ -115,6 +115,8 @@ export class GameEngine {
   buildings = new Map<number, BuildingInst>();
   trucks: Truck[] = [];
   boats: Boat[] = [];
+  /** Cosmetic border traffic: foreign lorries visiting the customs on trade days. */
+  foreignTrucks: Truck[] = [];
   day = 1; month = 3; year = 1960;
   rubles = BALANCE.startRubles;
   dollars = BALANCE.startDollars;
@@ -218,17 +220,25 @@ export class GameEngine {
     this.pushEvent('The Politburo has granted you this land. Build a thriving socialist republic!', 'info', 'star');
   }
 
-  /** Border crossing: a lane through the foreign strip to the map edge, plus a domestic link to the base. */
-  private layCrossingRoads(edge: BorderEdge, cx: number, cy: number, sx: number, sy: number) {
+  /** Lane through the foreign strip to the map edge — every customs house is a crossing. */
+  private layCrossingLane(edge: BorderEdge, cx: number, cy: number) {
     const lay = (x: number, y: number) => {
       const t = this.tiles[y]?.[x];
       if (t && !t.buildingId) t.road = true; // over water this is a bridge
     };
-    // through the strip to the edge (foreign soil — engine-laid; players cannot build here)
     if (edge === 'W') for (let x = 0; x < cx; x++) lay(x, cy);
     if (edge === 'E') for (let x = cx + 2; x < MAP_W; x++) lay(x, cy);
     if (edge === 'N') for (let y = 0; y < cy; y++) lay(cx, y);
     if (edge === 'S') for (let y = cy + 2; y < MAP_H; y++) lay(cx, y);
+  }
+
+  /** Border crossing: the strip lane plus a domestic link to the base. */
+  private layCrossingRoads(edge: BorderEdge, cx: number, cy: number, sx: number, sy: number) {
+    this.layCrossingLane(edge, cx, cy);
+    const lay = (x: number, y: number) => {
+      const t = this.tiles[y]?.[x];
+      if (t && !t.buildingId) t.road = true;
+    };
     // domestic link: the front-door tile, then an L to the base road row
     const front = edge === 'W' ? { x: cx + 2, y: cy }
       : edge === 'E' ? { x: cx - 1, y: cy }
@@ -468,6 +478,7 @@ export class GameEngine {
         this.stats.roadsBuilt++;
       } else {
         this.placeFree(defId, x, y);
+        if (def.isCustoms && this.borderEdge) this.layCrossingLane(this.borderEdge, x, y);
       }
       this.bump();
       return { ok: true };
@@ -490,6 +501,7 @@ export class GameEngine {
     for (let dy = 0; dy < b.h; dy++)
       for (let dx = 0; dx < b.w; dx++)
         this.tiles[y + dy][x + dx].buildingId = b.id;
+    if (def.isCustoms && this.borderEdge) this.layCrossingLane(this.borderEdge, x, y);
     this.bump();
     return { ok: true };
   }
@@ -665,6 +677,7 @@ export class GameEngine {
     const wx = WEATHER[this.weather.condition];
     this.moveFleet(this.trucks, daysDelta * wx.truckMult);
     this.moveFleet(this.boats, daysDelta * Math.max(0.4, wx.boatMult));
+    this.moveForeignTrucks(daysDelta * wx.truckMult);
     this.acc += dtMs * this.speed;
     let days = 0;
     while (this.acc >= this.TICK_MS && days < 20) {
@@ -1038,6 +1051,35 @@ export class GameEngine {
   }
 
   /**
+   * Flavor: a foreign lorry drives in from the map edge along the crossing
+   * lane, pauses at the customs, and leaves. Purely visual — capped, and
+   * spawned only by actual trades, so it stays deterministic.
+   */
+  private spawnForeignTruck(c: BuildingInst, r: ResourceId, amt: number) {
+    const edge = this.borderEdge;
+    if (!edge || this.foreignTrucks.length >= 8) return;
+    const pts = edge === 'W' ? [{ x: -0.8, y: c.y + 0.5 }, { x: c.x - 0.5, y: c.y + 0.5 }]
+      : edge === 'E' ? [{ x: MAP_W - 0.2, y: c.y + 0.5 }, { x: c.x + c.w + 0.5, y: c.y + 0.5 }]
+      : edge === 'N' ? [{ x: c.x + 0.5, y: -0.8 }, { x: c.x + 0.5, y: c.y - 0.5 }]
+      : [{ x: c.x + 0.5, y: MAP_H - 0.2 }, { x: c.x + 0.5, y: c.y + c.h + 0.5 }];
+    this.foreignTrucks.push({
+      id: this.nextTruckId++, points: pts, cargo: r, amount: amt,
+      daysTotal: 0.7, daysDone: 0, phase: 'go', destId: c.id, srcId: 0,
+    });
+  }
+
+  /** Foreign lorries only cross and return — no delivery logic. */
+  private moveForeignTrucks(daysDelta: number) {
+    for (let i = this.foreignTrucks.length - 1; i >= 0; i--) {
+      const t = this.foreignTrucks[i];
+      t.daysDone += daysDelta;
+      if (t.daysDone < t.daysTotal) continue;
+      if (t.phase === 'go') { t.phase = 'back'; t.daysDone = 0; }
+      else this.foreignTrucks.splice(i, 1);
+    }
+  }
+
+  /**
    * Standing orders of the Foreign Trade Directorate. Runs before logistics
    * (imports land in customs stock in time for today's trucks) and before
    * citizens (the reserve floor keeps wages safe from automation). Each
@@ -1076,6 +1118,7 @@ export class GameEngine {
         led.exports[r] = (led.exports[r] ?? 0) + amt;
         led.used += amt;
         budget -= amt;
+        this.spawnForeignTruck(c, r, amt);
       }
 
       // imports — fill the town to each rule's level, throughput- and reserve-limited
@@ -1101,6 +1144,7 @@ export class GameEngine {
         led.imports[r] = (led.imports[r] ?? 0) + amt;
         led.used += amt;
         budget -= amt;
+        this.spawnForeignTruck(c, r, amt);
       }
     }
   }

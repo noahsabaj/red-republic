@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { BALANCE } from '../config';
-import type { GameEngine } from '../engine';
-import { layRoad, makeEngine, placeBuilt, runDays, totalOf } from './helpers';
+import { ALL_RESOURCES, BALANCE } from '../config';
+import { GameEngine } from '../engine';
+import { MAP_W } from '../mapgen';
+import { CALM_WEATHER, flatBorderMap, layRoad, makeEngine, placeBuilt, runDays, totalOf } from './helpers';
 
 /**
  * A staffable customs town: road row, customs house, beds for a stable
@@ -184,5 +185,61 @@ describe('auto-trade policy', () => {
     const day1 = e.tradeLedger.today;
     runDays(e, 1);
     expect(e.tradeLedger.yesterday).toBe(day1);
+  });
+});
+
+describe('foreign trucks (border flavor)', () => {
+  /** Bordered customs town: western border strip, customs hugging it. */
+  function borderTown() {
+    const e = new GameEngine({ map: flatBorderMap(), skipStartingBase: true, weatherScript: CALM_WEATHER });
+    layRoad(e, 2, 9, 30, 9);
+    const customs = placeBuilt(e, 'customs', 2, 10);
+    placeBuilt(e, 'apartment', 20, 10);
+    e.pop = 40;
+    e.rubles = 50000;
+    e.setAutoTradeEnabled(true);
+    return { e, customs };
+  }
+
+  it('visit on trade days, cross only the strip, and drive home again', () => {
+    const { e, customs } = borderTown();
+    e.setAutoTradeRule('coal', { mode: 'import', level: 30, currency: 'east' });
+    runDays(e, 1);
+    expect(e.foreignTrucks.length).toBe(1);
+    const t = e.foreignTrucks[0];
+    expect(t.phase).toBe('go');
+    // path: from off the west edge to just outside the customs, never inland
+    for (const p of t.points) {
+      expect(p.x).toBeLessThan(customs.x);
+      expect(p.x).toBeGreaterThanOrEqual(-1);
+      expect(p.x).toBeLessThan(MAP_W);
+    }
+    // once the rule is satisfied no trades happen, and the visitors go home
+    runDays(e, 6);
+    expect(e.tradeLedger.today.imports.coal).toBeUndefined();
+    expect(e.foreignTrucks).toHaveLength(0);
+  });
+
+  it('never exceed the concurrent cap even with rules on every good', () => {
+    const { e } = borderTown();
+    for (const r of ALL_RESOURCES) e.setAutoTradeRule(r, { mode: 'import', level: 500, currency: 'east' });
+    for (let i = 0; i < 5; i++) {
+      runDays(e, 1);
+      expect(e.foreignTrucks.length).toBeLessThanOrEqual(8);
+    }
+  });
+
+  it('do not exist on borderless maps', () => {
+    const e = makeEngine();
+    layRoad(e, 4, 9, 30, 9);
+    placeBuilt(e, 'customs', 10, 10);
+    placeBuilt(e, 'apartment', 20, 10);
+    e.pop = 40;
+    e.rubles = 50000;
+    e.setAutoTradeEnabled(true);
+    e.setAutoTradeRule('coal', { mode: 'import', level: 30, currency: 'east' });
+    runDays(e, 2);
+    expect(e.tradeLedger.yesterday.imports.coal).toBeGreaterThan(0); // trade ran
+    expect(e.foreignTrucks).toHaveLength(0);                         // no border, no visitors
   });
 });
