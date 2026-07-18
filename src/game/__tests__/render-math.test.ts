@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isoCompare, pickBuilding, screenToTile, toScreen, truckWorldPos, type Camera } from '../render';
+import { hash01, isoCompare, pickBuilding, precipParticle, screenToTile, toScreen, truckWorldPos, type Camera } from '../render';
 import type { Truck } from '../engine';
 import { makeEngine, placeBuilt } from './helpers';
 
@@ -78,5 +78,34 @@ describe('truckWorldPos', () => {
   it('reverses the polyline on the way back', () => {
     expect(truckWorldPos(truck({ phase: 'back', daysDone: 0 }))).toEqual({ wx: 4, wy: 3 });
     expect(truckWorldPos(truck({ phase: 'back', daysDone: 2 }))).toEqual({ wx: 0, wy: 0 });
+  });
+});
+
+describe('weather particles', () => {
+  it('are a pure function of (index, time) — deterministic and stateless', () => {
+    const a = precipParticle(17, 12345, 800, 600, 'rain', 0.5, 950);
+    const b = precipParticle(17, 12345, 800, 600, 'rain', 0.5, 950);
+    expect(a).toEqual(b);
+    expect(hash01(42)).toBe(hash01(42));
+  });
+
+  it('stay inside the padded viewport at any time', () => {
+    for (const t of [0, 999, 123456, 9876543]) {
+      for (let i = 0; i < 50; i++) {
+        for (const kind of ['rain', 'snow'] as const) {
+          const p = precipParticle(i, t, 800, 600, kind, kind === 'snow' ? 0.75 : 0.14, 300);
+          expect(p.x).toBeGreaterThanOrEqual(-100);
+          expect(p.x).toBeLessThanOrEqual(900);
+          expect(p.y).toBeGreaterThanOrEqual(-20);
+          expect(p.y).toBeLessThanOrEqual(620);
+        }
+      }
+    }
+  });
+
+  it('particles actually fall between frames', () => {
+    const p0 = precipParticle(3, 10000, 800, 600, 'rain', 0.14, 640);
+    const p1 = precipParticle(3, 10016, 800, 600, 'rain', 0.14, 640);
+    expect(p1.y).not.toBe(p0.y);
   });
 });
