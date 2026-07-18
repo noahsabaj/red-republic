@@ -66,7 +66,28 @@ export interface GameEvent {
 
 export type Season = 'winter' | 'spring' | 'summer' | 'autumn';
 
-interface LogisticsDemand { b: BuildingInst; r: ResourceId; amt: number; prio: number; from?: number }
+/** A standing order of the Foreign Trade Directorate for one resource. */
+export interface AutoTradeRule {
+  mode: 'import' | 'export';
+  level: number; // import: keep town stock at >= level; export: sell surplus above level
+  currency: 'east' | 'west';
+}
+
+/** One day's page of the customs ledger (auto-trade only; manual trades stay toasts). */
+export interface TradeDayLedger {
+  imports: Partial<Record<ResourceId, number>>;
+  exports: Partial<Record<ResourceId, number>>;
+  rubles: number;   // net treasury change from automated trade
+  dollars: number;
+  used: number;     // customs throughput consumed
+  capacity: number; // customs throughput available (staffing-scaled)
+  blocked: string[];
+}
+
+const emptyLedger = (): TradeDayLedger =>
+  ({ imports: {}, exports: {}, rubles: 0, dollars: 0, used: 0, capacity: 0, blocked: [] });
+
+interface LogisticsDemand { b: BuildingInst; r: ResourceId; amt: number; prio: number; from?: number; noCustomsSrc?: boolean }
 
 const JOB_PRIORITY = [
   'powerPlant', 'heatingPlant', 'store', 'foodFactory',
@@ -106,6 +127,14 @@ export class GameEngine {
   objectivesDone: string[] = [];
   alerts: Alert[] = [];
   wagesUnpaid = false;
+  /** National auto-trade policy — mutate only via the setAutoTrade* methods. */
+  autoTrade = {
+    enabled: false,
+    reserveRubles: BALANCE.autoReserveRubles,
+    reserveDollars: BALANCE.autoReserveDollars,
+    rules: {} as Partial<Record<ResourceId, AutoTradeRule>>,
+  };
+  tradeLedger = { today: emptyLedger(), yesterday: emptyLedger() };
 
   private nextBuildingId = 1;
   private nextTruckId = 1;
@@ -642,6 +671,7 @@ export class GameEngine {
     this.assignWorkers();
     this.updatePowerHeat();
     this.production();
+    this.foreignTrade();
     this.logistics();
     this.dispatchBoats();
     this.construction();
@@ -885,6 +915,86 @@ export class GameEngine {
     }
   }
 
+  // ---------------- foreign trade (auto) ----------------
+
+  /** Live town-wide stock incl. cargo on the road — auto-imports measure against this, not yesterday's totals. */
+  private liveTownTotal(r: ResourceId): number {
+    let total = 0;
+    for (const b of this.buildings.values()) total += this.stockOf(b, r);
+    for (const t of this.trucks) if (t.cargo === r) total += t.amount;
+    for (const bt of this.boats) if (bt.cargo === r) total += bt.amount;
+    return total;
+  }
+
+  /**
+   * Standing orders of the Foreign Trade Directorate. Runs before logistics
+   * (imports land in customs stock in time for today's trucks) and before
+   * citizens (the reserve floor keeps wages safe from automation). Each
+   * customs house clears a limited daily tonnage scaled by its staffing —
+   * exports sell from its own stock (trucks stage them via logistics),
+   * imports arrive into it. Manual panel trades stay instant.
+   */
+  private foreignTrade() {
+    this.tradeLedger.yesterday = this.tradeLedger.today;
+    const led = this.tradeLedger.today = emptyLedger();
+    const customsHouses = [...this.buildings.values()]
+      .filter(b => this.def(b).isCustoms && b.constructed)
+      .sort((a, b) => a.id - b.id);
+    for (const c of customsHouses) led.capacity += Math.floor(BALANCE.customsThroughputPerDay * c.eff);
+    if (!this.autoTrade.enabled || !customsHouses.length) return;
+    if (!ALL_RESOURCES.some(r => this.autoTrade.rules[r])) return;
+    const blocked = (why: string) => { if (!led.blocked.includes(why)) led.blocked.push(why); };
+    if (led.capacity <= 0) { blocked('customs house unstaffed'); return; }
+
+    for (const c of customsHouses) {
+      let budget = Math.floor(BALANCE.customsThroughputPerDay * c.eff);
+      if (budget <= 0) continue;
+
+      // exports first — earn before spending, straight from this customs' stock
+      for (const r of ALL_RESOURCES) {
+        if (budget <= 0) break;
+        const rule = this.autoTrade.rules[r];
+        if (rule?.mode !== 'export') continue;
+        const amt = Math.min(budget, Math.floor(this.stockOf(c, r)));
+        if (amt < 1) continue;
+        this.addStock(c, r, -amt);
+        const price = this.priceOf(r, rule.currency);
+        const gain = amt * price;
+        if (rule.currency === 'east') { this.rubles += gain; led.rubles += gain; }
+        else { this.dollars += gain; led.dollars += gain; }
+        this.stats.exportedValue += amt * (rule.currency === 'east' ? price : price * 10);
+        led.exports[r] = (led.exports[r] ?? 0) + amt;
+        led.used += amt;
+        budget -= amt;
+      }
+
+      // imports — fill the town to each rule's level, throughput- and reserve-limited
+      for (const r of ALL_RESOURCES) {
+        if (budget <= 0) break;
+        const rule = this.autoTrade.rules[r];
+        if (rule?.mode !== 'import') continue;
+        const deficit = Math.floor(rule.level - this.liveTownTotal(r));
+        if (deficit < 1) continue;
+        const free = Math.floor(this.capOf(c, r) - this.stockOf(c, r) - this.incomingOf(c, r));
+        if (free < 1) { blocked('customs storage full'); continue; }
+        const price = this.importPriceOf(r, rule.currency);
+        const spendable = rule.currency === 'east'
+          ? this.rubles - this.autoTrade.reserveRubles
+          : this.dollars - this.autoTrade.reserveDollars;
+        const affordable = Math.floor(spendable / price);
+        if (affordable < 1) { blocked('treasury at reserve floor'); continue; }
+        const amt = Math.min(deficit, budget, free, affordable);
+        const cost = amt * price;
+        if (rule.currency === 'east') { this.rubles -= cost; led.rubles -= cost; }
+        else { this.dollars -= cost; led.dollars -= cost; }
+        this.addStock(c, r, amt);
+        led.imports[r] = (led.imports[r] ?? 0) + amt;
+        led.used += amt;
+        budget -= amt;
+      }
+    }
+  }
+
   // ---------------- logistics ----------------
 
   private builderPool(): number {
@@ -964,6 +1074,33 @@ export class GameEngine {
       }
     }
 
+    // auto-export staging: haul surplus above the keep-level to a customs
+    // house, one truckload per demand — the border sells only what reaches it
+    if (this.autoTrade.enabled) {
+      const customsHouses = [...this.buildings.values()].filter(b => this.def(b).isCustoms && b.constructed);
+      for (const r of ALL_RESOURCES) {
+        const rule = this.autoTrade.rules[r];
+        if (rule?.mode !== 'export' || !customsHouses.length) continue;
+        // surplus measured inland: what connected buildings would sell,
+        // excluding stock already staged border-side
+        let inland = 0;
+        for (const s of this.sellableSources(r)) if (!this.def(s.b).isCustoms) inland += s.amt;
+        let surplus = inland - rule.level;
+        for (const c of customsHouses) {
+          if (surplus < 1) break;
+          const free = this.capOf(c, r) - this.stockOf(c, r) - this.incomingOf(c, r);
+          if (free < 1) continue;
+          let left = Math.min(surplus, free);
+          surplus -= left;
+          while (left >= 1) {
+            const chunk = Math.min(left, BALANCE.truckCapacity);
+            demands.push({ b: c, r, amt: chunk, prio: 44, noCustomsSrc: true });
+            left -= chunk;
+          }
+        }
+      }
+    }
+
     // overflow hauling: pin the overflowing producer as the supplier and
     // target the nearest storage with room, so the producer actually drains
     const storages = [...this.buildings.values()].filter(b =>
@@ -1015,6 +1152,7 @@ export class GameEngine {
       for (const s of this.buildings.values()) {
         if (s.id === d.b.id) continue;
         if (d.from !== undefined && s.id !== d.from) continue;
+        if (d.noCustomsSrc && this.def(s).isCustoms) continue; // staging never drains the border back inland
         if (this.supplyOf(s, d.r) < 1) continue;
         for (const t of adjOf(s)) {
           const dd = flood.distanceAt(t.x, t.y);
@@ -1368,6 +1506,9 @@ export class GameEngine {
     if (this.jobs > this.workers && this.workers > 0) a.push({ id: 'labor', icon: 'users', text: 'Labor shortage — not enough workers for all jobs', level: 'warn' });
     const customs = [...this.buildings.values()].some(b => this.def(b).isCustoms && b.constructed);
     if (!customs) a.push({ id: 'customs', icon: 'trade', text: 'No Customs House — foreign trade impossible', level: 'warn' });
+    if (this.tradeLedger.today.blocked.length) {
+      a.push({ id: 'autotrade', icon: 'trade', text: `Auto-trade stalled — ${this.tradeLedger.today.blocked.join('; ')}`, level: 'warn' });
+    }
     this.alerts = a;
   }
 
@@ -1415,6 +1556,27 @@ export class GameEngine {
     if (r === 'food') return this.pop * BALANCE.foodPerCitizen;
     if (r === 'clothes') return this.pop * BALANCE.clothesPerCitizen;
     return 0;
+  }
+
+  // ---------------- auto-trade policy (UI actions) ----------------
+
+  setAutoTradeEnabled(on: boolean) {
+    this.autoTrade.enabled = on;
+    this.bump();
+  }
+
+  /** One rule per resource: import OR export — setting one replaces the other (no buy-high/sell-low churn). */
+  setAutoTradeRule(r: ResourceId, rule: AutoTradeRule | null) {
+    if (rule) this.autoTrade.rules[r] = { ...rule, level: Math.max(0, Math.round(rule.level)) };
+    else delete this.autoTrade.rules[r];
+    this.bump();
+  }
+
+  setAutoTradeReserve(currency: 'east' | 'west', amt: number) {
+    const v = Math.max(0, Math.round(amt));
+    if (currency === 'east') this.autoTrade.reserveRubles = v;
+    else this.autoTrade.reserveDollars = v;
+    this.bump();
   }
 
   /** Set staffing priority for several buildings at once (multi-selection action). */

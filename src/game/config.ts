@@ -344,6 +344,9 @@ export const BALANCE = {
   heatDesignTempC: -15,   // heat demand reaches 100% at this temp; colder over-drives it
   droughtAfterDays: 10,   // consecutive rainless warm days before crops start to wither
   borderDepth: 2,         // tiles of foreign soil along the national-border map edge
+  customsThroughputPerDay: 30, // units a fully staffed customs house clears daily (auto-trade)
+  autoReserveRubles: 2000,     // default treasury floor auto-imports never spend below
+  autoReserveDollars: 200,
 };
 
 // Farm seasonal factor by month (1-12): sowing, growth, harvest
