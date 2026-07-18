@@ -101,7 +101,11 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
           </section>
           <section>
             <div className="font-bold text-yellow-300 mb-1"><GameIcon name="crops" size={12} /> Seasons</div>
-            Farms sow in spring and harvest late summer to autumn — stockpile crops for winter. From October to March, homes need heat from a Heating Plant or citizens freeze.
+            Farms sow in spring and harvest late summer to autumn — stockpile crops for winter. Heating follows the actual temperature: the colder it gets, the more heat homes demand and the more coal your Heating Plant burns.
+          </section>
+          <section>
+            <div className="font-bold text-yellow-300 mb-1"><GameIcon name="overcast" size={12} /> Weather</div>
+            Every day has real weather — the top bar shows today plus the State Hydrometeorological Service's exact 5-day forecast. Rain slows trucks but feeds the crops; storms and blizzards slow everything and ground barges; frost stops crop growth and summer droughts wither it. Sustained cold <b>freezes the river</b>, ice-locking barge traffic until the thaw — stockpile across the water before winter, or pay for a bridge.
           </section>
           <section>
             <div className="font-bold text-yellow-300 mb-1"><GameIcon name="trade" size={12} /> Trade</div>

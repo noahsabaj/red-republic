@@ -209,7 +209,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     workers: 8, power: 1, heatOutput: 8, heat: 0,
     storage: { coal: 40 }, inputs: { coal: 1 }, pollution: 2,
     boxHeight: 16, color: '#7a3b2a', wallColor: '#9c5a44',
-    description: 'Burns 1 coal daily for 8 heat. Citizens freeze without it from October to March.',
+    description: 'Burns coal for heat, throttling to demand — the colder the day, the more it burns. Citizens freeze without it.',
   }),
   farm: B({
     id: 'farm', name: 'Collective Farm', icon: 'farm', category: 'industry', size: [2, 2],

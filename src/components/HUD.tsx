@@ -1,5 +1,5 @@
 import type { GameEngine } from '@/game/engine';
-import { BALANCE } from '@/game/config';
+import { BALANCE, WEATHER } from '@/game/config';
 import { useEngineSignature } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
 
@@ -24,6 +24,8 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
     Math.round(e.happiness),
     e.powerProduced.toFixed(1), e.powerDemand.toFixed(1),
     e.heatingRequired(), e.heatProduced.toFixed(1), e.heatDemand.toFixed(1),
+    e.weather.condition, Math.round(e.weather.tempC), e.weather.riverFrozen,
+    e.forecast().map(d => d.condition + Math.round(d.tempC)).join('|'),
     e.alerts.map(a => a.id + a.text).join('|'),
   ]);
 
@@ -64,6 +66,27 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
           <GameIcon name={season} size={12} className="text-yellow-300" />
           <span className="font-bold">{BALANCE.months[engine.month - 1]} {engine.year}</span>
           <span className="text-yellow-200/60">day {engine.day}</span>
+        </div>
+
+        <div
+          className="flex items-center gap-1 bg-red-950/60 rounded px-2 py-0.5 text-xs"
+          title={`${WEATHER[engine.weather.condition].label}, ${Math.round(engine.weather.tempC)} °C${engine.weather.riverFrozen ? ' · river frozen' : ''}`}
+        >
+          <GameIcon name={WEATHER[engine.weather.condition].icon} size={12} className="text-yellow-300" />
+          <span className="font-bold">{Math.round(engine.weather.tempC)}°C</span>
+          {engine.weather.riverFrozen && <GameIcon name="freeze" size={11} className="text-sky-300" />}
+        </div>
+
+        <div
+          className="hidden lg:flex items-center gap-1.5 bg-red-950/40 rounded px-2 py-0.5"
+          title="State Hydrometeorological Service — 5-day forecast"
+        >
+          {engine.forecast().map((d, i) => (
+            <span key={i} className="flex flex-col items-center leading-none gap-0.5">
+              <GameIcon name={WEATHER[d.condition].icon} size={10} className="text-yellow-200/80" />
+              <span className="text-[9px] text-yellow-200/60">{Math.round(d.tempC)}°</span>
+            </span>
+          ))}
         </div>
 
         <div className="flex items-center gap-1">
