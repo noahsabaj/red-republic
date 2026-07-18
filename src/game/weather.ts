@@ -36,7 +36,7 @@ const COND_DIST: Record<SeasonKey, [number, number, number, number, number]> = {
 // Continental climate: mean +6 °C, ±18 swing → July ≈ +24, January ≈ −12.
 const TEMP_MEAN = 6;
 const TEMP_AMP = 18;
-const PEAK_DOY = 134; // mid-July in day-of-year space (day 0 = March 1)
+const PEAK_DOY = 194; // mid-July in day-of-year space (day 0 = January 1)
 
 const FREEZE_AT = 30; // freeze-degree-days to lock the river…
 const THAW_AT = 8;    // …and hysteresis so a one-day thaw can't flicker it open
@@ -63,7 +63,7 @@ export class WeatherTimeline {
     this.rnd = mulberry32((seed ^ 0x51c6a2b7) >>> 0); // decorrelated from map & economy streams
   }
 
-  /** Weather for an absolute day index (0 = March 1, 1960; 30-day months). */
+  /** Weather for an absolute day index (0 = January 1, 1960; 30-day months). */
   at(index: number): DayWeather {
     while (this.days.length <= index) this.generateNext();
     return this.days[index];
@@ -71,7 +71,7 @@ export class WeatherTimeline {
 
   private generateNext() {
     const idx = this.days.length;
-    const month = ((Math.floor(idx / 30) + 2) % 12) + 1; // calendar month; index 0 is March
+    const month = (Math.floor(idx / 30) % 12) + 1; // calendar month
     const doy = idx % 360;
 
     // temperature: seasonal sinusoid + fast wobble + slow fronts

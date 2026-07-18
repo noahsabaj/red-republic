@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BUILDINGS } from '../config';
+import { BALANCE, BUILDINGS } from '../config';
 import { layRoad, makeEngine, placeBuilt, runDays } from './helpers';
 
 describe('assignWorkers', () => {
@@ -22,23 +22,47 @@ describe('assignWorkers', () => {
 });
 
 describe('heating plant', () => {
-  it('produces heat and burns coal with one consistent efficiency', () => {
-    const e = makeEngine();
-    layRoad(e, 4, 9, 12, 9);
+  /** Cold town: depot + staffed plant + one apartment (heat 2) at a given outdoor temp. */
+  const heatTown = (tempC: number) => {
+    const e = makeEngine({ weather: () => ({ tempC, condition: 'clear' as const, snowDepth: 0, riverFrozen: false }) });
+    layRoad(e, 4, 9, 15, 9);
     placeBuilt(e, 'depot', 5, 10);
     const plant = placeBuilt(e, 'heatingPlant', 10, 10);
+    const flat = placeBuilt(e, 'apartment', 12, 10);
     plant.stock.coal = 20;
-    e.pop = 20; // fully staffs the plant
+    e.pop = 20;
+    return { e, plant, flat };
+  };
 
-    const before = plant.stock.coal;
+  it('throttles to temperature-scaled demand; coal burn matches actual output', () => {
+    const { e, plant, flat } = heatTown(BALANCE.heatDesignTempC); // demand factor = 1
+    const before = plant.stock.coal!;
     runDays(e, 1);
-    const burned = before - plant.stock.coal;
+    const burned = before - plant.stock.coal!;
 
-    // unpowered (no power plant): eff = 1 (staff) * 0.5 (unpowered)
+    // unpowered (no power plant): eff = 1 (staff) * 0.5; capacity = 8 * 0.5 = 4
     expect(plant.eff).toBeCloseTo(0.5, 9);
-    expect(e.heatProduced).toBeCloseTo(8 * 0.5, 9);            // heatOutput * eff
-    expect(burned).toBeCloseTo(1 * 0.5, 9);                    // inputs.coal * eff
-    expect(e.heatProduced / 8).toBeCloseTo(burned / 1, 9);     // the invariant itself
+    expect(e.heatDemand).toBeCloseTo(2, 9);                    // apartment heat * factor 1
+    expect(e.heatProduced).toBeCloseTo(2, 9);                  // throttled to demand, not capacity
+    expect(e.heatProduced / 8).toBeCloseTo(burned / 1, 9);     // output and fuel agree
+    expect(flat.heated).toBe(true);
+  });
+
+  it('burns more coal the colder it gets, and none when warm', () => {
+    const burnAt = (tempC: number) => {
+      const { e, plant } = heatTown(tempC);
+      const before = plant.stock.coal!;
+      runDays(e, 1);
+      return before - plant.stock.coal!;
+    };
+    const warm = burnAt(15);   // above heatThresholdC — no heating at all
+    const mild = burnAt(5);
+    const design = burnAt(BALANCE.heatDesignTempC);
+    const deep = burnAt(-25);  // demand over-driven past 100%
+    expect(warm).toBe(0);
+    expect(mild).toBeGreaterThan(0);
+    expect(design).toBeGreaterThan(mild);
+    expect(deep).toBeGreaterThan(design);
   });
 });
 

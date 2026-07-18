@@ -2,7 +2,7 @@
 // Red Republic — game engine & simulation
 // ============================================================
 import {
-  BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, FARM_SEASON,
+  BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, FARM_SEASON, WEATHER,
   DOLLAR_BUILD_RATE, IMPORT_MARKUP, OBJECTIVES,
 } from './config';
 import type { DepositType, ResourceId } from './config';
@@ -125,6 +125,11 @@ export class GameEngine {
   /** Test/debug seam: overlays the deterministic timeline (helpers force calm weather). */
   weatherScript?: (dayIndex: number) => Partial<DayWeather>;
   weather: DayWeather;
+  private hasWater = false;
+  private dryStreak = 0;   // hot rainless days in a row (drought)
+  private gloomStreak = 0; // miserable-weather days in a row (morale)
+  private sunStreak = 0;
+  private wasFrost = false;
 
   constructor(opts: { seed?: number; map?: MapData; skipStartingBase?: boolean; weatherScript?: (dayIndex: number) => Partial<DayWeather> } = {}) {
     this.seed = opts.seed ?? Math.floor(Math.random() * 2 ** 31);
@@ -134,6 +139,7 @@ export class GameEngine {
     this.weather = this.weatherAt(this.dayIndex());
     const map = opts.map ?? generateMap(this.seed);
     this.tiles = map.tiles;
+    this.hasWater = this.tiles.some(row => row.some(t => t.terrain === 'water'));
     if (!opts.skipStartingBase) this.setupStartingBase(map.startX, map.startY);
   }
 
@@ -177,9 +183,24 @@ export class GameEngine {
     return 'autumn';
   }
 
-  isHeatingSeason() { return BALANCE.winterMonths.includes(this.month); }
+  /** Heating is needed when it is actually cold out — not by the calendar. */
+  heatingRequired() { return this.weather.tempC < BALANCE.heatThresholdC; }
 
-  /** Absolute day index into the weather timeline (0 = March 1, 1960). */
+  /** 0..1.25 share of nominal heat demand: mild days sip coal, deep cold over-drives. */
+  heatDemandFactor(): number {
+    if (!this.heatingRequired()) return 0;
+    return Math.min(1.25,
+      (BALANCE.heatThresholdC - this.weather.tempC) / (BALANCE.heatThresholdC - BALANCE.heatDesignTempC));
+  }
+
+  /** Crop growth multiplier from today's weather: rain feeds, frost stops, drought withers. */
+  farmWeatherMult(): number {
+    if (this.weather.tempC < 0) return 0; // frost — nothing grows
+    const drought = Math.max(0.6, 1 - Math.max(0, this.dryStreak - BALANCE.droughtAfterDays) * 0.05);
+    return WEATHER[this.weather.condition].farmMult * drought;
+  }
+
+  /** Absolute day index into the weather timeline (0 = January 1, 1960). */
   private dayIndex(): number {
     return (this.year - 1960) * 360 + (this.month - 1) * 30 + (this.day - 1);
   }
@@ -520,9 +541,12 @@ export class GameEngine {
   advance(dtMs: number) {
     if (this.speed === 0) return;
     const daysDelta = (dtMs / this.TICK_MS) * this.speed;
-    // trucks and barges move continuously
-    this.moveFleet(this.trucks, daysDelta);
-    this.moveFleet(this.boats, daysDelta);
+    // trucks and barges move continuously; today's weather slows everyone
+    // mid-trip. Grounding weather (boatMult 0) stops new sailings, but a
+    // barge already out limps on rather than stalling forever.
+    const wx = WEATHER[this.weather.condition];
+    this.moveFleet(this.trucks, daysDelta * wx.truckMult);
+    this.moveFleet(this.boats, daysDelta * Math.max(0.4, wx.boatMult));
     this.acc += dtMs * this.speed;
     let days = 0;
     while (this.acc >= this.TICK_MS && days < 20) {
@@ -592,7 +616,37 @@ export class GameEngine {
   // ---------------- systems ----------------
 
   private updateWeather() {
+    const prev = this.weather;
     this.weather = this.weatherAt(this.dayIndex());
+    const w = this.weather;
+    const hasFarms = [...this.buildings.values()].some(b => this.def(b).isFarm && b.constructed);
+
+    // drought bookkeeping: hot rainless days accumulate, any precipitation resets
+    const wet = w.condition === 'rain' || w.condition === 'storm' || w.condition === 'snow' || w.condition === 'blizzard';
+    if (wet) {
+      if (this.dryStreak > BALANCE.droughtAfterDays && hasFarms) this.pushEvent('Rain breaks the drought — the fields recover.', 'good', 'rain');
+      this.dryStreak = 0;
+    } else if (w.tempC >= 18) {
+      this.dryStreak++;
+      if (this.dryStreak === BALANCE.droughtAfterDays + 1 && hasFarms) this.pushEvent('Drought — the fields are withering.', 'bad', 'summer');
+    }
+
+    // frost: one warning per cold spell while crops are growing
+    const frost = w.tempC < 0 && (FARM_SEASON[this.month] ?? 0) > 0;
+    if (frost && !this.wasFrost && hasFarms) this.pushEvent('Frost grips the fields — crops stop growing.', 'bad', 'freeze');
+    this.wasFrost = frost;
+
+    // morale streaks: long gray spells wear people down, sunny runs lift them
+    const mood = WEATHER[w.condition].morale;
+    if (mood < 0) { this.gloomStreak++; this.sunStreak = 0; }
+    else if (mood > 0) { this.sunStreak++; this.gloomStreak = 0; }
+    else { this.gloomStreak = Math.max(0, this.gloomStreak - 1); this.sunStreak = Math.max(0, this.sunStreak - 1); }
+
+    // river freeze-over / break-up
+    if (this.hasWater && w.riverFrozen !== prev.riverFrozen) {
+      if (w.riverFrozen) this.pushEvent('The river has frozen over — barges are ice-locked until the thaw.', 'bad', 'freeze');
+      else this.pushEvent('The ice breaks up — barges can sail again.', 'good', 'port');
+    }
   }
 
   private updateConnectivity() {
@@ -647,21 +701,44 @@ export class GameEngine {
   }
 
   private updatePowerHeat() {
+    // Heat demand first (temperature-scaled) so plants can throttle to it:
+    // mild days sip coal, a January cold snap burns through the stockpile.
+    const heatFactor = this.heatDemandFactor();
+    this.heatDemand = 0;
+    for (const b of this.buildings.values()) {
+      const def = this.def(b);
+      if (b.constructed && def.heat > 0) this.heatDemand += def.heat * heatFactor;
+    }
+
     // Plants: fix eff & coalFactor for the whole day (powerFactor uses the
     // previous day's allocation). production() burns coal via productionRates()
     // with these same stored factors, so output and fuel always agree.
     this.powerProduced = 0;
     this.heatProduced = 0;
+    let heatToServe = this.heatDemand;
     for (const b of this.buildings.values()) {
       const def = this.def(b);
       if (!b.constructed || (!def.powerOutput && !def.heatOutput)) continue;
       const eff = this.baseEff(b);
-      const need = (def.inputs?.coal ?? 0) * eff;
-      const have = this.stockOf(b, 'coal');
-      b.coalFactor = need <= 0 ? 1 : Math.min(1, have / need);
       b.eff = eff;
-      if (def.powerOutput) this.powerProduced += def.powerOutput * eff * b.coalFactor;
-      if (def.heatOutput) this.heatProduced += def.heatOutput * eff * b.coalFactor;
+      if (def.powerOutput) {
+        const need = (def.inputs?.coal ?? 0) * eff;
+        const have = this.stockOf(b, 'coal');
+        b.coalFactor = need <= 0 ? 1 : Math.min(1, have / need);
+        this.powerProduced += def.powerOutput * eff * b.coalFactor;
+      }
+      if (def.heatOutput) {
+        // throttle to remaining demand; fuel burn scales with actual output
+        const capacity = def.heatOutput * eff;
+        const throttle = capacity > 0 ? Math.min(1, heatToServe / capacity) : 0;
+        const need = (def.inputs?.coal ?? 0) * eff * throttle;
+        const have = this.stockOf(b, 'coal');
+        const fuel = need <= 0 ? 1 : Math.min(1, have / need);
+        b.coalFactor = throttle * fuel;
+        const out = capacity * b.coalFactor;
+        this.heatProduced += out;
+        heatToServe = Math.max(0, heatToServe - out);
+      }
     }
     // demand & allocation (priority order)
     this.powerDemand = 0;
@@ -682,22 +759,18 @@ export class GameEngine {
     }
     for (const b of this.buildings.values()) if (this.def(b).power === 0) b.powered = true;
 
-    // heat
-    this.heatDemand = 0;
-    const heating = this.isHeatingSeason();
+    // heat allocation
+    const required = this.heatingRequired();
     for (const b of this.buildings.values()) {
-      const def = this.def(b);
-      if (b.constructed && def.heat > 0) {
-        this.heatDemand += def.heat;
-        b.heated = !heating; // outside season everyone is fine
-      }
+      if (b.constructed && this.def(b).heat > 0) b.heated = !required; // warm days everyone is fine
     }
-    if (heating) {
+    if (required) {
       let hb = this.heatProduced;
       for (const b of this.buildings.values()) {
         const def = this.def(b);
         if (!b.constructed || def.heat === 0) continue;
-        if (hb >= def.heat) { b.heated = true; hb -= def.heat; }
+        const need = def.heat * heatFactor;
+        if (hb >= need - 1e-9) { b.heated = true; hb -= need; }
         else b.heated = false;
       }
     }
@@ -725,7 +798,7 @@ export class GameEngine {
     let outMul = eff;
     if (def.isFarm) {
       const fields = Math.min(12, this.countFarmFields(b.x, b.y, b.w, b.h));
-      outMul = eff * (fields / 12) * (FARM_SEASON[this.month] ?? 0) * 2.2;
+      outMul = eff * (fields / 12) * (FARM_SEASON[this.month] ?? 0) * 2.2 * this.farmWeatherMult();
     }
     if (def.requiresForest) {
       outMul = eff * Math.min(1, this.countForestTiles(b.x, b.y, b.w, b.h) / 6);
@@ -940,6 +1013,7 @@ export class GameEngine {
     adjOf: (b: BuildingInst) => { x: number; y: number }[],
     demands: LogisticsDemand[],
   ) {
+    if (this.weather.riverFrozen) return; // no new relay chains onto an ice-locked river
     const ports = [...this.buildings.values()].filter(p => this.def(p).isPort && p.constructed);
     if (ports.length < 2) return;
     const pDest = ports.find(p => p.id !== d.b.id && adjOf(p).some(t => destFlood.distanceAt(t.x, t.y) >= 0));
@@ -984,6 +1058,8 @@ export class GameEngine {
   private dispatchBoats() {
     const ports = [...this.buildings.values()].filter(p => this.def(p).isPort && p.constructed);
     if (!ports.length) { this.boatOrders = []; return; }
+    // ice or grounding weather keeps barges in port — orders wait for fair skies
+    if (this.weather.riverFrozen || WEATHER[this.weather.condition].boatMult === 0) return;
     for (let i = this.boatOrders.length - 1; i >= 0; i--) {
       if (this.boats.filter(b => b.phase === 'go').length >= ports.length) break;
       const order = this.boatOrders[i];
@@ -1034,7 +1110,7 @@ export class GameEngine {
         .every(([r, amt]) => this.stockOf(b, r) >= amt - 0.001);
       if (!ready) continue;
       const crew = Math.min(BALANCE.buildersPerSite, pool);
-      b.progress += crew;
+      b.progress += crew * WEATHER[this.weather.condition].buildMult; // storms slow the site
       pool -= crew;
       if (b.progress >= def.labor) {
         b.constructed = true;
@@ -1164,6 +1240,8 @@ export class GameEngine {
       this.wagesUnpaid = true;
       target *= 0.85;
     }
+    // weather morale: long gray spells wear on people, sunny runs lift them
+    target *= 1 - Math.min(0.06, this.gloomStreak * 0.01) + Math.min(0.02, this.sunStreak * 0.005);
     this.happiness = this.lerp(this.happiness, Math.max(0, Math.min(100, target)), 0.2);
 
     // migration — settlers only (re)found the republic while its reputation holds
@@ -1229,7 +1307,14 @@ export class GameEngine {
     if (this.pop > 5 && this.sat.food < 0.5) a.push({ id: 'food', icon: 'food', text: 'Food shortage — citizens are hungry', level: 'bad' });
     const hasPlant = [...this.buildings.values()].some(b => this.def(b).powerOutput && b.constructed);
     if (this.powerDemand > this.powerProduced + 0.01 && (hasPlant || this.pop > 0)) a.push({ id: 'power', icon: 'power', text: `Power deficit (${this.powerDemand.toFixed(1)} MW needed, ${this.powerProduced.toFixed(1)} MW generated)`, level: 'warn' });
-    if (this.isHeatingSeason() && this.capacity > 0 && this.sat.heat < 0.8) a.push({ id: 'heat', icon: 'freeze', text: 'Heating shortage — citizens are freezing', level: 'bad' });
+    if (this.heatingRequired() && this.capacity > 0 && this.sat.heat < 0.8) a.push({ id: 'heat', icon: 'freeze', text: 'Heating shortage — citizens are freezing', level: 'bad' });
+    if (this.weather.riverFrozen && [...this.buildings.values()].some(b => this.def(b).isPort && b.constructed)) {
+      a.push({ id: 'ice', icon: 'freeze', text: 'River frozen — barges ice-locked until the thaw', level: 'warn' });
+    }
+    const tomorrow = this.forecast(1)[0];
+    if (tomorrow.condition === 'storm' || tomorrow.condition === 'blizzard') {
+      a.push({ id: 'stormfront', icon: tomorrow.condition, text: `${tomorrow.condition === 'storm' ? 'Storm' : 'Blizzard'} front approaches — expect slow roads tomorrow`, level: 'warn' });
+    }
     const unconnected = [...this.buildings.values()].filter(b => b.constructed && !b.connected).length;
     if (unconnected > 0) a.push({ id: 'roads', icon: 'road', text: `${unconnected} building${unconnected > 1 ? 's' : ''} not connected to a road`, level: 'warn' });
     const sites = [...this.buildings.values()].filter(b => !b.constructed);

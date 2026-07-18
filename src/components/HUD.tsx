@@ -23,7 +23,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
     e.pop, e.capacity, e.workers, e.employed,
     Math.round(e.happiness),
     e.powerProduced.toFixed(1), e.powerDemand.toFixed(1),
-    e.isHeatingSeason(), e.heatProduced.toFixed(1), e.heatDemand.toFixed(1),
+    e.heatingRequired(), e.heatProduced.toFixed(1), e.heatDemand.toFixed(1),
     e.alerts.map(a => a.id + a.text).join('|'),
   ]);
 
@@ -87,7 +87,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
           <span title={`Power: ${engine.powerProduced.toFixed(1)} / ${engine.powerDemand.toFixed(1)} MW`} className={`flex items-center gap-1 ${engine.powerDemand > engine.powerProduced + 0.01 ? 'text-red-300' : ''}`}>
             <GameIcon name="power" size={12} /> {engine.powerProduced.toFixed(0)}/{engine.powerDemand.toFixed(0)}
           </span>
-          {engine.isHeatingSeason() && (
+          {engine.heatingRequired() && (
             <span title={`Heat: ${engine.heatProduced.toFixed(1)} / ${engine.heatDemand.toFixed(1)}`} className={`flex items-center gap-1 ${engine.heatDemand > engine.heatProduced + 0.01 ? 'text-red-300' : ''}`}>
               <GameIcon name="heat" size={12} /> {engine.heatProduced.toFixed(0)}/{engine.heatDemand.toFixed(0)}
             </span>
