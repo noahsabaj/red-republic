@@ -9,9 +9,9 @@ import type { IconNode } from 'lucide';
 import {
   Anchor, Anvil, Axe, Ban, Beer, BrickWall, Building2, CircleCheck, CircleDot, CircleHelp,
   Cloud, CloudFog, CloudLightning, CloudRain, CloudSnow,
-  Container, CookingPot, Coins, Droplet, Eraser, Factory, FlaskConical, Flame, Fuel,
+  Container, CookingPot, Coins, Droplet, Eraser, Factory, Flag, FlaskConical, Flame, Fuel,
   Gauge, Grip, HardHat, HeartPulse, Home, Keyboard, Landmark, Layers, Leaf, Magnet,
-  Map as MapIcon, Package, Pause, Pickaxe, Route, Ruler, ShoppingBasket, Shirt, Shovel,
+  Map as MapIcon, Package, Pause, Pickaxe, Route, Ruler, ScrollText, ShoppingBasket, Shirt, Shovel,
   Slice, Smile, Snowflake, Sprout, Square, Star, Sun, Target, Tractor, TreePine, Truck,
   Users, Warehouse, Wheat, Wind, X, Zap, BedDouble,
 } from 'lucide';
@@ -66,6 +66,8 @@ export const GAME_ICONS = {
   stockpiles: Package,
   plan: Target,
   trade: Container,
+  contract: ScrollText,
+  flag: Flag,
   help: CircleHelp,
   users: Users,
   happy: Smile,

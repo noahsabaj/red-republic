@@ -2,7 +2,7 @@
 // Red Republic — game engine & simulation
 // ============================================================
 import {
-  BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, FARM_SEASON, WEATHER,
+  BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, CONTRACTS, FARM_SEASON, WEATHER,
   DOLLAR_BUILD_RATE, IMPORT_MARKUP, OBJECTIVES,
 } from './config';
 import type { DepositType, ResourceId } from './config';
@@ -87,6 +87,20 @@ export interface TradeDayLedger {
 const emptyLedger = (): TradeDayLedger =>
   ({ imports: {}, exports: {}, rubles: 0, dollars: 0, used: 0, capacity: 0, blocked: [] });
 
+/** A deadline bulk order from one of the blocs, at a premium price locked when offered. */
+export interface Contract {
+  id: number;
+  r: ResourceId;
+  bloc: 'east' | 'west';
+  amount: number;
+  delivered: number;
+  pricePerUnit: number;    // market price at offer time * (1 + premium)
+  deadlineIdx: number;     // absolute day index (see dayIndex())
+  offerExpiresIdx: number; // unaccepted offers are withdrawn after this day
+  state: 'offer' | 'active' | 'done' | 'failed';
+  closedIdx?: number;      // when it reached done/failed (for pruning the history)
+}
+
 interface LogisticsDemand { b: BuildingInst; r: ResourceId; amt: number; prio: number; from?: number; noCustomsSrc?: boolean }
 
 const JOB_PRIORITY = [
@@ -135,6 +149,11 @@ export class GameEngine {
     rules: {} as Partial<Record<ResourceId, AutoTradeRule>>,
   };
   tradeLedger = { today: emptyLedger(), yesterday: emptyLedger() };
+  /** Offers, active deals and recent history — mutate only via accept/declineContract. */
+  contracts: Contract[] = [];
+  /** 0..cap price malus per bloc from failed contracts; decays daily. */
+  relationsPenalty = { east: 0, west: 0 };
+  private nextContractId = 1;
 
   private nextBuildingId = 1;
   private nextTruckId = 1;
@@ -507,13 +526,19 @@ export class GameEngine {
 
   // ---------------- trade ----------------
 
-  priceOf(r: ResourceId, currency: 'east' | 'west') {
+  private marketPrice(r: ResourceId, currency: 'east' | 'west') {
     const base = currency === 'east' ? RESOURCES[r].priceEast : RESOURCES[r].priceWest;
     return base * (currency === 'east' ? this.priceFactorEast : this.priceFactorWest);
   }
 
+  /** Sell price. A failed contract sours relations: the bloc pays less for a while. */
+  priceOf(r: ResourceId, currency: 'east' | 'west') {
+    return this.marketPrice(r, currency) * (1 - this.relationsPenalty[currency]);
+  }
+
+  /** Buy price. Soured relations cut both ways: the bloc also charges more. */
   importPriceOf(r: ResourceId, currency: 'east' | 'west') {
-    return this.priceOf(r, currency) * IMPORT_MARKUP;
+    return this.marketPrice(r, currency) * IMPORT_MARKUP * (1 + this.relationsPenalty[currency]);
   }
 
   private customsCache: { version: number; field: DistanceField | null } | null = null;
@@ -560,6 +585,25 @@ export class GameEngine {
     return v;
   }
 
+  /**
+   * Pay for `amt` exported units. Units owed to the oldest active contract
+   * for (r, bloc) are credited and paid at its locked price; the remainder
+   * fetches the market price. Both sale paths (manual sell, auto-trade) route
+   * through here, so contracts cannot miss a delivery.
+   */
+  private exportPayout(r: ResourceId, bloc: 'east' | 'west', amt: number): number {
+    const c = this.contracts.find(k => k.state === 'active' && k.r === r && k.bloc === bloc);
+    if (!c) return amt * this.priceOf(r, bloc);
+    const credited = Math.min(amt, c.amount - c.delivered);
+    c.delivered += credited;
+    if (c.delivered >= c.amount - 1e-9) {
+      c.state = 'done';
+      c.closedIdx = this.dayIndex();
+      this.pushEvent(`Contract fulfilled: ${c.amount} ${RESOURCES[r].name} to the ${c.bloc === 'east' ? 'East' : 'West'}!`, 'good', 'contract');
+    }
+    return credited * c.pricePerUnit + (amt - credited) * this.priceOf(r, bloc);
+  }
+
   sell(r: ResourceId, amount: number, currency: 'east' | 'west'): { ok: boolean; msg: string } {
     const sources = this.sellableSources(r);
     if (!sources.length) return { ok: false, msg: 'No sellable goods connected to a Customs House' };
@@ -572,10 +616,10 @@ export class GameEngine {
     }
     const sold = amount - Math.max(0, remaining);
     if (sold <= 0) return { ok: false, msg: 'Nothing to sell' };
-    const price = this.priceOf(r, currency);
-    if (currency === 'east') this.rubles += sold * price;
-    else this.dollars += sold * price;
-    this.stats.exportedValue += sold * (currency === 'east' ? price : price * 10);
+    const payout = this.exportPayout(r, currency, sold);
+    if (currency === 'east') this.rubles += payout;
+    else this.dollars += payout;
+    this.stats.exportedValue += currency === 'east' ? payout : payout * 10;
     this.bump();
     return { ok: true, msg: `Sold ${sold.toFixed(0)} ${RESOURCES[r].name}` };
   }
@@ -672,6 +716,7 @@ export class GameEngine {
     this.updatePowerHeat();
     this.production();
     this.foreignTrade();
+    this.updateContracts();
     this.logistics();
     this.dispatchBoats();
     this.construction();
@@ -686,6 +731,72 @@ export class GameEngine {
     const drift = (v: number) => Math.min(1.15, Math.max(0.85, v + (this.rng() - 0.5) * 0.1));
     this.priceFactorEast = drift(this.priceFactorEast);
     this.priceFactorWest = drift(this.priceFactorWest);
+    this.offerContract();
+  }
+
+  /**
+   * A bloc tenders a bulk order every other month. The draw comes from its
+   * own stateless per-month stream (like the weather timeline), so contract
+   * generation never perturbs the price-drift rng sequence.
+   */
+  private offerContract() {
+    const monthIndex = (this.year - 1960) * 12 + (this.month - 1);
+    if (monthIndex % CONTRACTS.offerEveryMonths !== 0) return;
+    if (![...this.buildings.values()].some(b => this.def(b).isCustoms && b.constructed)) return;
+    if (this.contracts.filter(c => c.state === 'offer').length >= 2) return;
+    const rnd = mulberry32((this.seed ^ 0x7c3a9e50 ^ Math.imul(monthIndex, 0x9e3779b9)) >>> 0);
+    // the blocs ask for what the republic demonstrably produces
+    const produced = ALL_RESOURCES.filter(r => this.stats.produced[r] > 0);
+    const pool = produced.length ? produced : ALL_RESOURCES;
+    const r = pool[Math.floor(rnd() * pool.length)];
+    const bloc: 'east' | 'west' = rnd() < 0.5 ? 'east' : 'west';
+    const amount = CONTRACTS.minAmount + Math.floor(rnd() * CONTRACTS.amountSteps) * CONTRACTS.amountStep;
+    const premium = CONTRACTS.premiumMin + rnd() * (CONTRACTS.premiumMax - CONTRACTS.premiumMin);
+    const days = CONTRACTS.deadlineMinDays + Math.floor(rnd() * (CONTRACTS.deadlineMaxDays - CONTRACTS.deadlineMinDays + 1));
+    const c: Contract = {
+      id: this.nextContractId++, r, bloc, amount, delivered: 0,
+      pricePerUnit: this.priceOf(r, bloc) * (1 + premium),
+      deadlineIdx: this.dayIndex() + days,
+      offerExpiresIdx: this.dayIndex() + CONTRACTS.offerDays,
+      state: 'offer',
+    };
+    this.contracts.push(c);
+    const cur = bloc === 'east' ? '₽' : '$';
+    this.pushEvent(
+      `The ${bloc === 'east' ? 'East' : 'West'} tenders a contract: ${amount} ${RESOURCES[r].name} at ${cur}${c.pricePerUnit.toFixed(1)}/unit within ${days} days.`,
+      'info', 'contract');
+  }
+
+  /** Daily contract sweep: withdraw stale offers, fail passed deadlines, heal relations. */
+  private updateContracts() {
+    const idx = this.dayIndex();
+    for (let i = this.contracts.length - 1; i >= 0; i--) {
+      const c = this.contracts[i];
+      if (c.state === 'offer' && idx > c.offerExpiresIdx) {
+        this.contracts.splice(i, 1);
+        this.pushEvent(`The ${c.bloc === 'east' ? 'East' : 'West'} withdrew its ${RESOURCES[c.r].name} offer.`, 'info', 'contract');
+        continue;
+      }
+      if (c.state === 'active' && idx > c.deadlineIdx) {
+        c.state = 'failed';
+        c.closedIdx = idx;
+        const fine = CONTRACTS.finePct * (c.amount - c.delivered) * c.pricePerUnit;
+        if (c.bloc === 'east') this.rubles = Math.max(0, this.rubles - fine);
+        else this.dollars = Math.max(0, this.dollars - fine);
+        this.relationsPenalty[c.bloc] = Math.min(CONTRACTS.relationsCap, this.relationsPenalty[c.bloc] + CONTRACTS.relationsHit);
+        const cur = c.bloc === 'east' ? '₽' : '$';
+        this.pushEvent(
+          `Contract failed: ${c.amount - c.delivered} ${RESOURCES[c.r].name} undelivered. Fined ${cur}${fine.toFixed(0)}; the ${c.bloc === 'east' ? 'East' : 'West'} sours on us.`,
+          'bad', 'contract');
+        continue;
+      }
+      // prune old history so the panel stays readable
+      if ((c.state === 'done' || c.state === 'failed') && c.closedIdx !== undefined && idx - c.closedIdx > 60) {
+        this.contracts.splice(i, 1);
+      }
+    }
+    this.relationsPenalty.east = Math.max(0, this.relationsPenalty.east - CONTRACTS.relationsDecayPerDay);
+    this.relationsPenalty.west = Math.max(0, this.relationsPenalty.west - CONTRACTS.relationsDecayPerDay);
   }
 
   // ---------------- systems ----------------
@@ -958,11 +1069,10 @@ export class GameEngine {
         const amt = Math.min(budget, Math.floor(this.stockOf(c, r)));
         if (amt < 1) continue;
         this.addStock(c, r, -amt);
-        const price = this.priceOf(r, rule.currency);
-        const gain = amt * price;
+        const gain = this.exportPayout(r, rule.currency, amt);
         if (rule.currency === 'east') { this.rubles += gain; led.rubles += gain; }
         else { this.dollars += gain; led.dollars += gain; }
-        this.stats.exportedValue += amt * (rule.currency === 'east' ? price : price * 10);
+        this.stats.exportedValue += rule.currency === 'east' ? gain : gain * 10;
         led.exports[r] = (led.exports[r] ?? 0) + amt;
         led.used += amt;
         budget -= amt;
@@ -1509,6 +1619,15 @@ export class GameEngine {
     if (this.tradeLedger.today.blocked.length) {
       a.push({ id: 'autotrade', icon: 'trade', text: `Auto-trade stalled — ${this.tradeLedger.today.blocked.join('; ')}`, level: 'warn' });
     }
+    const risky = this.contracts.find(c =>
+      c.state === 'active' && this.contractDaysLeft(c) <= 15 && c.delivered < c.amount);
+    if (risky) {
+      a.push({
+        id: 'contract', icon: 'contract',
+        text: `Contract deadline in ${Math.max(0, this.contractDaysLeft(risky))} days — ${Math.ceil(risky.amount - risky.delivered)} ${RESOURCES[risky.r].name} still owed`,
+        level: 'warn',
+      });
+    }
     this.alerts = a;
   }
 
@@ -1556,6 +1675,27 @@ export class GameEngine {
     if (r === 'food') return this.pop * BALANCE.foodPerCitizen;
     if (r === 'clothes') return this.pop * BALANCE.clothesPerCitizen;
     return 0;
+  }
+
+  // ---------------- contracts (UI actions) ----------------
+
+  acceptContract(id: number) {
+    const c = this.contracts.find(k => k.id === id && k.state === 'offer');
+    if (!c) return;
+    c.state = 'active';
+    this.bump();
+  }
+
+  declineContract(id: number) {
+    const i = this.contracts.findIndex(k => k.id === id && k.state === 'offer');
+    if (i < 0) return;
+    this.contracts.splice(i, 1);
+    this.bump();
+  }
+
+  /** Days left before a contract's deadline (negative once passed). */
+  contractDaysLeft(c: Contract): number {
+    return c.deadlineIdx - this.dayIndex();
   }
 
   // ---------------- auto-trade policy (UI actions) ----------------

@@ -349,6 +349,22 @@ export const BALANCE = {
   autoReserveDollars: 200,
 };
 
+// ------------------------------------------------------------
+// Trade contracts (deadline bulk orders from the blocs)
+// ------------------------------------------------------------
+
+export const CONTRACTS = {
+  offerEveryMonths: 2,    // a new offer lands every other month (if a customs stands)
+  minAmount: 40, amountStep: 20, amountSteps: 5, // 40..120 units
+  premiumMin: 0.15, premiumMax: 0.25,            // over market price, locked at offer time
+  deadlineMinDays: 60, deadlineMaxDays: 90,
+  offerDays: 30,          // unaccepted offers are withdrawn
+  finePct: 0.25,          // of the undelivered value, on failure
+  relationsHit: 0.12,     // price penalty added per failed contract
+  relationsCap: 0.25,
+  relationsDecayPerDay: 0.002, // a failure haunts prices for ~2 months
+};
+
 // Farm seasonal factor by month (1-12): sowing, growth, harvest
 export const FARM_SEASON: Record<number, number> = {
   1: 0, 2: 0, 3: 0.2, 4: 0.3, 5: 0.35, 6: 0.5,
