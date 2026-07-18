@@ -108,8 +108,16 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
             Every day has real weather — the top bar shows today plus the State Hydrometeorological Service's exact 5-day forecast. Rain slows trucks but feeds the crops; storms and blizzards slow everything and ground barges; frost stops crop growth and summer droughts wither it. Sustained cold <b>freezes the river</b>, ice-locking barge traffic until the thaw — stockpile across the water before winter, or pay for a bridge.
           </section>
           <section>
-            <div className="font-bold text-yellow-300 mb-1"><GameIcon name="trade" size={12} /> Trade</div>
-            Sell surplus at the Customs House: East pays rubles (₽), the West pays hard dollars ($) — best for fuel and steel. Import goods you lack at 1.6× price. Workers' wages are paid daily in rubles.
+            <div className="font-bold text-yellow-300 mb-1"><GameIcon name="flag" size={12} /> The border &amp; trade</div>
+            One map edge is the <b>national border</b> — the striped line with the red-white posts. Foreign soil beyond it is untouchable, and every Customs House must stand at the border. Sell surplus there: East pays rubles (₽), the West pays hard dollars ($) — best for fuel and steel. Import goods you lack at 1.6× price. Workers' wages are paid daily in rubles.
+          </section>
+          <section>
+            <div className="font-bold text-yellow-300 mb-1"><GameIcon name="trade" size={12} /> Auto-trade</div>
+            Tick <b>Auto-trade</b> in the Foreign Trade panel and set per-good rules: <b>Imp</b> keeps the town stocked to a level (imports the deficit daily), <b>Exp</b> sells everything above a keep-level — trucks stage the surplus to customs, and the customs house sells what reached it. A staffed, powered Customs House clears more tonnage per day; the <b>reserve floor</b> stops automation from ever spending wages money. The daily ledger in the panel shows what moved.
+          </section>
+          <section>
+            <div className="font-bold text-yellow-300 mb-1"><GameIcon name="contract" size={12} /> Contracts</div>
+            Every couple of months a bloc tenders a bulk order at a <b>premium price</b>, locked when offered. Accept it and every export of that good to that bloc counts toward it — deliver in time for the premium, miss the deadline and you pay a fine while that bloc's prices sour on you for a couple of months.
           </section>
           <section>
             <div className="font-bold text-yellow-300 mb-1"><GameIcon name="keyboard" size={12} /> Controls</div>

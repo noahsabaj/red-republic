@@ -27,7 +27,13 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
     e.weather.condition, Math.round(e.weather.tempC), e.weather.riverFrozen,
     e.forecast().map(d => d.condition + Math.round(d.tempC)).join('|'),
     e.alerts.map(a => a.id + a.text).join('|'),
+    e.autoTrade.enabled,
+    Math.round(e.tradeLedger.yesterday.rubles), Math.round(e.tradeLedger.yesterday.dollars),
+    e.contracts.filter(c => c.state === 'offer').length,
   ]);
+  const offersPending = engine.contracts.filter(c => c.state === 'offer').length;
+  const tradeNote = (v: number, sym: string) =>
+    Math.round(v) !== 0 ? ` · auto-trade yesterday ${v > 0 ? '+' : '−'}${sym}${Math.abs(Math.round(v)).toLocaleString()}` : '';
 
   const season = engine.season();
   const speedBtn = (s: 0 | 1 | 2 | 4, label: React.ReactNode, name: string) => (
@@ -42,15 +48,16 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
     </button>
   );
 
-  const panelBtn = (label: string, icon: string, active: boolean, onClick: () => void) => (
+  const panelBtn = (label: string, icon: string, active: boolean, onClick: () => void, dot = false) => (
     <button
       onClick={onClick}
       aria-label={label}
       aria-pressed={active}
       title={label}
-      className={`rounded px-2 py-1 text-xs font-bold ${active ? 'bg-yellow-500 text-red-950' : 'bg-red-950/60 hover:bg-red-800'}`}
+      className={`relative rounded px-2 py-1 text-xs font-bold ${active ? 'bg-yellow-500 text-red-950' : 'bg-red-950/60 hover:bg-red-800'}`}
     >
       <GameIcon name={icon} size={14} />
+      {dot && <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-yellow-400 border border-red-950" />}
     </button>
   );
 
@@ -99,8 +106,8 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
         <div className="h-5 w-px bg-yellow-600/40" />
 
         <div className="flex items-center gap-3 text-xs font-bold">
-          <span title="Rubles — earned from trade with the East; pays wages and construction" className={engine.wagesUnpaid ? 'text-red-300' : ''}>₽ {Math.floor(engine.rubles).toLocaleString()}</span>
-          <span title="Dollars — hard currency from the West" className="text-green-300">$ {Math.floor(engine.dollars).toLocaleString()}</span>
+          <span title={`Rubles — earned from trade with the East; pays wages and construction${tradeNote(engine.tradeLedger.yesterday.rubles, '₽')}`} className={engine.wagesUnpaid ? 'text-red-300' : ''}>₽ {Math.floor(engine.rubles).toLocaleString()}</span>
+          <span title={`Dollars — hard currency from the West${tradeNote(engine.tradeLedger.yesterday.dollars, '$')}`} className="text-green-300">$ {Math.floor(engine.dollars).toLocaleString()}</span>
           <span title={`Citizens: ${engine.pop} / housing ${engine.capacity} · workers ${engine.workers} · employed ${engine.employed}`} className="flex items-center gap-1">
             <GameIcon name="users" size={12} /> {engine.pop}<span className="text-yellow-200/50">/{engine.capacity}</span>
           </span>
@@ -120,7 +127,11 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
         <div className="ml-auto flex items-center gap-1.5">
           {panelBtn('Stockpiles', 'stockpiles', activePanel === 'stockpiles', onOpenStockpiles)}
           {panelBtn('Five-Year Plan', 'plan', activePanel === 'objectives', onOpenObjectives)}
-          {panelBtn('Foreign Trade', 'trade', activePanel === 'trade', onOpenTrade)}
+          {panelBtn(
+            `Foreign Trade${offersPending ? ` — ${offersPending} contract offer${offersPending > 1 ? 's' : ''} pending` : ''}${engine.autoTrade.enabled ? ' — auto-trade ON' : ''}`,
+            'trade', activePanel === 'trade', onOpenTrade,
+            engine.autoTrade.enabled || offersPending > 0,
+          )}
           {panelBtn('Help', 'help', helpOpen, onOpenHelp)}
         </div>
       </div>

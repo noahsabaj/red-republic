@@ -1698,6 +1698,11 @@ export class GameEngine {
     return c.deadlineIdx - this.dayIndex();
   }
 
+  /** Days before an unaccepted offer is withdrawn. */
+  offerDaysLeft(c: Contract): number {
+    return c.offerExpiresIdx - this.dayIndex();
+  }
+
   // ---------------- auto-trade policy (UI actions) ----------------
 
   setAutoTradeEnabled(on: boolean) {

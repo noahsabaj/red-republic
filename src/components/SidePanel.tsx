@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react';
 import type { GameEngine, BuildingInst } from '@/game/engine';
-import { BUILDINGS, RESOURCES, ALL_RESOURCES, OBJECTIVES, FARM_SEASON } from '@/game/config';
+import { BALANCE, BUILDINGS, RESOURCES, ALL_RESOURCES, OBJECTIVES, FARM_SEASON } from '@/game/config';
 import type { DepositType, ResourceId } from '@/game/config';
+import type { Contract } from '@/game/engine';
 import type { SelectionItem } from '@/game/selection';
 import type { PanelMode } from './HUD';
 import { useEngineVersion } from '@/hooks/use-engine';
@@ -354,6 +355,7 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
             {def.serviceRadius && <Row label={<><GameIcon name="coverage" size={12} /> Coverage</>} value={`${def.serviceRadius} tiles`} />}
             {def.isFarm && <Row label={<><GameIcon name="fields" size={12} /> Fields</>} value={`${b.farmFields} plots · season ×${(FARM_SEASON[engine.month] ?? 0).toFixed(2)}`} />}
             {def.workers > 0 && <Row label={<><GameIcon name="eff" size={12} /> Efficiency</>} value={`${Math.round(b.eff * 100)}%`} ok={b.eff > 0.6} />}
+            {def.isCustoms && <Row label={<><GameIcon name="trade" size={12} /> Clears</>} value={`${Math.floor(BALANCE.customsThroughputPerDay * b.eff)}/day`} ok={b.eff > 0} />}
           </div>
 
           {(def.inputs || def.outputs) && (() => {
@@ -416,16 +418,134 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
 
 // ------------------------------------------------------------
 
+/** Compact dark number input; commits every valid keystroke via the engine mutator. */
+function NumInput({ value, onValue, step = 10, w = 'w-16' }: { value: number; onValue: (v: number) => void; step?: number; w?: string }) {
+  return (
+    <input
+      type="number" min={0} step={step} value={value}
+      onChange={ev => { const v = ev.target.valueAsNumber; if (Number.isFinite(v)) onValue(v); }}
+      className={`${w} rounded bg-red-950/60 border border-yellow-600/30 px-1 py-0.5 text-[11px] font-bold text-yellow-50`}
+    />
+  );
+}
+
+function ContractCard({ engine, c }: { engine: GameEngine; c: Contract }) {
+  const cur = c.bloc === 'east' ? '₽' : '$';
+  const blocName = c.bloc === 'east' ? 'East' : 'West';
+  const daysLeft = engine.contractDaysLeft(c);
+  return (
+    <div className="rounded bg-red-900/40 p-2 text-[11px] space-y-1">
+      <div className="flex items-center justify-between">
+        <span className="font-bold flex items-center gap-1">
+          <GameIcon name={RESOURCES[c.r].icon} size={12} /> {c.amount} {RESOURCES[c.r].name} → {blocName}
+        </span>
+        <span className="font-bold" title="Locked at offer time — a premium over the market price">{cur}{c.pricePerUnit.toFixed(1)}/u</span>
+      </div>
+      {c.state === 'offer' && (
+        <>
+          <div className="text-[10px] text-yellow-200/60">
+            Deliver within {daysLeft} days · offer withdrawn in {engine.offerDaysLeft(c)} days
+          </div>
+          <div className="flex gap-1">
+            <button onClick={() => engine.acceptContract(c.id)} className="flex-1 rounded bg-yellow-500 text-red-950 font-bold py-0.5 hover:bg-yellow-400">Accept</button>
+            <button onClick={() => engine.declineContract(c.id)} className="flex-1 rounded bg-red-900/70 font-bold py-0.5 hover:bg-red-800">Decline</button>
+          </div>
+        </>
+      )}
+      {c.state === 'active' && (
+        <>
+          <div className="h-1.5 rounded bg-red-900 overflow-hidden">
+            <div className="h-full bg-yellow-500/80" style={{ width: `${Math.min(100, (c.delivered / c.amount) * 100)}%` }} />
+          </div>
+          <div className="flex justify-between text-[10px] text-yellow-200/60">
+            <span>{Math.floor(c.delivered)}/{c.amount} delivered</span>
+            <span className={daysLeft <= 15 ? 'text-red-300 font-bold' : ''}>{Math.max(0, daysLeft)} days left</span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string, k: 'good' | 'bad' | 'info') => void }) {
   const [amount, setAmount] = useState(10);
   const doTrade = (fn: () => { ok: boolean; msg: string }) => {
     const res = fn();
     notify(res.msg, res.ok ? 'good' : 'bad');
   };
+  const at = engine.autoTrade;
+  const led = engine.tradeLedger.yesterday;
+  const today = engine.tradeLedger.today;
+  const offers = engine.contracts.filter(c => c.state === 'offer');
+  const active = engine.contracts.filter(c => c.state === 'active');
+  const closed = engine.contracts.filter(c => c.state === 'done' || c.state === 'failed');
+  const ledImports = Object.entries(led.imports) as [ResourceId, number][];
+  const ledExports = Object.entries(led.exports) as [ResourceId, number][];
+  const money = (v: number, sym: string) =>
+    `${v >= 0 ? '+' : '−'}${sym}${Math.abs(v) < 10 ? Math.abs(v).toFixed(1) : Math.abs(Math.round(v)).toLocaleString()}`;
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
+      <section className="rounded bg-red-900/40 p-2 space-y-1.5">
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" checked={at.enabled} onChange={ev => engine.setAutoTradeEnabled(ev.target.checked)} className="accent-yellow-500" />
+          <span className="text-xs font-black uppercase tracking-wider text-yellow-400">Auto-trade</span>
+        </label>
+        <div className="text-[10px] text-yellow-200/60 leading-tight">
+          Standing orders of the Foreign Trade Directorate. Each staffed Customs House clears up to {BALANCE.customsThroughputPerDay} units a day; set per-good rules below.
+        </div>
+        {at.enabled && (
+          <>
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-yellow-200/70">Customs capacity today</span>
+              <span className="font-bold">{today.used}/{today.capacity}</span>
+            </div>
+            <div className="flex items-center gap-2 text-[11px]" title="Auto-imports never spend the treasury below these floors — wages stay safe">
+              <span className="text-yellow-200/70 shrink-0">Reserve</span>
+              <label className="flex items-center gap-1">₽ <NumInput value={at.reserveRubles} onValue={v => engine.setAutoTradeReserve('east', v)} step={500} /></label>
+              <label className="flex items-center gap-1 text-green-300">$ <NumInput value={at.reserveDollars} onValue={v => engine.setAutoTradeReserve('west', v)} step={100} /></label>
+            </div>
+            <div className="text-[10px] text-yellow-200/70 border-t border-yellow-600/20 pt-1 leading-relaxed">
+              <span className="font-black uppercase tracking-wider text-yellow-400/80 mr-1">Yesterday</span>
+              {ledImports.length === 0 && ledExports.length === 0
+                ? 'no automated trade'
+                : (
+                  <>
+                    {ledImports.length > 0 && <>in{' '}{ledImports.map(([r, n]) => <span key={r} className="inline-flex items-center gap-0.5 mr-1"><GameIcon name={RESOURCES[r].icon} size={11} />{Math.round(n)}</span>)}</>}
+                    {ledExports.length > 0 && <>out{' '}{ledExports.map(([r, n]) => <span key={r} className="inline-flex items-center gap-0.5 mr-1"><GameIcon name={RESOURCES[r].icon} size={11} />{Math.round(n)}</span>)}</>}
+                    <span className="font-bold">{money(led.rubles, '₽')}</span>
+                    {led.dollars !== 0 && <span className="font-bold text-green-300 ml-1">{money(led.dollars, '$')}</span>}
+                  </>
+                )}
+            </div>
+            {today.blocked.length > 0 && (
+              <div className="text-[10px] text-red-300 font-bold">Stalled: {today.blocked.join('; ')}</div>
+            )}
+          </>
+        )}
+      </section>
+
+      {(offers.length > 0 || active.length > 0 || closed.length > 0 || engine.relationsPenalty.east > 0.001 || engine.relationsPenalty.west > 0.001) && (
+        <section className="space-y-1">
+          <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400 flex items-center gap-1">
+            <GameIcon name="contract" size={11} /> Contracts
+          </div>
+          {(['east', 'west'] as const).map(bloc => engine.relationsPenalty[bloc] > 0.001 && (
+            <div key={bloc} className="text-[10px] text-red-300">
+              Relations soured with the {bloc === 'east' ? 'East' : 'West'} — prices {Math.round(engine.relationsPenalty[bloc] * 100)}% worse until it blows over.
+            </div>
+          ))}
+          {[...offers, ...active].map(c => <ContractCard key={c.id} engine={engine} c={c} />)}
+          {closed.map(c => (
+            <div key={c.id} className={`text-[10px] flex justify-between px-1 ${c.state === 'done' ? 'text-yellow-200/40' : 'text-red-300/60'}`}>
+              <span>{c.amount} {RESOURCES[c.r].name} → {c.bloc === 'east' ? 'East' : 'West'}</span>
+              <span>{c.state === 'done' ? 'fulfilled' : 'failed'}</span>
+            </div>
+          ))}
+        </section>
+      )}
+
       <div className="text-[10px] text-yellow-200/60 leading-tight">
-        Sell surplus to the <b>East (₽)</b> or the <b>West ($)</b>. Goods must be road-connected to a Customs House. Imports arrive at customs storage and are hauled away by truck.
+        Sell surplus to the <b>East (₽)</b> or the <b>West ($)</b>. Goods must be road-connected to the border Customs House. Imports arrive at customs storage and are hauled away by truck.
       </div>
       <div className="flex items-center gap-1 text-xs">
         <span className="text-yellow-200/70 mr-1">Amount:</span>
@@ -475,6 +595,39 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
                     −${engine.importPriceOf(r, 'west').toFixed(1)}
                   </button>
                 </div>
+                {(() => {
+                  const rule = engine.autoTrade.rules[r];
+                  return (
+                    <div className={`flex items-center gap-1 mt-1 text-[10px] ${engine.autoTrade.enabled ? '' : 'opacity-50'}`}>
+                      <span className="text-yellow-200/50 mr-0.5">auto</span>
+                      {(['import', 'export'] as const).map(m => (
+                        <button
+                          key={m}
+                          onClick={() => engine.setAutoTradeRule(r, rule?.mode === m ? null : { mode: m, level: rule?.level ?? 20, currency: rule?.currency ?? 'east' })}
+                          className={`px-1.5 py-0.5 rounded font-bold ${rule?.mode === m ? 'bg-yellow-500 text-red-950' : 'bg-red-950/60 hover:bg-red-800'}`}
+                          title={m === 'import'
+                            ? 'Auto-import: keep the town stocked to the level'
+                            : 'Auto-export: trucks stage everything above the level to customs, which sells it'}
+                        >
+                          {m === 'import' ? 'Imp' : 'Exp'}
+                        </button>
+                      ))}
+                      {rule && (
+                        <>
+                          <span className="text-yellow-200/50">{rule.mode === 'import' ? 'keep ≥' : 'above'}</span>
+                          <NumInput value={rule.level} onValue={v => engine.setAutoTradeRule(r, { ...rule, level: v })} step={5} w="w-12" />
+                          <button
+                            onClick={() => engine.setAutoTradeRule(r, { ...rule, currency: rule.currency === 'east' ? 'west' : 'east' })}
+                            className={`px-1.5 py-0.5 rounded font-bold ${rule.currency === 'east' ? 'bg-red-800' : 'bg-green-900 text-green-100'}`}
+                            title="Trade bloc: East trades in rubles, West in dollars"
+                          >
+                            {rule.currency === 'east' ? '₽' : '$'}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             );
           });
