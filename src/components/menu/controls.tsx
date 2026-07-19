@@ -91,9 +91,10 @@ export function OptionCard({ selected, icon, label, blurb, onClick }: {
  * Inline two-step confirm: the first click arms the button (label swaps,
  * danger styling) for 3 s; the second click commits. No nested modals.
  */
-export function TwoStepButton({ label, confirmLabel, onConfirm, className, disabled, title }: {
+export function TwoStepButton({ label, confirmLabel, onConfirm, className, armedClassName, disabled, title }: {
   label: ReactNode; confirmLabel: ReactNode; onConfirm: () => void;
-  className?: string; disabled?: boolean; title?: string;
+  /** Geometry + palette for both states; arming may only change palette, never size. */
+  className?: string; armedClassName?: string; disabled?: boolean; title?: string;
 }) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
@@ -109,9 +110,7 @@ export function TwoStepButton({ label, confirmLabel, onConfirm, className, disab
         if (armed) { setArmed(false); onConfirm(); }
         else setArmed(true);
       }}
-      className={armed
-        ? 'rounded bg-red-600 px-2 py-1 text-[0.6875rem] font-bold text-white hover:bg-red-500'
-        : className ?? 'rounded bg-red-900/70 px-2 py-1 text-[0.6875rem] font-bold text-yellow-100 hover:bg-red-800 disabled:opacity-40'}
+      className={armed ? armedClassName ?? rowBtnDanger : className ?? rowBtnMuted}
     >
       {armed ? confirmLabel : label}
     </button>
@@ -121,3 +120,14 @@ export function TwoStepButton({ label, confirmLabel, onConfirm, className, disab
 /** Standard primary/secondary menu buttons. */
 export const primaryBtn = 'rounded-lg bg-yellow-500 px-4 py-2 text-sm font-black uppercase tracking-widest text-red-950 hover:bg-yellow-400 shadow-lg disabled:opacity-40';
 export const secondaryBtn = 'rounded-lg bg-red-900/70 border border-yellow-600/40 px-4 py-2 text-sm font-bold uppercase tracking-wider text-yellow-100 hover:bg-red-800';
+
+/**
+ * Compact list-row action buttons (save slots and similar): one fixed height
+ * with flex centering so text and icon-only buttons align. Without this, an
+ * icon-only button's height is set by the line box of the parent's inherited
+ * font — text that is never rendered — and drifts from its text siblings.
+ */
+export const rowBtn = 'flex h-6 shrink-0 items-center justify-center rounded px-2 text-[0.6875rem] font-bold';
+export const rowBtnPrimary = `${rowBtn} bg-yellow-500 text-red-950 hover:bg-yellow-400`;
+export const rowBtnMuted = `${rowBtn} bg-red-900/70 text-yellow-100 hover:bg-red-800 disabled:opacity-40`;
+export const rowBtnDanger = `${rowBtn} bg-red-600 text-white hover:bg-red-500`;

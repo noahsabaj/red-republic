@@ -39,7 +39,7 @@ export function MenuShell({ title, icon, onBack, escDisabled, width = 'max-w-md'
           <span className="flex items-center gap-2 text-yellow-400 font-black uppercase tracking-widest text-xs">
             {icon && <GameIcon name={icon} size={14} />}{title}
           </span>
-          <button onClick={onBack} aria-label="Back" className="text-yellow-200/60 hover:text-yellow-100">
+          <button onClick={onBack} aria-label="Back" className="flex items-center justify-center text-yellow-200/60 hover:text-yellow-100">
             <GameIcon name="close" size={15} />
           </button>
         </header>

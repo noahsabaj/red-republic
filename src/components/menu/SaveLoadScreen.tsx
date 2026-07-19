@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { MenuShell } from './MenuShell';
-import { TwoStepButton, primaryBtn, secondaryBtn } from './controls';
+import { TwoStepButton, primaryBtn, rowBtnMuted, rowBtnPrimary, secondaryBtn } from './controls';
 import { BALANCE, CLIMATES } from '@/game/config';
 import type { GameEngine } from '@/game/engine';
 import { SaveError } from '@/game/save-format';
@@ -124,14 +124,11 @@ export function SaveLoadScreen({ mode, engine, unsavedDays, onBack, onLoad, onSa
             engine && unsavedDays > 0 ? (
               <TwoStepButton
                 label="Load" confirmLabel={`Lose ${unsavedDays}d?`}
-                className="rounded bg-yellow-500 px-2 py-1 text-[0.6875rem] font-bold text-red-950 hover:bg-yellow-400"
+                className={rowBtnPrimary}
                 onConfirm={() => doLoad(m.slotId)}
               />
             ) : (
-              <button
-                onClick={() => doLoad(m.slotId)}
-                className="rounded bg-yellow-500 px-2 py-1 text-[0.6875rem] font-bold text-red-950 hover:bg-yellow-400"
-              >
+              <button onClick={() => doLoad(m.slotId)} className={rowBtnPrimary}>
                 Load
               </button>
             )
@@ -145,7 +142,7 @@ export function SaveLoadScreen({ mode, engine, unsavedDays, onBack, onLoad, onSa
           <button
             onClick={() => void doExport(m.slotId)}
             aria-label="Export this save" title="Export as .json"
-            className="rounded bg-red-900/70 px-2 py-1 text-yellow-200 hover:bg-red-800"
+            className={rowBtnMuted}
           >
             <GameIcon name="download" size={12} />
           </button>
