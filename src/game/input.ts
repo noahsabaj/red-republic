@@ -25,9 +25,22 @@ export interface NormPointerEvent {
 
 export interface NormKeyEvent { key: string; code: string; repeat: boolean }
 
+/** Live user preferences, read per frame (injected so this stays DOM-free). */
+export interface InputOptions {
+  panSpeed: number;    // 0.5..2 multiplier on WASD/edge panning
+  invertZoom: boolean; // flips wheel-zoom direction
+  edgePan: boolean;    // pointer near the viewport edge pans (mouse only)
+}
+
+const DEFAULT_OPTIONS: InputOptions = { panSpeed: 1, invertZoom: false, edgePan: false };
+
+export const EDGE_PAN_MARGIN = 24;      // px from the edge where panning ramps in
+export const EDGE_PAN_FACTOR = 0.8;     // fraction of KEY_PAN_SPEED at full ramp
+
 export interface InputCallbacks {
   getTool(): Tool;
   hotkeysEnabled(): boolean;
+  getViewport(): { w: number; h: number };
   panBy(dx: number, dy: number): void;
   zoomAt(sx: number, sy: number, factor: number): void;
   placeAt(sx: number, sy: number): void;  // build tool, non-road, single-shot
@@ -37,6 +50,7 @@ export interface InputCallbacks {
   setHover(sx: number, sy: number): void;
   clearHover(): void;
   cancelTool(): void;
+  openMenu(): void; // Escape with no tool armed — the pause menu
   togglePause(): void;
   setSpeed(s: 1 | 2 | 4): void;
 }
@@ -55,14 +69,18 @@ export const KEY_PAN_SPEED = 550; // screen px per second
 
 export class InputController {
   private cb: InputCallbacks;
+  private opts: () => InputOptions;
   private mode: Mode = 'idle';
   private pointers = new Map<number, PointerInfo>();
   private gestureId = -1;                       // pointer driving pan/maybeSelect/paint
   private pinchIds: [number, number] | null = null;
   private dragged = false;
+  /** Last mouse position for edge panning; touch never edge-pans. */
+  private lastMouse: { x: number; y: number; onCanvas: boolean } | null = null;
 
-  constructor(cb: InputCallbacks) {
+  constructor(cb: InputCallbacks, opts: () => InputOptions = () => DEFAULT_OPTIONS) {
     this.cb = cb;
+    this.opts = opts;
   }
 
   pointerDown(e: NormPointerEvent): void {
@@ -107,6 +125,7 @@ export class InputController {
   }
 
   pointerMove(e: NormPointerEvent): void {
+    if (!e.isTouch) this.lastMouse = { x: e.x, y: e.y, onCanvas: e.onCanvas };
     if (this.mode !== 'pinch') {
       if (e.onCanvas) this.cb.setHover(e.x, e.y);
       else this.cb.clearHover();
@@ -183,27 +202,52 @@ export class InputController {
   }
 
   pointerLeave(): void {
+    this.lastMouse = null; // the pointer left the window — edge panning stops
     this.cb.clearHover();
   }
 
   wheel(e: { x: number; y: number; deltaY: number }): void {
-    this.cb.zoomAt(e.x, e.y, e.deltaY < 0 ? 1.15 : 0.87);
+    const zoomIn = (e.deltaY < 0) !== this.opts().invertZoom;
+    this.cb.zoomAt(e.x, e.y, zoomIn ? 1.15 : 0.87);
   }
 
   private heldPan = new Set<string>();
 
-  /** Per-frame update — applies held-WASD panning. Call from the rAF loop. */
+  /** Per-frame update — applies held-WASD and edge panning. Call from the rAF loop. */
   tick(dtMs: number): void {
-    if (this.heldPan.size === 0) return;
-    if (!this.cb.hotkeysEnabled()) { this.heldPan.clear(); return; }
-    let dx = 0, dy = 0;
-    for (const code of this.heldPan) {
-      const dir = PAN_KEYS[code];
-      dx += dir[0]; dy += dir[1];
+    const enabled = this.cb.hotkeysEnabled();
+    const o = this.opts();
+
+    if (this.heldPan.size > 0) {
+      if (!enabled) {
+        this.heldPan.clear();
+      } else {
+        let dx = 0, dy = 0;
+        for (const code of this.heldPan) {
+          const dir = PAN_KEYS[code];
+          dx += dir[0]; dy += dir[1];
+        }
+        if (dx !== 0 || dy !== 0) { // opposing keys cancel
+          const v = (KEY_PAN_SPEED * o.panSpeed * dtMs) / 1000 / Math.hypot(dx, dy); // diagonals not faster
+          this.cb.panBy(dx * v, dy * v);
+        }
+      }
     }
-    if (dx === 0 && dy === 0) return; // opposing keys cancel
-    const v = (KEY_PAN_SPEED * dtMs) / 1000 / Math.hypot(dx, dy); // diagonals not faster
-    this.cb.panBy(dx * v, dy * v);
+
+    // edge panning: mouse resting near a viewport edge, only while no gesture
+    // is in progress (a captured drag-pan would double-apply) and only when the
+    // topmost element is the canvas (hovering the HUD must not scroll the map)
+    if (o.edgePan && enabled && this.mode === 'idle' && this.lastMouse?.onCanvas) {
+      const { w, h } = this.cb.getViewport();
+      const ramp = (d: number) => Math.max(0, Math.min(1, (EDGE_PAN_MARGIN - d) / EDGE_PAN_MARGIN));
+      // left edge → view west → positive panBy x (same convention as KeyA)
+      const sx = ramp(this.lastMouse.x) - ramp(w - this.lastMouse.x);
+      const sy = ramp(this.lastMouse.y) - ramp(h - this.lastMouse.y);
+      if (sx !== 0 || sy !== 0) {
+        const v = (KEY_PAN_SPEED * o.panSpeed * EDGE_PAN_FACTOR * dtMs) / 1000;
+        this.cb.panBy(sx * v, sy * v);
+      }
+    }
   }
 
   keyUp(e: NormKeyEvent): void {
@@ -214,7 +258,12 @@ export class InputController {
   key(e: NormKeyEvent): boolean {
     if (!this.cb.hotkeysEnabled()) return false;
     if (e.code in PAN_KEYS) { this.heldPan.add(e.code); return true; }
-    if (e.key === 'Escape') { this.cb.cancelTool(); return true; }
+    if (e.key === 'Escape') {
+      // tool armed → disarm it; otherwise Escape means "open the pause menu"
+      if (this.cb.getTool().kind !== 'select') this.cb.cancelTool();
+      else this.cb.openMenu();
+      return true;
+    }
     if (e.code === 'Space') {
       if (!e.repeat) this.cb.togglePause(); // auto-repeat must not rapid-toggle
       return true;
@@ -233,6 +282,7 @@ export class InputController {
     this.gestureId = -1;
     this.dragged = false;
     this.heldPan.clear();
+    this.lastMouse = null;
     this.cb.clearHover();
   }
 }

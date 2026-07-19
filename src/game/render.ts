@@ -2,7 +2,6 @@
 // Isometric canvas renderer
 // ============================================================
 import { BALANCE, BUILDINGS, RESOURCES } from './config';
-import { MAP_W, MAP_H } from './mapgen';
 import { drawIcon } from '@/ui/icons';
 import type { GameEngine, BuildingInst, Season, Truck } from './engine';
 import type { WeatherCondition } from './weather';
@@ -19,7 +18,41 @@ export interface UIState {
   tool: { kind: 'select' } | { kind: 'build'; defId: string } | { kind: 'bulldoze' };
   selection: SelectionItem[];
   time: number; // ms, for animation
+  showGrid?: boolean;      // tile-lattice overlay (display setting)
+  reducedMotion?: boolean; // no decorative animation (accessibility setting)
+  palette?: StatusPalette; // status colors; defaults to STATUS_PALETTES.default
 }
+
+/** Placement/status colors, swappable for the colorblind-safe variant. */
+export interface StatusPalette {
+  okFill: string; okStroke: string;
+  badFill: string; badStroke: string;
+  bulldozeFill: string; bulldozeStroke: string;
+  selection: string;
+  badgePower: string; badgeCold: string;
+  /** shape cue: cross out invalid ghosts (hue alone can't carry the signal) */
+  crossInvalid: boolean;
+}
+
+export const STATUS_PALETTES: Record<'default' | 'colorblind', StatusPalette> = {
+  default: {
+    okFill: 'rgba(80,255,120,0.5)', okStroke: '#4dff7a',
+    badFill: 'rgba(255,70,70,0.5)', badStroke: '#ff5050',
+    bulldozeFill: 'rgba(255,60,60,0.4)', bulldozeStroke: '#ff4040',
+    selection: '#ffd94d',
+    badgePower: '#ffb02e', badgeCold: '#bfe3ff',
+    crossInvalid: false,
+  },
+  // blue-valid / orange-invalid: the deutan/protan-safe axis
+  colorblind: {
+    okFill: 'rgba(60,145,255,0.5)', okStroke: '#4d90ff',
+    badFill: 'rgba(255,150,40,0.55)', badStroke: '#ff9628',
+    bulldozeFill: 'rgba(255,150,40,0.45)', bulldozeStroke: '#ff9628',
+    selection: '#ffffff',
+    badgePower: '#ffd166', badgeCold: '#7fc8ff',
+    crossInvalid: true,
+  },
+};
 
 // Bare-season bases: winter is dormant, not white — snow cover (a sim value,
 // engine.weather.snowDepth) whitens the world gradually via tint().
@@ -160,11 +193,12 @@ interface DepthItem {
   foreign?: boolean;
 }
 
-// farm-field membership only changes when the world changes — cache per engine version
-let fieldCache: { version: number; tiles: Set<number> } | null = null;
+// farm-field membership only changes when the world changes — cache per engine
+// version AND identity (a freshly loaded engine restarts its version counter)
+let fieldCache: { engine: GameEngine; version: number; tiles: Set<number> } | null = null;
 
 function fieldTilesOf(engine: GameEngine): Set<number> {
-  if (fieldCache && fieldCache.version === engine.getVersion()) return fieldCache.tiles;
+  if (fieldCache && fieldCache.engine === engine && fieldCache.version === engine.getVersion()) return fieldCache.tiles;
   const tiles = new Set<number>();
   for (const b of engine.buildings.values()) {
     const def = BUILDINGS[b.defId];
@@ -172,10 +206,10 @@ function fieldTilesOf(engine: GameEngine): Set<number> {
     for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
       const tx = b.x + dx, ty = b.y + dy;
       const t = engine.tiles[ty]?.[tx];
-      if (t && t.terrain === 'grass' && !t.buildingId && !t.road && !t.deposit) tiles.add(ty * MAP_W + tx);
+      if (t && t.terrain === 'grass' && !t.buildingId && !t.road && !t.deposit) tiles.add(ty * engine.mapW + tx);
     }
   }
-  fieldCache = { version: engine.getVersion(), tiles };
+  fieldCache = { engine, version: engine.getVersion(), tiles };
   return tiles;
 }
 
@@ -213,6 +247,8 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
     time: ui.time,
     season,
     snowT,
+    reduced: ui.reducedMotion ?? false,
+    palette: ui.palette ?? STATUS_PALETTES.default,
     fontSite: `bold ${Math.max(9, Math.round(10 * cam.z))}px sans-serif`,
     fontDeposit: `${Math.max(6, Math.round(9 * cam.z))}px sans-serif`,
     treeShade0: '', treeShade1: '',
@@ -256,7 +292,8 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
       if (!def.housingCapacity || !b.constructed) continue;
       const n = Math.min(3, Math.ceil(def.housingCapacity / 12));
       for (let i = 0; i < n; i++) {
-        const ph = ui.time / 1400 + b.id * 1.7 + i * 2.1;
+        // reduced motion: citizens stand at fixed deterministic spots
+        const ph = (frame.reduced ? 0 : ui.time / 1400) + b.id * 1.7 + i * 2.1;
         const wx = b.x + b.w / 2 + Math.sin(ph) * (b.w / 2 + 0.6);
         const wy = b.y + b.h / 2 + Math.cos(ph * 0.8) * (b.h / 2 + 0.6);
         items.push({ x: wx, y: wy, w: 0, h: 0, kind: 'citizen', wx, wy });
@@ -273,8 +310,8 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
 
   const hwz = (TILE_W / 2) * cam.z;
   const hhz = (TILE_H / 2) * cam.z;
-  for (let y = 0; y < MAP_H; y++) {
-    for (let x = 0; x < MAP_W; x++) {
+  for (let y = 0; y < engine.mapH; y++) {
+    for (let x = 0; x < engine.mapW; x++) {
       // allocation-free viewport cull (corner extremes in closed form)
       const minX = (x - y - 1) * hwz + cam.x;
       if (minX > vw + 80 || minX + 2 * hwz < -80) continue;
@@ -301,10 +338,18 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
           else if (t.terrain === 'forest') fill = even ? forest1 : forest2;
         }
         poly(ctx, [c0, c1, c2, c3], fill);
+        // tile grid: two edges per tile stroke the whole lattice exactly once
+        if (ui.showGrid) {
+          ctx.strokeStyle = 'rgba(20,24,20,0.20)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(c3.x, c3.y); ctx.lineTo(c0.x, c0.y); ctx.lineTo(c1.x, c1.y);
+          ctx.stroke();
+        }
       }
 
       // farm fields
-      if (fieldTiles.has(y * MAP_W + x)) {
+      if (fieldTiles.has(y * engine.mapW + x)) {
         ctx.globalAlpha = 0.85;
         poly(ctx, [lerpP(c0, c2, 0.12), lerpP(c1, c3, 0.12), lerpP(c2, c0, 0.12), lerpP(c3, c1, 0.12)], frame.fieldCol);
         ctx.globalAlpha = 1;
@@ -378,7 +423,7 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
         drawTruck(ctx, it.tr!, it.wx!, it.wy!, cam, it.foreign);
         break;
       case 'boat':
-        drawBoat(ctx, it.tr!, it.wx!, it.wy!, cam, ui.time);
+        drawBoat(ctx, it.tr!, it.wx!, it.wy!, cam, frame.reduced ? null : ui.time);
         break;
       case 'citizen': {
         const p = toScreen(it.wx!, it.wy!, cam);
@@ -396,13 +441,13 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
 
   // weather atmosphere — lighting scrim, precipitation, lightning, fog —
   // over the world, under the selection UI
-  drawWeather(ctx, engine.weather.condition, ui.time, vw, vh);
+  drawWeather(ctx, engine.weather.condition, ui.time, vw, vh, frame.reduced);
 
   // selection highlights (deliberate overlay — dashed outlines read as UI)
   if (ui.selection.length) {
     ctx.setLineDash([6, 4]);
-    ctx.lineDashOffset = -ui.time / 60;
-    ctx.strokeStyle = '#ffd94d';
+    ctx.lineDashOffset = frame.reduced ? 0 : -ui.time / 60;
+    ctx.strokeStyle = frame.palette.selection;
     ctx.lineWidth = 2;
     for (const sel of ui.selection) {
       let rect: { x: number; y: number; w: number; h: number } | null = null;
@@ -428,17 +473,26 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
 // depth position (see ghostRow in render())
 function drawGhost(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: Camera, ui: UIState) {
   if (!ui.hoverTile) return;
+  const pal = ui.palette ?? STATUS_PALETTES.default;
   if (ui.tool.kind === 'build') {
     const defId = ui.tool.defId;
     const def = BUILDINGS[defId];
     const [w, h] = def.size;
     const chk = engine.canPlace(defId, ui.hoverTile.x, ui.hoverTile.y);
-    const col = chk.ok ? 'rgba(80,255,120,0.5)' : 'rgba(255,70,70,0.5)';
     const c0 = toScreen(ui.hoverTile.x, ui.hoverTile.y, cam);
     const c1 = toScreen(ui.hoverTile.x + w, ui.hoverTile.y, cam);
     const c2 = toScreen(ui.hoverTile.x + w, ui.hoverTile.y + h, cam);
     const c3 = toScreen(ui.hoverTile.x, ui.hoverTile.y + h, cam);
-    poly(ctx, [c0, c1, c2, c3], col, chk.ok ? '#4dff7a' : '#ff5050');
+    poly(ctx, [c0, c1, c2, c3], chk.ok ? pal.okFill : pal.badFill, chk.ok ? pal.okStroke : pal.badStroke);
+    if (!chk.ok && pal.crossInvalid) {
+      // shape cue: hue alone must not carry valid/invalid
+      ctx.strokeStyle = pal.badStroke;
+      ctx.lineWidth = Math.max(1.5, 2 * cam.z);
+      ctx.beginPath();
+      ctx.moveTo(c0.x, c0.y); ctx.lineTo(c2.x, c2.y);
+      ctx.moveTo(c1.x, c1.y); ctx.lineTo(c3.x, c3.y);
+      ctx.stroke();
+    }
     if (chk.ok && defId !== 'road') {
       ctx.globalAlpha = 0.9;
       drawIcon(ctx, def.icon, c2.x, c2.y - 18 * cam.z, 18 * cam.z);
@@ -449,7 +503,7 @@ function drawGhost(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: Camer
     const c1 = toScreen(ui.hoverTile.x + 1, ui.hoverTile.y, cam);
     const c2 = toScreen(ui.hoverTile.x + 1, ui.hoverTile.y + 1, cam);
     const c3 = toScreen(ui.hoverTile.x, ui.hoverTile.y + 1, cam);
-    poly(ctx, [c0, c1, c2, c3], 'rgba(255,60,60,0.4)', '#ff4040');
+    poly(ctx, [c0, c1, c2, c3], pal.bulldozeFill, pal.bulldozeStroke);
   }
 }
 
@@ -481,7 +535,7 @@ function drawWater(ctx: CanvasRenderingContext2D, engine: GameEngine, x: number,
   if (!nW) bank(c0, c3, c1, c2);
 
   // calm glints that breathe in and out (a frozen river lies still)
-  if (!engine.weather.riverFrozen) {
+  if (!engine.weather.riverFrozen && !frame.reduced) {
     const v = engine.tiles[y][x].variant;
     for (let i = 0; i < 2; i++) {
       const fx = 0.18 + ((v * 37 + i * 0.43) % 0.5);
@@ -532,16 +586,19 @@ const SCRIM: Partial<Record<WeatherCondition, string>> = {
   fog: 'rgba(158,170,184,0.34)',
 };
 
-function drawWeather(ctx: CanvasRenderingContext2D, cond: WeatherCondition, time: number, vw: number, vh: number) {
+function drawWeather(ctx: CanvasRenderingContext2D, cond: WeatherCondition, time: number, vw: number, vh: number, reduced = false) {
   if (cond === 'clear') return;
   const scrim = SCRIM[cond];
   if (scrim) { ctx.fillStyle = scrim; ctx.fillRect(0, 0, vw, vh); }
 
   if (cond === 'fog') {
-    // soft banks of fog drifting slowly down the view
-    for (let i = 0; i < 3; i++) {
+    // soft banks of fog; a single static mid-screen band under reduced motion
+    // (the scrim above keeps the condition readable either way)
+    for (let i = 0; i < (reduced ? 1 : 3); i++) {
       const bandH = vh * 0.16;
-      const y = fract(time / (26000 + i * 9000) + i * 0.37) * (vh + bandH) - bandH / 2;
+      const y = reduced
+        ? vh * 0.45
+        : fract(time / (26000 + i * 9000) + i * 0.37) * (vh + bandH) - bandH / 2;
       const gr = ctx.createLinearGradient(0, y, 0, y + bandH);
       gr.addColorStop(0, 'rgba(190,200,212,0)');
       gr.addColorStop(0.5, 'rgba(190,200,212,0.22)');
@@ -551,6 +608,10 @@ function drawWeather(ctx: CanvasRenderingContext2D, cond: WeatherCondition, time
     }
     return;
   }
+
+  // reduced motion: no particles, no lightning — never freeze `time` instead,
+  // a frozen clock could park the lightning branch inside a flash frame
+  if (reduced) return;
 
   const snowfall = cond === 'snow' || cond === 'blizzard';
   if (snowfall || cond === 'rain' || cond === 'storm') {
@@ -600,6 +661,8 @@ interface FrameStyle {
   time: number;
   season: Season;
   snowT: number; // 0..0.85 whitening from simulated snow depth
+  reduced: boolean; // reduced motion: sim movement stays, decoration freezes
+  palette: StatusPalette;
   fontSite: string;
   fontDeposit: string;
   treeShade0: string;
@@ -622,17 +685,17 @@ function borderPosts(engine: GameEngine): Pt[] {
   if (!edge) return [];
   const D = BALANCE.borderDepth;
   const posts: Pt[] = [];
-  const alongMax = edge === 'N' || edge === 'S' ? MAP_W : MAP_H;
+  const alongMax = edge === 'N' || edge === 'S' ? engine.mapW : engine.mapH;
   for (let u = 0; u <= alongMax; u += 2) {
     // the two foreign-side tiles flanking this corner
-    const f1 = edge === 'W' ? { x: D - 1, y: u } : edge === 'E' ? { x: MAP_W - D, y: u }
-      : edge === 'N' ? { x: u, y: D - 1 } : { x: u, y: MAP_H - D };
+    const f1 = edge === 'W' ? { x: D - 1, y: u } : edge === 'E' ? { x: engine.mapW - D, y: u }
+      : edge === 'N' ? { x: u, y: D - 1 } : { x: u, y: engine.mapH - D };
     const f2 = edge === 'N' || edge === 'S' ? { x: f1.x - 1, y: f1.y } : { x: f1.x, y: f1.y - 1 };
     const t1 = engine.tiles[f1.y]?.[f1.x], t2 = engine.tiles[f2.y]?.[f2.x];
     if (t1 && (t1.road || t1.terrain === 'water')) continue;
     if (t2 && (t2.road || t2.terrain === 'water')) continue;
-    posts.push(edge === 'W' ? { x: D, y: u } : edge === 'E' ? { x: MAP_W - D, y: u }
-      : edge === 'N' ? { x: u, y: D } : { x: u, y: MAP_H - D });
+    posts.push(edge === 'W' ? { x: D, y: u } : edge === 'E' ? { x: engine.mapW - D, y: u }
+      : edge === 'N' ? { x: u, y: D } : { x: u, y: engine.mapH - D });
   }
   return posts;
 }
@@ -765,10 +828,10 @@ function drawRoad(ctx: CanvasRenderingContext2D, engine: GameEngine, x: number, 
   ctx.setLineDash([]);
 }
 
-function drawBoat(ctx: CanvasRenderingContext2D, boat: Truck, wx: number, wy: number, cam: Camera, time: number) {
+function drawBoat(ctx: CanvasRenderingContext2D, boat: Truck, wx: number, wy: number, cam: Camera, time: number | null) {
   const p = toScreen(wx, wy, cam);
   const s = cam.z;
-  const y = p.y + Math.sin(time / 600 + boat.id * 1.3) * 0.8 * s; // gentle bob
+  const y = time === null ? p.y : p.y + Math.sin(time / 600 + boat.id * 1.3) * 0.8 * s; // gentle bob (null = reduced motion)
   // wake
   ctx.strokeStyle = 'rgba(255,255,255,0.25)';
   ctx.lineWidth = Math.max(1, 1.2 * s);
@@ -855,8 +918,9 @@ function drawBuilding(ctx: CanvasRenderingContext2D, b: BuildingInst, cam: Camer
       ctx.fillRect(tp.x - cw / 2, tp.y - ch, cw, ch);
       ctx.fillStyle = '#5a2b1e';
       ctx.fillRect(tp.x - cw / 2 - 1, tp.y - ch - 2, cw + 2, 3);
-      // smoke while the plant is actually running
-      if (b.eff > 0.05) {
+      // smoke while the plant is actually running (a decorative particle —
+      // reduced motion drops it; the badge/eff readouts carry the signal)
+      if (b.eff > 0.05 && !frame.reduced) {
         for (let s = 0; s < 3; s++) {
           const ph = ((frame.time / 1800 + s * 0.33 + i * 0.5 + b.id * 0.17) % 1);
           ctx.globalAlpha = 0.28 * (1 - ph);
@@ -876,9 +940,9 @@ function drawBuilding(ctx: CanvasRenderingContext2D, b: BuildingInst, cam: Camer
 
   // status badges above the roof
   const badges: { icon: string; color: string }[] = [];
-  if (unpowered) badges.push({ icon: 'power', color: '#ffb02e' });
+  if (unpowered) badges.push({ icon: 'power', color: frame.palette.badgePower });
   if (!b.connected) badges.push({ icon: 'ban', color: '#ff6b5e' });
-  if (def.heat > 0 && !b.heated) badges.push({ icon: 'freeze', color: '#bfe3ff' });
+  if (def.heat > 0 && !b.heated) badges.push({ icon: 'freeze', color: frame.palette.badgeCold });
   let sx = mid.x - ((badges.length - 1) * 12 * cam.z) / 2;
   const sy = mid.y - 16 * cam.z;
   for (const badge of badges) {

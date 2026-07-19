@@ -35,7 +35,7 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
   return (
     <div className="absolute left-0 top-24 bottom-0 z-10 flex pointer-events-none">
       <div className="pointer-events-auto flex flex-col w-56 m-2 rounded-lg border-2 border-yellow-600/60 bg-red-950/95 text-yellow-50 shadow-2xl overflow-hidden">
-        <div className="px-2 py-1.5 text-[11px] font-black uppercase tracking-widest text-yellow-400 bg-red-900/60">Construction</div>
+        <div className="px-2 py-1.5 text-[0.6875rem] font-black uppercase tracking-widest text-yellow-400 bg-red-900/60">Construction</div>
 
         <div className="flex border-b border-yellow-600/30">
           {CATS.map(c => (
@@ -68,7 +68,7 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
                 <GameIcon name={def.icon} size={18} className="mt-0.5 text-yellow-200" />
                 <span className="flex-1 min-w-0">
                   <span className="block text-xs font-bold truncate">{def.name}</span>
-                  <span className="block text-[10px] text-yellow-200/60">
+                  <span className="block text-[0.625rem] text-yellow-200/60">
                     {buildCostText(engine, id, instantBuild)}
                     {def.workers > 0 && <span> · <GameIcon name="staff" size={10} />{def.workers}</span>}
                     {Object.keys(def.materials).length > 0 && !instantBuild && (
@@ -77,7 +77,7 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
                       ))}</span>
                     )}
                   </span>
-                  <span className="hidden group-hover:block text-[10px] text-yellow-100/80 leading-tight mt-0.5">{def.description}</span>
+                  <span className="hidden group-hover:block text-[0.625rem] text-yellow-100/80 leading-tight mt-0.5">{def.description}</span>
                 </span>
               </button>
             );
@@ -85,7 +85,7 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
         </div>
 
         <div className="border-t border-yellow-600/30 p-2 space-y-1.5">
-          <label className="flex items-center gap-2 text-[11px] cursor-pointer select-none" title="Pay dollars to finish construction instantly, no materials or builders needed">
+          <label className="flex items-center gap-2 text-[0.6875rem] cursor-pointer select-none" title="Pay dollars to finish construction instantly, no materials or builders needed">
             <input type="checkbox" checked={instantBuild} onChange={e => setInstantBuild(e.target.checked)} className="accent-yellow-500" />
             <span>Instant build (Western $)</span>
           </label>
@@ -95,7 +95,7 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
           >
             <GameIcon name="bulldoze" size={12} /> Bulldoze
           </button>
-          <div className="text-[9px] text-yellow-200/40 leading-tight">
+          <div className="text-[0.5625rem] text-yellow-200/40 leading-tight">
             Left-click: place · Shift/Ctrl+click: multi-select · drag: paint roads · right-drag/WASD: pan · wheel: zoom · Esc: cancel · Space: pause
           </div>
         </div>

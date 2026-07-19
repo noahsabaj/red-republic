@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ALL_RESOURCES, BALANCE } from '../config';
 import { GameEngine } from '../engine';
-import { MAP_W } from '../mapgen';
+import { DEFAULT_MAP_W as MAP_W } from '../mapgen';
 import { CALM_WEATHER, flatBorderMap, layRoad, makeEngine, placeBuilt, runDays, totalOf } from './helpers';
 
 /**

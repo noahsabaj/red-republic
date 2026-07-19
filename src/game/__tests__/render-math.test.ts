@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hash01, isoCompare, pickBuilding, precipParticle, screenToTile, toScreen, truckWorldPos, type Camera } from '../render';
+import { STATUS_PALETTES, hash01, isoCompare, pickBuilding, precipParticle, screenToTile, toScreen, truckWorldPos, type Camera } from '../render';
 import type { Truck } from '../engine';
 import { makeEngine, placeBuilt } from './helpers';
 
@@ -11,6 +11,15 @@ describe('coordinate transforms', () => {
       const p = toScreen(tx + 0.5, ty + 0.5, cam); // center of tile
       expect(screenToTile(p.x, p.y, cam)).toEqual({ x: tx, y: ty });
     }
+  });
+});
+
+describe('status palettes', () => {
+  it('every variant defines exactly the same keys, and colorblind adds the shape cue', () => {
+    const keySets = Object.values(STATUS_PALETTES).map(p => Object.keys(p).sort().join(','));
+    expect(new Set(keySets).size).toBe(1);
+    expect(STATUS_PALETTES.default.crossInvalid).toBe(false);
+    expect(STATUS_PALETTES.colorblind.crossInvalid).toBe(true);
   });
 });
 

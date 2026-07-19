@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generateMap, MAP_H, MAP_W } from '../mapgen';
+import { generateMap, DEFAULT_MAP_H as MAP_H, DEFAULT_MAP_W as MAP_W } from '../mapgen';
 
 describe('generateMap', () => {
   it('is deterministic for a given seed', () => {

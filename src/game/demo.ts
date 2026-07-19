@@ -1,6 +1,5 @@
 // Demo town seeder — opens a developed republic via ?demo in the URL
 import type { GameEngine } from './engine';
-import { MAP_W, MAP_H } from './mapgen';
 
 export function seedDemoTown(e: GameEngine) {
   const depot = [...e.buildings.values()].find(b => b.defId === 'depot')!;
@@ -13,8 +12,8 @@ export function seedDemoTown(e: GameEngine) {
   // both foreign strips) and a connector road ties it back to the depot.
   const shift = e.borderEdge === 'W' ? [15, 0] : e.borderEdge === 'E' ? [-15, 0]
     : e.borderEdge === 'N' ? [0, 8] : e.borderEdge === 'S' ? [0, -13] : [0, 0];
-  const gx = Math.max(14, Math.min(MAP_W - 15, sx + shift[0]));
-  const gy = Math.max(4, Math.min(MAP_H - 13, sy + shift[1]));
+  const gx = Math.max(14, Math.min(e.mapW - 15, sx + shift[0]));
+  const gy = Math.max(4, Math.min(e.mapH - 13, sy + shift[1]));
 
   const road = (x: number, y: number) => {
     const t = e.tiles[y]?.[x];

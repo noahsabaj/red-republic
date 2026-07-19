@@ -13,18 +13,26 @@ export interface Tile {
   variant: number;     // visual variation seed 0..1
 }
 
-export const MAP_W = 48;
-export const MAP_H = 48;
+// Default map dimensions; runtime dimensions live on MapData / engine.mapW/mapH.
+export const DEFAULT_MAP_W = 48;
+export const DEFAULT_MAP_H = 48;
 
-// deterministic rng (shared with the engine for economy drift)
-export function mulberry32(seed: number) {
+// deterministic rng (shared with the engine for economy drift). State is
+// exposed so save/load can restore a stream's exact position mid-sequence.
+export type SeededRng = (() => number) & { getState(): number; setState(s: number): void };
+
+export function mulberry32(seed: number): SeededRng {
   let a = seed >>> 0;
-  return () => {
+  const next = () => {
     a |= 0; a = (a + 0x6d2b79f5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+  return Object.assign(next, {
+    getState: () => a >>> 0,
+    setState: (s: number) => { a = s >>> 0; },
+  });
 }
 
 export interface MapData {
@@ -51,12 +59,12 @@ function carveDisk(tiles: Tile[][], cx: number, cy: number, r: number) {
  * (repelled from the starting base). Once per river it may briefly fork
  * into a second channel, leaving an island between the two arms.
  */
-function carveRiver(tiles: Tile[][], rnd: () => number, sx: number, sy: number) {
+function carveRiver(tiles: Tile[][], w: number, h: number, rnd: () => number, sx: number, sy: number) {
   const edgePoint = (edge: number) =>
-    edge === 0 ? { x: 3 + rnd() * (MAP_W - 6), y: -1 }
-    : edge === 1 ? { x: 3 + rnd() * (MAP_W - 6), y: MAP_H }
-    : edge === 2 ? { x: -1, y: 3 + rnd() * (MAP_H - 6) }
-    : { x: MAP_W, y: 3 + rnd() * (MAP_H - 6) };
+    edge === 0 ? { x: 3 + rnd() * (w - 6), y: -1 }
+    : edge === 1 ? { x: 3 + rnd() * (w - 6), y: h }
+    : edge === 2 ? { x: -1, y: 3 + rnd() * (h - 6) }
+    : { x: w, y: 3 + rnd() * (h - 6) };
   const e1 = Math.floor(rnd() * 4);
   let e2 = Math.floor(rnd() * 4);
   while (e2 === e1) e2 = Math.floor(rnd() * 4);
@@ -66,7 +74,9 @@ function carveRiver(tiles: Tile[][], rnd: () => number, sx: number, sy: number) 
   let width = 1.5 + rnd() * 0.6;
   let forkUsed = false, forkRemaining = 0, forkTotal = 0;
 
-  for (let step = 0; step < 400; step++) {
+  // step cap scales with the longest edge (equals the old 400 at 48x48)
+  const maxSteps = Math.round(400 * Math.max(w, h) / 48);
+  for (let step = 0; step < maxSteps; step++) {
     const dx = b.x - px, dy = b.y - py;
     const dist = Math.hypot(dx, dy);
     if (dist < 1) break;
@@ -102,10 +112,10 @@ function carveRiver(tiles: Tile[][], rnd: () => number, sx: number, sy: number) 
 }
 
 /** A blobby lake (wobbled radius); big ones sometimes hold an island. */
-function carveLake(tiles: Tile[][], rnd: () => number, sx: number, sy: number) {
+function carveLake(tiles: Tile[][], w: number, h: number, rnd: () => number, sx: number, sy: number) {
   for (let tries = 0; tries < 20; tries++) {
-    const cx = 5 + rnd() * (MAP_W - 10);
-    const cy = 5 + rnd() * (MAP_H - 10);
+    const cx = 5 + rnd() * (w - 10);
+    const cy = 5 + rnd() * (h - 10);
     if (Math.hypot(cx - sx, cy - sy) < 13) continue;
     const R = 2.4 + rnd() * 2.6;
     const phase = rnd() * Math.PI * 2;
@@ -126,12 +136,18 @@ function carveLake(tiles: Tile[][], rnd: () => number, sx: number, sy: number) {
   }
 }
 
-export function generateMap(seed = 1961): MapData {
+// Feature densities scale with area relative to the classic 48x48 map. Every
+// expression below MUST equal its original literal at 48x48 and consume rnd()
+// in the same order — `?seed=N` reproducibility is a player-facing promise
+// (mapgen-snapshot.test.ts is the tripwire).
+export function generateMap(seed = 1961, w = DEFAULT_MAP_W, h = DEFAULT_MAP_H): MapData {
+  if (w < 32 || h < 32 || w > 128 || h > 128) throw new Error(`generateMap: size ${w}x${h} out of range (32..128)`);
+  const areaScale = (w * h) / (48 * 48);
   const rnd = mulberry32(seed);
   const tiles: Tile[][] = [];
-  for (let y = 0; y < MAP_H; y++) {
+  for (let y = 0; y < h; y++) {
     const row: Tile[] = [];
-    for (let x = 0; x < MAP_W; x++) {
+    for (let x = 0; x < w; x++) {
       row.push({ terrain: 'grass', variant: rnd() });
     }
     tiles.push(row);
@@ -143,28 +159,28 @@ export function generateMap(seed = 1961): MapData {
   const D = BALANCE.borderDepth;
   const toXY = (v: number, u: number) =>
     border === 'W' ? { x: v, y: u }
-    : border === 'E' ? { x: MAP_W - 1 - v, y: u }
+    : border === 'E' ? { x: w - 1 - v, y: u }
     : border === 'N' ? { x: u, y: v }
-    : { x: u, y: MAP_H - 1 - v };
-  const alongMax = border === 'N' || border === 'S' ? MAP_W : MAP_H;
+    : { x: u, y: h - 1 - v };
+  const alongMax = border === 'N' || border === 'S' ? w : h;
 
-  // --- Water: a river with a random course, plus 0-2 lakes ---
+  // --- Water: a river with a random course, plus 0-2 lakes (more when vast) ---
   // The town spawns a short walk inside the border — a border town, not a frontier outpost.
   const startU = 14 + Math.floor(rnd() * (alongMax - 28));
   const { x: startX, y: startY } = toXY(D + 8, startU);
-  carveRiver(tiles, rnd, startX, startY);
-  const lakeCount = Math.floor(rnd() * 3);
-  for (let i = 0; i < lakeCount; i++) carveLake(tiles, rnd, startX, startY);
+  carveRiver(tiles, w, h, rnd, startX, startY);
+  const lakeCount = Math.floor(rnd() * (1 + Math.round(2 * areaScale)));
+  for (let i = 0; i < lakeCount; i++) carveLake(tiles, w, h, rnd, startX, startY);
 
   // --- Forest patches (blobby) ---
-  const forestSpots = 16;
+  const forestSpots = Math.round(16 * areaScale);
   for (let i = 0; i < forestSpots; i++) {
-    const cx = 6 + Math.floor(rnd() * (MAP_W - 8));
-    const cy = Math.floor(rnd() * MAP_H);
+    const cx = 6 + Math.floor(rnd() * (w - 8));
+    const cy = Math.floor(rnd() * h);
     const r = 2 + Math.floor(rnd() * 3);
     for (let y = cy - r; y <= cy + r; y++) {
       for (let x = cx - r; x <= cx + r; x++) {
-        if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) continue;
+        if (x < 0 || x >= w || y < 0 || y >= h) continue;
         const d = Math.hypot(x - cx, y - cy);
         if (d <= r && rnd() > 0.25 && tiles[y][x].terrain === 'grass') {
           tiles[y][x].terrain = 'forest';
@@ -174,11 +190,13 @@ export function generateMap(seed = 1961): MapData {
   }
 
   // --- Deposits ---
-  const placeDeposits = (type: DepositType, count: number, cluster: number) => {
+  const placeDeposits = (type: DepositType, baseCount: number, cluster: number) => {
+    const count = Math.max(2, Math.round(baseCount * areaScale));
+    const maxGuard = Math.max(500, Math.round(500 * areaScale));
     let placed = 0, guard = 0;
-    while (placed < count && guard++ < 500) {
-      const cx = 8 + Math.floor(rnd() * (MAP_W - 10));
-      const cy = 2 + Math.floor(rnd() * (MAP_H - 4));
+    while (placed < count && guard++ < maxGuard) {
+      const cx = 8 + Math.floor(rnd() * (w - 10));
+      const cy = 2 + Math.floor(rnd() * (h - 4));
       // keep distance from the starting area
       if (Math.hypot(cx - startX, cy - startY) < 6) continue;
       let ok = true;
@@ -222,9 +240,9 @@ export function generateMap(seed = 1961): MapData {
   }
 
   // --- Foreign strip: flag the border edge, no deposits on the other side ---
-  for (let y = 0; y < MAP_H; y++) {
-    for (let x = 0; x < MAP_W; x++) {
-      const v = border === 'W' ? x : border === 'E' ? MAP_W - 1 - x : border === 'N' ? y : MAP_H - 1 - y;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const v = border === 'W' ? x : border === 'E' ? w - 1 - x : border === 'N' ? y : h - 1 - y;
       if (v < D) { tiles[y][x].foreign = true; tiles[y][x].deposit = undefined; }
     }
   }

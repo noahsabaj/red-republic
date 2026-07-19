@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generateMap, MAP_W, MAP_H } from '../mapgen';
+import { generateMap, DEFAULT_MAP_W as MAP_W, DEFAULT_MAP_H as MAP_H } from '../mapgen';
 import type { BorderEdge, MapData } from '../mapgen';
 import { GameEngine } from '../engine';
 import { BALANCE } from '../config';

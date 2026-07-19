@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getSettings } from '@/app/settings';
 
 export interface Toast { id: number; text: string; kind: 'good' | 'bad' | 'info'; icon?: string }
 
@@ -19,8 +20,16 @@ export function useToasts() {
     const timer = setTimeout(() => {
       timers.current.delete(timer);
       setToasts(ts => ts.filter(t => t.id !== id));
-    }, 4200);
+    }, getSettings().toastSeconds * 1000); // lifetime captured at push time
     timers.current.add(timer);
   }, []);
-  return { toasts, push };
+
+  // wipe everything on session swaps so stale toasts don't outlive their world
+  const clear = useCallback(() => {
+    for (const t of timers.current) clearTimeout(t);
+    timers.current.clear();
+    setToasts([]);
+  }, []);
+
+  return { toasts, push, clear };
 }

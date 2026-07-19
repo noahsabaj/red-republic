@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import type { Toast } from '@/hooks/use-toasts';
 import { useFocusTrap } from '@/hooks/use-focus-trap';
+import { useSettings } from '@/hooks/use-settings';
 import { GameIcon } from '@/ui/GameIcon';
 
 // ------------------------------------------------------------
@@ -8,13 +9,18 @@ import { GameIcon } from '@/ui/GameIcon';
 // ------------------------------------------------------------
 
 export function ToastStack({ toasts }: { toasts: Toast[] }) {
+  // colorblind mode swaps the green/red kind colors for the blue/orange axis
+  const colorblind = useSettings().colorblind;
+  const kindClass = (kind: Toast['kind']) =>
+    kind === 'good'
+      ? (colorblind ? 'bg-sky-800/95 border-sky-400 text-sky-50' : 'bg-green-800/95 border-green-500 text-green-50')
+      : kind === 'bad'
+        ? (colorblind ? 'bg-orange-700/95 border-orange-400 text-orange-50' : 'bg-red-700/95 border-red-400 text-red-50')
+        : 'bg-slate-700/95 border-slate-400 text-slate-50';
   return (
     <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center gap-1.5 pointer-events-none">
       {toasts.map(t => (
-        <div key={t.id} className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-bold shadow-2xl border animate-[fadein_.2s_ease-out] ${
-          t.kind === 'good' ? 'bg-green-800/95 border-green-500 text-green-50'
-          : t.kind === 'bad' ? 'bg-red-700/95 border-red-400 text-red-50'
-          : 'bg-slate-700/95 border-slate-400 text-slate-50'}`}>
+        <div key={t.id} className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-bold shadow-2xl border animate-[fadein_.2s_ease-out] ${kindClass(t.kind)}`}>
           {t.icon && <GameIcon name={t.icon} size={12} />}{t.text}
         </div>
       ))}
@@ -33,13 +39,13 @@ export function IntroOverlay({ onStart }: { onStart: () => void }) {
       <div ref={trapRef} tabIndex={-1} className="max-w-lg w-full mx-4 rounded-xl border-4 border-yellow-600 bg-gradient-to-b from-red-900 to-red-950 p-8 text-center shadow-2xl outline-none">
         <div className="text-6xl text-yellow-400 mb-2">★</div>
         <h1 className="text-3xl font-black uppercase tracking-[0.3em] text-yellow-100">Red Republic</h1>
-        <div className="text-[11px] uppercase tracking-widest text-yellow-400/80 mt-1 mb-5">A planned-economy city builder · inspired by Workers &amp; Resources: Soviet Republic</div>
+        <div className="text-[0.6875rem] uppercase tracking-widest text-yellow-400/80 mt-1 mb-5">A planned-economy city builder · inspired by Workers &amp; Resources: Soviet Republic</div>
         <p className="text-sm text-yellow-100/85 leading-relaxed">
           Comrade, the Politburo has entrusted you with this land. There is no free market here —
           <b> you</b> plan everything: mines, factories, farms, housing, power, and every single truck.
           Feed your citizens, keep them warm through winter, and earn hard currency through foreign trade.
         </p>
-        <div className="mt-4 grid grid-cols-2 gap-2 text-left text-[11px] text-yellow-100/75">
+        <div className="mt-4 grid grid-cols-2 gap-2 text-left text-[0.6875rem] text-yellow-100/75">
           <div><GameIcon name="cat-industry" size={12} className="text-yellow-400" /> Build production chains</div>
           <div><GameIcon name="truck" size={12} className="text-yellow-400" /> Trucks haul goods by road</div>
           <div><GameIcon name="users" size={12} className="text-yellow-400" /> Citizens need food &amp; warmth</div>
@@ -121,7 +127,7 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
           </section>
           <section>
             <div className="font-bold text-yellow-300 mb-1"><GameIcon name="keyboard" size={12} /> Controls</div>
-            Left-click place/select · <b>Shift/Ctrl</b>+click multi-select buildings &amp; deposits · drag to paint roads · right-drag, left-drag or <b>WASD</b> to pan · mouse wheel to zoom · <b>Esc</b> cancel tool · <b>Space</b> pause · <b>1/2/3</b> game speed.
+            Left-click place/select · <b>Shift/Ctrl</b>+click multi-select buildings &amp; deposits · drag to paint roads · right-drag, left-drag or <b>WASD</b> to pan · mouse wheel to zoom · <b>Esc</b> cancel tool, then pause menu · <b>Space</b> pause · <b>1/2/3</b> game speed · <b>F5</b> quicksave · <b>F9</b> quickload.
           </section>
         </div>
       </div>

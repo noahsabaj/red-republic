@@ -9,11 +9,11 @@ import type { IconNode } from 'lucide';
 import {
   Anchor, Anvil, Axe, Ban, Beer, BrickWall, Building2, CircleCheck, CircleDot, CircleHelp,
   Cloud, CloudFog, CloudLightning, CloudRain, CloudSnow,
-  Container, CookingPot, Coins, Droplet, Eraser, Factory, Flag, FlaskConical, Flame, Fuel,
-  Gauge, Grip, HardHat, HeartPulse, Home, Keyboard, Landmark, Layers, Leaf, Magnet,
-  Map as MapIcon, Package, Pause, Pickaxe, Route, Ruler, ScrollText, ShoppingBasket, Shirt, Shovel,
-  Slice, Smile, Snowflake, Sprout, Square, Star, Sun, Target, Tractor, TreePine, Truck,
-  Users, Warehouse, Wheat, Wind, X, Zap, BedDouble,
+  Container, CookingPot, Coins, Dices, Download, Droplet, Eraser, Factory, Flag, FlaskConical, Flame,
+  FolderOpen, Fuel, Gauge, Grip, HardHat, HeartPulse, Home, Keyboard, Landmark, Layers, Leaf, LogOut,
+  Magnet, Map as MapIcon, Menu, Package, Pause, Pickaxe, Play, RotateCcw, Route, Ruler, Save,
+  ScrollText, Settings, ShoppingBasket, Shirt, Shovel, Slice, Smile, Snowflake, Sprout, Square, Star,
+  Sun, Target, Tractor, TreePine, Trash2, Truck, Upload, Users, Warehouse, Wheat, Wind, X, Zap, BedDouble,
 } from 'lucide';
 
 export const GAME_ICONS = {
@@ -87,6 +87,18 @@ export const GAME_ICONS = {
   map: MapIcon,
   pick: Pickaxe,
   keyboard: Keyboard,
+  // menus / save system
+  menu: Menu,
+  settings: Settings,
+  save: Save,
+  load: FolderOpen,
+  play: Play,
+  dice: Dices,
+  restart: RotateCcw,
+  exit: LogOut,
+  download: Download,
+  upload: Upload,
+  trash: Trash2,
   factory: Factory,
   staff: Users,
   eff: Gauge,
@@ -98,6 +110,11 @@ export const GAME_ICONS = {
   spring: Sprout,
   summer: Sun,
   autumn: Leaf,
+  // climate regions (new-game cards)
+  'climate-plains': Wheat,
+  'climate-taiga': TreePine,
+  'climate-steppe': Sun,
+  'climate-maritime': CloudFog,
   // weather conditions
   clear: Sun,
   overcast: Cloud,

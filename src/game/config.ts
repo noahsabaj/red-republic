@@ -2,7 +2,7 @@
 // Red Republic — Planned Economy Builder
 // Game configuration: resources, buildings, prices, objectives
 // ============================================================
-import type { WeatherCondition } from './weather';
+import type { CondDist, WeatherCondition } from './weather';
 
 export type ResourceId =
   | 'coal' | 'ironOre' | 'steel'
@@ -394,6 +394,117 @@ export const WEATHER: Record<WeatherCondition, WeatherFx> = {
   blizzard: { label: 'Blizzard', icon: 'blizzard', truckMult: 0.45, boatMult: 0,   buildMult: 0.3,  farmMult: 1,    morale: -1 },
   fog:      { label: 'Fog',      icon: 'fog',      truckMult: 0.75, boatMult: 0,   buildMult: 1,    farmMult: 1,    morale: 0 },
 };
+
+// ------------------------------------------------------------
+// Climate regions (numeric climate for the WeatherTimeline)
+// ------------------------------------------------------------
+
+export type ClimateId = 'plains' | 'taiga' | 'steppe' | 'maritime';
+
+export interface ClimateDef {
+  id: ClimateId;
+  label: string;
+  description: string; // new-game card blurb
+  icon: string;        // GameIcon name
+  tempMean: number;    // annual mean, °C
+  tempAmp: number;     // seasonal sinusoid amplitude
+  peakDoy: number;     // warmest day-of-year (194 = mid-July)
+  condDist: CondDist;
+  freezeAt: number;    // freeze-degree-days to lock the river…
+  thawAt: number;      // …and the hysteresis floor to break the ice
+  snowfallPerDay: number;
+  blizzardPerDay: number;
+  meltRate: number;    // melt = tempC * meltRate on warm days
+}
+
+// plains is the pre-preset continental climate, values verbatim — the default
+// stream is pinned by climate.test.ts and must never drift.
+export const CLIMATES: Record<ClimateId, ClimateDef> = {
+  plains: {
+    id: 'plains', label: 'Central Plains', icon: 'climate-plains',
+    description: 'The classic continental heartland. Warm summers, honest winters, a river that freezes when it must.',
+    tempMean: 6, tempAmp: 18, peakDoy: 194,
+    condDist: {
+      winter: [0.30, 0.30, 0.28, 0.05, 0.07],
+      spring: [0.38, 0.26, 0.24, 0.05, 0.07],
+      summer: [0.50, 0.20, 0.18, 0.08, 0.04],
+      autumn: [0.28, 0.28, 0.24, 0.05, 0.15],
+    },
+    freezeAt: 30, thawAt: 8, snowfallPerDay: 1.2, blizzardPerDay: 2.5, meltRate: 0.35,
+  },
+  taiga: {
+    id: 'taiga', label: 'Northern Taiga', icon: 'climate-taiga',
+    description: 'Brutal winters near −25 °C devour coal; the river locks for half the year and the farms sleep until May.',
+    tempMean: -2, tempAmp: 22, peakDoy: 194,
+    condDist: {
+      winter: [0.24, 0.28, 0.36, 0.06, 0.06],
+      spring: [0.34, 0.28, 0.26, 0.04, 0.08],
+      summer: [0.46, 0.24, 0.20, 0.06, 0.04],
+      autumn: [0.24, 0.30, 0.30, 0.05, 0.11],
+    },
+    freezeAt: 24, thawAt: 6, snowfallPerDay: 1.5, blizzardPerDay: 3.0, meltRate: 0.35,
+  },
+  steppe: {
+    id: 'steppe', label: 'Southern Steppe', icon: 'climate-steppe',
+    description: 'Mild winters barely trouble the heating plants, but scorching rainless summers wither the harvest.',
+    tempMean: 10, tempAmp: 16, peakDoy: 194,
+    condDist: {
+      winter: [0.40, 0.28, 0.22, 0.04, 0.06],
+      spring: [0.46, 0.24, 0.20, 0.06, 0.04],
+      summer: [0.62, 0.16, 0.10, 0.09, 0.03],
+      autumn: [0.42, 0.26, 0.20, 0.05, 0.07],
+    },
+    freezeAt: 40, thawAt: 10, snowfallPerDay: 1.0, blizzardPerDay: 2.0, meltRate: 0.45,
+  },
+  maritime: {
+    id: 'maritime', label: 'Maritime Coast', icon: 'climate-maritime',
+    description: 'The river almost never freezes — barges run all year — but fog and rain dog the docks and roads.',
+    tempMean: 10, tempAmp: 8, peakDoy: 194,
+    condDist: {
+      winter: [0.16, 0.30, 0.30, 0.06, 0.18],
+      spring: [0.24, 0.28, 0.26, 0.05, 0.17],
+      summer: [0.34, 0.26, 0.22, 0.06, 0.12],
+      autumn: [0.18, 0.28, 0.26, 0.06, 0.22],
+    },
+    freezeAt: 120, thawAt: 30, snowfallPerDay: 1.0, blizzardPerDay: 2.0, meltRate: 0.5,
+  },
+};
+
+export const DEFAULT_CLIMATE: ClimateId = 'plains';
+
+// ------------------------------------------------------------
+// New-game presets: map sizes and difficulty (start conditions only —
+// the simulation itself is identical across difficulties)
+// ------------------------------------------------------------
+
+export type MapSizeId = 'small' | 'medium' | 'large' | 'vast';
+
+export const MAP_SIZES: Record<MapSizeId, { label: string; tiles: number; blurb: string }> = {
+  small:  { label: 'Small',  tiles: 32, blurb: 'A border hamlet — tight land, quick walks' },
+  medium: { label: 'Medium', tiles: 48, blurb: 'The classic republic' },
+  large:  { label: 'Large',  tiles: 64, blurb: 'Room for heavy industry' },
+  vast:   { label: 'Vast',   tiles: 96, blurb: 'A five-year megaproject' },
+};
+
+export type DifficultyId = 'easy' | 'normal' | 'hard';
+
+export interface DifficultyDef {
+  id: DifficultyId;
+  label: string;
+  blurb: string;
+  icon: string; // GameIcon name
+  startRubles: number;
+  startDollars: number;
+  depotStockMult: number; // scales the starting depot stock
+}
+
+export const DIFFICULTIES: Record<DifficultyId, DifficultyDef> = {
+  easy:   { id: 'easy',   label: 'Comfortable', icon: 'coins', blurb: 'The Politburo is generous', startRubles: 60000, startDollars: 5000, depotStockMult: 1.5 },
+  normal: { id: 'normal', label: 'Planned',     icon: 'star',  blurb: 'The Plan is the Plan',      startRubles: 40000, startDollars: 3000, depotStockMult: 1 },
+  hard:   { id: 'hard',   label: 'Austere',     icon: 'pick',  blurb: 'Sabotage is suspected',     startRubles: 25000, startDollars: 1500, depotStockMult: 0.6 },
+};
+
+export const DEFAULT_DIFFICULTY: DifficultyId = 'normal';
 
 // ------------------------------------------------------------
 // Objectives (Five-Year Plans)

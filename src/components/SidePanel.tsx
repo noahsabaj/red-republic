@@ -8,6 +8,7 @@ import type { PanelMode } from './HUD';
 import { useEngineVersion } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
 import { buildCostText, buildCostTotalText } from '@/ui/build-cost';
+import { audio } from '@/audio';
 
 interface Props {
   engine: GameEngine;
@@ -99,7 +100,7 @@ function StockpilesPanel({ engine }: { engine: GameEngine }) {
   }
   return (
     <div className="space-y-0.5">
-      <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 px-1 pb-1 text-[10px] font-black uppercase tracking-wider text-yellow-400">
+      <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 px-1 pb-1 text-[0.625rem] font-black uppercase tracking-wider text-yellow-400">
         <span>Resource</span><span className="text-right">Stock</span><span className="text-right">Net / day</span>
       </div>
       {ALL_RESOURCES.map(r => {
@@ -122,7 +123,7 @@ function StockpilesPanel({ engine }: { engine: GameEngine }) {
           </div>
         );
       })}
-      <p className="pt-2 text-[10px] leading-snug text-yellow-200/50">
+      <p className="pt-2 text-[0.625rem] leading-snug text-yellow-200/50">
         Stock (sellable): total inventory, with the customs-connected share industry can spare in parentheses.
         Net/day is live production minus factory inputs and citizen demand.
       </p>
@@ -174,7 +175,7 @@ function MultiInfo({ engine, items, instant, onArmBuild }: { engine: GameEngine;
     <div className="space-y-3">
       {buildings.length > 0 && (
         <div className="space-y-2">
-          <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400">Buildings ({buildings.length})</div>
+          <div className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400">Buildings ({buildings.length})</div>
           <div className="space-y-0.5">
             {[...typeCounts.entries()].map(([defId, n]) => (
               <Row key={defId} label={<><GameIcon name={BUILDINGS[defId].icon} size={12} /> {BUILDINGS[defId].name}</>} value={`×${n}`} />
@@ -186,7 +187,7 @@ function MultiInfo({ engine, items, instant, onArmBuild }: { engine: GameEngine;
           </div>
           {(Object.keys(flowIn).length > 0 || Object.keys(flowOut).length > 0) && (
             <div className="rounded bg-red-900/40 p-2">
-              <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400 mb-1">Combined production / day</div>
+              <div className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400 mb-1">Combined production / day</div>
               <div className="text-xs">
                 <FlowLine ins={Object.entries(flowIn) as [ResourceId, number][]} outs={Object.entries(flowOut) as [ResourceId, number][]} />
               </div>
@@ -206,7 +207,7 @@ function MultiInfo({ engine, items, instant, onArmBuild }: { engine: GameEngine;
 
       {depositKinds.size > 0 && (
         <div className="space-y-2">
-          <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400">Deposits</div>
+          <div className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400">Deposits</div>
           {[...depositKinds.entries()].map(([kind, g]) => {
             const res = RESOURCES[kind];
             const miner = Object.values(BUILDINGS).find(d => d.requiresDeposit === kind)!;
@@ -219,7 +220,7 @@ function MultiInfo({ engine, items, instant, onArmBuild }: { engine: GameEngine;
                 </div>
                 {g.free > 0 && (
                   <>
-                    <div className="text-[11px] text-yellow-200/80">
+                    <div className="text-[0.6875rem] text-yellow-200/80">
                       One {miner.name} per free tile:{' '}
                       {outputsPerMine.map(([r, a]) => (
                         <span key={r} className="inline-flex items-center gap-0.5"><GameIcon name={RESOURCES[r].icon} size={11} />{fmtRate(a * g.free)}/day</span>
@@ -265,7 +266,7 @@ function DepositInfo({ engine, x, y, instant, onArmBuild }: { engine: GameEngine
         <GameIcon name={res.icon} size={26} className="text-yellow-300" />
         <div>
           <div className="font-bold text-sm">{DEPOSIT_NAMES[cluster.kind]} Deposit</div>
-          <div className="text-[10px] text-yellow-200/50">
+          <div className="text-[0.625rem] text-yellow-200/50">
             {exploited ? `Worked by a ${BUILDINGS[exploited.defId].name}.` : 'Unexploited mineral wealth of the republic.'}
           </div>
         </div>
@@ -278,7 +279,7 @@ function DepositInfo({ engine, x, y, instant, onArmBuild }: { engine: GameEngine
       </div>
 
       <div className="rounded bg-red-900/40 p-2">
-        <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400 mb-1">{miner.name}</div>
+        <div className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400 mb-1">{miner.name}</div>
         <div className="text-xs">
           {outputs.map(([r, a]) => (
             <span key={r} className="inline-flex items-center gap-0.5"><GameIcon name={RESOURCES[r].icon} size={12} />{a}/day at full staff</span>
@@ -313,7 +314,7 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
         <GameIcon name={def.icon} size={26} className="text-yellow-300" />
         <div>
           <div className="font-bold text-sm">{def.name}</div>
-          <div className="text-[10px] text-yellow-200/50">{def.description}</div>
+          <div className="text-[0.625rem] text-yellow-200/50">{def.description}</div>
         </div>
       </div>
 
@@ -325,7 +326,7 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
           <div className="h-2 rounded bg-red-900 overflow-hidden">
             <div className="h-full bg-yellow-500" style={{ width: `${(b.progress / def.labor) * 100}%` }} />
           </div>
-          <div className="text-[11px] text-yellow-200/70">
+          <div className="text-[0.6875rem] text-yellow-200/70">
             Labor: {Math.floor(b.progress)} / {def.labor} worker-days
           </div>
           {Object.entries(def.materials).map(([r, amt]) => {
@@ -340,7 +341,7 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
               />
             );
           })}
-          <div className="text-[10px] text-yellow-200/50">Materials arrive by truck. Builders come from a staffed Construction Office.</div>
+          <div className="text-[0.625rem] text-yellow-200/50">Materials arrive by truck. Builders come from a staffed Construction Office.</div>
         </div>
       ) : (
         <div className="space-y-2">
@@ -364,7 +365,7 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
             const rates = engine.productionRates(b);
             return (
               <div className="rounded bg-red-900/40 p-2">
-                <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400 mb-1">Production / day</div>
+                <div className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400 mb-1">Production / day</div>
                 <div className="text-xs">
                   <FlowLine ins={Object.entries(rates.inputs) as [ResourceId, number][]} outs={Object.entries(rates.outputs) as [ResourceId, number][]} />
                 </div>
@@ -374,13 +375,13 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
 
           {Object.keys(def.storage).length > 0 && (
             <div>
-              <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400 mb-1">Storage</div>
+              <div className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400 mb-1">Storage</div>
               <div className="space-y-1">
                 {(Object.entries(def.storage) as [ResourceId, number][]).filter(([r]) => (b.stock[r] ?? 0) > 0.05 || (b.incoming[r] ?? 0) > 0.05 || (def.inputs?.[r] ?? 0) > 0 || (def.outputs?.[r] ?? 0) > 0 || def.serviceType === 'shop').map(([r, cap]) => {
                   const v = b.stock[r] ?? 0;
                   const inc = b.incoming[r] ?? 0;
                   return (
-                    <div key={r} className="text-[11px]">
+                    <div key={r} className="text-[0.6875rem]">
                       <div className="flex justify-between">
                         <span className="flex items-center gap-1"><GameIcon name={RESOURCES[r].icon} size={12} /> {RESOURCES[r].name}</span>
                         <span className="font-bold">{v.toFixed(1)}/{cap}{inc > 0.05 ? <span className="text-yellow-200/60"> (+{inc.toFixed(0)} <GameIcon name="truck" size={11} />)</span> : null}</span>
@@ -424,7 +425,7 @@ function NumInput({ value, onValue, step = 10, w = 'w-16' }: { value: number; on
     <input
       type="number" min={0} step={step} value={value}
       onChange={ev => { const v = ev.target.valueAsNumber; if (Number.isFinite(v)) onValue(v); }}
-      className={`${w} rounded bg-red-950/60 border border-yellow-600/30 px-1 py-0.5 text-[11px] font-bold text-yellow-50`}
+      className={`${w} rounded bg-red-950/60 border border-yellow-600/30 px-1 py-0.5 text-[0.6875rem] font-bold text-yellow-50`}
     />
   );
 }
@@ -434,7 +435,7 @@ function ContractCard({ engine, c }: { engine: GameEngine; c: Contract }) {
   const blocName = c.bloc === 'east' ? 'East' : 'West';
   const daysLeft = engine.contractDaysLeft(c);
   return (
-    <div className="rounded bg-red-900/40 p-2 text-[11px] space-y-1">
+    <div className="rounded bg-red-900/40 p-2 text-[0.6875rem] space-y-1">
       <div className="flex items-center justify-between">
         <span className="font-bold flex items-center gap-1">
           <GameIcon name={RESOURCES[c.r].icon} size={12} /> {c.amount} {RESOURCES[c.r].name} → {blocName}
@@ -443,7 +444,7 @@ function ContractCard({ engine, c }: { engine: GameEngine; c: Contract }) {
       </div>
       {c.state === 'offer' && (
         <>
-          <div className="text-[10px] text-yellow-200/60">
+          <div className="text-[0.625rem] text-yellow-200/60">
             Deliver within {daysLeft} days · offer withdrawn in {engine.offerDaysLeft(c)} days
           </div>
           <div className="flex gap-1">
@@ -457,7 +458,7 @@ function ContractCard({ engine, c }: { engine: GameEngine; c: Contract }) {
           <div className="h-1.5 rounded bg-red-900 overflow-hidden">
             <div className="h-full bg-yellow-500/80" style={{ width: `${Math.min(100, (c.delivered / c.amount) * 100)}%` }} />
           </div>
-          <div className="flex justify-between text-[10px] text-yellow-200/60">
+          <div className="flex justify-between text-[0.625rem] text-yellow-200/60">
             <span>{Math.floor(c.delivered)}/{c.amount} delivered</span>
             <span className={daysLeft <= 15 ? 'text-red-300 font-bold' : ''}>{Math.max(0, daysLeft)} days left</span>
           </div>
@@ -471,6 +472,7 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
   const [amount, setAmount] = useState(10);
   const doTrade = (fn: () => { ok: boolean; msg: string }) => {
     const res = fn();
+    audio.sfx(res.ok ? 'coin' : 'error');
     notify(res.msg, res.ok ? 'good' : 'bad');
   };
   const at = engine.autoTrade;
@@ -490,21 +492,21 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
           <input type="checkbox" checked={at.enabled} onChange={ev => engine.setAutoTradeEnabled(ev.target.checked)} className="accent-yellow-500" />
           <span className="text-xs font-black uppercase tracking-wider text-yellow-400">Auto-trade</span>
         </label>
-        <div className="text-[10px] text-yellow-200/60 leading-tight">
+        <div className="text-[0.625rem] text-yellow-200/60 leading-tight">
           Standing orders of the Foreign Trade Directorate. Each staffed Customs House clears up to {BALANCE.customsThroughputPerDay} units a day; set per-good rules below.
         </div>
         {at.enabled && (
           <>
-            <div className="flex items-center justify-between text-[11px]">
+            <div className="flex items-center justify-between text-[0.6875rem]">
               <span className="text-yellow-200/70">Customs capacity today</span>
               <span className="font-bold">{today.used}/{today.capacity}</span>
             </div>
-            <div className="flex items-center gap-2 text-[11px]" title="Auto-imports never spend the treasury below these floors — wages stay safe">
+            <div className="flex items-center gap-2 text-[0.6875rem]" title="Auto-imports never spend the treasury below these floors — wages stay safe">
               <span className="text-yellow-200/70 shrink-0">Reserve</span>
               <label className="flex items-center gap-1">₽ <NumInput value={at.reserveRubles} onValue={v => engine.setAutoTradeReserve('east', v)} step={500} /></label>
               <label className="flex items-center gap-1 text-green-300">$ <NumInput value={at.reserveDollars} onValue={v => engine.setAutoTradeReserve('west', v)} step={100} /></label>
             </div>
-            <div className="text-[10px] text-yellow-200/70 border-t border-yellow-600/20 pt-1 leading-relaxed">
+            <div className="text-[0.625rem] text-yellow-200/70 border-t border-yellow-600/20 pt-1 leading-relaxed">
               <span className="font-black uppercase tracking-wider text-yellow-400/80 mr-1">Yesterday</span>
               {ledImports.length === 0 && ledExports.length === 0
                 ? 'no automated trade'
@@ -518,7 +520,7 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
                 )}
             </div>
             {today.blocked.length > 0 && (
-              <div className="text-[10px] text-red-300 font-bold">Stalled: {today.blocked.join('; ')}</div>
+              <div className="text-[0.625rem] text-red-300 font-bold">Stalled: {today.blocked.join('; ')}</div>
             )}
           </>
         )}
@@ -526,17 +528,17 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
 
       {(offers.length > 0 || active.length > 0 || closed.length > 0 || engine.relationsPenalty.east > 0.001 || engine.relationsPenalty.west > 0.001) && (
         <section className="space-y-1">
-          <div className="text-[10px] font-black uppercase tracking-wider text-yellow-400 flex items-center gap-1">
+          <div className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400 flex items-center gap-1">
             <GameIcon name="contract" size={11} /> Contracts
           </div>
           {(['east', 'west'] as const).map(bloc => engine.relationsPenalty[bloc] > 0.001 && (
-            <div key={bloc} className="text-[10px] text-red-300">
+            <div key={bloc} className="text-[0.625rem] text-red-300">
               Relations soured with the {bloc === 'east' ? 'East' : 'West'} — prices {Math.round(engine.relationsPenalty[bloc] * 100)}% worse until it blows over.
             </div>
           ))}
           {[...offers, ...active].map(c => <ContractCard key={c.id} engine={engine} c={c} />)}
           {closed.map(c => (
-            <div key={c.id} className={`text-[10px] flex justify-between px-1 ${c.state === 'done' ? 'text-yellow-200/40' : 'text-red-300/60'}`}>
+            <div key={c.id} className={`text-[0.625rem] flex justify-between px-1 ${c.state === 'done' ? 'text-yellow-200/40' : 'text-red-300/60'}`}>
               <span>{c.amount} {RESOURCES[c.r].name} → {c.bloc === 'east' ? 'East' : 'West'}</span>
               <span>{c.state === 'done' ? 'fulfilled' : 'failed'}</span>
             </div>
@@ -544,7 +546,7 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
         </section>
       )}
 
-      <div className="text-[10px] text-yellow-200/60 leading-tight">
+      <div className="text-[0.625rem] text-yellow-200/60 leading-tight">
         Sell surplus to the <b>East (₽)</b> or the <b>West ($)</b>. Goods must be road-connected to the border Customs House. Imports arrive at customs storage and are hauled away by truck.
       </div>
       <div className="flex items-center gap-1 text-xs">
@@ -579,26 +581,26 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
                 </div>
                 <div className="flex items-center gap-1 mt-1">
                   <button onClick={() => doTrade(() => engine.sell(r, amount, 'east'))} disabled={!canSell}
-                    className="flex-1 rounded bg-red-800 hover:bg-red-700 disabled:opacity-30 text-[10px] font-bold py-0.5" title={`Sell to East at ₽${engine.priceOf(r, 'east').toFixed(1)}`}>
+                    className="flex-1 rounded bg-red-800 hover:bg-red-700 disabled:opacity-30 text-[0.625rem] font-bold py-0.5" title={`Sell to East at ₽${engine.priceOf(r, 'east').toFixed(1)}`}>
                     +₽{engine.priceOf(r, 'east').toFixed(1)}
                   </button>
                   <button onClick={() => doTrade(() => engine.sell(r, amount, 'west'))} disabled={!canSell}
-                    className="flex-1 rounded bg-green-900 hover:bg-green-800 disabled:opacity-30 text-[10px] font-bold py-0.5" title={`Sell to West at $${engine.priceOf(r, 'west').toFixed(1)}`}>
+                    className="flex-1 rounded bg-green-900 hover:bg-green-800 disabled:opacity-30 text-[0.625rem] font-bold py-0.5" title={`Sell to West at $${engine.priceOf(r, 'west').toFixed(1)}`}>
                     +${engine.priceOf(r, 'west').toFixed(1)}
                   </button>
                   <button onClick={() => doTrade(() => engine.buy(r, amount, 'east'))} disabled={!canBuy('east')}
-                    className="flex-1 rounded bg-red-950 hover:bg-red-800 disabled:opacity-30 text-[10px] font-bold py-0.5 border border-yellow-600/30" title="Import from East">
+                    className="flex-1 rounded bg-red-950 hover:bg-red-800 disabled:opacity-30 text-[0.625rem] font-bold py-0.5 border border-yellow-600/30" title="Import from East">
                     −₽{engine.importPriceOf(r, 'east').toFixed(1)}
                   </button>
                   <button onClick={() => doTrade(() => engine.buy(r, amount, 'west'))} disabled={!canBuy('west')}
-                    className="flex-1 rounded bg-red-950 hover:bg-red-800 disabled:opacity-30 text-[10px] font-bold py-0.5 border border-green-600/30" title="Import from West">
+                    className="flex-1 rounded bg-red-950 hover:bg-red-800 disabled:opacity-30 text-[0.625rem] font-bold py-0.5 border border-green-600/30" title="Import from West">
                     −${engine.importPriceOf(r, 'west').toFixed(1)}
                   </button>
                 </div>
                 {(() => {
                   const rule = engine.autoTrade.rules[r];
                   return (
-                    <div className={`flex items-center gap-1 mt-1 text-[10px] ${engine.autoTrade.enabled ? '' : 'opacity-50'}`}>
+                    <div className={`flex items-center gap-1 mt-1 text-[0.625rem] ${engine.autoTrade.enabled ? '' : 'opacity-50'}`}>
                       <span className="text-yellow-200/50 mr-0.5">auto</span>
                       {(['import', 'export'] as const).map(m => (
                         <button
@@ -643,7 +645,7 @@ function ObjectivesPanel({ engine }: { engine: GameEngine }) {
   const current = OBJECTIVES.find(o => !engine.objectivesDone.includes(o.id));
   return (
     <div className="space-y-1.5">
-      <div className="text-[10px] text-yellow-200/60">Directives from the Planning Committee. Complete them for rewards.</div>
+      <div className="text-[0.625rem] text-yellow-200/60">Directives from the Planning Committee. Complete them for rewards.</div>
       {OBJECTIVES.map(o => {
         const done = engine.objectivesDone.includes(o.id);
         const isCurrent = current?.id === o.id;
@@ -657,8 +659,8 @@ function ObjectivesPanel({ engine }: { engine: GameEngine }) {
               />
               <span className={done ? 'line-through text-yellow-200/50' : ''}>{o.title}</span>
             </div>
-            <div className="text-[10px] text-yellow-200/60 ml-5">{o.description}</div>
-            <div className="text-[10px] text-green-300/80 ml-5">
+            <div className="text-[0.625rem] text-yellow-200/60 ml-5">{o.description}</div>
+            <div className="text-[0.625rem] text-green-300/80 ml-5">
               {o.rewardRubles ? `+₽${o.rewardRubles.toLocaleString()} ` : ''}{o.rewardDollars ? `+$${o.rewardDollars.toLocaleString()}` : ''}
             </div>
           </div>

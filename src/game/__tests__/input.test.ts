@@ -1,15 +1,20 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { InputController, KEY_PAN_SPEED, type InputCallbacks, type NormPointerEvent, type Tool } from '../input';
+import {
+  EDGE_PAN_FACTOR, EDGE_PAN_MARGIN, InputController, KEY_PAN_SPEED,
+  type InputCallbacks, type InputOptions, type NormPointerEvent, type Tool,
+} from '../input';
 
 interface Log { calls: [string, ...unknown[]][] }
 
-function makeCtrl(overrides: { tool?: Tool; hotkeys?: boolean } = {}) {
+function makeCtrl(overrides: { tool?: Tool; hotkeys?: boolean; opts?: Partial<InputOptions> } = {}) {
   const log: Log = { calls: [] };
   let tool: Tool = overrides.tool ?? { kind: 'select' };
   let hotkeys = overrides.hotkeys ?? true;
+  const opts: InputOptions = { panSpeed: 1, invertZoom: false, edgePan: false, ...overrides.opts };
   const cb: InputCallbacks = {
     getTool: () => tool,
     hotkeysEnabled: () => hotkeys,
+    getViewport: () => ({ w: 800, h: 600 }),
     panBy: (dx, dy) => log.calls.push(['panBy', dx, dy]),
     zoomAt: (x, y, f) => log.calls.push(['zoomAt', x, y, f]),
     placeAt: (x, y) => log.calls.push(['placeAt', x, y]),
@@ -19,12 +24,13 @@ function makeCtrl(overrides: { tool?: Tool; hotkeys?: boolean } = {}) {
     setHover: (x, y) => log.calls.push(['setHover', x, y]),
     clearHover: () => log.calls.push(['clearHover']),
     cancelTool: () => log.calls.push(['cancelTool']),
+    openMenu: () => log.calls.push(['openMenu']),
     togglePause: () => log.calls.push(['togglePause']),
     setSpeed: (s) => log.calls.push(['setSpeed', s]),
   };
-  const ctrl = new InputController(cb);
+  const ctrl = new InputController(cb, () => opts);
   return {
-    ctrl, log,
+    ctrl, log, opts,
     setTool: (t: Tool) => { tool = t; },
     setHotkeys: (v: boolean) => { hotkeys = v; },
     names: () => log.calls.map(c => c[0]),
@@ -144,11 +150,26 @@ describe('hotkeys', () => {
     expect(t.of('togglePause')).toHaveLength(1);
   });
 
-  it('Esc cancels the tool; digits set speed', () => {
+  it('Esc with a tool armed cancels it; digits set speed', () => {
+    const armed = makeCtrl({ tool: { kind: 'build', defId: 'house' } });
+    armed.ctrl.key({ key: 'Escape', code: 'Escape', repeat: false });
+    armed.ctrl.key({ key: '3', code: 'Digit3', repeat: false });
+    expect(armed.of('cancelTool')).toHaveLength(1);
+    expect(armed.of('openMenu')).toHaveLength(0);
+    expect(armed.of('setSpeed')).toEqual([['setSpeed', 4]]);
+  });
+
+  it('Esc with no tool armed opens the pause menu', () => {
     t.ctrl.key({ key: 'Escape', code: 'Escape', repeat: false });
-    t.ctrl.key({ key: '3', code: 'Digit3', repeat: false });
-    expect(t.of('cancelTool')).toHaveLength(1);
-    expect(t.of('setSpeed')).toEqual([['setSpeed', 4]]);
+    expect(t.of('openMenu')).toHaveLength(1);
+    expect(t.of('cancelTool')).toHaveLength(0);
+  });
+
+  it('the bulldozer counts as an armed tool for Esc', () => {
+    const dozer = makeCtrl({ tool: { kind: 'bulldoze' } });
+    dozer.ctrl.key({ key: 'Escape', code: 'Escape', repeat: false });
+    expect(dozer.of('cancelTool')).toHaveLength(1);
+    expect(dozer.of('openMenu')).toHaveLength(0);
   });
 });
 
@@ -204,6 +225,92 @@ describe('WASD panning', () => {
     t.ctrl.reset();
     t.ctrl.tick(1000);
     expect(t.of('panBy')).toHaveLength(0);
+  });
+});
+
+describe('input options', () => {
+  it('panSpeed multiplies WASD panning', () => {
+    const fast = makeCtrl({ opts: { panSpeed: 2 } });
+    fast.ctrl.key({ key: 'w', code: 'KeyW', repeat: false });
+    fast.ctrl.tick(1000);
+    expect(fast.of('panBy')).toEqual([['panBy', 0, KEY_PAN_SPEED * 2]]);
+  });
+
+  it('invertZoom flips the wheel direction', () => {
+    const inv = makeCtrl({ opts: { invertZoom: true } });
+    inv.ctrl.wheel({ x: 5, y: 5, deltaY: -1 });
+    expect(inv.of('zoomAt')).toEqual([['zoomAt', 5, 5, 0.87]]);
+    inv.ctrl.wheel({ x: 5, y: 5, deltaY: 1 });
+    expect(inv.of('zoomAt')[1]).toEqual(['zoomAt', 5, 5, 1.15]);
+  });
+
+  describe('edge panning', () => {
+    const rest = (c: ReturnType<typeof makeCtrl>, x: number, y: number, onCanvas = true) =>
+      c.ctrl.pointerMove(ev({ x, y, onCanvas }));
+
+    it('pans toward the edge under the pointer, ramped by proximity', () => {
+      const c = makeCtrl({ opts: { edgePan: true } });
+      rest(c, 0, 300); // hard against the left edge
+      c.ctrl.tick(1000);
+      expect(c.of('panBy')).toEqual([['panBy', KEY_PAN_SPEED * EDGE_PAN_FACTOR, 0]]);
+
+      c.log.calls.length = 0;
+      rest(c, EDGE_PAN_MARGIN / 2, 300); // halfway into the margin
+      c.ctrl.tick(1000);
+      const [, dx] = c.of('panBy')[0] as [string, number];
+      expect(dx).toBeCloseTo(KEY_PAN_SPEED * EDGE_PAN_FACTOR * 0.5, 6);
+
+      c.log.calls.length = 0;
+      rest(c, 800, 600); // bottom-right corner pans view south-east (negative both)
+      c.ctrl.tick(1000);
+      const [, ex, ey] = c.of('panBy')[0] as [string, number, number];
+      expect(ex).toBeLessThan(0);
+      expect(ey).toBeLessThan(0);
+    });
+
+    it('stays inert when disabled, mid-viewport, over UI, mid-gesture, or after leave', () => {
+      const off = makeCtrl();
+      rest(off, 0, 300);
+      off.ctrl.tick(1000);
+      expect(off.of('panBy')).toHaveLength(0); // edgePan off
+
+      const c = makeCtrl({ opts: { edgePan: true } });
+      rest(c, 400, 300); // mid-viewport
+      c.ctrl.tick(1000);
+      expect(c.of('panBy')).toHaveLength(0);
+
+      rest(c, 3, 300, false); // hovering UI at the edge
+      c.ctrl.tick(1000);
+      expect(c.of('panBy')).toHaveLength(0);
+
+      // an active drag-pan must not double-apply
+      c.ctrl.pointerDown(ev({ x: 3, y: 300, button: 2 }));
+      rest(c, 3, 300);
+      c.log.calls.length = 0;
+      c.ctrl.tick(1000);
+      expect(c.of('panBy')).toHaveLength(0);
+      c.ctrl.pointerUp(ev({ x: 3, y: 300, button: 2 }));
+
+      rest(c, 3, 300);
+      c.ctrl.pointerLeave(); // pointer left the window
+      c.log.calls.length = 0;
+      c.ctrl.tick(1000);
+      expect(c.of('panBy')).toHaveLength(0);
+    });
+
+    it('is dead behind modals and ignores touch pointers', () => {
+      const c = makeCtrl({ opts: { edgePan: true } });
+      rest(c, 0, 300);
+      c.setHotkeys(false);
+      c.log.calls.length = 0;
+      c.ctrl.tick(1000);
+      expect(c.of('panBy')).toHaveLength(0);
+
+      const touch = makeCtrl({ opts: { edgePan: true } });
+      touch.ctrl.pointerMove(ev({ x: 0, y: 300, isTouch: true }));
+      touch.ctrl.tick(1000);
+      expect(touch.of('panBy')).toHaveLength(0);
+    });
   });
 });
 

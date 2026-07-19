@@ -102,3 +102,31 @@ html, body, #root {
   from { opacity: 0; transform: translateY(-6px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* Range sliders in the options screen — gold thumb on a dark rail */
+.soviet-range {
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(10, 5, 4, 0.7);
+  outline: none;
+  cursor: pointer;
+}
+.soviet-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #eab308;
+  border: 1px solid #713f12;
+}
+.soviet-range::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #eab308;
+  border: 1px solid #713f12;
+}
+.soviet-range:focus-visible {
+  box-shadow: 0 0 0 2px rgba(234, 179, 8, 0.5);
+}

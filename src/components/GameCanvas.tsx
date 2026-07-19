@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react';
 import type { GameEngine } from '@/game/engine';
-import { render, screenToTile, pickBuilding, type Camera, type UIState } from '@/game/render';
+import { render, screenToTile, pickBuilding, STATUS_PALETTES, type Camera, type UIState } from '@/game/render';
 import { InputController, type NormPointerEvent, type Tool } from '@/game/input';
 import type { SelectionItem } from '@/game/selection';
-import { MAP_W, MAP_H } from '@/game/mapgen';
+import { getSettings, subscribeSettings } from '@/app/settings';
+import { audio } from '@/audio';
 
 export type { SelectionItem, Tool };
 
@@ -17,14 +18,16 @@ interface Props {
   instantBuild: boolean;
   hotkeysEnabled: boolean;
   onError: (msg: string) => void;
+  /** Escape with no tool armed — App opens the pause menu. */
+  onOpenMenu: () => void;
 }
 
-export default function GameCanvas({ engine, tool, setTool, selection, onSelect, instantBuild, hotkeysEnabled, onError }: Props) {
+export default function GameCanvas({ engine, tool, setTool, selection, onSelect, instantBuild, hotkeysEnabled, onError, onOpenMenu }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const camRef = useRef<Camera>({ x: 0, y: 0, z: 0.8 });
   const uiRef = useRef<UIState>({ hoverTile: null, tool, selection, time: 0 });
   const engineRef = useRef(engine);
-  const cbRef = useRef({ setTool, onSelect, onError });
+  const cbRef = useRef({ setTool, onSelect, onError, onOpenMenu });
   const instantRef = useRef(instantBuild);
   const hotkeysRef = useRef(hotkeysEnabled);
 
@@ -34,7 +37,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
     uiRef.current.tool = tool;
     uiRef.current.selection = selection;
     engineRef.current = engine;
-    cbRef.current = { setTool, onSelect, onError };
+    cbRef.current = { setTool, onSelect, onError, onOpenMenu };
     instantRef.current = instantBuild;
     hotkeysRef.current = hotkeysEnabled;
   });
@@ -49,20 +52,23 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
     let initialized = false;
 
     const resize = () => {
-      dpr = Math.min(2, window.devicePixelRatio || 1); // re-read: monitor moves / zoom change it
+      // re-read every time: monitor moves / zoom / the sharpness setting change it
+      dpr = Math.min(getSettings().dprCap, window.devicePixelRatio || 1);
       vw = canvas.clientWidth; vh = canvas.clientHeight;
       canvas.width = Math.round(vw * dpr);
       canvas.height = Math.round(vh * dpr);
       if (!initialized && vw > 0) {
         initialized = true;
+        const eng = engineRef.current;
         const z = camRef.current.z;
         camRef.current.x = vw / 2;
-        camRef.current.y = vh / 2 - ((MAP_W + MAP_H) / 2) * 16 * z;
+        camRef.current.y = vh / 2 - ((eng.mapW + eng.mapH) / 2) * 16 * z;
       }
     };
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(canvas);
+    const unsubSettings = subscribeSettings(resize); // dprCap changes re-rasterize
 
     // browser zoom changes clientWidth (ResizeObserver fires), but moving the
     // window to another monitor only changes devicePixelRatio — watch it too
@@ -78,11 +84,16 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
     const loop = (now: number) => {
       const dt = Math.min(120, now - last);
       last = now;
-      ctrl.tick(dt); // held-key (WASD) panning
+      ctrl.tick(dt); // held-key (WASD) and edge panning
       engineRef.current.advance(dt);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      uiRef.current.time = now;
-      render(ctx, engineRef.current, camRef.current, uiRef.current, vw, vh);
+      const ui = uiRef.current;
+      const s = getSettings();
+      ui.time = now;
+      ui.showGrid = s.showGrid;
+      ui.reducedMotion = s.reducedMotion;
+      ui.palette = s.colorblind ? STATUS_PALETTES.colorblind : STATUS_PALETTES.default;
+      render(ctx, engineRef.current, camRef.current, ui, vw, vh);
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -94,6 +105,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
     const ctrl = new InputController({
       getTool: () => uiRef.current.tool,
       hotkeysEnabled: () => hotkeysRef.current,
+      getViewport: () => ({ w: vw, h: vh }),
       panBy: (dx, dy) => { camRef.current.x += dx; camRef.current.y += dy; },
       zoomAt: (sx, sy, factor) => {
         const cam = camRef.current;
@@ -107,6 +119,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
         if (tl.kind !== 'build') return;
         const t = tileOf(sx, sy);
         const res = engineRef.current.tryPlace(tl.defId, t.x, t.y, instantRef.current);
+        audio.sfx(res.ok ? 'buildPlace' : 'error');
         if (!res.ok && res.reason) cbRef.current.onError(res.reason);
       },
       beginPaint: () => { lastPaintTile = ''; },
@@ -118,9 +131,12 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
         const tl = uiRef.current.tool;
         const eng = engineRef.current;
         if (tl.kind === 'build' && tl.defId === 'road') {
-          eng.tryPlace('road', t.x, t.y, instantRef.current);
+          if (eng.tryPlace('road', t.x, t.y, instantRef.current).ok) audio.sfx('roadPaint');
         } else if (tl.kind === 'bulldoze') {
-          if (eng.bulldozeAt(t.x, t.y)) cbRef.current.onSelect(null, false);
+          if (eng.bulldozeAt(t.x, t.y)) {
+            audio.sfx('bulldoze');
+            cbRef.current.onSelect(null, false);
+          }
         }
       },
       selectAt: (sx, sy, additive) => {
@@ -142,9 +158,10 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
       setHover: (sx, sy) => { uiRef.current.hoverTile = tileOf(sx, sy); },
       clearHover: () => { uiRef.current.hoverTile = null; },
       cancelTool: () => cbRef.current.setTool({ kind: 'select' }),
-      togglePause: () => engineRef.current.togglePause(),
-      setSpeed: (s) => engineRef.current.setSpeed(s),
-    });
+      openMenu: () => cbRef.current.onOpenMenu(),
+      togglePause: () => { audio.sfx('speedChange'); engineRef.current.togglePause(); },
+      setSpeed: (s) => { audio.sfx('speedChange'); engineRef.current.setSpeed(s); },
+    }, getSettings); // Settings is a structural superset of InputOptions
 
     const norm = (e: PointerEvent): NormPointerEvent => {
       const r = canvas.getBoundingClientRect();
@@ -210,6 +227,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
+      unsubSettings();
       mq?.removeEventListener('change', onDprChange);
       canvas.removeEventListener('pointerdown', onDown);
       canvas.removeEventListener('pointermove', onMove);

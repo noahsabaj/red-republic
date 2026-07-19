@@ -2,6 +2,7 @@ import type { GameEngine } from '@/game/engine';
 import { BALANCE, WEATHER } from '@/game/config';
 import { useEngineSignature } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
+import { audio } from '@/audio';
 
 export type PanelMode = 'building' | 'trade' | 'objectives' | 'stockpiles';
 
@@ -13,9 +14,10 @@ interface Props {
   onOpenObjectives: () => void;
   onOpenTrade: () => void;
   onOpenHelp: () => void;
+  onOpenMenu: () => void;
 }
 
-export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, onOpenObjectives, onOpenTrade, onOpenHelp }: Props) {
+export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, onOpenObjectives, onOpenTrade, onOpenHelp, onOpenMenu }: Props) {
   // re-render only when something the HUD actually displays changes
   useEngineSignature(engine, (e) => [
     e.day, e.month, e.year, e.speed,
@@ -39,7 +41,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
   const speedBtn = (s: 0 | 1 | 2 | 4, label: React.ReactNode, name: string) => (
     <button
       key={name}
-      onClick={() => engine.setSpeed(s)}
+      onClick={() => { audio.sfx('speedChange'); engine.setSpeed(s); }}
       aria-label={name}
       aria-pressed={engine.speed === s}
       className={`px-2 py-0.5 rounded text-xs font-bold ${engine.speed === s ? 'bg-yellow-500 text-red-950' : 'bg-red-950/60 text-yellow-100/70 hover:bg-red-900'}`}
@@ -64,9 +66,9 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
   return (
     <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col">
       <div className="pointer-events-auto flex items-center gap-3 bg-gradient-to-b from-red-950 to-red-900/95 px-3 py-1.5 text-yellow-50 shadow-lg border-b-2 border-yellow-600/60">
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0" title={engine.name}>
           <span className="text-yellow-400 text-lg">★</span>
-          <span className="font-black tracking-widest text-sm uppercase hidden md:inline">Red Republic</span>
+          <span className="font-black tracking-widest text-sm uppercase hidden md:inline max-w-44 truncate">{engine.name}</span>
         </div>
 
         <div className="flex items-center gap-1 bg-red-950/60 rounded px-2 py-0.5 text-xs">
@@ -91,7 +93,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
           {engine.forecast().map((d, i) => (
             <span key={i} className="flex flex-col items-center leading-none gap-0.5">
               <GameIcon name={WEATHER[d.condition].icon} size={10} className="text-yellow-200/80" />
-              <span className="text-[9px] text-yellow-200/60">{Math.round(d.tempC)}°</span>
+              <span className="text-[0.5625rem] text-yellow-200/60">{Math.round(d.tempC)}°</span>
             </span>
           ))}
         </div>
@@ -133,6 +135,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
             engine.autoTrade.enabled || offersPending > 0,
           )}
           {panelBtn('Help', 'help', helpOpen, onOpenHelp)}
+          {panelBtn('Menu (Esc)', 'menu', false, onOpenMenu)}
         </div>
       </div>
 
@@ -141,7 +144,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
         // don't block panning/zooming the canvas underneath
         <div className="pointer-events-none flex flex-wrap gap-1.5 px-3 py-1.5">
           {engine.alerts.map(a => (
-            <span key={a.id} className={`pointer-events-auto flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-bold shadow ${a.level === 'bad' ? 'bg-red-600/90 text-white' : 'bg-amber-500/90 text-amber-950'}`}>
+            <span key={a.id} className={`pointer-events-auto flex items-center gap-1 rounded px-2 py-0.5 text-[0.6875rem] font-bold shadow ${a.level === 'bad' ? 'bg-red-600/90 text-white' : 'bg-amber-500/90 text-amber-950'}`}>
               <GameIcon name={a.icon} size={11} /> {a.text}
             </span>
           ))}

@@ -2,7 +2,7 @@ import { GameEngine } from '../engine';
 import { BALANCE } from '../config';
 import type { ResourceId } from '../config';
 import type { MapData, Tile } from '../mapgen';
-import { MAP_W, MAP_H } from '../mapgen';
+import { DEFAULT_MAP_W, DEFAULT_MAP_H } from '../mapgen';
 import type { DayWeather } from '../weather';
 
 /** Calm weather for deterministic tests: no slowdowns, no frost, no heating need. */
@@ -10,23 +10,23 @@ export const CALM_WEATHER = (): Partial<DayWeather> =>
   ({ tempC: 15, condition: 'clear', snowDepth: 0, riverFrozen: false });
 
 /** All-grass map with no water/forest/deposits — deterministic test terrain. */
-export function flatMap(): MapData {
+export function flatMap(w = DEFAULT_MAP_W, h = DEFAULT_MAP_H): MapData {
   const tiles: Tile[][] = [];
-  for (let y = 0; y < MAP_H; y++) {
+  for (let y = 0; y < h; y++) {
     const row: Tile[] = [];
-    for (let x = 0; x < MAP_W; x++) row.push({ terrain: 'grass', variant: 0.5 });
+    for (let x = 0; x < w; x++) row.push({ terrain: 'grass', variant: 0.5 });
     tiles.push(row);
   }
-  return { tiles, startX: Math.floor(MAP_W / 2), startY: Math.floor(MAP_H / 2) };
+  return { tiles, startX: Math.floor(w / 2), startY: Math.floor(h / 2) };
 }
 
 /** Flat map with a western national border strip — opts border tests into the border rules. */
 export function flatBorderMap(): MapData {
   const map = flatMap();
-  for (let y = 0; y < MAP_H; y++) {
+  for (let y = 0; y < map.tiles.length; y++) {
     for (let x = 0; x < BALANCE.borderDepth; x++) map.tiles[y][x].foreign = true;
   }
-  return { ...map, border: 'W', crossX: BALANCE.borderDepth, crossY: Math.floor(MAP_H / 2) };
+  return { ...map, border: 'W', crossX: BALANCE.borderDepth, crossY: Math.floor(map.tiles.length / 2) };
 }
 
 /** Engine on a flat map, calm weather, no pre-seeded starting base (unless asked for). */

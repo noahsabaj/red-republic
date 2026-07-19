@@ -4,10 +4,13 @@
 import {
   BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, CONTRACTS, FARM_SEASON, WEATHER,
   DOLLAR_BUILD_RATE, IMPORT_MARKUP, OBJECTIVES,
+  CLIMATES, DEFAULT_CLIMATE, DIFFICULTIES, DEFAULT_DIFFICULTY,
 } from './config';
-import type { DepositType, ResourceId } from './config';
-import { generateMap, mulberry32, MAP_W, MAP_H } from './mapgen';
-import type { BorderEdge, MapData, Tile } from './mapgen';
+import type { ClimateId, DepositType, DifficultyId, ResourceId } from './config';
+import { generateMap, mulberry32 } from './mapgen';
+import type { BorderEdge, MapData, SeededRng, Tile } from './mapgen';
+import { SAVE_FORMAT_VERSION, packTiles, unpackTiles, validateSave } from './save-format';
+import type { SaveGameV1 } from './save-format';
 import { floodRoads, FloodResult } from './pathfind';
 import type { DistanceField } from './pathfind';
 import { WeatherTimeline } from './weather';
@@ -170,9 +173,18 @@ export class GameEngine {
   readonly TICK_MS = 500; // one game day at 1x speed
 
   readonly seed: number;
+  /** Map dimensions in tiles (derived from the tile grid at construction). */
+  readonly mapW: number;
+  readonly mapH: number;
+  /** Climate region driving the weather timeline. Fixed for the whole run. */
+  readonly climate: ClimateId;
+  /** Difficulty preset (start conditions only — the sim is difficulty-blind). */
+  readonly difficulty: DifficultyId;
+  /** The republic's name (player-chosen at founding; shown in HUD and saves). */
+  name: string;
   /** Which map edge is the national border; null on bare test maps (no border rules). */
   readonly borderEdge: BorderEdge | null;
-  private rng: () => number;
+  private rng: SeededRng;
   private timeline: WeatherTimeline;
   /** Test/debug seam: overlays the deterministic timeline (helpers force calm weather). */
   weatherScript?: (dayIndex: number) => Partial<DayWeather>;
@@ -183,14 +195,25 @@ export class GameEngine {
   private sunStreak = 0;
   private wasFrost = false;
 
-  constructor(opts: { seed?: number; map?: MapData; skipStartingBase?: boolean; weatherScript?: (dayIndex: number) => Partial<DayWeather> } = {}) {
+  constructor(opts: {
+    seed?: number; map?: MapData; mapW?: number; mapH?: number;
+    climate?: ClimateId; difficulty?: DifficultyId; name?: string;
+    skipStartingBase?: boolean; weatherScript?: (dayIndex: number) => Partial<DayWeather>;
+  } = {}) {
     this.seed = opts.seed ?? Math.floor(Math.random() * 2 ** 31);
+    this.climate = opts.climate ?? DEFAULT_CLIMATE;
+    this.difficulty = opts.difficulty ?? DEFAULT_DIFFICULTY;
+    this.name = opts.name ?? 'Red Republic';
+    this.rubles = DIFFICULTIES[this.difficulty].startRubles;
+    this.dollars = DIFFICULTIES[this.difficulty].startDollars;
     this.rng = mulberry32(this.seed ^ 0x9e3779b9); // decorrelate from map generation
-    this.timeline = new WeatherTimeline(this.seed);
+    this.timeline = new WeatherTimeline(this.seed, CLIMATES[this.climate]);
     this.weatherScript = opts.weatherScript;
     this.weather = this.weatherAt(this.dayIndex());
-    const map = opts.map ?? generateMap(this.seed);
+    const map = opts.map ?? generateMap(this.seed, opts.mapW, opts.mapH);
     this.tiles = map.tiles;
+    this.mapH = this.tiles.length;
+    this.mapW = this.tiles[0].length;
     this.borderEdge = map.border ?? null;
     this.hasWater = this.tiles.some(row => row.some(t => t.terrain === 'water'));
     if (!opts.skipStartingBase) this.setupStartingBase(map);
@@ -216,7 +239,11 @@ export class GameEngine {
       for (let x = sx + 2; x <= sx + 4; x++) this.tiles[sy - 1][x].road = true;
     }
     const depot = [...this.buildings.values()].find(b => b.defId === 'depot')!;
-    depot.stock = { planks: 120, bricks: 120, steel: 50, food: 100 };
+    const mult = DIFFICULTIES[this.difficulty].depotStockMult;
+    depot.stock = {
+      planks: Math.round(120 * mult), bricks: Math.round(120 * mult),
+      steel: Math.round(50 * mult), food: Math.round(100 * mult),
+    };
     this.pushEvent('The Politburo has granted you this land. Build a thriving socialist republic!', 'info', 'star');
   }
 
@@ -227,9 +254,9 @@ export class GameEngine {
       if (t && !t.buildingId) t.road = true; // over water this is a bridge
     };
     if (edge === 'W') for (let x = 0; x < cx; x++) lay(x, cy);
-    if (edge === 'E') for (let x = cx + 2; x < MAP_W; x++) lay(x, cy);
+    if (edge === 'E') for (let x = cx + 2; x < this.mapW; x++) lay(x, cy);
     if (edge === 'N') for (let y = 0; y < cy; y++) lay(cx, y);
-    if (edge === 'S') for (let y = cy + 2; y < MAP_H; y++) lay(cx, y);
+    if (edge === 'S') for (let y = cy + 2; y < this.mapH; y++) lay(cx, y);
   }
 
   /** Border crossing: the strip lane plus a domestic link to the base. */
@@ -291,7 +318,7 @@ export class GameEngine {
   }
 
   /** Absolute day index into the weather timeline (0 = January 1, 1960). */
-  private dayIndex(): number {
+  dayIndex(): number {
     return (this.year - 1960) * 360 + (this.month - 1) * 30 + (this.day - 1);
   }
 
@@ -344,7 +371,7 @@ export class GameEngine {
   }
 
   private floodFrom(sources: { x: number; y: number }[]): FloodResult {
-    return floodRoads((x, y) => !!this.tiles[y][x].road, sources);
+    return floodRoads(this.mapW, this.mapH, (x, y) => !!this.tiles[y][x].road, sources);
   }
 
   /** Water tiles orthogonally touching a building's footprint (its docks). */
@@ -363,7 +390,7 @@ export class GameEngine {
   }
 
   private waterFlood(sources: { x: number; y: number }[]): FloodResult {
-    return floodRoads((x, y) => this.tiles[y][x].terrain === 'water', sources);
+    return floodRoads(this.mapW, this.mapH, (x, y) => this.tiles[y][x].terrain === 'water', sources);
   }
 
   findPath(from: { x: number; y: number }[], to: { x: number; y: number }[]): { x: number; y: number }[] | null {
@@ -422,7 +449,7 @@ export class GameEngine {
       return { ok: true }; // on water this becomes a bridge
     }
     const [w, h] = def.size;
-    if (x < 0 || y < 0 || x + w > MAP_W || y + h > MAP_H) return { ok: false, reason: 'Out of bounds' };
+    if (x < 0 || y < 0 || x + w > this.mapW || y + h > this.mapH) return { ok: false, reason: 'Out of bounds' };
     let depositOk = !def.requiresDeposit;
     for (let dy = 0; dy < h; dy++) {
       for (let dx = 0; dx < w; dx++) {
@@ -1059,9 +1086,9 @@ export class GameEngine {
     const edge = this.borderEdge;
     if (!edge || this.foreignTrucks.length >= 8) return;
     const pts = edge === 'W' ? [{ x: -0.8, y: c.y + 0.5 }, { x: c.x - 0.5, y: c.y + 0.5 }]
-      : edge === 'E' ? [{ x: MAP_W - 0.2, y: c.y + 0.5 }, { x: c.x + c.w + 0.5, y: c.y + 0.5 }]
+      : edge === 'E' ? [{ x: this.mapW - 0.2, y: c.y + 0.5 }, { x: c.x + c.w + 0.5, y: c.y + 0.5 }]
       : edge === 'N' ? [{ x: c.x + 0.5, y: -0.8 }, { x: c.x + 0.5, y: c.y - 0.5 }]
-      : [{ x: c.x + 0.5, y: MAP_H - 0.2 }, { x: c.x + 0.5, y: c.y + c.h + 0.5 }];
+      : [{ x: c.x + 0.5, y: this.mapH - 0.2 }, { x: c.x + 0.5, y: c.y + c.h + 0.5 }];
     this.foreignTrucks.push({
       id: this.nextTruckId++, points: pts, cargo: r, amount: amt,
       daysTotal: 0.7, daysDone: 0, phase: 'go', destId: c.id, srcId: 0,
@@ -1683,7 +1710,7 @@ export class GameEngine {
     const start = this.tiles[y]?.[x];
     if (!start?.deposit) return null;
     const kind = start.deposit;
-    const seen = new Set<number>([y * MAP_W + x]);
+    const seen = new Set<number>([y * this.mapW + x]);
     const stack = [{ x, y }];
     const tiles: { x: number; y: number }[] = [];
     let exploitedBy: BuildingInst | null = null;
@@ -1698,7 +1725,7 @@ export class GameEngine {
       for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
         if (dx === 0 && dy === 0) continue;
         const nx = cur.x + dx, ny = cur.y + dy;
-        const k = ny * MAP_W + nx;
+        const k = ny * this.mapW + nx;
         if (seen.has(k)) continue;
         if (this.tiles[ny]?.[nx]?.deposit === kind) { seen.add(k); stack.push({ x: nx, y: ny }); }
       }
@@ -1779,6 +1806,154 @@ export class GameEngine {
       }
     }
     if (changed) this.bump();
+  }
+
+  // ---------------- save / load ----------------
+
+  /**
+   * Snapshot the full simulation as a versioned, JSON-safe blob. Runs
+   * between advance() calls on the UI thread, so fleets and the incoming[]
+   * reservations they hold are captured atomically. Deep-copies everything —
+   * mutating the blob later can never corrupt the live engine.
+   */
+  serialize(): SaveGameV1 {
+    const cloneTruck = (t: Truck): Truck => ({ ...t, points: t.points.map(p => ({ ...p })) });
+    const cloneLedger = (l: TradeDayLedger): TradeDayLedger =>
+      ({ imports: { ...l.imports }, exports: { ...l.exports }, rubles: l.rubles, dollars: l.dollars, used: l.used, capacity: l.capacity, blocked: [...l.blocked] });
+    const rules: Partial<Record<ResourceId, AutoTradeRule>> = {};
+    for (const [r, rule] of Object.entries(this.autoTrade.rules) as [ResourceId, AutoTradeRule][]) rules[r] = { ...rule };
+    return {
+      header: {
+        formatVersion: SAVE_FORMAT_VERSION,
+        savedAt: Date.now(),
+        name: this.name,
+        seed: this.seed,
+        mapW: this.mapW, mapH: this.mapH,
+        climate: this.climate,
+        difficulty: this.difficulty,
+        day: this.day, month: this.month, year: this.year,
+        pop: this.pop,
+        rubles: this.rubles, dollars: this.dollars,
+      },
+      body: {
+        borderEdge: this.borderEdge,
+        ...packTiles(this.tiles),
+        buildings: [...this.buildings.values()].map(b => ({ ...b, stock: { ...b.stock }, incoming: { ...b.incoming } })),
+        trucks: this.trucks.map(cloneTruck),
+        boats: this.boats.map(cloneTruck),
+        foreignTrucks: this.foreignTrucks.map(cloneTruck),
+        boatOrders: this.boatOrders.map(o => ({ ...o })),
+        acc: this.acc,
+        lastRunSpeed: this.lastRunSpeed,
+        rngState: this.rng.getState(),
+        priceFactorEast: this.priceFactorEast,
+        priceFactorWest: this.priceFactorWest,
+        autoTrade: { enabled: this.autoTrade.enabled, reserveRubles: this.autoTrade.reserveRubles, reserveDollars: this.autoTrade.reserveDollars, rules },
+        tradeLedger: { today: cloneLedger(this.tradeLedger.today), yesterday: cloneLedger(this.tradeLedger.yesterday) },
+        contracts: this.contracts.map(c => ({ ...c })),
+        relationsPenalty: { ...this.relationsPenalty },
+        wagesUnpaid: this.wagesUnpaid,
+        objectivesDone: [...this.objectivesDone],
+        stats: { produced: { ...this.stats.produced }, exportedValue: this.stats.exportedValue, roadsBuilt: this.stats.roadsBuilt },
+        happiness: this.happiness,
+        sat: { ...this.sat },
+        streaks: { dry: this.dryStreak, gloom: this.gloomStreak, sun: this.sunStreak, wasFrost: this.wasFrost },
+        counters: { building: this.nextBuildingId, truck: this.nextTruckId, boat: this.nextBoatId, contract: this.nextContractId },
+        aggregates: {
+          capacity: this.capacity, workers: this.workers, employed: this.employed, jobs: this.jobs,
+          powerProduced: this.powerProduced, powerDemand: this.powerDemand,
+          heatProduced: this.heatProduced, heatDemand: this.heatDemand,
+        },
+      },
+    };
+  }
+
+  /**
+   * Reconstruct an engine from a save blob. Always returns a PAUSED engine
+   * (speed 0) — the caller decides when time resumes. The weather timeline is
+   * rebuilt from the seed and replayed to the saved day, so snow depth and
+   * river-freeze hysteresis come back exactly; the economy rng position is
+   * restored bit-exact via rngState. Throws SaveError on invalid blobs.
+   */
+  static fromSave(save: SaveGameV1, opts: { weatherScript?: (dayIndex: number) => Partial<DayWeather> } = {}): GameEngine {
+    const { header: h, body } = validateSave(save);
+    const tiles = unpackTiles(body.tilesPacked, body.variantsPacked, h.mapW, h.mapH);
+    // buildingId stamps are not encoded — clear-and-restamp from footprints below
+    const e = new GameEngine({
+      seed: h.seed, climate: h.climate, difficulty: h.difficulty, name: h.name,
+      skipStartingBase: true, weatherScript: opts.weatherScript,
+      map: { tiles, startX: 0, startY: 0, border: body.borderEdge ?? undefined },
+    });
+
+    e.day = h.day; e.month = h.month; e.year = h.year;
+    e.rubles = h.rubles; e.dollars = h.dollars; e.pop = h.pop;
+
+    e.happiness = body.happiness;
+    e.sat = { ...body.sat };
+    e.priceFactorEast = body.priceFactorEast;
+    e.priceFactorWest = body.priceFactorWest;
+    e.relationsPenalty = { ...body.relationsPenalty };
+    e.wagesUnpaid = body.wagesUnpaid;
+    e.objectivesDone = [...body.objectivesDone];
+    e.stats = { produced: { ...body.stats.produced }, exportedValue: body.stats.exportedValue, roadsBuilt: body.stats.roadsBuilt };
+    e.autoTrade = {
+      enabled: body.autoTrade.enabled,
+      reserveRubles: body.autoTrade.reserveRubles,
+      reserveDollars: body.autoTrade.reserveDollars,
+      rules: Object.fromEntries((Object.entries(body.autoTrade.rules) as [ResourceId, AutoTradeRule][]).map(([r, rule]) => [r, { ...rule }])),
+    };
+    const cloneLedger = (l: TradeDayLedger): TradeDayLedger =>
+      ({ imports: { ...l.imports }, exports: { ...l.exports }, rubles: l.rubles, dollars: l.dollars, used: l.used, capacity: l.capacity, blocked: [...l.blocked] });
+    e.tradeLedger = { today: cloneLedger(body.tradeLedger.today), yesterday: cloneLedger(body.tradeLedger.yesterday) };
+    e.contracts = body.contracts.map(c => ({ ...c }));
+    e.dryStreak = body.streaks.dry;
+    e.gloomStreak = body.streaks.gloom;
+    e.sunStreak = body.streaks.sun;
+    e.wasFrost = body.streaks.wasFrost;
+    e.acc = body.acc;
+    e.lastRunSpeed = body.lastRunSpeed;
+    e.nextBuildingId = body.counters.building;
+    e.nextTruckId = body.counters.truck;
+    e.nextBoatId = body.counters.boat;
+    e.nextContractId = body.counters.contract;
+    e.capacity = body.aggregates.capacity;
+    e.workers = body.aggregates.workers;
+    e.employed = body.aggregates.employed;
+    e.jobs = body.aggregates.jobs;
+    e.powerProduced = body.aggregates.powerProduced;
+    e.powerDemand = body.aggregates.powerDemand;
+    e.heatProduced = body.aggregates.heatProduced;
+    e.heatDemand = body.aggregates.heatDemand;
+    e.rng.setState(body.rngState);
+
+    // hydrate over defaults so future BuildingInst fields load from old saves
+    for (const saved of body.buildings) {
+      const inst: BuildingInst = Object.assign(
+        { staff: 0, eff: 0, powered: false, heated: false, connected: false, coalFactor: 0, farmFields: 0 },
+        saved,
+        { stock: { ...saved.stock }, incoming: { ...saved.incoming } },
+      );
+      e.buildings.set(inst.id, inst);
+      for (let dy = 0; dy < inst.h; dy++) {
+        for (let dx = 0; dx < inst.w; dx++) {
+          const t = e.tiles[inst.y + dy]?.[inst.x + dx];
+          if (t) t.buildingId = inst.id;
+        }
+      }
+    }
+    const cloneTruck = (t: Truck): Truck => ({ ...t, points: t.points.map(p => ({ ...p })) });
+    e.trucks = body.trucks.map(cloneTruck);
+    e.boats = body.boats.map(cloneTruck);
+    e.foreignTrucks = body.foreignTrucks.map(cloneTruck);
+    e.boatOrders = body.boatOrders.map(o => ({ ...o }));
+
+    // rebuild derived state: weather replays to the saved day; totals/alerts recompute
+    e.weather = e.weatherAt(e.dayIndex());
+    e.computeTotals();
+    e.updateAlerts();
+    e.speed = 0;
+    e.bump();
+    return e;
   }
 
   // ---------------- events / subscription ----------------
