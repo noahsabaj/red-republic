@@ -9,6 +9,8 @@ export default defineConfig({
   plugins: [inspectAttr(), react()],
   server: {
     port: 3000,
+    // Tauri's devUrl points at :3000 — fail fast instead of drifting to 3001
+    strictPort: true,
   },
   resolve: {
     alias: {

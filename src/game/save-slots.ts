@@ -10,6 +10,8 @@
 // ============================================================
 import { SaveError, parseSave } from './save-format';
 import type { SaveGameV1, SaveHeaderV1 } from './save-format';
+import { isTauri, storage } from '@/platform/storage';
+import type { KV } from '@/platform/storage';
 
 const PREFIX = 'redrepublic:save:';
 const INDEX_KEY = 'redrepublic:save-index';
@@ -41,19 +43,9 @@ export function newSlotId(): string {
   return `manual-${Date.now().toString(36)}-${Math.floor(Math.random() * 36 ** 4).toString(36)}`;
 }
 
-function storage(): Storage | null {
-  try {
-    const s = globalThis.localStorage;
-    if (!s) return null;
-    return s;
-  } catch {
-    return null; // storage disabled (private mode, permissions)
-  }
-}
-
 type Index = Record<string, { header: SaveHeaderV1; sizeBytes: number }>;
 
-function readIndex(s: Storage): Index | null {
+function readIndex(s: KV): Index | null {
   try {
     const raw = s.getItem(INDEX_KEY);
     if (!raw) return null;
@@ -66,11 +58,10 @@ function readIndex(s: Storage): Index | null {
 }
 
 /** Rebuild the index by scanning prefixed keys (torn writes, cleared index). */
-function rebuildIndex(s: Storage): Index {
+function rebuildIndex(s: KV): Index {
   const idx: Index = {};
-  for (let i = 0; i < s.length; i++) {
-    const key = s.key(i);
-    if (!key?.startsWith(PREFIX)) continue;
+  for (const key of s.keys()) {
+    if (!key.startsWith(PREFIX)) continue;
     const raw = s.getItem(key);
     if (!raw) continue;
     try {
@@ -166,22 +157,57 @@ function slug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'republic';
 }
 
-/** Download a save as a .json file via a transient anchor. */
-export function exportSave(save: SaveGameV1): void {
+const SAVE_FILTER = [{ name: 'Red Republic save', extensions: ['json'] }];
+
+/**
+ * Export a save as a .json file. Desktop: a native Save-As dialog (the
+ * browser <a download> flow silently no-ops inside Tauri webviews).
+ * Browser: transient anchor download. Resolves false when the user
+ * cancels the dialog; throws on I/O failure.
+ */
+export async function exportSave(save: SaveGameV1): Promise<boolean> {
+  const filename = `red-republic-${slug(save.header.name)}-y${save.header.year}m${save.header.month}.json`;
+  if (isTauri()) {
+    const { save: saveDialog } = await import('@tauri-apps/plugin-dialog');
+    const path = await saveDialog({ defaultPath: filename, filters: SAVE_FILTER });
+    if (path === null) return false;
+    const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+    await writeTextFile(path, JSON.stringify(save)); // absolute dialog-picked path
+    return true;
+  }
   const blob = new Blob([JSON.stringify(save)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `red-republic-${slug(save.header.name)}-y${save.header.year}m${save.header.month}.json`;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+  return true;
 }
 
-/** Parse and validate an imported .json file. Throws SaveError on anything invalid. */
+/** Parse and validate an imported .json file (browser file-input path). */
 export async function importSave(file: File): Promise<SaveGameV1> {
   let text: string;
   try {
     text = await file.text();
+  } catch {
+    throw new SaveError('corrupt', 'Could not read the selected file');
+  }
+  return parseSave(text);
+}
+
+/**
+ * Desktop import: native open dialog → read → validate. Resolves null
+ * when the user cancels; throws SaveError on unreadable/invalid content.
+ */
+export async function importSaveViaDialog(): Promise<SaveGameV1 | null> {
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const path = await open({ multiple: false, filters: SAVE_FILTER });
+  if (path === null) return null;
+  const { readTextFile } = await import('@tauri-apps/plugin-fs');
+  let text: string;
+  try {
+    text = await readTextFile(path);
   } catch {
     throw new SaveError('corrupt', 'Could not read the selected file');
   }

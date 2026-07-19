@@ -6,8 +6,9 @@ import type { GameEngine } from '@/game/engine';
 import { SaveError } from '@/game/save-format';
 import type { SaveGameV1 } from '@/game/save-format';
 import {
-  deleteSlot, exportSave, importSave, listSlots, newSlotId, readSlot, writeSlot,
+  deleteSlot, exportSave, importSave, importSaveViaDialog, listSlots, newSlotId, readSlot, writeSlot,
 } from '@/game/save-slots';
+import { isTauri } from '@/platform/storage';
 import type { SlotMeta } from '@/game/save-slots';
 import { GameIcon } from '@/ui/GameIcon';
 
@@ -64,20 +65,40 @@ export function SaveLoadScreen({ mode, engine, unsavedDays, onBack, onLoad, onSa
     }
   }, [onLoad, notify]);
 
+  const doExport = useCallback(async (slotId: string) => {
+    try {
+      if (await exportSave(readSlot(slotId))) notify('Save exported', 'info', 'download');
+    } catch (e) {
+      notify(e instanceof SaveError ? e.message : 'Export failed', 'bad');
+    }
+  }, [notify]);
+
+  const addImported = useCallback((save: SaveGameV1) => {
+    const res = writeSlot(newSlotId(), save);
+    if (res.ok) {
+      notify(`Imported “${save.header.label ?? save.header.name}”`, 'good', 'upload');
+      setRefresh(n => n + 1);
+    } else {
+      notify(res.message, 'bad');
+    }
+  }, [notify]);
+
   const doImport = useCallback(async (file: File) => {
     try {
-      const save = await importSave(file);
-      const res = writeSlot(newSlotId(), save);
-      if (res.ok) {
-        notify(`Imported “${save.header.label ?? save.header.name}”`, 'good', 'upload');
-        setRefresh(n => n + 1);
-      } else {
-        notify(res.message, 'bad');
-      }
+      addImported(await importSave(file));
     } catch (e) {
       notify(e instanceof SaveError ? e.message : 'Not a valid save file', 'bad');
     }
-  }, [notify]);
+  }, [addImported, notify]);
+
+  const doImportDesktop = useCallback(async () => {
+    try {
+      const save = await importSaveViaDialog();
+      if (save) addImported(save); // null = user cancelled, no toast
+    } catch (e) {
+      notify(e instanceof SaveError ? e.message : 'Not a valid save file', 'bad');
+    }
+  }, [addImported, notify]);
 
   const meta = (m: SlotMeta) => {
     const h = m.header;
@@ -122,7 +143,7 @@ export function SaveLoadScreen({ mode, engine, unsavedDays, onBack, onLoad, onSa
             />
           )}
           <button
-            onClick={() => { exportSave(readSlot(m.slotId)); notify('Save exported', 'info', 'download'); }}
+            onClick={() => void doExport(m.slotId)}
             aria-label="Export this save" title="Export as .json"
             className="rounded bg-red-900/70 px-2 py-1 text-yellow-200 hover:bg-red-800"
           >
@@ -150,7 +171,7 @@ export function SaveLoadScreen({ mode, engine, unsavedDays, onBack, onLoad, onSa
           <button className={secondaryBtn} onClick={onBack}>Back</button>
           <button
             className="flex items-center gap-1.5 rounded bg-red-900/70 px-3 py-1.5 text-[0.6875rem] font-bold text-yellow-100 hover:bg-red-800"
-            onClick={() => fileRef.current?.click()}
+            onClick={() => { if (isTauri()) void doImportDesktop(); else fileRef.current?.click(); }}
           >
             <GameIcon name="upload" size={12} /> Import .json
           </button>

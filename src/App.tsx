@@ -20,6 +20,10 @@ import { getSettings, subscribeSettings } from './app/settings';
 import { SaveError } from './game/save-format';
 import type { SaveGameV1 } from './game/save-format';
 import { QUICKSAVE_SLOT, readSlot, writeSlot } from './game/save-slots';
+import { onStorageFlushError } from './platform/storage';
+import { onUpdateAvailable, quitApp, setCloseRequestHandler } from './platform/desktop';
+import type { PendingUpdate } from './platform/desktop';
+import { UpdateBanner } from './components/UpdateBanner';
 import { audio } from './audio';
 
 export default function App() {
@@ -33,6 +37,7 @@ export default function App() {
   const [panel, setPanel] = useState<PanelMode | null>(null);
   const [briefingVisible, setBriefingVisible] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
   const { toasts, push, clear } = useToasts();
   const nextSessionId = useRef((session?.id ?? 0) + 1);
   const speedBeforePause = useRef<0 | 1 | 2 | 4>(1);
@@ -47,6 +52,9 @@ export default function App() {
     apply();
     return subscribeSettings(apply);
   }, []);
+
+  // desktop: async disk writes fail out-of-band — surface them, never swallow
+  useEffect(() => onStorageFlushError(f => push(`Could not write to disk: ${f.message}`, 'bad')), [push]);
 
   // audio: the context can only start from a user gesture (autoplay policy)
   useEffect(() => {
@@ -173,6 +181,24 @@ export default function App() {
     if (screen.phase === 'playing' && screen.overlay === 'root') resume();
     else dispatch({ type: 'BACK' });
   }, [screen, resume]);
+
+  // desktop: titlebar X / Alt+F4 → confirm when progress is unsaved. Days are
+  // computed from the engine AT CALL TIME — App renders lazily, so captured
+  // values could be a day stale.
+  useEffect(() => setCloseRequestHandler(() => {
+    const days = session
+      ? session.engine.dayIndex() - (lastSave?.sessionId === session.id ? lastSave.dayIndex : 0)
+      : 0;
+    if (!session || days <= 0) return 'quit';
+    if (screen.phase === 'playing') {
+      if (screen.overlay === null) openPause(); // pauses the sim, overlay → 'root'
+      dispatch({ type: 'PAUSE_GOTO', sub: 'confirm-quit' });
+    }
+    return 'confirm';
+  }), [session, lastSave, screen, openPause]);
+
+  // desktop: update prompt (no-op subscription in the browser)
+  useEffect(() => onUpdateAvailable(setPendingUpdate), []);
 
   // ---------- quicksave / quickload ----------
 
@@ -339,12 +365,21 @@ export default function App() {
               else exitToMenu();
             }}
             onExitConfirm={exitToMenu}
+            onQuitConfirm={() => void quitApp()}
             onBack={back}
           />
         )
       )}
 
       <ToastStack toasts={toasts} />
+      {pendingUpdate && (
+        <UpdateBanner
+          version={pendingUpdate.version}
+          install={pendingUpdate.install}
+          onDismiss={() => setPendingUpdate(null)}
+          notify={push}
+        />
+      )}
       {briefingVisible && session && (
         <IntroOverlay onStart={() => { setBriefingVisible(false); session.engine.setSpeed(1); }} />
       )}

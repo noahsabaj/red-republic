@@ -1,0 +1,29 @@
+[package]
+name = "red-republic"
+version = "1.0.0"
+description = "Red Republic - planned-economy city builder"
+authors = ["Noah Sabaj"]
+edition = "2021"
+
+# The shipped app version comes from tauri.conf.json -> ../package.json;
+# this field is informational.
+
+[lib]
+name = "red_republic_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-process = "2"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-updater = "2"

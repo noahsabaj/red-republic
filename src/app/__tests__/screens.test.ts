@@ -48,4 +48,10 @@ describe('screenReducer', () => {
     expect(s).toEqual({ phase: 'playing', overlay: 'confirm-exit' });
     expect(step(s, { type: 'BACK' })).toEqual({ phase: 'playing', overlay: 'root' });
   });
+
+  it('confirm-quit (desktop close) is a pause sub-screen with standard BACK', () => {
+    const s = step(PLAYING, { type: 'OPEN_PAUSE' }, { type: 'PAUSE_GOTO', sub: 'confirm-quit' });
+    expect(s).toEqual({ phase: 'playing', overlay: 'confirm-quit' });
+    expect(step(s, { type: 'BACK' })).toEqual({ phase: 'playing', overlay: 'root' });
+  });
 });

@@ -6,7 +6,11 @@
 //
 // The stored object is replaced (never mutated) on every update and
 // frozen, so identity comparison is a correct change signal.
+//
+// Persistence goes through the platform storage facade (localStorage
+// in the browser, real files on desktop) — never raw localStorage.
 // ============================================================
+import { storage } from '@/platform/storage';
 
 export interface Settings {
   // gameplay & UI
@@ -94,7 +98,7 @@ function sanitize(raw: unknown): Settings {
 
 function load(): Settings {
   try {
-    const raw = globalThis.localStorage?.getItem(STORAGE_KEY);
+    const raw = storage()?.getItem(STORAGE_KEY);
     if (!raw) return defaultSettings();
     return sanitize(JSON.parse(raw));
   } catch {
@@ -107,7 +111,7 @@ const listeners = new Set<() => void>();
 
 function persist() {
   try {
-    globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify(current));
+    storage()?.setItem(STORAGE_KEY, JSON.stringify(current));
   } catch {
     // storage unavailable/full — settings still apply for this session
   }

@@ -3,7 +3,7 @@ import { primaryBtn, secondaryBtn } from './controls';
 import { GameIcon } from '@/ui/GameIcon';
 
 interface Props {
-  overlay: 'root' | 'confirm-exit' | 'confirm-restart';
+  overlay: 'root' | 'confirm-exit' | 'confirm-restart' | 'confirm-quit';
   republicName: string;
   unsavedDays: number;
   escDisabled: boolean;
@@ -16,6 +16,7 @@ interface Props {
   onRestartConfirm: () => void;
   onExitRequest: () => void;    // -> confirm-exit (or straight exit when nothing is unsaved)
   onExitConfirm: () => void;
+  onQuitConfirm: () => void;    // desktop only: close the application
   onBack: () => void;
 }
 
@@ -30,6 +31,22 @@ export function PauseMenu(p: Props) {
         <div className="mt-4 flex justify-end gap-2">
           <button className={secondaryBtn} onClick={p.onBack}>Back</button>
           <button className={primaryBtn} onClick={p.onRestartConfirm}>Restart</button>
+        </div>
+      </MenuShell>
+    );
+  }
+
+  if (p.overlay === 'confirm-quit') {
+    return (
+      <MenuShell title="Quit Red Republic?" icon="exit" onBack={p.onBack} escDisabled={p.escDisabled} width="max-w-sm">
+        <p className="text-xs leading-relaxed text-yellow-100/85">
+          <b>{p.unsavedDays} day{p.unsavedDays > 1 ? 's' : ''}</b> of progress since your last save will be lost.
+          Save first, comrade?
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button className={secondaryBtn} onClick={p.onBack}>Back</button>
+          <button className={secondaryBtn} onClick={p.onSave}>Save Game</button>
+          <button className={primaryBtn} onClick={p.onQuitConfirm}>Quit Anyway</button>
         </div>
       </MenuShell>
     );
