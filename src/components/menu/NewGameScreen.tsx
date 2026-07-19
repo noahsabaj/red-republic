@@ -78,7 +78,7 @@ export function NewGameScreen({ onBack, onStart, escDisabled }: Props) {
                 const d = DIFFICULTIES[id];
                 return (
                   <OptionCard key={id} selected={difficulty === id} icon={d.icon} label={d.label}
-                    blurb={`${d.blurb} · ₽${(d.startRubles / 1000).toFixed(0)}k · $${d.startDollars.toLocaleString()}`}
+                    blurb={`${d.blurb} · grant ₽${d.startRubles.toLocaleString()} + $${d.startDollars.toLocaleString()} · imports ×${d.importPriceMult}`}
                     onClick={() => setDifficulty(id)} />
                 );
               })}

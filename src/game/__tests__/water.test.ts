@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { BALANCE } from '../config';
 import type { GameEngine } from '../engine';
 import { layRoad, makeEngine, placeBuilt, runDays } from './helpers';
 
@@ -9,17 +8,24 @@ function carveChannel(e: GameEngine, x0: number, x1: number, y0: number, y1: num
 }
 
 describe('bridges', () => {
-  it('roads may cross water at the bridge price', () => {
+  it('a road painted on water becomes a bridge construction site — no money charged', () => {
     const e = makeEngine();
     carveChannel(e, 20, 20, 5, 15);
     expect(e.canPlace('road', 20, 10).ok).toBe(true);
     e.rubles = 1000;
     e.tryPlace('road', 20, 10, false);
-    expect(e.rubles).toBe(1000 - BALANCE.bridgeCostRubles);
-    // instant bridges scale off the bridge price too
+    expect(e.rubles).toBe(1000); // domestic construction never touches the treasury
+    const site = e.buildingAt(20, 10)!;
+    expect(site.defId).toBe('bridge'); // plank+steel bill, not gravel
+    expect(site.constructed).toBe(false);
+    expect(e.tiles[10][20].road).toBeFalsy(); // not drivable until built
+    // instant mode imports the prefab for dollars, priced per-tile as a bridge
     e.dollars = 1000;
+    const cost = e.instantCost('road', 20, 11);
+    expect(cost).toBeGreaterThan(e.instantCost('road')); // bridge > land road
     e.tryPlace('road', 20, 11, true);
-    expect(e.dollars).toBe(1000 - Math.ceil(BALANCE.bridgeCostRubles * 0.09));
+    expect(e.dollars).toBe(1000 - cost);
+    expect(e.tiles[11][20].road).toBe(true); // instant = built immediately
   });
 
   it('trucks deliver across a bridge', () => {

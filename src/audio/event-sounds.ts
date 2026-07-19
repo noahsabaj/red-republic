@@ -15,7 +15,6 @@ const MAP: Record<string, SfxName> = {
   'bad:freeze': 'alertBad',
   'bad:summer': 'alertBad',       // drought
   'bad:users': 'alertBad',        // citizens leave
-  'bad:coins': 'alertBad',        // wages unpaid
   'good:users': 'complete',       // settlers arrive
   'good:rain': 'complete',        // drought breaks
   'good:port': 'complete',        // thaw

@@ -3,7 +3,7 @@
 // ============================================================
 import {
   BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, CONTRACTS, FARM_SEASON, WEATHER,
-  DOLLAR_BUILD_RATE, IMPORT_MARKUP, OBJECTIVES,
+  INSTANT_BUILD, IMPORT_MARKUP, OBJECTIVES,
   CLIMATES, DEFAULT_CLIMATE, DIFFICULTIES, DEFAULT_DIFFICULTY,
 } from './config';
 import type { ClimateId, DepositType, DifficultyId, ResourceId } from './config';
@@ -109,9 +109,17 @@ interface LogisticsDemand { b: BuildingInst; r: ResourceId; amt: number; prio: n
 const JOB_PRIORITY = [
   'powerPlant', 'heatingPlant', 'store', 'foodFactory',
   'clinic', 'pub', 'customs', 'farm', 'textileMill', 'sawmill', 'brickworks',
-  'woodcutter', 'gravelQuarry', 'coalMine', 'ironMine', 'steelMill',
+  'woodcutter', 'gravelQuarry', 'coalMine', 'ironMine', 'steelMill', 'machineWorks',
   'oilPump', 'refinery', 'port', 'depot', 'warehouse', 'constructionOffice',
 ];
+
+/** True when any of the building's machinery (wear) bins ran dry — it then
+ *  runs at BALANCE.wornEffMult until spares arrive. Pure; UI-safe. */
+export function buildingWorn(b: BuildingInst): boolean {
+  const wear = BUILDINGS[b.defId].wear;
+  if (!wear) return false;
+  return (Object.keys(wear) as ResourceId[]).some(r => (b.stock[r] ?? 0) < 1e-6);
+}
 
 export class GameEngine {
   tiles: Tile[][];
@@ -121,8 +129,10 @@ export class GameEngine {
   /** Cosmetic border traffic: foreign lorries visiting the customs on trade days. */
   foreignTrucks: Truck[] = [];
   day = 1; month = 3; year = 1960;
-  rubles = BALANCE.startRubles;
-  dollars = BALANCE.startDollars;
+  // Foreign currency only — nothing domestic ever charges the treasury.
+  // The real starting grants come from DIFFICULTIES in the constructor.
+  rubles = 0;
+  dollars = 0;
   pop = 0;
   speed: 0 | 1 | 2 | 4 = 1;
 
@@ -140,12 +150,13 @@ export class GameEngine {
   totals: Record<ResourceId, number> = Object.fromEntries(ALL_RESOURCES.map(r => [r, 0])) as Record<ResourceId, number>;
   stats = {
     produced: Object.fromEntries(ALL_RESOURCES.map(r => [r, 0])) as Record<ResourceId, number>,
+    /** Cumulative customs imports per resource (objective metric). */
+    imported: {} as Partial<Record<ResourceId, number>>,
     exportedValue: 0,
-    roadsBuilt: 0, // cumulative player-built road tiles (objective metric; never decremented)
+    roadsBuilt: 0, // cumulative COMPLETED road tiles (objective metric; never decremented)
   };
   objectivesDone: string[] = [];
   alerts: Alert[] = [];
-  wagesUnpaid = false;
   /** National auto-trade policy — mutate only via the setAutoTrade* methods. */
   autoTrade = {
     enabled: false,
@@ -243,6 +254,7 @@ export class GameEngine {
     depot.stock = {
       planks: Math.round(120 * mult), bricks: Math.round(120 * mult),
       steel: Math.round(50 * mult), food: Math.round(100 * mult),
+      gravel: Math.round(80 * mult), machinery: Math.round(2 * mult),
     };
     this.pushEvent('The Politburo has granted you this land. Build a thriving socialist republic!', 'info', 'star');
   }
@@ -283,10 +295,24 @@ export class GameEngine {
       staff: 0, eff: 0, powered: false, heated: false, connected: false,
       coalFactor: 1, farmFields: 0,
     };
+    this.seedWearBins(b);
     this.buildings.set(b.id, b);
     for (let dy = 0; dy < b.h; dy++)
       for (let dx = 0; dx < b.w; dx++)
         this.tiles[y + dy][x + dx].buildingId = b.id;
+  }
+
+  /**
+   * Part of a new building's construction bill survives as installed spares:
+   * min(bin cap, bill) of each wear resource lands in stock so nothing is
+   * born worn. Conserves machinery — none is conjured beyond the bill.
+   */
+  private seedWearBins(b: BuildingInst) {
+    const def = BUILDINGS[b.defId];
+    for (const r of Object.keys(def.wear ?? {}) as ResourceId[]) {
+      const seed = Math.min(def.storage[r] ?? 0, def.materials[r] ?? 0);
+      if (seed > 0) b.stock[r] = (b.stock[r] ?? 0) + seed;
+    }
   }
 
   // ---------------- helpers ----------------
@@ -433,11 +459,6 @@ export class GameEngine {
 
   // ---------------- placement ----------------
 
-  /** Roads over water are bridges — same tile flag, steeper price. */
-  roadCostAt(x: number, y: number): number {
-    return this.tiles[y]?.[x]?.terrain === 'water' ? BALANCE.bridgeCostRubles : BUILDINGS.road.costRubles;
-  }
-
   canPlace(defId: string, x: number, y: number): { ok: boolean; reason?: string } {
     const def = BUILDINGS[defId];
     if (defId === 'road') {
@@ -494,10 +515,9 @@ export class GameEngine {
   tryPlace(defId: string, x: number, y: number, instant: boolean): { ok: boolean; reason?: string } {
     const chk = this.canPlace(defId, x, y);
     if (!chk.ok) return chk;
-    const def = BUILDINGS[defId];
-    const rubleCost = defId === 'road' ? this.roadCostAt(x, y) : def.costRubles;
     if (instant) {
-      const cost = Math.max(1, Math.ceil(rubleCost * DOLLAR_BUILD_RATE));
+      // instant build = importing a Western prefab: dollars, no site, no wait
+      const cost = this.instantCost(defId, x, y);
       if (this.dollars < cost) return { ok: false, reason: `Not enough dollars ($${cost})` };
       this.dollars -= cost;
       if (defId === 'road') {
@@ -505,21 +525,17 @@ export class GameEngine {
         this.stats.roadsBuilt++;
       } else {
         this.placeFree(defId, x, y);
-        if (def.isCustoms && this.borderEdge) this.layCrossingLane(this.borderEdge, x, y);
+        if (BUILDINGS[defId].isCustoms && this.borderEdge) this.layCrossingLane(this.borderEdge, x, y);
       }
       this.bump();
       return { ok: true };
     }
-    if (this.rubles < rubleCost) return { ok: false, reason: `Not enough rubles (₽${rubleCost})` };
-    this.rubles -= rubleCost;
-    if (defId === 'road') {
-      this.tiles[y][x].road = true;
-      this.stats.roadsBuilt++;
-      this.bump();
-      return { ok: true };
-    }
+    // Domestic construction costs no money — only materials and labor.
+    // A road painted on water becomes a bridge site (plank+steel bill).
+    const effId = defId === 'road' && this.tiles[y][x].terrain === 'water' ? 'bridge' : defId;
+    const def = BUILDINGS[effId];
     const b: BuildingInst = {
-      id: this.nextBuildingId++, defId, x, y, w: def.size[0], h: def.size[1],
+      id: this.nextBuildingId++, defId: effId, x, y, w: def.size[0], h: def.size[1],
       constructed: false, progress: 0, stock: {}, incoming: {},
       staff: 0, eff: 0, powered: false, heated: false, connected: false,
       coalFactor: 1, farmFields: 0,
@@ -533,8 +549,22 @@ export class GameEngine {
     return { ok: true };
   }
 
-  instantCost(defId: string) {
-    return Math.max(1, Math.ceil(BUILDINGS[defId].costRubles * DOLLAR_BUILD_RATE));
+  /**
+   * Dollar price of the Western prefab: the materials bill at import prices
+   * plus a labor surcharge, with a convenience premium. Static base prices —
+   * the magic path stays decoupled from market drift and relations. Pass
+   * coordinates so a road on water prices as a bridge.
+   */
+  instantCost(defId: string, x?: number, y?: number): number {
+    const effId = defId === 'road' && x !== undefined
+      && this.tiles[y!]?.[x]?.terrain === 'water' ? 'bridge' : defId;
+    const def = BUILDINGS[effId];
+    let mats = 0;
+    for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
+      mats += amt * RESOURCES[r].priceWest;
+    }
+    return Math.max(1, Math.ceil(
+      (mats * IMPORT_MARKUP + def.labor * INSTANT_BUILD.laborDollars) * INSTANT_BUILD.premium));
   }
 
   bulldozeAt(x: number, y: number): boolean {
@@ -577,7 +607,9 @@ export class GameEngine {
 
   /** Buy price. Soured relations cut both ways: the bloc also charges more. */
   importPriceOf(r: ResourceId, currency: 'east' | 'west') {
-    return this.marketPrice(r, currency) * IMPORT_MARKUP * (1 + this.relationsPenalty[currency]);
+    return this.marketPrice(r, currency) * IMPORT_MARKUP
+      * DIFFICULTIES[this.difficulty].importPriceMult
+      * (1 + this.relationsPenalty[currency]);
   }
 
   private customsCache: { version: number; field: DistanceField | null } | null = null;
@@ -676,6 +708,7 @@ export class GameEngine {
     if (currency === 'east') this.rubles -= delivered * price;
     else this.dollars -= delivered * price;
     this.addStock(customs, r, delivered);
+    this.stats.imported[r] = (this.stats.imported[r] ?? 0) + delivered;
     this.bump();
     return { ok: true, msg: `Imported ${delivered.toFixed(0)} ${RESOURCES[r].name} to Customs` };
   }
@@ -790,7 +823,12 @@ export class GameEngine {
     const pool = produced.length ? produced : ALL_RESOURCES;
     const r = pool[Math.floor(rnd() * pool.length)];
     const bloc: 'east' | 'west' = rnd() < 0.5 ? 'east' : 'west';
-    const amount = CONTRACTS.minAmount + Math.floor(rnd() * CONTRACTS.amountSteps) * CONTRACTS.amountStep;
+    // value-banded orders: a machinery tender is a few machines, a coal tender
+    // a trainload — but both are worth comparable money
+    const [vLo, vHi] = bloc === 'east' ? CONTRACTS.valueBandEast : CONTRACTS.valueBandWest;
+    const value = vLo + rnd() * (vHi - vLo);
+    const amount = Math.min(CONTRACTS.maxUnits,
+      Math.max(CONTRACTS.minUnits, Math.round(value / this.priceOf(r, bloc))));
     const premium = CONTRACTS.premiumMin + rnd() * (CONTRACTS.premiumMax - CONTRACTS.premiumMin);
     const days = CONTRACTS.deadlineMinDays + Math.floor(rnd() * (CONTRACTS.deadlineMaxDays - CONTRACTS.deadlineMinDays + 1));
     const c: Contract = {
@@ -923,7 +961,9 @@ export class GameEngine {
     const def = this.def(b);
     const staffRatio = def.workers > 0 ? b.staff / def.workers : 1;
     const powerFactor = def.power > 0 && !b.powered ? 0.5 : 1;
-    return staffRatio * powerFactor;
+    // dry machinery bins never stall a building — the machines limp on, worn
+    const wornFactor = buildingWorn(b) ? BALANCE.wornEffMult : 1;
+    return staffRatio * powerFactor * wornFactor;
   }
 
   private updatePowerHeat() {
@@ -1016,6 +1056,11 @@ export class GameEngine {
     if (def.powerOutput || def.heatOutput) {
       const burn = (def.inputs?.coal ?? 0) * b.eff * b.coalFactor;
       if (burn > 0) rates.inputs.coal = burn;
+      // machinery wears with actual burn intensity — an idle plant wears nothing
+      for (const [r, amt] of Object.entries(def.wear ?? {}) as [ResourceId, number][]) {
+        const w = amt * b.eff * b.coalFactor;
+        if (w > 0) rates.inputs[r] = (rates.inputs[r] ?? 0) + w;
+      }
       return rates;
     }
     if (!def.outputs) return rates;
@@ -1043,6 +1088,12 @@ export class GameEngine {
     if (finalMul <= 0) return rates;
     if (def.inputs) {
       for (const [r, amt] of Object.entries(def.inputs) as [ResourceId, number][]) rates.inputs[r] = amt * finalMul;
+    }
+    // wear scales with actual activity and NEVER gates output (addStock clamps
+    // an empty bin at 0; the worn penalty rides in baseEff instead)
+    for (const [r, amt] of Object.entries(def.wear ?? {}) as [ResourceId, number][]) {
+      const w = amt * finalMul;
+      if (w > 0) rates.inputs[r] = (rates.inputs[r] ?? 0) + w;
     }
     for (const [r, amt] of Object.entries(def.outputs) as [ResourceId, number][]) rates.outputs[r] = amt * finalMul;
     return rates;
@@ -1168,6 +1219,7 @@ export class GameEngine {
         if (rule.currency === 'east') { this.rubles -= cost; led.rubles -= cost; }
         else { this.dollars -= cost; led.dollars -= cost; }
         this.addStock(c, r, amt);
+        this.stats.imported[r] = (this.stats.imported[r] ?? 0) + amt;
         led.imports[r] = (led.imports[r] ?? 0) + amt;
         led.used += amt;
         budget -= amt;
@@ -1204,7 +1256,9 @@ export class GameEngine {
     const def = this.def(b);
     if (!b.constructed) return 0;
     if (def.serviceType === 'shop' && (r === 'food' || r === 'clothes')) return 0;
-    const keep = def.inputs?.[r] ? def.inputs[r] * 3 : 0;
+    // keep 3 days of production inputs plus a month of wear spares — trucks
+    // must never rob one factory's machinery bin to feed another's
+    const keep = (def.inputs?.[r] ?? 0) * 3 + (def.wear?.[r] ?? 0) * BALANCE.wearReserveDays;
     return Math.max(0, this.stockOf(b, r) - keep);
   }
 
@@ -1226,10 +1280,12 @@ export class GameEngine {
     for (const b of this.buildings.values()) {
       const def = this.def(b);
       if (!b.constructed) {
-        // construction site materials
+        // construction site materials. Threshold is ~0, not 1: a supply-starved
+        // truck can deliver a fraction (e.g. 1.4/2 gravel), and the remainder
+        // must still be requestable or the site starves forever.
         for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
           const missing = amt - this.stockOf(b, r) - this.incomingOf(b, r);
-          if (missing >= 1) demands.push({ b, r, amt: missing, prio: 16 });
+          if (missing > 0.001) demands.push({ b, r, amt: missing, prio: 16 });
         }
         continue;
       }
@@ -1251,6 +1307,14 @@ export class GameEngine {
           const bufferTarget = this.capOf(b, r) * 0.6;
           const missing = bufferTarget - this.stockOf(b, r) - this.incomingOf(b, r);
           if (missing >= 6) demands.push({ b, r, amt: missing, prio: 20 });
+        }
+      }
+      // wear spares (machinery) — small bins topped up for EVERY consumer,
+      // plants included (the coal branch above never hauls machinery)
+      if (def.wear) {
+        for (const r of Object.keys(def.wear) as ResourceId[]) {
+          const free = this.capOf(b, r) - this.stockOf(b, r) - this.incomingOf(b, r);
+          if (free >= 1) demands.push({ b, r, amt: free, prio: 24 });
         }
       }
     }
@@ -1323,7 +1387,11 @@ export class GameEngine {
       const destFree = d.b.constructed
         ? this.capOf(d.b, d.r) - this.stockOf(d.b, d.r) - this.incomingOf(d.b, d.r)
         : (this.def(d.b).materials[d.r] ?? 0) - this.stockOf(d.b, d.r) - this.incomingOf(d.b, d.r);
-      if (destFree < 1) continue;
+      // sites accept fractional remainders (a dribble-fed site missing 0.8
+      // bricks must not starve forever, holding its other materials hostage);
+      // constructed buildings keep the ≥1 gate against truck churn
+      const minLoad = d.b.constructed ? 1 : 0.001;
+      if (destFree < minLoad) continue;
 
       // one flood from the destination ranks every candidate supplier by road distance
       const flood = this.floodFrom(destRoads);
@@ -1349,7 +1417,7 @@ export class GameEngine {
       const bestPath = flood.pathFrom(bestTile.x, bestTile.y)!;
 
       const amount = Math.min(d.amt, destFree, this.supplyOf(bestSupplier, d.r), BALANCE.truckCapacity);
-      if (amount < 1) continue;
+      if (amount < minLoad) continue;
 
       this.addStock(bestSupplier, d.r, -amount);
       d.b.incoming[d.r] = this.incomingOf(d.b, d.r) + amount;
@@ -1465,6 +1533,7 @@ export class GameEngine {
   private construction() {
     let pool = this.builderPool();
     if (pool <= 0) return;
+    const buildMult = WEATHER[this.weather.condition].buildMult;
     for (const b of this.buildings.values()) {
       if (pool <= 0) break;
       if (b.constructed) continue;
@@ -1473,16 +1542,29 @@ export class GameEngine {
       const ready = (Object.entries(def.materials) as [ResourceId, number][])
         .every(([r, amt]) => this.stockOf(b, r) >= amt - 0.001);
       if (!ready) continue;
-      const crew = Math.min(BALANCE.buildersPerSite, pool);
-      b.progress += crew * WEATHER[this.weather.condition].buildMult; // storms slow the site
+      // a 3-labor road tile must not burn a full 10-builder slot for the day
+      const needed = Math.ceil((def.labor - b.progress) / Math.max(1e-4, buildMult));
+      const crew = Math.min(BALANCE.buildersPerSite, pool, needed);
+      b.progress += crew * buildMult; // storms slow the site
       pool -= crew;
       if (b.progress >= def.labor) {
+        if (def.becomesRoad) {
+          // the site completes INTO a road tile — the instance dissolves.
+          // Silent by design: a 30-tile paint must not fire 30 toasts.
+          this.tiles[b.y][b.x].road = true;
+          this.tiles[b.y][b.x].buildingId = undefined;
+          this.buildings.delete(b.id);
+          this.stats.roadsBuilt++;
+          continue;
+        }
         b.constructed = true;
         b.progress = def.labor;
         // consume materials
         for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
           this.addStock(b, r, -amt);
         }
+        // part of the bill survives as installed spares — nothing is born worn
+        this.seedWearBins(b);
         this.pushEvent(`${def.name} completed!`, 'good', 'check');
       }
     }
@@ -1595,15 +1677,8 @@ export class GameEngine {
       0.30 * w.food + 0.14 * w.clothes + 0.12 * w.power + 0.12 * w.heat +
       0.10 * w.culture + 0.10 * w.health + 0.12 * w.employment
     ) * w.pollution;
-    // unpaid wages
-    const wages = this.employed * BALANCE.wagePerWorker;
-    if (this.rubles >= wages) {
-      this.rubles -= wages;
-      this.wagesUnpaid = false;
-    } else {
-      this.wagesUnpaid = true;
-      target *= 0.85;
-    }
+    // No wages: citizens are compensated in what they consume — food, clothes,
+    // warmth, light — which the republic must actually produce or import.
     // weather morale: long gray spells wear on people, sunny runs lift them
     target *= 1 - Math.min(0.06, this.gloomStreak * 0.01) + Math.min(0.02, this.sunStreak * 0.005);
     this.happiness = this.lerp(this.happiness, Math.max(0, Math.min(100, target)), 0.2);
@@ -1646,6 +1721,9 @@ export class GameEngine {
         case 'shop': done = [...this.buildings.values()].some(b => this.def(b).serviceType === 'shop' && b.constructed && this.stockOf(b, 'food') >= 5); break;
         case 'sow': done = [...this.buildings.values()].some(b => this.def(b).isFarm && b.constructed); break;
         case 'builders': done = this.stats.produced.planks >= 20 && this.stats.produced.bricks >= 20; break;
+        case 'firstMachines': done = (this.stats.imported.machinery ?? 0) >= 5; break;
+        case 'meansOfProduction': done = [...this.buildings.values()].some(b => b.defId === 'machineWorks' && b.constructed); break;
+        case 'autarky': done = this.stats.produced.machinery >= 50; break;
         case 'coal': done = this.stats.produced.coal >= 30; break;
         case 'power': done = this.powerProduced >= 8; break;
         case 'heat': done = [...this.buildings.values()].some(b => this.def(b).heatOutput && b.constructed && b.staff > 0); break;
@@ -1667,7 +1745,22 @@ export class GameEngine {
 
   private updateAlerts() {
     const a: Alert[] = [];
-    if (this.wagesUnpaid) a.push({ id: 'wages', icon: 'coins', text: 'Treasury empty — wages unpaid!', level: 'bad' });
+    // stranded construction sites: need materials but no finished road AND no
+    // neighboring road/bridge site (normal frontier road chains stay quiet)
+    let stranded = 0;
+    for (const b of this.buildings.values()) {
+      if (b.constructed) continue;
+      if (this.adjacentRoads(b).length > 0) continue;
+      let nearSite = false;
+      for (let dy = -1; dy <= b.h && !nearSite; dy++) for (let dx = -1; dx <= b.w && !nearSite; dx++) {
+        const onEdge = dx === -1 || dx === b.w || dy === -1 || dy === b.h;
+        if (!onEdge) continue;
+        const id = this.tiles[b.y + dy]?.[b.x + dx]?.buildingId;
+        if (id && id !== b.id && !this.buildings.get(id)?.constructed) nearSite = true;
+      }
+      if (!nearSite) stranded++;
+    }
+    if (stranded > 0) a.push({ id: 'sites', icon: 'road', text: `${stranded} construction site${stranded > 1 ? 's' : ''} unreachable by road — deliveries cannot arrive`, level: 'warn' });
     if (this.pop > 5 && this.sat.food < 0.5) a.push({ id: 'food', icon: 'food', text: 'Food shortage — citizens are hungry', level: 'bad' });
     const hasPlant = [...this.buildings.values()].some(b => this.def(b).powerOutput && b.constructed);
     if (this.powerDemand > this.powerProduced + 0.01 && (hasPlant || this.pop > 0)) a.push({ id: 'power', icon: 'power', text: `Power deficit (${this.powerDemand.toFixed(1)} MW needed, ${this.powerProduced.toFixed(1)} MW generated)`, level: 'warn' });
@@ -1852,9 +1945,8 @@ export class GameEngine {
         tradeLedger: { today: cloneLedger(this.tradeLedger.today), yesterday: cloneLedger(this.tradeLedger.yesterday) },
         contracts: this.contracts.map(c => ({ ...c })),
         relationsPenalty: { ...this.relationsPenalty },
-        wagesUnpaid: this.wagesUnpaid,
         objectivesDone: [...this.objectivesDone],
-        stats: { produced: { ...this.stats.produced }, exportedValue: this.stats.exportedValue, roadsBuilt: this.stats.roadsBuilt },
+        stats: { produced: { ...this.stats.produced }, imported: { ...this.stats.imported }, exportedValue: this.stats.exportedValue, roadsBuilt: this.stats.roadsBuilt },
         happiness: this.happiness,
         sat: { ...this.sat },
         streaks: { dry: this.dryStreak, gloom: this.gloomStreak, sun: this.sunStreak, wasFrost: this.wasFrost },
@@ -1893,9 +1985,18 @@ export class GameEngine {
     e.priceFactorEast = body.priceFactorEast;
     e.priceFactorWest = body.priceFactorWest;
     e.relationsPenalty = { ...body.relationsPenalty };
-    e.wagesUnpaid = body.wagesUnpaid;
     e.objectivesDone = [...body.objectivesDone];
-    e.stats = { produced: { ...body.stats.produced }, exportedValue: body.stats.exportedValue, roadsBuilt: body.stats.roadsBuilt };
+    // merge produced over fresh defaults: a pre-machinery save must not leave
+    // produced.machinery undefined (undefined + n = NaN, forever)
+    e.stats = {
+      produced: {
+        ...(Object.fromEntries(ALL_RESOURCES.map(r => [r, 0])) as Record<ResourceId, number>),
+        ...body.stats.produced,
+      },
+      imported: { ...(body.stats.imported ?? {}) },
+      exportedValue: body.stats.exportedValue,
+      roadsBuilt: body.stats.roadsBuilt,
+    };
     e.autoTrade = {
       enabled: body.autoTrade.enabled,
       reserveRubles: body.autoTrade.reserveRubles,

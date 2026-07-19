@@ -21,7 +21,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
   // re-render only when something the HUD actually displays changes
   useEngineSignature(engine, (e) => [
     e.day, e.month, e.year, e.speed,
-    Math.floor(e.rubles), Math.floor(e.dollars), e.wagesUnpaid,
+    Math.floor(e.rubles), Math.floor(e.dollars),
     e.pop, e.capacity, e.workers, e.employed,
     Math.round(e.happiness),
     e.powerProduced.toFixed(1), e.powerDemand.toFixed(1),
@@ -108,7 +108,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
         <div className="h-5 w-px bg-yellow-600/40" />
 
         <div className="flex items-center gap-3 text-xs font-bold">
-          <span title={`Rubles — earned from trade with the East; pays wages and construction${tradeNote(engine.tradeLedger.yesterday.rubles, '₽')}`} className={engine.wagesUnpaid ? 'text-red-300' : ''}>₽ {Math.floor(engine.rubles).toLocaleString()}</span>
+          <span title={`Rubles — foreign currency earned from trade with the East; buys imports and machinery${tradeNote(engine.tradeLedger.yesterday.rubles, '₽')}`}>₽ {Math.floor(engine.rubles).toLocaleString()}</span>
           <span title={`Dollars — hard currency from the West${tradeNote(engine.tradeLedger.yesterday.dollars, '$')}`} className="text-green-300">$ {Math.floor(engine.dollars).toLocaleString()}</span>
           <span title={`Citizens: ${engine.pop} / housing ${engine.capacity} · workers ${engine.workers} · employed ${engine.employed}`} className="flex items-center gap-1">
             <GameIcon name="users" size={12} /> {engine.pop}<span className="text-yellow-200/50">/{engine.capacity}</span>

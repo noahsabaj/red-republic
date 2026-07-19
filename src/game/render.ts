@@ -3,6 +3,7 @@
 // ============================================================
 import { BALANCE, BUILDINGS, RESOURCES } from './config';
 import { drawIcon } from '@/ui/icons';
+import { buildingWorn } from './engine';
 import type { GameEngine, BuildingInst, Season, Truck } from './engine';
 import type { WeatherCondition } from './weather';
 
@@ -29,7 +30,7 @@ export interface StatusPalette {
   badFill: string; badStroke: string;
   bulldozeFill: string; bulldozeStroke: string;
   selection: string;
-  badgePower: string; badgeCold: string;
+  badgePower: string; badgeCold: string; badgeWorn: string;
   /** shape cue: cross out invalid ghosts (hue alone can't carry the signal) */
   crossInvalid: boolean;
 }
@@ -40,7 +41,7 @@ export const STATUS_PALETTES: Record<'default' | 'colorblind', StatusPalette> = 
     badFill: 'rgba(255,70,70,0.5)', badStroke: '#ff5050',
     bulldozeFill: 'rgba(255,60,60,0.4)', bulldozeStroke: '#ff4040',
     selection: '#ffd94d',
-    badgePower: '#ffb02e', badgeCold: '#bfe3ff',
+    badgePower: '#ffb02e', badgeCold: '#bfe3ff', badgeWorn: '#c9b545',
     crossInvalid: false,
   },
   // blue-valid / orange-invalid: the deutan/protan-safe axis
@@ -49,7 +50,7 @@ export const STATUS_PALETTES: Record<'default' | 'colorblind', StatusPalette> = 
     badFill: 'rgba(255,150,40,0.55)', badStroke: '#ff9628',
     bulldozeFill: 'rgba(255,150,40,0.45)', bulldozeStroke: '#ff9628',
     selection: '#ffffff',
-    badgePower: '#ffd166', badgeCold: '#7fc8ff',
+    badgePower: '#ffd166', badgeCold: '#7fc8ff', badgeWorn: '#ffe08a',
     crossInvalid: true,
   },
 };
@@ -161,8 +162,10 @@ export function isoCompare(
 }
 
 export function pickBuilding(engine: GameEngine, sx: number, sy: number, cam: Camera): BuildingInst | null {
+  // flat-but-unfinished sites (roads, bridges) stay selectable so the panel
+  // can answer "why isn't this finishing" with its delivered/needed rows
   const list = [...engine.buildings.values()]
-    .filter(b => BUILDINGS[b.defId].boxHeight > 0)
+    .filter(b => BUILDINGS[b.defId].boxHeight > 0 || !b.constructed)
     .sort(isoCompare); // draw order — walk it back-to-front reversed
   for (let i = list.length - 1; i >= 0; i--) {
     const b = list[i];
@@ -943,6 +946,7 @@ function drawBuilding(ctx: CanvasRenderingContext2D, b: BuildingInst, cam: Camer
   if (unpowered) badges.push({ icon: 'power', color: frame.palette.badgePower });
   if (!b.connected) badges.push({ icon: 'ban', color: '#ff6b5e' });
   if (def.heat > 0 && !b.heated) badges.push({ icon: 'freeze', color: frame.palette.badgeCold });
+  if (buildingWorn(b)) badges.push({ icon: 'machinery', color: frame.palette.badgeWorn });
   let sx = mid.x - ((badges.length - 1) * 12 * cam.z) / 2;
   const sy = mid.y - 16 * cam.z;
   for (const badge of badges) {

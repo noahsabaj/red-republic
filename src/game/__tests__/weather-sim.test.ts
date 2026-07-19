@@ -113,7 +113,6 @@ describe('weather gameplay effects', () => {
     depot.stock.bricks = 60;
     placeBuilt(e, 'port', 23, 10);
     layRoad(e, 23, 9, 32, 9);
-    e.rubles = 10000;
     expect(e.tryPlace('house', 30, 10, false).ok).toBe(true);
     const site = e.buildingAt(30, 10)!;
 
@@ -174,7 +173,6 @@ describe('weather gameplay effects', () => {
       layRoad(e, 4, 9, 14, 9);
       placeBuilt(e, 'depot', 5, 10);
       placeBuilt(e, 'constructionOffice', 10, 10); // contract crew of 10
-      e.rubles = 10000;
       expect(e.tryPlace('house', 13, 10, false).ok).toBe(true);
       const site = e.buildingAt(13, 10)!;
       site.stock.planks = 6; // materials pre-delivered

@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react';
+import { buildingWorn } from '@/game/engine';
 import type { GameEngine, BuildingInst } from '@/game/engine';
 import { BALANCE, BUILDINGS, RESOURCES, ALL_RESOURCES, OBJECTIVES, FARM_SEASON } from '@/game/config';
 import type { DepositType, ResourceId } from '@/game/config';
@@ -357,6 +358,7 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
             {def.isFarm && <Row label={<><GameIcon name="fields" size={12} /> Fields</>} value={`${b.farmFields} plots · season ×${(FARM_SEASON[engine.month] ?? 0).toFixed(2)}`} />}
             {def.workers > 0 && <Row label={<><GameIcon name="eff" size={12} /> Efficiency</>} value={`${Math.round(b.eff * 100)}%`} ok={b.eff > 0.6} />}
             {def.isCustoms && <Row label={<><GameIcon name="trade" size={12} /> Clears</>} value={`${Math.floor(BALANCE.customsThroughputPerDay * b.eff)}/day`} ok={b.eff > 0} />}
+            {def.wear && <Row label={<><GameIcon name="machinery" size={12} /> Machines</>} value={buildingWorn(b) ? 'Worn — deliver machinery!' : 'Maintained'} ok={!buildingWorn(b)} />}
           </div>
 
           {(def.inputs || def.outputs) && (() => {
@@ -501,7 +503,7 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
               <span className="text-yellow-200/70">Customs capacity today</span>
               <span className="font-bold">{today.used}/{today.capacity}</span>
             </div>
-            <div className="flex items-center gap-2 text-[0.6875rem]" title="Auto-imports never spend the treasury below these floors — wages stay safe">
+            <div className="flex items-center gap-2 text-[0.6875rem]" title="Auto-imports never spend the treasury below these floors — emergency machinery money stays safe">
               <span className="text-yellow-200/70 shrink-0">Reserve</span>
               <label className="flex items-center gap-1">₽ <NumInput value={at.reserveRubles} onValue={v => engine.setAutoTradeReserve('east', v)} step={500} /></label>
               <label className="flex items-center gap-1 text-green-300">$ <NumInput value={at.reserveDollars} onValue={v => engine.setAutoTradeReserve('west', v)} step={100} /></label>

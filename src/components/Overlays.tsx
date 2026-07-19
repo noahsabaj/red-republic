@@ -87,7 +87,7 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
           </section>
           <section>
             <div className="font-bold text-yellow-300 mb-1"><GameIcon name="builders" size={12} /> Construction</div>
-            Buildings cost rubles up-front, then need <b>materials</b> (planks, bricks, steel) delivered by truck plus <b>builders</b> from a staffed Construction Office. Your starting depot holds some materials. Or tick <b>Instant build</b> to pay Western dollars instead.
+            Nothing here costs money — buildings need <b>materials</b> (planks, bricks, steel, machinery for industry) delivered by truck plus <b>builders</b> from a staffed Construction Office. Your starting depot holds some materials. Or tick <b>Instant build</b> to import a Western prefab for dollars.
           </section>
           <section>
             <div className="font-bold text-yellow-300 mb-1"><GameIcon name="road" size={12} /> Roads &amp; Trucks</div>
@@ -95,7 +95,7 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
           </section>
           <section>
             <div className="font-bold text-yellow-300 mb-1"><GameIcon name="port" size={12} /> Water: bridges, ports &amp; barges</div>
-            Roads placed over water become <b>bridges</b> at ₽{90}/tile — short crossings are cheap, long ones are megaprojects. For wide water, build <b>River Ports</b> on each shore: barges automatically ferry goods between ports when a delivery can't be made by road, hauling four truckloads per trip.
+            Roads are real construction: crews lay <b>gravel</b> tile by tile, and unfinished tiles aren't drivable. Over water they become <b>bridge sites</b> devouring planks and steel — short crossings are projects, long ones are monuments. For wide water, build <b>River Ports</b> on each shore: barges automatically ferry goods between ports when a delivery can't be made by road, hauling four truckloads per trip.
           </section>
           <section>
             <div className="font-bold text-yellow-300 mb-1"><GameIcon name="factory" size={12} /> Production chains</div>
@@ -115,11 +115,11 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
           </section>
           <section>
             <div className="font-bold text-yellow-300 mb-1"><GameIcon name="flag" size={12} /> The border &amp; trade</div>
-            One map edge is the <b>national border</b> — the striped line with the red-white posts. Foreign soil beyond it is untouchable, and every Customs House must stand at the border. Sell surplus there: East pays rubles (₽), the West pays hard dollars ($) — best for fuel and steel. Import goods you lack at 1.6× price. Workers' wages are paid daily in rubles.
+            One map edge is the <b>national border</b> — the striped line with the red-white posts. Foreign soil beyond it is untouchable, and every Customs House must stand at the border. Money exists ONLY here: sell surplus (East pays rubles ₽, the West hard dollars $) and import what you lack at a markup — above all <b>machinery</b>, which industry needs to build and to keep running. Late game, a Machine Works ends that dependence: autarky.
           </section>
           <section>
             <div className="font-bold text-yellow-300 mb-1"><GameIcon name="trade" size={12} /> Auto-trade</div>
-            Tick <b>Auto-trade</b> in the Foreign Trade panel and set per-good rules: <b>Imp</b> keeps the town stocked to a level (imports the deficit daily), <b>Exp</b> sells everything above a keep-level — trucks stage the surplus to customs, and the customs house sells what reached it. A staffed, powered Customs House clears more tonnage per day; the <b>reserve floor</b> stops automation from ever spending wages money. The daily ledger in the panel shows what moved.
+            Tick <b>Auto-trade</b> in the Foreign Trade panel and set per-good rules: <b>Imp</b> keeps the town stocked to a level (imports the deficit daily), <b>Exp</b> sells everything above a keep-level — trucks stage the surplus to customs, and the customs house sells what reached it. A staffed, powered Customs House clears more tonnage per day; the <b>reserve floor</b> stops automation from ever draining the treasury dry. The daily ledger in the panel shows what moved.
           </section>
           <section>
             <div className="font-bold text-yellow-300 mb-1"><GameIcon name="contract" size={12} /> Contracts</div>

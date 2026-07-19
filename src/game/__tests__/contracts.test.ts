@@ -38,7 +38,13 @@ describe('contract offers', () => {
     const ca = a.contracts[0];
     expect(ca.state).toBe('offer');
     expect(ca.r).toBe('steel'); // drawn from what the town produces
-    expect(ca.amount).toBeGreaterThanOrEqual(CONTRACTS.minAmount);
+    expect(ca.amount).toBeGreaterThanOrEqual(CONTRACTS.minUnits);
+    expect(ca.amount).toBeLessThanOrEqual(CONTRACTS.maxUnits);
+    // value-banded: the order's market value sits inside the bloc's band
+    const band = ca.bloc === 'east' ? CONTRACTS.valueBandEast : CONTRACTS.valueBandWest;
+    const value = ca.amount * a.priceOf('steel', ca.bloc);
+    expect(value).toBeGreaterThanOrEqual(band[0] * 0.8); // rounding slack
+    expect(value).toBeLessThanOrEqual(band[1] * 1.2);
     expect(ca.pricePerUnit).toBeGreaterThan(a.priceOf('steel', ca.bloc)); // premium over market
     expect({ ...ca }).toEqual({ ...b.contracts[0] }); // stateless per-month stream
   });
@@ -123,8 +129,7 @@ describe('contract failure', () => {
     if (c.bloc === 'west') {
       expect(dollarsBefore - e.dollars).toBeCloseTo(fine, 6);
     } else {
-      // rubles also paid the day's wages
-      expect(rublesBefore - e.rubles).toBeCloseTo(fine + e.employed * 0.4, 6);
+      expect(rublesBefore - e.rubles).toBeCloseTo(fine, 6); // the fine is the only ruble outflow
     }
     // relations penalty is live and hits both price directions
     const p = e.relationsPenalty[c.bloc];

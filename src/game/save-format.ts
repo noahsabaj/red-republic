@@ -54,9 +54,14 @@ export interface SaveBodyV1 {
   tradeLedger: { today: TradeDayLedger; yesterday: TradeDayLedger };
   contracts: Contract[];
   relationsPenalty: { east: number; west: number };
-  wagesUnpaid: boolean;
   objectivesDone: string[];
-  stats: { produced: Record<ResourceId, number>; exportedValue: number; roadsBuilt: number };
+  stats: {
+    produced: Record<ResourceId, number>;
+    /** cumulative customs imports; absent in older saves (hydrates to {}) */
+    imported?: Partial<Record<ResourceId, number>>;
+    exportedValue: number;
+    roadsBuilt: number;
+  };
   happiness: number;
   sat: Record<'food' | 'clothes' | 'power' | 'heat' | 'culture' | 'health' | 'employment' | 'pollution', number>;
   streaks: { dry: number; gloom: number; sun: number; wasFrost: boolean };

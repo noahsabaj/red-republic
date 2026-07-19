@@ -1,0 +1,77 @@
+import { describe, expect, it } from 'vitest';
+import { runCampaign } from './campaign';
+
+/**
+ * The pinned campaign is the economy's tripwire — the mapgen snapshot's
+ * counterpart for balance. A deterministic map, weather script and three-year
+ * build order that a competent player could follow (campaign.ts); if a config
+ * or engine change breaks the bootstrap chain, treasury solvency, the
+ * electrification push, or the machinery arc, these milestones trip.
+ *
+ * Thresholds carry ~30-40% slack below the observed trajectory: they catch
+ * structural regressions, not small tuning. If a deliberate rebalance moves
+ * the curve, rerun the scratch trajectory and re-pin — don't loosen blindly.
+ */
+describe('campaign pacing', () => {
+  it('three years: bootstrap, solvency, electrification, machinery autarky', () => {
+    let peakPop = 0;
+    const engine = runCampaign(1080, (e, day) => {
+      // ---- every-day invariants ----
+      // nothing domestic charges money, and the scripted trade never overspends
+      expect(e.rubles, `day ${day}: treasury went negative`).toBeGreaterThanOrEqual(0);
+      // winters bite (high 20s is a hard January), but never collapse
+      expect(e.happiness, `day ${day}: happiness collapsed`).toBeGreaterThan(15);
+      peakPop = Math.max(peakPop, e.pop);
+      if (peakPop >= 40) { // settler churn in the first weeks is noise, not collapse
+        expect(e.pop, `day ${day}: population collapsed from peak ${peakPop}`)
+          .toBeGreaterThanOrEqual(Math.floor(peakPop * 0.5));
+      }
+
+      // ---- milestones ----
+      switch (day) {
+        case 120: // the wooden town runs on depot stock + first sawmill output
+          expect(e.stats.produced.planks, 'd120 planks').toBeGreaterThanOrEqual(5);
+          expect(e.pop, 'd120 pop').toBeGreaterThanOrEqual(24);
+          expect(e.objectivesDone.length, 'd120 objectives').toBeGreaterThanOrEqual(2);
+          break;
+        case 240: // bricks + food chains flowing, treasury untouched by construction
+          expect(e.stats.produced.bricks, 'd240 bricks').toBeGreaterThanOrEqual(30);
+          expect(e.stats.produced.food, 'd240 food').toBeGreaterThanOrEqual(20);
+          expect(e.rubles, 'd240 treasury').toBeGreaterThanOrEqual(2000);
+          break;
+        case 360: // survived the first electrified winter
+          expect(e.pop, 'd360 pop').toBeGreaterThanOrEqual(56);
+          expect(e.powerProduced, 'd360 power').toBeGreaterThan(0);
+          expect(e.rubles, 'd360 treasury').toBeGreaterThanOrEqual(1000);
+          break;
+        case 600: // the grid carries the town (power objective threshold)
+          expect(e.powerProduced, 'd600 power').toBeGreaterThanOrEqual(8);
+          break;
+        case 720: // the border earns: textiles + surplus flow out for rubles
+          expect(e.stats.exportedValue, 'd720 exports').toBeGreaterThanOrEqual(1800);
+          break;
+        case 960: // heavy industry online: domestic steel and the first machines
+          expect(e.stats.produced.steel, 'd960 steel').toBeGreaterThanOrEqual(40);
+          expect(e.stats.produced.machinery, 'd960 machinery').toBeGreaterThan(0);
+          expect(e.dollars, 'd960 dollars from objectives').toBeGreaterThanOrEqual(400);
+          break;
+        case 1080: // the mature republic
+          expect(e.stats.produced.steel, 'd1080 steel').toBeGreaterThanOrEqual(100);
+          expect(e.stats.produced.machinery, 'd1080 machinery').toBeGreaterThanOrEqual(15);
+          expect(e.pop, 'd1080 pop').toBeGreaterThanOrEqual(220);
+          expect(e.rubles, 'd1080 treasury').toBeGreaterThanOrEqual(3000);
+          expect(e.powerProduced, 'd1080 power').toBeGreaterThanOrEqual(28);
+          break;
+      }
+    });
+
+    // the full arc of Moscow's plan, by name
+    for (const id of ['roads', 'housing', 'firstMachines', 'coal', 'power', 'steel', 'export', 'meansOfProduction', 'pop150']) {
+      expect(engine.objectivesDone, `objective ${id}`).toContain(id);
+    }
+    // the wear tax was actually paid across the border
+    expect(engine.stats.imported.machinery ?? 0).toBeGreaterThanOrEqual(5);
+    // and no construction site is stranded at the end of the plan
+    expect([...engine.buildings.values()].filter(b => !b.constructed)).toHaveLength(0);
+  });
+});

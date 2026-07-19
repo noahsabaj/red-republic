@@ -8,7 +8,7 @@
 import type { IconNode } from 'lucide';
 import {
   Anchor, Anvil, Axe, Ban, Beer, BrickWall, Building2, CircleCheck, CircleDot, CircleHelp,
-  Cloud, CloudFog, CloudLightning, CloudRain, CloudSnow,
+  Cloud, CloudFog, CloudLightning, CloudRain, CloudSnow, Cog,
   Container, CookingPot, Coins, Dices, Download, Droplet, Eraser, Factory, Flag, FlaskConical, Flame,
   FolderOpen, Fuel, Gauge, Grip, HardHat, HeartPulse, Home, Keyboard, Landmark, Layers, Leaf, LogOut,
   Magnet, Map as MapIcon, Menu, Package, Pause, Pickaxe, Play, RotateCcw, Route, Ruler, Save,
@@ -30,6 +30,7 @@ export const GAME_ICONS = {
   crops: Wheat,
   food: CookingPot,
   clothes: Shirt,
+  machinery: Cog,
   // buildings
   road: Route,
   house: Home,
@@ -48,6 +49,7 @@ export const GAME_ICONS = {
   farm: Tractor,
   foodFactory: CookingPot,
   textileMill: Shirt,
+  machineWorks: Cog,
   store: ShoppingBasket,
   clinic: HeartPulse,
   pub: Beer,

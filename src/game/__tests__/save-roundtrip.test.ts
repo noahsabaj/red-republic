@@ -78,6 +78,35 @@ describe('save round-trip', () => {
     expect(e2.forecast(5)).toEqual(e.forecast(5));
   });
 
+  it('round-trips in-flight road sites, a Machine Works, and a worn factory bit-exact', () => {
+    const e = makeEngine();
+    e.rubles = 1e9;
+    layRoad(e, 4, 9, 20, 9);
+    const depot = placeBuilt(e, 'depot', 5, 10);
+    placeBuilt(e, 'constructionOffice', 8, 10);
+    const works = placeBuilt(e, 'machineWorks', 10, 10);
+    const factory = placeBuilt(e, 'foodFactory', 14, 10);
+    placeBuilt(e, 'apartment', 18, 10);
+    e.pop = 40;
+    depot.stock.gravel = 40;
+    depot.stock.crops = 100;
+    works.stock.steel = 30;
+    factory.stock.crops = 40;
+    factory.stock.machinery = 0; // born worn — the penalty must survive the trip
+    for (const x of [21, 22, 23]) e.tryPlace('road', x, 9, false); // a paint mid-flight
+    runDays(e, 4); // trucks en route, some tiles complete, wear ticking
+
+    const snap = e.serialize();
+    const e2 = GameEngine.fromSave(snap, { weatherScript: CALM_WEATHER }); // test maps script their weather
+    expect(stable(e2.serialize())).toEqual(stable(snap));
+
+    runDays(e, 30);
+    runDays(e2, 30);
+    expect(stable(e2.serialize())).toEqual(stable(e.serialize()));
+    // and the paint finished identically in both worlds
+    expect(e.tiles[9][23].road).toBe(e2.tiles[9][23].road);
+  });
+
   it('ids allocated after a load never collide with saved entities', () => {
     const e = makeEngine();
     e.rubles = 1e9;

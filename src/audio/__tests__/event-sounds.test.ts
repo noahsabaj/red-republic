@@ -20,7 +20,7 @@ describe('event → sound mapping', () => {
 
   it('every mapped sound has a synth recipe', () => {
     const kinds = ['good', 'bad', 'info'];
-    const icons = ['star', 'check', 'contract', 'winter', 'freeze', 'summer', 'users', 'coins', 'rain', 'port', 'spring'];
+    const icons = ['star', 'check', 'contract', 'winter', 'freeze', 'summer', 'users', 'rain', 'port', 'spring'];
     for (const k of kinds) {
       for (const i of icons) {
         const s = soundForEvent(k, i);

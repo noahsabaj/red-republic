@@ -43,7 +43,7 @@ describe('auto-import', () => {
     e.setAutoTradeRule('coal', { mode: 'import', level: 40, currency: 'east' });
     runDays(e, 1);
     expect(e.tradeLedger.today.imports.coal).toBe(1);
-    runDays(e, 1); // wages already pushed the treasury below the floor
+    runDays(e, 1); // the treasury now sits exactly at the reserve floor
     expect(e.tradeLedger.today.imports.coal).toBeUndefined();
     expect(e.tradeLedger.today.blocked).toContain('treasury at reserve floor');
     expect(e.alerts.some(a => a.id === 'autotrade')).toBe(true);

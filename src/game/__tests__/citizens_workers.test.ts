@@ -114,18 +114,17 @@ describe('togglePause', () => {
   });
 });
 
-describe('wages', () => {
-  it('flags unpaid wages instead of the unreachable debt alert', () => {
+describe('no domestic money', () => {
+  it('an empty treasury never touches citizens — no wages exist', () => {
     const e = makeEngine();
     layRoad(e, 4, 9, 12, 9);
     placeBuilt(e, 'depot', 5, 10);
     e.pop = 20;
     e.rubles = 0;
-    runDays(e, 1);
-    expect(e.wagesUnpaid).toBe(true);
-    expect(e.alerts.some(a => a.id === 'wages')).toBe(true);
-    e.rubles = 1000;
-    runDays(e, 1);
-    expect(e.wagesUnpaid).toBe(false);
+    const before = e.happiness;
+    runDays(e, 5);
+    expect(e.rubles).toBe(0); // nothing domestic charges or pays the treasury
+    expect(e.alerts.some(a => a.id === 'wages')).toBe(false);
+    expect(e.happiness).toBeGreaterThan(before - 30); // no payroll-crisis spiral
   });
 });
