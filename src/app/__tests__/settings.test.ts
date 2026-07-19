@@ -61,6 +61,20 @@ describe('settings store', () => {
     expect('legacyKnob' in s).toBe(false);
   });
 
+  it('clamps interfaceVolume and repairs hoverSounds on load', () => {
+    updateSettings({ interfaceVolume: 5 });
+    expect(getSettings().interfaceVolume).toBe(1);   // clamps high
+    updateSettings({ interfaceVolume: -2 });
+    expect(getSettings().interfaceVolume).toBe(0);   // clamps low
+    expect(defaultSettings().hoverSounds).toBe(true);
+    vi.stubGlobal('localStorage', fakeStorage({
+      'rr.settings.v1': JSON.stringify({ interfaceVolume: 'loud', hoverSounds: 'yes' }),
+    }));
+    reloadSettingsFromStorage();
+    expect(getSettings().interfaceVolume).toBe(defaultSettings().interfaceVolume); // bad type → default
+    expect(getSettings().hoverSounds).toBe(true);
+  });
+
   it('survives corrupt JSON and missing storage', () => {
     vi.stubGlobal('localStorage', fakeStorage({ 'rr.settings.v1': '{oops' }));
     reloadSettingsFromStorage();

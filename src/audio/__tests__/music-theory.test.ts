@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { mulberry32 } from '../../game/mapgen';
 import {
-  CHORD_MARKOV, CHORD_TONES, PENTATONIC, ROOT_MIDI, midiToHz, nextChord, phrase,
+  CHORD_MARKOV, CHORD_TONES, PENTATONIC, ROOT_MIDI, clickHz, midiToHz, nextChord, phrase,
 } from '../music-theory';
 import type { Degree } from '../music-theory';
 
@@ -20,6 +20,21 @@ describe('music theory tables', () => {
     expect(midiToHz(69)).toBeCloseTo(440, 9);   // A4
     expect(midiToHz(ROOT_MIDI)).toBeCloseTo(110, 6); // A2
     expect(midiToHz(57)).toBeCloseTo(220, 6);
+  });
+
+  it('clickHz voices chord tones in-key, positive for every degree/index', () => {
+    expect(clickHz(CHORD_TONES.i)).toBeCloseTo(220, 6);              // root, +1 octave = A3
+    expect(clickHz(CHORD_TONES.i, 0, 0)).toBeCloseTo(110, 6);        // root at the pad octave = A2
+    expect(clickHz(CHORD_TONES.i, 2, 1)).toBeCloseTo(midiToHz(ROOT_MIDI + 7 + 12), 6); // fifth
+    // must stay finite & positive — clicks feed exponential frequency ramps
+    for (const d of DEGREES) {
+      for (let i = 0; i < 3; i++) {
+        const hz = clickHz(CHORD_TONES[d], i, 1);
+        expect(Number.isFinite(hz)).toBe(true);
+        expect(hz).toBeGreaterThan(0);
+      }
+    }
+    expect(clickHz(CHORD_TONES.i, 5)).toBeGreaterThan(0); // index wraps, never NaN
   });
 });
 

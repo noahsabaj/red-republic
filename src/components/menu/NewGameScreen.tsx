@@ -110,9 +110,10 @@ export function NewGameScreen({ onBack, onStart, escDisabled }: Props) {
       </div>
 
       <div className="mt-5 flex justify-between">
-        <button className={secondaryBtn} onClick={onBack}>Back</button>
+        <button className={secondaryBtn} data-sfx="back" onClick={onBack}>Back</button>
         <button
           className={primaryBtn}
+          data-sfx="confirm"
           onClick={() => onStart({ name: name.trim() || 'Red Republic', seed, mapSize, climate, difficulty })}
         >
           Found the Republic

@@ -27,9 +27,10 @@ export function UpdateBanner({ version, install, onDismiss, notify }: Props) {
           : 'Restart now to install, or keep playing — the offer returns next launch.'}
       </p>
       <div className="mt-2.5 flex justify-end gap-2">
-        <button className={secondaryBtn} disabled={busy} onClick={onDismiss}>Later</button>
+        <button className={secondaryBtn} data-sfx="back" disabled={busy} onClick={onDismiss}>Later</button>
         <button
           className={primaryBtn}
+          data-sfx="confirm"
           disabled={busy}
           onClick={() => {
             setBusy(true);

@@ -29,8 +29,8 @@ export function PauseMenu(p: Props) {
           {p.unsavedDays > 0 && <> The <b>{p.unsavedDays} day{p.unsavedDays > 1 ? 's' : ''}</b> since your last save will be lost.</>}
         </p>
         <div className="mt-4 flex justify-end gap-2">
-          <button className={secondaryBtn} onClick={p.onBack}>Back</button>
-          <button className={primaryBtn} onClick={p.onRestartConfirm}>Restart</button>
+          <button className={secondaryBtn} data-sfx="back" onClick={p.onBack}>Back</button>
+          <button className={primaryBtn} data-sfx="commit" onClick={p.onRestartConfirm}>Restart</button>
         </div>
       </MenuShell>
     );
@@ -44,9 +44,9 @@ export function PauseMenu(p: Props) {
           Save first, comrade?
         </p>
         <div className="mt-4 flex justify-end gap-2">
-          <button className={secondaryBtn} onClick={p.onBack}>Back</button>
+          <button className={secondaryBtn} data-sfx="back" onClick={p.onBack}>Back</button>
           <button className={secondaryBtn} onClick={p.onSave}>Save Game</button>
-          <button className={primaryBtn} onClick={p.onQuitConfirm}>Quit Anyway</button>
+          <button className={primaryBtn} data-sfx="commit" onClick={p.onQuitConfirm}>Quit Anyway</button>
         </div>
       </MenuShell>
     );
@@ -60,17 +60,18 @@ export function PauseMenu(p: Props) {
           Save first, comrade?
         </p>
         <div className="mt-4 flex justify-end gap-2">
-          <button className={secondaryBtn} onClick={p.onBack}>Back</button>
+          <button className={secondaryBtn} data-sfx="back" onClick={p.onBack}>Back</button>
           <button className={secondaryBtn} onClick={p.onSave}>Save Game</button>
-          <button className={primaryBtn} onClick={p.onExitConfirm}>Exit Anyway</button>
+          <button className={primaryBtn} data-sfx="commit" onClick={p.onExitConfirm}>Exit Anyway</button>
         </div>
       </MenuShell>
     );
   }
 
-  const item = (label: string, icon: string, onClick: () => void, primary = false) => (
+  const item = (label: string, icon: string, onClick: () => void, primary = false, sfx?: string) => (
     <button
       onClick={onClick}
+      data-sfx={sfx}
       className={`flex items-center gap-2.5 rounded px-3 py-2 text-xs font-black uppercase tracking-widest ${primary
         ? 'bg-yellow-500 text-red-950 hover:bg-yellow-400'
         : 'bg-red-900/60 text-yellow-100 hover:bg-red-800'}`}
@@ -82,7 +83,7 @@ export function PauseMenu(p: Props) {
   return (
     <MenuShell title="— Paused —" icon="pause" onBack={p.onBack} escDisabled={p.escDisabled} width="max-w-xs">
       <div className="flex flex-col gap-1.5">
-        {item('Resume', 'play', p.onResume, true)}
+        {item('Resume', 'play', p.onResume, true, 'back')}
         {item('Save Game', 'save', p.onSave)}
         {item('Load Game', 'load', p.onLoad)}
         {item('Options', 'settings', p.onOptions)}

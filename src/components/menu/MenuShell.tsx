@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { useFocusTrap } from '@/hooks/use-focus-trap';
 import { GameIcon } from '@/ui/GameIcon';
+import { uiSound } from '@/audio';
 
 interface Props {
   title: string;
@@ -26,7 +27,7 @@ export function MenuShell({ title, icon, onBack, escDisabled, width = 'max-w-md'
   useEffect(() => {
     if (escDisabled) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.preventDefault(); onBack(); }
+      if (e.key === 'Escape') { e.preventDefault(); uiSound('back'); onBack(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -39,7 +40,7 @@ export function MenuShell({ title, icon, onBack, escDisabled, width = 'max-w-md'
           <span className="flex items-center gap-2 text-yellow-400 font-black uppercase tracking-widest text-xs">
             {icon && <GameIcon name={icon} size={14} />}{title}
           </span>
-          <button onClick={onBack} aria-label="Back" className="flex items-center justify-center text-yellow-200/60 hover:text-yellow-100">
+          <button onClick={onBack} aria-label="Back" data-sfx="back" className="flex items-center justify-center text-yellow-200/60 hover:text-yellow-100">
             <GameIcon name="close" size={15} />
           </button>
         </header>

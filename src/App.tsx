@@ -24,7 +24,7 @@ import { onStorageFlushError } from './platform/storage';
 import { onUpdateAvailable, quitApp, setCloseRequestHandler } from './platform/desktop';
 import type { PendingUpdate } from './platform/desktop';
 import { UpdateBanner } from './components/UpdateBanner';
-import { audio } from './audio';
+import { audio, installUiSounds } from './audio';
 
 export default function App() {
   // ?demo / ?seed=N boot straight into gameplay; otherwise start at the menu.
@@ -66,6 +66,9 @@ export default function App() {
       window.removeEventListener('keydown', unlock, { capture: true });
     };
   }, []);
+  // one delegated capture-phase listener voices every button click + hover;
+  // the single owner of press-driven UI sound (keyboard nav calls uiSound()).
+  useEffect(() => installUiSounds(), []);
   useEffect(() => {
     audio.setScene(screen.phase === 'menu' ? 'menu' : 'game');
   }, [screen.phase]);
@@ -165,14 +168,12 @@ export default function App() {
     if (!session) return;
     speedBeforePause.current = session.engine.speed;
     session.engine.setSpeed(0);
-    audio.sfx('panelOpen');
     dispatch({ type: 'OPEN_PAUSE' });
   }, [session]);
 
   /** RESUME must restore 0 for a manually-paused game — hence no togglePause(). */
   const resume = useCallback(() => {
     session?.engine.setSpeed(speedBeforePause.current);
-    audio.sfx('panelClose');
     dispatch({ type: 'RESUME' });
   }, [session]);
 
@@ -245,10 +246,21 @@ export default function App() {
     });
   };
 
+  // the HUD panel buttons (data-sfx="panel") voice open/close via the click
+  // classifier — no explicit sound here keeps one owner per press.
   const togglePanel = (m: PanelMode) => {
-    audio.sfx(panel === m ? 'panelClose' : 'panelOpen'); // side effects stay out of the updater
     setPanel(p => (p === m ? null : m));
   };
+
+  /** Wrap setTool so arming/dropping a build tool plays a world cue — the one
+   *  owner of tool sound, covering menu clicks AND the Escape-cancel path. */
+  const setToolSfx = useCallback((next: Tool) => {
+    setTool(prev => {
+      const key = (t: Tool) => (t.kind === 'build' ? `build:${t.defId}` : t.kind);
+      if (key(next) !== key(prev)) audio.ui(next.kind === 'select' ? 'toolCancel' : 'toolArm');
+      return next;
+    });
+  }, []);
 
   const hotkeysEnabled =
     screen.phase === 'playing' && screen.overlay === null && !showHelp && !briefingVisible;
@@ -268,7 +280,7 @@ export default function App() {
           key={session.id}
           engine={session.engine}
           tool={tool}
-          setTool={setTool}
+          setTool={setToolSfx}
           selection={selection}
           onSelect={handleSelect}
           instantBuild={instantBuild}
@@ -293,7 +305,7 @@ export default function App() {
           <BuildMenu
             engine={session.engine}
             tool={tool}
-            setTool={setTool}
+            setTool={setToolSfx}
             instantBuild={instantBuild}
             setInstantBuild={setInstantBuild}
           />
@@ -305,7 +317,7 @@ export default function App() {
               instantBuild={instantBuild}
               onClose={() => setPanel(null)}
               onOpenTrade={() => setPanel('trade')}
-              onArmBuild={(defId) => setTool({ kind: 'build', defId })}
+              onArmBuild={(defId) => setToolSfx({ kind: 'build', defId })}
               notify={push}
             />
           )}

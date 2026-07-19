@@ -21,6 +21,7 @@ export function Toggle({ checked, onChange, label }: { checked: boolean; onChang
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      data-sfx="toggle"
       onClick={() => onChange(!checked)}
       className={`relative h-5 w-10 rounded-full border transition-colors ${checked ? 'bg-yellow-500 border-yellow-400' : 'bg-red-950/60 border-yellow-600/40'}`}
     >
@@ -106,6 +107,8 @@ export function TwoStepButton({ label, confirmLabel, onConfirm, className, armed
     <button
       disabled={disabled}
       title={title}
+      data-sfx="destructive"
+      data-armed={armed}
       onClick={() => {
         if (armed) { setArmed(false); onConfirm(); }
         else setArmed(true);

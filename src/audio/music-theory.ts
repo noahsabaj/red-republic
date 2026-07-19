@@ -37,6 +37,18 @@ export function midiToHz(midi: number): number {
   return 440 * 2 ** ((midi - 69) / 12);
 }
 
+/**
+ * Fundamental for a UI click voiced in-key: the `index`-th tone of the
+ * given chord (as semitone offsets from the key root), raised `octave`
+ * octaves above the pad root. Pure — the click SFX pitch to the live
+ * chord through this so they're always consonant with the score.
+ * clickHz(CHORD_TONES.i) === 220 (A3).
+ */
+export function clickHz(chord: readonly number[], index = 0, octave = 1): number {
+  const tone = chord[((index % chord.length) + chord.length) % chord.length] ?? 0;
+  return midiToHz(ROOT_MIDI + tone + octave * 12);
+}
+
 export function nextChord(current: Degree, rng: () => number): Degree {
   const row = CHORD_MARKOV[current];
   let roll = rng();

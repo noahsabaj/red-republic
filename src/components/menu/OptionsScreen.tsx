@@ -106,8 +106,14 @@ export function OptionsScreen({ onBack, escDisabled }: Props) {
               <SettingRow label="Music volume" description="The State Radio Orchestra's ambient programme">
                 <RangeSlider label="Music volume" min={0} max={1} step={0.05} value={s.musicVolume} format={pct} onChange={v => updateSettings({ musicVolume: v })} />
               </SettingRow>
-              <SettingRow label="Effects volume" description="Construction, trade and interface sounds">
+              <SettingRow label="Effects volume" description="Construction, trade and world sounds">
                 <RangeSlider label="Effects volume" min={0} max={1} step={0.05} value={s.sfxVolume} format={pct} onChange={v => updateSettings({ sfxVolume: v })} />
+              </SettingRow>
+              <SettingRow label="Interface volume" description="Menus, clicks, toggles and tabs">
+                <RangeSlider label="Interface volume" min={0} max={1} step={0.05} value={s.interfaceVolume} format={pct} onChange={v => updateSettings({ interfaceVolume: v })} />
+              </SettingRow>
+              <SettingRow label="Hover ticks" description="A whisper-quiet tick when the pointer crosses a control">
+                <Toggle label="Hover ticks" checked={s.hoverSounds} onChange={v => updateSettings({ hoverSounds: v })} />
               </SettingRow>
               <SettingRow label="Mute when hidden" description="Silence the game while the tab is in the background">
                 <Toggle label="Mute when hidden" checked={s.muteWhenHidden} onChange={v => updateSettings({ muteWhenHidden: v })} />

@@ -11,8 +11,11 @@
 // module is safe to import anywhere (including tests without WebAudio).
 // ============================================================
 import { getSettings, subscribeSettings } from '@/app/settings';
-import { SFX_DEFS } from './sfx';
-import type { SfxName } from './sfx';
+import { SFX_DEFS, SFX_BUS, UI_VOICES } from './sfx';
+import type { SfxName, VoiceCtx } from './sfx';
+import { FAMILY_BUS } from './ui-catalog';
+import type { UiFamily } from './ui-catalog';
+import { CHORD_TONES } from './music-theory';
 import { soundForEvent } from './event-sounds';
 import { MusicEngine } from './music';
 import type { EngineMood } from './music';
@@ -24,8 +27,10 @@ export class AudioSystem {
   private masterGain: GainNode | null = null;
   private musicGain: GainNode | null = null;
   private sfxGain: GainNode | null = null;
+  private interfaceGain: GainNode | null = null;
   private music: MusicEngine | null = null;
   private lastPlayed = new Map<SfxName, number>();
+  private lastUi = new Map<UiFamily, number>();
   private scene: 'menu' | 'game' = 'menu';
   private probe: (() => EngineMood) | null = null;
   private autoSuspended = false;
@@ -49,6 +54,8 @@ export class AudioSystem {
       this.musicGain.connect(this.masterGain);
       this.sfxGain = this.ctx.createGain();
       this.sfxGain.connect(this.masterGain);
+      this.interfaceGain = this.ctx.createGain();
+      this.interfaceGain.connect(this.masterGain);
       this.applyVolumes(true);
       subscribeSettings(() => this.applyVolumes());
       document.addEventListener('visibilitychange', () => this.onVisibility());
@@ -63,16 +70,49 @@ export class AudioSystem {
     }
   }
 
-  /** Play one effect. No-op before the first unlock or while muted. */
+  /** Play one outcome effect. No-op before the first unlock or while muted. */
   sfx(name: SfxName) {
     this.unlock();
-    if (!this.ctx || !this.sfxGain) return;
+    if (!this.ctx || !this.sfxGain || !this.interfaceGain) return;
     if (getSettings().muted) return;
     const now = performance.now();
     const last = this.lastPlayed.get(name) ?? -Infinity;
     if (now - last < SFX_MIN_INTERVAL_MS) return;
     this.lastPlayed.set(name, now);
-    SFX_DEFS[name](this.ctx, this.sfxGain, this.ctx.currentTime);
+    const dest = SFX_BUS[name] === 'interface' ? this.interfaceGain : this.sfxGain;
+    SFX_DEFS[name](this.ctx, dest, this.ctx.currentTime, this.voiceCtx());
+  }
+
+  /**
+   * Play a press/interaction voice — the single owner of press-driven UI
+   * sound. Menu families route to the Interface bus, world cues (select /
+   * tool*) to Effects. Per-family rate-limit mirrors sfx().
+   */
+  ui(family: UiFamily) {
+    this.unlock();
+    if (!this.ctx || !this.sfxGain || !this.interfaceGain) return;
+    if (getSettings().muted) return;
+    const now = performance.now();
+    const last = this.lastUi.get(family) ?? -Infinity;
+    if (now - last < SFX_MIN_INTERVAL_MS) return;
+    this.lastUi.set(family, now);
+    const dest = FAMILY_BUS[family] === 'effects' ? this.sfxGain : this.interfaceGain;
+    UI_VOICES[family](this.ctx, dest, this.ctx.currentTime, this.voiceCtx());
+  }
+
+  /** A whisper hover tick — gated by the hoverSounds setting; its stricter
+   *  throttle (rate + same-element + touch skip) is owned by ui-sounds.ts. */
+  uiHover() {
+    this.unlock();
+    if (!this.ctx || !this.interfaceGain) return;
+    if (getSettings().muted || !getSettings().hoverSounds) return;
+    UI_VOICES.hover(this.ctx, this.interfaceGain, this.ctx.currentTime, this.voiceCtx());
+  }
+
+  /** Live pitch + humanization for a play: the score's current chord (so
+   *  clicks stay consonant) plus a fresh jitter. */
+  private voiceCtx(): VoiceCtx {
+    return { chord: this.music?.currentChord() ?? CHORD_TONES.i, jitter: Math.random() };
   }
 
   /** Fan-out hook for the App event drain — maps engine events to sounds. */
@@ -95,7 +135,7 @@ export class AudioSystem {
   }
 
   private applyVolumes(immediate = false) {
-    if (!this.ctx || !this.masterGain || !this.musicGain || !this.sfxGain) return;
+    if (!this.ctx || !this.masterGain || !this.musicGain || !this.sfxGain || !this.interfaceGain) return;
     const s = getSettings();
     const t = this.ctx.currentTime;
     const set = (g: GainNode, v: number) => {
@@ -105,6 +145,7 @@ export class AudioSystem {
     set(this.masterGain, s.muted ? 0 : 1);
     set(this.musicGain, s.musicVolume ** 2); // perceptual curve
     set(this.sfxGain, s.sfxVolume ** 2);
+    set(this.interfaceGain, s.interfaceVolume ** 2);
   }
 
   private onVisibility() {

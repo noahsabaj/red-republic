@@ -143,6 +143,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
         const eng = engineRef.current;
         const b = pickBuilding(eng, sx, sy, camRef.current);
         if (b) {
+          audio.ui('select');
           cbRef.current.onSelect({ kind: 'building', id: b.id }, additive);
           return;
         }
@@ -150,6 +151,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
         const t = tileOf(sx, sy);
         const tile = eng.tiles[t.y]?.[t.x];
         if (tile?.deposit && !tile.buildingId) {
+          audio.ui('select');
           cbRef.current.onSelect({ kind: 'deposit', x: t.x, y: t.y }, additive);
           return;
         }
@@ -157,10 +159,11 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
       },
       setHover: (sx, sy) => { uiRef.current.hoverTile = tileOf(sx, sy); },
       clearHover: () => { uiRef.current.hoverTile = null; },
+      // setTool flows through App's setToolSfx funnel → toolCancel on disarm
       cancelTool: () => cbRef.current.setTool({ kind: 'select' }),
-      openMenu: () => cbRef.current.onOpenMenu(),
-      togglePause: () => { audio.sfx('speedChange'); engineRef.current.togglePause(); },
-      setSpeed: (s) => { audio.sfx('speedChange'); engineRef.current.setSpeed(s); },
+      openMenu: () => { audio.ui('open'); cbRef.current.onOpenMenu(); },
+      togglePause: () => { audio.ui('speed'); engineRef.current.togglePause(); },
+      setSpeed: (s) => { audio.ui('speed'); engineRef.current.setSpeed(s); },
     }, getSettings); // Settings is a structural superset of InputOptions
 
     const norm = (e: PointerEvent): NormPointerEvent => {

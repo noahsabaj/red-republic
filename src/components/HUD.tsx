@@ -2,7 +2,6 @@ import type { GameEngine } from '@/game/engine';
 import { BALANCE, WEATHER } from '@/game/config';
 import { useEngineSignature } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
-import { audio } from '@/audio';
 
 export type PanelMode = 'building' | 'trade' | 'objectives' | 'stockpiles';
 
@@ -41,7 +40,8 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
   const speedBtn = (s: 0 | 1 | 2 | 4, label: React.ReactNode, name: string) => (
     <button
       key={name}
-      onClick={() => { audio.sfx('speedChange'); engine.setSpeed(s); }}
+      onClick={() => engine.setSpeed(s)}
+      data-sfx="speed"
       aria-label={name}
       aria-pressed={engine.speed === s}
       className={`px-2 py-0.5 rounded text-xs font-bold ${engine.speed === s ? 'bg-yellow-500 text-red-950' : 'bg-red-950/60 text-yellow-100/70 hover:bg-red-900'}`}
@@ -53,6 +53,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
   const panelBtn = (label: string, icon: string, active: boolean, onClick: () => void, dot = false) => (
     <button
       onClick={onClick}
+      data-sfx="panel"
       aria-label={label}
       aria-pressed={active}
       title={label}

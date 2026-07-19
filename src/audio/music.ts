@@ -50,6 +50,12 @@ export class MusicEngine {
     this.mood = probe;
   }
 
+  /** The chord currently voiced by the pads — UI clicks pitch to these
+   *  tones so interface sounds stay consonant with the score. */
+  currentChord(): readonly [number, number, number] {
+    return CHORD_TONES[this.degree];
+  }
+
   private tick() {
     while (this.nextChordTime < this.ctx.currentTime + LOOKAHEAD_S) {
       const duration = 8 + Math.random() * 8;

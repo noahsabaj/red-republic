@@ -3,6 +3,7 @@ import type { Toast } from '@/hooks/use-toasts';
 import { useFocusTrap } from '@/hooks/use-focus-trap';
 import { useSettings } from '@/hooks/use-settings';
 import { GameIcon } from '@/ui/GameIcon';
+import { uiSound } from '@/audio';
 
 // ------------------------------------------------------------
 // Toasts
@@ -53,7 +54,7 @@ export function IntroOverlay({ onStart }: { onStart: () => void }) {
           <div><GameIcon name="trade" size={12} className="text-yellow-400" /> Trade with East (₽) &amp; West ($)</div>
           <div><GameIcon name="plan" size={12} className="text-yellow-400" /> Fulfill the Five-Year Plan</div>
         </div>
-        <button onClick={onStart}
+        <button onClick={onStart} data-sfx="confirm"
           className="mt-6 rounded-lg bg-yellow-500 px-8 py-3 text-lg font-black uppercase tracking-widest text-red-950 hover:bg-yellow-400 shadow-lg">
           Begin, Comrade
         </button>
@@ -69,7 +70,7 @@ export function IntroOverlay({ onStart }: { onStart: () => void }) {
 export function HelpOverlay({ onClose }: { onClose: () => void }) {
   const trapRef = useFocusTrap<HTMLDivElement>();
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { uiSound('back'); onClose(); } };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -78,7 +79,7 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
       <div ref={trapRef} tabIndex={-1} className="max-w-xl w-full mx-4 max-h-[80vh] overflow-y-auto soviet-scroll rounded-xl border-2 border-yellow-600 bg-red-950 p-6 text-yellow-50 shadow-2xl outline-none" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-black uppercase tracking-widest text-yellow-400">Commissar's Manual</h2>
-          <button onClick={onClose} aria-label="Close help" className="text-yellow-200/60 hover:text-yellow-100"><GameIcon name="close" size={15} /></button>
+          <button onClick={onClose} aria-label="Close help" data-sfx="back" className="text-yellow-200/60 hover:text-yellow-100"><GameIcon name="close" size={15} /></button>
         </div>
         <div className="space-y-3 text-xs leading-relaxed">
           <section>

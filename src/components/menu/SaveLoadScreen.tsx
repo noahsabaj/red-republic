@@ -128,7 +128,7 @@ export function SaveLoadScreen({ mode, engine, unsavedDays, onBack, onLoad, onSa
                 onConfirm={() => doLoad(m.slotId)}
               />
             ) : (
-              <button onClick={() => doLoad(m.slotId)} className={rowBtnPrimary}>
+              <button onClick={() => doLoad(m.slotId)} data-sfx="confirm" className={rowBtnPrimary}>
                 Load
               </button>
             )
@@ -165,7 +165,7 @@ export function SaveLoadScreen({ mode, engine, unsavedDays, onBack, onLoad, onSa
       width="max-w-2xl"
       footer={
         <>
-          <button className={secondaryBtn} onClick={onBack}>Back</button>
+          <button className={secondaryBtn} data-sfx="back" onClick={onBack}>Back</button>
           <button
             className="flex items-center gap-1.5 rounded bg-red-900/70 px-3 py-1.5 text-[0.6875rem] font-bold text-yellow-100 hover:bg-red-800"
             onClick={() => { if (isTauri()) void doImportDesktop(); else fileRef.current?.click(); }}
@@ -195,7 +195,7 @@ export function SaveLoadScreen({ mode, engine, unsavedDays, onBack, onLoad, onSa
               className="flex-1 min-w-0 rounded border border-yellow-600/40 bg-red-950/60 px-2 py-1.5 text-xs text-yellow-50 outline-none focus:border-yellow-500"
               aria-label="Save name"
             />
-            <button className={primaryBtn} onClick={() => doSave(newSlotId(), newName.trim() || defaultLabel)}>
+            <button className={primaryBtn} data-sfx="confirm" onClick={() => doSave(newSlotId(), newName.trim() || defaultLabel)}>
               Save
             </button>
           </div>

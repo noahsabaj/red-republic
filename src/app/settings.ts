@@ -26,7 +26,9 @@ export interface Settings {
   showGrid: boolean;          // tile-grid overlay on terrain
   // audio
   musicVolume: number;        // 0..1
-  sfxVolume: number;          // 0..1
+  sfxVolume: number;          // 0..1 — construction & world sounds
+  interfaceVolume: number;    // 0..1 — menus, clicks, toggles, tabs (own bus)
+  hoverSounds: boolean;       // whisper tick when the pointer crosses a control
   muted: boolean;             // master mute
   muteWhenHidden: boolean;    // suspend audio while the tab is hidden
   // accessibility
@@ -57,6 +59,8 @@ export function defaultSettings(): Settings {
     showGrid: false,
     musicVolume: 0.6,
     sfxVolume: 0.8,
+    interfaceVolume: 0.65,
+    hoverSounds: true,
     muted: false,
     muteWhenHidden: true,
     colorblind: false,
@@ -89,6 +93,8 @@ function sanitize(raw: unknown): Settings {
     showGrid: bool(r.showGrid, d.showGrid),
     musicVolume: numIn(r.musicVolume, 0, 1, d.musicVolume),
     sfxVolume: numIn(r.sfxVolume, 0, 1, d.sfxVolume),
+    interfaceVolume: numIn(r.interfaceVolume, 0, 1, d.interfaceVolume),
+    hoverSounds: bool(r.hoverSounds, d.hoverSounds),
     muted: bool(r.muted, d.muted),
     muteWhenHidden: bool(r.muteWhenHidden, d.muteWhenHidden),
     colorblind: bool(r.colorblind, d.colorblind),

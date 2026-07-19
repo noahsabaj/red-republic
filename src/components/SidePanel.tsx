@@ -39,7 +39,7 @@ export default function SidePanel({ engine, mode, selection, instantBuild, onClo
           <span className="flex items-center gap-1.5 text-xs font-black uppercase tracking-widest text-yellow-400">
             {titleIcon && <GameIcon name={titleIcon} size={13} />}{title}
           </span>
-          <button onClick={onClose} aria-label="Close panel" className="text-yellow-200/60 hover:text-yellow-100"><GameIcon name="close" size={14} /></button>
+          <button onClick={onClose} aria-label="Close panel" data-sfx="back" className="text-yellow-200/60 hover:text-yellow-100"><GameIcon name="close" size={14} /></button>
         </div>
         <div className="flex-1 overflow-y-auto soviet-scroll p-3">
           {mode === 'building' && (
@@ -230,6 +230,7 @@ function MultiInfo({ engine, items, instant, onArmBuild }: { engine: GameEngine;
                     </div>
                     <button
                       onClick={() => onArmBuild(miner.id)}
+                      data-sfx="none" // the setTool funnel voices toolArm
                       className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1 hover:bg-yellow-400"
                     >
                       <GameIcon name="builders" size={12} /> Build {miner.name} ({buildCostText(engine, miner.id, instant)} each)
@@ -292,6 +293,7 @@ function DepositInfo({ engine, x, y, instant, onArmBuild }: { engine: GameEngine
       {!exploited && (
         <button
           onClick={() => onArmBuild(miner.id)}
+          data-sfx="none" // the setTool funnel voices toolArm
           className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1.5 hover:bg-yellow-400"
           title={`Arm the build tool — place the ${miner.name} on one of this cluster's tiles`}
         >
@@ -450,8 +452,8 @@ function ContractCard({ engine, c }: { engine: GameEngine; c: Contract }) {
             Deliver within {daysLeft} days · offer withdrawn in {engine.offerDaysLeft(c)} days
           </div>
           <div className="flex gap-1">
-            <button onClick={() => engine.acceptContract(c.id)} className="flex-1 rounded bg-yellow-500 text-red-950 font-bold py-0.5 hover:bg-yellow-400">Accept</button>
-            <button onClick={() => engine.declineContract(c.id)} className="flex-1 rounded bg-red-900/70 font-bold py-0.5 hover:bg-red-800">Decline</button>
+            <button onClick={() => engine.acceptContract(c.id)} data-sfx="confirm" className="flex-1 rounded bg-yellow-500 text-red-950 font-bold py-0.5 hover:bg-yellow-400">Accept</button>
+            <button onClick={() => engine.declineContract(c.id)} data-sfx="back" className="flex-1 rounded bg-red-900/70 font-bold py-0.5 hover:bg-red-800">Decline</button>
           </div>
         </>
       )}
@@ -582,19 +584,19 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
                   </span>
                 </div>
                 <div className="flex items-center gap-1 mt-1">
-                  <button onClick={() => doTrade(() => engine.sell(r, amount, 'east'))} disabled={!canSell}
+                  <button onClick={() => doTrade(() => engine.sell(r, amount, 'east'))} disabled={!canSell} data-sfx="none"
                     className="flex-1 rounded bg-red-800 hover:bg-red-700 disabled:opacity-30 text-[0.625rem] font-bold py-0.5" title={`Sell to East at ₽${engine.priceOf(r, 'east').toFixed(1)}`}>
                     +₽{engine.priceOf(r, 'east').toFixed(1)}
                   </button>
-                  <button onClick={() => doTrade(() => engine.sell(r, amount, 'west'))} disabled={!canSell}
+                  <button onClick={() => doTrade(() => engine.sell(r, amount, 'west'))} disabled={!canSell} data-sfx="none"
                     className="flex-1 rounded bg-green-900 hover:bg-green-800 disabled:opacity-30 text-[0.625rem] font-bold py-0.5" title={`Sell to West at $${engine.priceOf(r, 'west').toFixed(1)}`}>
                     +${engine.priceOf(r, 'west').toFixed(1)}
                   </button>
-                  <button onClick={() => doTrade(() => engine.buy(r, amount, 'east'))} disabled={!canBuy('east')}
+                  <button onClick={() => doTrade(() => engine.buy(r, amount, 'east'))} disabled={!canBuy('east')} data-sfx="none"
                     className="flex-1 rounded bg-red-950 hover:bg-red-800 disabled:opacity-30 text-[0.625rem] font-bold py-0.5 border border-yellow-600/30" title="Import from East">
                     −₽{engine.importPriceOf(r, 'east').toFixed(1)}
                   </button>
-                  <button onClick={() => doTrade(() => engine.buy(r, amount, 'west'))} disabled={!canBuy('west')}
+                  <button onClick={() => doTrade(() => engine.buy(r, amount, 'west'))} disabled={!canBuy('west')} data-sfx="none"
                     className="flex-1 rounded bg-red-950 hover:bg-red-800 disabled:opacity-30 text-[0.625rem] font-bold py-0.5 border border-green-600/30" title="Import from West">
                     −${engine.importPriceOf(r, 'west').toFixed(1)}
                   </button>

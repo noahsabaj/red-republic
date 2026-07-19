@@ -64,6 +64,7 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
               <button
                 key={id}
                 onClick={() => setTool(active ? { kind: 'select' } : { kind: 'build', defId: id })}
+                data-sfx="none" // the setTool funnel voices toolArm/toolCancel
                 disabled={!afford && !active}
                 aria-disabled={!afford && !active}
                 title={!afford
@@ -102,6 +103,7 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
           </label>
           <button
             onClick={() => setTool(tool.kind === 'bulldoze' ? { kind: 'select' } : { kind: 'bulldoze' })}
+            data-sfx="none" // the setTool funnel voices toolArm/toolCancel
             className={`w-full rounded px-2 py-1 text-xs font-bold ${tool.kind === 'bulldoze' ? 'bg-red-500 text-white' : 'bg-red-900/70 hover:bg-red-800'}`}
           >
             <GameIcon name="bulldoze" size={12} /> Bulldoze
