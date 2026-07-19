@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { floodRoads } from '../pathfind';
+import { floodCost, floodRoads } from '../pathfind';
 import { DEFAULT_MAP_W, DEFAULT_MAP_H } from '../mapgen';
 
 // L-shaped road: (2,2)→(2,6) then (2,6)→(8,6)
@@ -74,5 +74,40 @@ describe('floodRoads', () => {
     expect(() => a.distanceAt(2, 2)).toThrow(/Stale/);
     expect(snap.distanceAt(8, 6)).toBe(10); // snapshot owns its storage and width
     expect(snap.distanceAt(2, 2)).toBe(0);
+  });
+});
+
+describe('floodCost (weighted, off-road)', () => {
+  const K = 8;
+  // column x=0 is road (cost 1); x=3 is a water wall (impassable); rest is off-road land (cost K)
+  const cost = (x: number) => (x === 3 ? 0 : x === 0 ? 1 : K);
+
+  it('accumulates entry cost — roads cheap, off-road K×', () => {
+    const f = floodCost(10, 10, cost, [{ x: 0, y: 0 }], K);
+    expect(f.distanceAt(0, 0)).toBe(0);
+    expect(f.distanceAt(0, 3)).toBe(3);     // three road tiles down the column
+    expect(f.distanceAt(1, 0)).toBe(K);     // one off-road step
+    expect(f.distanceAt(2, 0)).toBe(2 * K); // two off-road steps
+  });
+
+  it('prefers the cheap road over an equal-hop off-road detour', () => {
+    const f = floodCost(10, 10, cost, [{ x: 0, y: 0 }], K);
+    expect(f.distanceAt(0, 5)).toBe(5);           // stayed on the road: cost 5, not 5×K
+    expect(f.pathFrom(0, 5)!.every(p => p.x === 0)).toBe(true);
+  });
+
+  it('treats cost ≤ 0 tiles as impassable walls', () => {
+    const f = floodCost(10, 10, cost, [{ x: 0, y: 0 }], K);
+    expect(f.distanceAt(3, 0)).toBe(-1); // the water column itself
+    expect(f.distanceAt(5, 0)).toBe(-1); // fully walled off beyond it
+    expect(f.distanceAt(2, 0)).toBe(2 * K); // this side stays reachable off-road
+  });
+
+  it('is deterministic across repeated floods', () => {
+    const a = floodCost(10, 10, cost, [{ x: 0, y: 0 }], K).snapshot();
+    const b = floodCost(10, 10, cost, [{ x: 0, y: 0 }], K).snapshot();
+    for (let y = 0; y < 10; y++) for (let x = 0; x < 10; x++) {
+      expect(a.distanceAt(x, y)).toBe(b.distanceAt(x, y));
+    }
   });
 });

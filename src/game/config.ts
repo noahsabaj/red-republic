@@ -368,6 +368,8 @@ export const BALANCE = {
   clothesPerCitizen: 0.004,
   truckCapacity: 6,
   truckDaysPerTile: 0.18, // travel days per road tile
+  offRoadStepCost: 8,     // off-road land tile costs 8× a road tile (roads always preferred; off-road is a slow fallback)
+  foreignLaborPerDay: 0.5, // ₽/builder-day for imported (non-citizen) construction crews (×importPriceMult)
   maxActiveTrucksPerOffice: 6,
   boatCapacity: 24,       // one barge hauls four truckloads
   boatDaysPerTile: 0.22,  // barges are slower per tile but shortcut the water

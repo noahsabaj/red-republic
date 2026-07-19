@@ -4,6 +4,7 @@ import type { GameEngine } from '@/game/engine';
 import { useEngineSignature } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
 import { buildCostText, canAffordBuild, materialsShort } from '@/ui/build-cost';
+import type { BuildPayMode } from '@/ui/build-cost';
 import type { Tool } from './GameCanvas';
 
 interface Props {
@@ -12,6 +13,8 @@ interface Props {
   setTool: (t: Tool) => void;
   instantBuild: boolean;
   setInstantBuild: (v: boolean) => void;
+  autoBuy: boolean;
+  setAutoBuy: (v: boolean) => void;
 }
 
 const CATS: { id: Category; icon: string }[] = [
@@ -22,13 +25,15 @@ const CATS: { id: Category; icon: string }[] = [
   { id: 'trade', icon: 'cat-trade' },
 ];
 
-export default function BuildMenu({ engine, tool, setTool, instantBuild, setInstantBuild }: Props) {
+export default function BuildMenu({ engine, tool, setTool, instantBuild, setInstantBuild, autoBuy, setAutoBuy }: Props) {
   const [cat, setCat] = useState<Category>('infra');
+  const mode: BuildPayMode = instantBuild ? 'instant' : autoBuy ? 'autoBuy' : 'materials';
 
   // only affordability/shortage flags matter here — re-render when one flips
   useEngineSignature(engine, (e) => [
     BUILD_LIST.map(id =>
-      `${canAffordBuild(e, id, instantBuild) ? 1 : 0}${materialsShort(e, id).length}`).join(''),
+      `${canAffordBuild(e, id, mode) ? 1 : 0}${materialsShort(e, id).length}`).join(''),
+    mode, e.foreignLaborEnabled,
   ]);
 
   const items = BUILD_LIST.filter(id => BUILDINGS[id].category === cat);
@@ -56,9 +61,9 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
           {items.map(id => {
             const def = BUILDINGS[id];
             const active = tool.kind === 'build' && tool.defId === id;
-            // only instant mode can be unaffordable — sites simply wait for materials
-            const afford = canAffordBuild(engine, id, instantBuild);
-            const short = instantBuild ? [] : materialsShort(engine, id);
+            // only the pay-upfront modes ($ / ₽) can be unaffordable — plain sites just wait
+            const afford = canAffordBuild(engine, id, mode);
+            const short = mode === 'materials' ? materialsShort(engine, id) : [];
             const shortSet = new Set<string>(short);
             return (
               <button
@@ -68,7 +73,7 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
                 disabled={!afford && !active}
                 aria-disabled={!afford && !active}
                 title={!afford
-                  ? `Cannot afford (${buildCostText(engine, id, instantBuild)})`
+                  ? `Cannot afford (${buildCostText(engine, id, mode)})`
                   : short.length
                     ? `Stockpile is short of ${short.map(r => RESOURCES[r].name).join(', ')} — the site will wait for deliveries`
                     : undefined}
@@ -78,10 +83,10 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
                 <span className="flex-1 min-w-0">
                   <span className="block text-xs font-bold truncate">{def.name}</span>
                   <span className="block text-[0.625rem] text-yellow-200/60">
-                    {instantBuild && buildCostText(engine, id, instantBuild)}
-                    {!instantBuild && <span><GameIcon name="builders" size={10} />{def.labor}</span>}
+                    {mode !== 'materials' && buildCostText(engine, id, mode)}
+                    {mode === 'materials' && <span><GameIcon name="builders" size={10} />{def.labor}</span>}
                     {def.workers > 0 && <span> · <GameIcon name="staff" size={10} />{def.workers}</span>}
-                    {Object.keys(def.materials).length > 0 && !instantBuild && (
+                    {Object.keys(def.materials).length > 0 && mode === 'materials' && (
                       <span> · {Object.entries(def.materials).map(([r, a]) => (
                         <span key={r} className={`inline-flex items-center ${shortSet.has(r) ? 'text-amber-400' : ''}`}>
                           {a}<GameIcon name={RESOURCES[r as ResourceId].icon} size={10} />
@@ -97,9 +102,20 @@ export default function BuildMenu({ engine, tool, setTool, instantBuild, setInst
         </div>
 
         <div className="border-t border-yellow-600/30 p-2 space-y-1.5">
+          <label className="flex items-center gap-2 text-[0.6875rem] cursor-pointer select-none" title="Pay rubles now to import this building's exact materials, delivered from your Customs House. The site still needs builders and time.">
+            <input type="checkbox" checked={autoBuy} onChange={e => setAutoBuy(e.target.checked)} className="accent-yellow-500" />
+            <span>Auto-buy imports (₽)</span>
+          </label>
           <label className="flex items-center gap-2 text-[0.6875rem] cursor-pointer select-none" title="Pay dollars to finish construction instantly, no materials or builders needed">
             <input type="checkbox" checked={instantBuild} onChange={e => setInstantBuild(e.target.checked)} className="accent-yellow-500" />
             <span>Instant build (Western $)</span>
+          </label>
+          <label
+            className="flex items-center gap-2 text-[0.6875rem] cursor-pointer select-none border-t border-yellow-600/20 pt-1.5"
+            title="Hire foreign builders with rubles for crews beyond your citizens. Off = citizens only — construction stalls without staffed offices."
+          >
+            <input type="checkbox" checked={engine.foreignLaborEnabled} onChange={e => engine.setForeignLaborEnabled(e.target.checked)} className="accent-yellow-500" />
+            <span>Hire foreign builders (₽)</span>
           </label>
           <button
             onClick={() => setTool(tool.kind === 'bulldoze' ? { kind: 'select' } : { kind: 'bulldoze' })}

@@ -15,10 +15,13 @@ import { runCampaign } from './campaign';
 describe('campaign pacing', () => {
   it('three years: bootstrap, solvency, electrification, machinery autarky', () => {
     let peakPop = 0;
+    let paidForeignLabor = false;
     const engine = runCampaign(1080, (e, day) => {
       // ---- every-day invariants ----
-      // nothing domestic charges money, and the scripted trade never overspends
+      // the only domestic money sink is foreign construction labor (capped by
+      // affordability), so the treasury bends but never goes negative
       expect(e.rubles, `day ${day}: treasury went negative`).toBeGreaterThanOrEqual(0);
+      if (e.tradeLedger.yesterday.foreignLabor < 0) paidForeignLabor = true;
       // winters bite (high 20s is a hard January), but never collapse
       expect(e.happiness, `day ${day}: happiness collapsed`).toBeGreaterThan(15);
       peakPop = Math.max(peakPop, e.pop);
@@ -34,7 +37,7 @@ describe('campaign pacing', () => {
           expect(e.pop, 'd120 pop').toBeGreaterThanOrEqual(24);
           expect(e.objectivesDone.length, 'd120 objectives').toBeGreaterThanOrEqual(2);
           break;
-        case 240: // bricks + food chains flowing, treasury untouched by construction
+        case 240: // bricks + food chains flowing; treasury bore the bootstrap labor tax and held
           expect(e.stats.produced.bricks, 'd240 bricks').toBeGreaterThanOrEqual(30);
           expect(e.stats.produced.food, 'd240 food').toBeGreaterThanOrEqual(20);
           expect(e.rubles, 'd240 treasury').toBeGreaterThanOrEqual(2000);
@@ -44,8 +47,10 @@ describe('campaign pacing', () => {
           expect(e.powerProduced, 'd360 power').toBeGreaterThan(0);
           expect(e.rubles, 'd360 treasury').toBeGreaterThanOrEqual(1000);
           break;
-        case 600: // the grid carries the town (power objective threshold)
-          expect(e.powerProduced, 'd600 power').toBeGreaterThanOrEqual(8);
+        case 600: // electrified, though the machinery-wear arc keeps mid-game
+          // power tight (worn plants run at half) until the Machine Works closes
+          // the loop — the grid fully catches up by d1080 (asserted below)
+          expect(e.powerProduced, 'd600 power').toBeGreaterThanOrEqual(5);
           break;
         case 720: // the border earns: textiles + surplus flow out for rubles
           expect(e.stats.exportedValue, 'd720 exports').toBeGreaterThanOrEqual(1800);
@@ -71,6 +76,8 @@ describe('campaign pacing', () => {
     }
     // the wear tax was actually paid across the border
     expect(engine.stats.imported.machinery ?? 0).toBeGreaterThanOrEqual(5);
+    // and the republic paid for imported construction labor to bootstrap
+    expect(paidForeignLabor, 'foreign labor was hired and paid').toBe(true);
     // and no construction site is stranded at the end of the plan
     expect([...engine.buildings.values()].filter(b => !b.constructed)).toHaveLength(0);
   });

@@ -16,19 +16,21 @@ interface Props {
   /** item = null means empty ground was clicked */
   onSelect: (item: SelectionItem | null, additive: boolean) => void;
   instantBuild: boolean;
+  autoBuy: boolean;
   hotkeysEnabled: boolean;
   onError: (msg: string) => void;
   /** Escape with no tool armed — App opens the pause menu. */
   onOpenMenu: () => void;
 }
 
-export default function GameCanvas({ engine, tool, setTool, selection, onSelect, instantBuild, hotkeysEnabled, onError, onOpenMenu }: Props) {
+export default function GameCanvas({ engine, tool, setTool, selection, onSelect, instantBuild, autoBuy, hotkeysEnabled, onError, onOpenMenu }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const camRef = useRef<Camera>({ x: 0, y: 0, z: 0.8 });
   const uiRef = useRef<UIState>({ hoverTile: null, tool, selection, time: 0 });
   const engineRef = useRef(engine);
   const cbRef = useRef({ setTool, onSelect, onError, onOpenMenu });
   const instantRef = useRef(instantBuild);
+  const autoBuyRef = useRef(autoBuy);
   const hotkeysRef = useRef(hotkeysEnabled);
 
   // mirror props into refs after render (writing refs during render is
@@ -39,6 +41,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
     engineRef.current = engine;
     cbRef.current = { setTool, onSelect, onError, onOpenMenu };
     instantRef.current = instantBuild;
+    autoBuyRef.current = autoBuy;
     hotkeysRef.current = hotkeysEnabled;
   });
 
@@ -118,7 +121,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
         const tl = uiRef.current.tool;
         if (tl.kind !== 'build') return;
         const t = tileOf(sx, sy);
-        const res = engineRef.current.tryPlace(tl.defId, t.x, t.y, instantRef.current);
+        const res = engineRef.current.tryPlace(tl.defId, t.x, t.y, instantRef.current, autoBuyRef.current);
         audio.sfx(res.ok ? 'buildPlace' : 'error');
         if (!res.ok && res.reason) cbRef.current.onError(res.reason);
       },
@@ -131,7 +134,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
         const tl = uiRef.current.tool;
         const eng = engineRef.current;
         if (tl.kind === 'build' && tl.defId === 'road') {
-          if (eng.tryPlace('road', t.x, t.y, instantRef.current).ok) audio.sfx('roadPaint');
+          if (eng.tryPlace('road', t.x, t.y, instantRef.current, autoBuyRef.current).ok) audio.sfx('roadPaint');
         } else if (tl.kind === 'bulldoze') {
           if (eng.bulldozeAt(t.x, t.y)) {
             audio.sfx('bulldoze');

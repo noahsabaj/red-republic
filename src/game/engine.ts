@@ -11,7 +11,7 @@ import { generateMap, mulberry32 } from './mapgen';
 import type { BorderEdge, MapData, SeededRng, Tile } from './mapgen';
 import { SAVE_FORMAT_VERSION, packTiles, unpackTiles, validateSave } from './save-format';
 import type { SaveGameV1 } from './save-format';
-import { floodRoads, FloodResult } from './pathfind';
+import { floodRoads, floodCost, FloodResult } from './pathfind';
 import type { DistanceField } from './pathfind';
 import { WeatherTimeline } from './weather';
 import type { DayWeather } from './weather';
@@ -29,10 +29,13 @@ export interface BuildingInst {
   eff: number;
   powered: boolean;
   heated: boolean;
-  connected: boolean;
+  connected: boolean;      // reachable (road OR off-road) from the depot network
+  roadConnected: boolean;  // reachable specifically by ROAD (drives the "off-road, slow" advisory)
   coalFactor: number;
   farmFields: number;
   priorityHigh?: boolean;
+  autoBought?: boolean;     // paid ₽ upfront at placement; materials arrive as bonded imports
+  bondedCustomsId?: number; // the customs house those bonded goods ship from
 }
 
 export interface Truck {
@@ -85,10 +88,11 @@ export interface TradeDayLedger {
   used: number;     // customs throughput consumed
   capacity: number; // customs throughput available (staffing-scaled)
   blocked: string[];
+  foreignLabor: number; // ₽ paid to imported construction crews (negative = spent)
 }
 
 const emptyLedger = (): TradeDayLedger =>
-  ({ imports: {}, exports: {}, rubles: 0, dollars: 0, used: 0, capacity: 0, blocked: [] });
+  ({ imports: {}, exports: {}, rubles: 0, dollars: 0, used: 0, capacity: 0, blocked: [], foreignLabor: 0 });
 
 /** A deadline bulk order from one of the blocs, at a premium price locked when offered. */
 export interface Contract {
@@ -104,7 +108,7 @@ export interface Contract {
   closedIdx?: number;      // when it reached done/failed (for pruning the history)
 }
 
-interface LogisticsDemand { b: BuildingInst; r: ResourceId; amt: number; prio: number; from?: number; noCustomsSrc?: boolean }
+interface LogisticsDemand { b: BuildingInst; r: ResourceId; amt: number; prio: number; from?: number; noCustomsSrc?: boolean; bonded?: boolean }
 
 const JOB_PRIORITY = [
   'powerPlant', 'heatingPlant', 'store', 'foodFactory',
@@ -165,6 +169,9 @@ export class GameEngine {
     rules: {} as Partial<Record<ResourceId, AutoTradeRule>>,
   };
   tradeLedger = { today: emptyLedger(), yesterday: emptyLedger() };
+  /** Hire imported construction crews with ₽ for builders beyond your citizens.
+   *  Off = domestic builders only (construction stalls without staffed offices). */
+  foreignLaborEnabled = true;
   /** Offers, active deals and recent history — mutate only via accept/declineContract. */
   contracts: Contract[] = [];
   /** 0..cap price malus per bloc from failed contracts; decays daily. */
@@ -292,7 +299,7 @@ export class GameEngine {
     const b: BuildingInst = {
       id: this.nextBuildingId++, defId, x, y, w: def.size[0], h: def.size[1],
       constructed: true, progress: def.labor, stock: {}, incoming: {},
-      staff: 0, eff: 0, powered: false, heated: false, connected: false,
+      staff: 0, eff: 0, powered: false, heated: false, connected: false, roadConnected: false,
       coalFactor: 1, farmFields: 0,
     };
     this.seedWearBins(b);
@@ -398,6 +405,39 @@ export class GameEngine {
 
   private floodFrom(sources: { x: number; y: number }[]): FloodResult {
     return floodRoads(this.mapW, this.mapH, (x, y) => !!this.tiles[y][x].road, sources);
+  }
+
+  /** Can a vehicle occupy this tile? Land only — never water, foreign soil,
+   *  or another building's footprint (roads over their own tile are fine). */
+  private drivable(x: number, y: number): boolean {
+    const t = this.tiles[y]?.[x];
+    return !!t && !t.foreign && t.terrain !== 'water' && (!!t.road || !t.buildingId);
+  }
+
+  /** Entry cost for the weighted terrain flood: 0 impassable, 1 road, K off-road. */
+  private terrainCostAt = (x: number, y: number): number =>
+    !this.drivable(x, y) ? 0 : this.tiles[y][x].road ? 1 : BALANCE.offRoadStepCost;
+
+  /** Weighted reachability over land: roads cost 1, off-road land costs K,
+   *  water/foreign/footprints are impassable. Roads win purely on cost. */
+  private floodTerrain(sources: { x: number; y: number }[]): FloodResult {
+    return floodCost(this.mapW, this.mapH, this.terrainCostAt, sources, BALANCE.offRoadStepCost);
+  }
+
+  /** Footprint-adjacent drivable tiles (roads AND open land) — a vehicle's
+   *  on/off ramps. Superset of adjacentRoads. */
+  accessTiles(b: BuildingInst): { x: number; y: number }[] {
+    const out: { x: number; y: number }[] = [];
+    for (let dy = -1; dy <= b.h; dy++) {
+      for (let dx = -1; dx <= b.w; dx++) {
+        const onEdge = dx === -1 || dx === b.w || dy === -1 || dy === b.h;
+        const onCorner = (dx === -1 || dx === b.w) && (dy === -1 || dy === b.h);
+        if (!onEdge || onCorner) continue;
+        const tx = b.x + dx, ty = b.y + dy;
+        if (this.drivable(tx, ty)) out.push({ x: tx, y: ty });
+      }
+    }
+    return out;
   }
 
   /** Water tiles orthogonally touching a building's footprint (its docks). */
@@ -512,7 +552,7 @@ export class GameEngine {
     return { ok: true };
   }
 
-  tryPlace(defId: string, x: number, y: number, instant: boolean): { ok: boolean; reason?: string } {
+  tryPlace(defId: string, x: number, y: number, instant: boolean, autoBuy = false): { ok: boolean; reason?: string } {
     const chk = this.canPlace(defId, x, y);
     if (!chk.ok) return chk;
     if (instant) {
@@ -534,11 +574,30 @@ export class GameEngine {
     // A road painted on water becomes a bridge site (plank+steel bill).
     const effId = defId === 'road' && this.tiles[y][x].terrain === 'water' ? 'bridge' : defId;
     const def = BUILDINGS[effId];
+
+    // Auto-buy: pay the import bill upfront in ₽; the exact materials then
+    // arrive as bonded imports earmarked to THIS site (plain roads excepted —
+    // gravel comes domestically; bridges DO import their plank+steel bill).
+    let autoBought = false;
+    let bondedCustomsId: number | undefined;
+    if (autoBuy && effId !== 'road') {
+      const customs = this.nearestConstructedCustoms(x, y);
+      if (!customs) return { ok: false, reason: 'Build a Customs House first' };
+      const cost = this.autoBuyImportCost(defId, x, y);
+      if (this.rubles < cost) return { ok: false, reason: `Not enough rubles (₽${cost.toLocaleString()})` };
+      this.rubles -= cost;
+      for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][])
+        this.stats.imported[r] = (this.stats.imported[r] ?? 0) + amt;
+      autoBought = true;
+      bondedCustomsId = customs.id;
+    }
+
     const b: BuildingInst = {
       id: this.nextBuildingId++, defId: effId, x, y, w: def.size[0], h: def.size[1],
       constructed: false, progress: 0, stock: {}, incoming: {},
-      staff: 0, eff: 0, powered: false, heated: false, connected: false,
+      staff: 0, eff: 0, powered: false, heated: false, connected: false, roadConnected: false,
       coalFactor: 1, farmFields: 0,
+      autoBought, bondedCustomsId,
     };
     this.buildings.set(b.id, b);
     for (let dy = 0; dy < b.h; dy++)
@@ -567,6 +626,91 @@ export class GameEngine {
       (mats * IMPORT_MARKUP + def.labor * INSTANT_BUILD.laborDollars) * INSTANT_BUILD.premium));
   }
 
+  /** ₽ to import a building's full material bill at current East prices — what
+   *  auto-buy charges upfront and the build menu displays. Bridge-aware via
+   *  coords (a road on water prices its plank+steel bridge bill). */
+  autoBuyImportCost(defId: string, x?: number, y?: number): number {
+    const effId = defId === 'road' && x !== undefined
+      && this.tiles[y!]?.[x]?.terrain === 'water' ? 'bridge' : defId;
+    const def = BUILDINGS[effId];
+    let total = 0;
+    for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
+      total += amt * this.importPriceOf(r, 'east');
+    }
+    return Math.round(total);
+  }
+
+  /** The constructed customs house nearest (Manhattan) a tile — where an
+   *  auto-bought site's bonded materials ship from. Deterministic. */
+  private nearestConstructedCustoms(x: number, y: number): BuildingInst | undefined {
+    let best: BuildingInst | undefined;
+    let bestD = Infinity;
+    for (const b of this.buildings.values()) {
+      if (!this.def(b).isCustoms || !b.constructed) continue;
+      const d = Math.abs(b.x + b.w / 2 - x) + Math.abs(b.y + b.h / 2 - y);
+      if (d < bestD) { bestD = d; best = b; }
+    }
+    return best;
+  }
+
+  /**
+   * Return an unfinished site's ALREADY-DELIVERED stock to storage before the
+   * site is deleted — otherwise those materials vanish. Return trucks are
+   * off-road capable and haul to the nearest storage (depot/warehouse/customs)
+   * with room; if none is reachable a storage with room is credited directly
+   * (salvage). Disjoint from the in-flight turn-back, which conserves cargo
+   * still on the road (b.incoming) — this handles the pile at the site
+   * (b.stock). Together: nothing is lost.
+   */
+  private refundSiteStock(b: BuildingInst): void {
+    const resources = (Object.keys(b.stock) as ResourceId[]).filter(r => this.stockOf(b, r) > 1e-3);
+    if (!resources.length) return;
+    const storages = [...this.buildings.values()].filter(s =>
+      s.constructed && (this.def(s).isDepot || this.def(s).isCustoms || s.defId === 'warehouse'));
+    if (!storages.length) {
+      this.pushEvent('Demolition scattered its materials — no depot to salvage them into.', 'bad', 'bulldoze');
+      return;
+    }
+    const access = this.accessTiles(b);
+    const flood = access.length ? this.floodTerrain(access) : null;
+    const bCenter = this.centerOf(b);
+    const roomFor = (s: BuildingInst, r: ResourceId) => this.capOf(s, r) - this.stockOf(s, r) - this.incomingOf(s, r);
+
+    for (const r of resources) {
+      let amt = this.stockOf(b, r);
+      while (amt > 1e-3) {
+        // nearest flood-reachable storage with room (tie-break: iteration order → id, then tile order)
+        let bs: BuildingInst | null = null, bt: { x: number; y: number } | null = null, bd = Infinity;
+        if (flood) {
+          for (const s of storages) {
+            if (roomFor(s, r) < 1e-3) continue;
+            for (const t of this.accessTiles(s)) {
+              const dd = flood.distanceAt(t.x, t.y);
+              if (dd >= 0 && dd < bd) { bd = dd; bs = s; bt = t; }
+            }
+          }
+        }
+        if (bs && bt) {
+          const load = Math.min(amt, BALANCE.truckCapacity, roomFor(bs, r));
+          this.addStock(b, r, -load); amt -= load;
+          bs.incoming[r] = this.incomingOf(bs, r) + load; // reserve so logistics won't overfill
+          const path = flood!.pathFrom(bt.x, bt.y) ?? [];
+          this.trucks.push({
+            id: this.nextTruckId++, points: [bCenter, ...path.slice().reverse(), this.centerOf(bs)],
+            cargo: r, amount: load, daysTotal: Math.max(0.6, bd * BALANCE.truckDaysPerTile),
+            daysDone: 0, phase: 'go', destId: bs.id, srcId: bs.id,
+          });
+          continue;
+        }
+        // nothing reachable by truck — salvage directly into any storage with room
+        const salvage = storages.find(s => roomFor(s, r) >= 1e-3);
+        if (!salvage) break; // everything full — the remainder is lost with the site
+        const load = Math.min(amt, roomFor(salvage, r));
+        this.addStock(b, r, -load); this.addStock(salvage, r, load); amt -= load;
+      }
+    }
+  }
+
   bulldozeAt(x: number, y: number): boolean {
     const t = this.tiles[y]?.[x];
     if (!t) return false;
@@ -585,6 +729,8 @@ export class GameEngine {
         }
       }
       this.boatOrders = this.boatOrders.filter(o => o.srcId !== b.id && o.destId !== b.id);
+      // an unfinished site's delivered materials go back to storage, not the void
+      if (!b.constructed) this.refundSiteStock(b);
       this.buildings.delete(b.id);
       this.bump();
       return true;
@@ -614,14 +760,15 @@ export class GameEngine {
 
   private customsCache: { version: number; field: DistanceField | null } | null = null;
 
-  /** Road distances from the customs network, cached per engine version. */
+  /** Travel-cost distances from the customs network (road or off-road),
+   *  cached per engine version — "can this good physically reach the border". */
   private customsField(): DistanceField | null {
     if (!this.customsCache || this.customsCache.version !== this.version) {
       const customs = [...this.buildings.values()].filter(b => this.def(b).isCustoms && b.constructed);
-      const roads = customs.flatMap(c => this.adjacentRoads(c));
+      const access = customs.flatMap(c => this.accessTiles(c));
       this.customsCache = {
         version: this.version,
-        field: roads.length ? this.floodFrom(roads).snapshot() : null,
+        field: access.length ? this.floodTerrain(access).snapshot() : null,
       };
     }
     return this.customsCache.field;
@@ -636,7 +783,7 @@ export class GameEngine {
       if (!b.constructed) continue;
       const amt = this.supplyOf(b, r);
       if (amt < 0.01) continue;
-      if (this.adjacentRoads(b).some(t => field.reachable(t.x, t.y))) out.push({ b, amt });
+      if (this.accessTiles(b).some(t => field.reachable(t.x, t.y))) out.push({ b, amt });
     }
     return out;
   }
@@ -914,12 +1061,18 @@ export class GameEngine {
   }
 
   private updateConnectivity() {
-    // a building "works" only if its road reaches the council depot network
+    // A building participates if ANY drivable path (road or off-road) reaches
+    // the depot network; roadConnected is the stricter road-only state that
+    // drives the "off-road, slow — lay a road" advisory. Snapshot the road
+    // field first: the terrain flood below invalidates any live FloodResult.
     const depots = [...this.buildings.values()].filter(b => this.def(b).isDepot && b.constructed);
-    const flood = depots.length ? this.floodFrom(depots.flatMap(d => this.adjacentRoads(d))) : null;
+    const roadField = depots.length ? this.floodFrom(depots.flatMap(d => this.adjacentRoads(d))).snapshot() : null;
+    const terrFlood = depots.length ? this.floodTerrain(depots.flatMap(d => this.accessTiles(d))) : null;
     for (const b of this.buildings.values()) {
-      const adj = this.adjacentRoads(b);
-      b.connected = adj.length > 0 && (!flood || adj.some(t => flood.distanceAt(t.x, t.y) >= 0));
+      const road = this.adjacentRoads(b);
+      const acc = this.accessTiles(b);
+      b.roadConnected = road.length > 0 && (!roadField || road.some(t => roadField.reachable(t.x, t.y)));
+      b.connected = acc.length > 0 && (!terrFlood || acc.some(t => terrFlood.distanceAt(t.x, t.y) >= 0));
     }
   }
 
@@ -1241,6 +1394,16 @@ export class GameEngine {
     return n;
   }
 
+  /** Builders actually manned by citizens — domestic labor is free. Anything
+   *  the full builderPool provides beyond this is imported (foreign) labor. */
+  private domesticBuilderPool(): number {
+    let n = 0;
+    for (const b of this.buildings.values()) {
+      if (this.def(b).isConstructionOffice && b.constructed && b.connected) n += b.staff;
+    }
+    return n;
+  }
+
   private maxTrucks(): number {
     let n = 0;
     for (const b of this.buildings.values()) {
@@ -1269,11 +1432,17 @@ export class GameEngine {
 
     const demands: LogisticsDemand[] = [];
 
-    // adjacentRoads is O(perimeter); cache per building for this pass
+    // adjacentRoads/accessTiles are O(perimeter); cache per building for this pass
     const adjCache = new Map<number, { x: number; y: number }[]>();
     const adjOf = (b: BuildingInst) => {
       let a = adjCache.get(b.id);
       if (!a) { a = this.adjacentRoads(b); adjCache.set(b.id, a); }
+      return a;
+    };
+    const accCache = new Map<number, { x: number; y: number }[]>();
+    const accOf = (b: BuildingInst) => {
+      let a = accCache.get(b.id);
+      if (!a) { a = this.accessTiles(b); accCache.set(b.id, a); }
       return a;
     };
 
@@ -1283,9 +1452,17 @@ export class GameEngine {
         // construction site materials. Threshold is ~0, not 1: a supply-starved
         // truck can deliver a fraction (e.g. 1.4/2 gravel), and the remainder
         // must still be requestable or the site starves forever.
+        // An auto-bought site draws BONDED imports from its customs (paid at
+        // placement) — pinned so no other site or export can take them.
+        let from: number | undefined;
+        let bonded = false;
+        if (b.autoBought) {
+          const customs = this.buildings.get(b.bondedCustomsId ?? -1) ?? this.nearestConstructedCustoms(b.x, b.y);
+          if (customs?.constructed && this.def(customs).isCustoms) { from = customs.id; bonded = true; }
+        }
         for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
           const missing = amt - this.stockOf(b, r) - this.incomingOf(b, r);
-          if (missing > 0.001) demands.push({ b, r, amt: missing, prio: 16 });
+          if (missing > 0.001) demands.push({ b, r, amt: missing, prio: 16, from, bonded });
         }
         continue;
       }
@@ -1382,8 +1559,6 @@ export class GameEngine {
 
     for (const d of demands) {
       if (budget <= 0) break;
-      const destRoads = adjOf(d.b);
-      if (!destRoads.length) continue;
       const destFree = d.b.constructed
         ? this.capOf(d.b, d.r) - this.stockOf(d.b, d.r) - this.incomingOf(d.b, d.r)
         : (this.def(d.b).materials[d.r] ?? 0) - this.stockOf(d.b, d.r) - this.incomingOf(d.b, d.r);
@@ -1393,43 +1568,70 @@ export class GameEngine {
       const minLoad = d.b.constructed ? 1 : 0.001;
       if (destFree < minLoad) continue;
 
-      // one flood from the destination ranks every candidate supplier by road distance
-      const flood = this.floodFrom(destRoads);
-      let bestSupplier: BuildingInst | null = null;
-      let bestTile: { x: number; y: number } | null = null;
-      let bestD = Infinity;
-      for (const s of this.buildings.values()) {
-        if (s.id === d.b.id) continue;
-        if (d.from !== undefined && s.id !== d.from) continue;
-        if (d.noCustomsSrc && this.def(s).isCustoms) continue; // staging never drains the border back inland
-        if (this.supplyOf(s, d.r) < 1) continue;
-        for (const t of adjOf(s)) {
-          const dd = flood.distanceAt(t.x, t.y);
-          if (dd >= 0 && dd < bestD) { bestD = dd; bestSupplier = s; bestTile = t; }
+      // ROAD-FIRST: try the road network exactly as before (byte-identical
+      // dispatch + timing for road-connected demand — roads always preferred).
+      const destRoads = adjOf(d.b);
+      let pick = destRoads.length ? this.bestSupply(d, this.floodFrom(destRoads), adjOf) : null;
+      let offRoad = false;
+
+      if (!pick) {
+        // OFF-ROAD FALLBACK: only when no road path exists. Weighted terrain
+        // flood over access tiles (roads still win on cost); water is impassable
+        // so genuinely water-separated suppliers fall through to the port relay.
+        const destAccess = accOf(d.b);
+        if (!destAccess.length) continue; // walled in by water/foreign — nothing can reach it
+        const terr = this.floodTerrain(destAccess);
+        pick = this.bestSupply(d, terr, accOf);
+        offRoad = true;
+        if (!pick) {
+          if (d.from === undefined) this.relayViaPorts(d, terr, accOf, demands);
+          continue;
         }
       }
-      if (!bestSupplier || !bestTile) {
-        // nowhere on this road network can supply it — try relaying the goods
-        // across water: truck to a far port, barge over, truck onward later
-        if (d.from === undefined) this.relayViaPorts(d, flood, adjOf, demands);
-        continue;
-      }
-      const bestPath = flood.pathFrom(bestTile.x, bestTile.y)!;
 
-      const amount = Math.min(d.amt, destFree, this.supplyOf(bestSupplier, d.r), BALANCE.truckCapacity);
+      // bonded goods are a paid virtual import — the customs is an infinite
+      // source and its real stock is never touched (bypasses the storage cap)
+      const supplyCap = d.bonded ? Infinity : this.supplyOf(pick.supplier, d.r);
+      const amount = Math.min(d.amt, destFree, supplyCap, BALANCE.truckCapacity);
       if (amount < minLoad) continue;
 
-      this.addStock(bestSupplier, d.r, -amount);
+      if (!d.bonded) this.addStock(pick.supplier, d.r, -amount);
       d.b.incoming[d.r] = this.incomingOf(d.b, d.r) + amount;
 
-      const pts = [this.centerOf(bestSupplier), ...bestPath, this.centerOf(d.b)];
-      const daysTotal = Math.max(0.6, bestPath.length * BALANCE.truckDaysPerTile);
+      const pts = [this.centerOf(pick.supplier), ...pick.path, this.centerOf(d.b)];
+      // roads: legacy per-tile timing; off-road: accumulated weighted cost (slower)
+      const travel = offRoad ? pick.cost : pick.path.length;
+      const daysTotal = Math.max(0.6, travel * BALANCE.truckDaysPerTile);
       this.trucks.push({
         id: this.nextTruckId++, points: pts, cargo: d.r, amount,
-        daysTotal, daysDone: 0, phase: 'go', destId: d.b.id, srcId: bestSupplier.id,
+        daysTotal, daysDone: 0, phase: 'go', destId: d.b.id, srcId: pick.supplier.id,
       });
       budget--;
     }
+  }
+
+  /** Nearest willing supplier for a demand over a given flood + access fn.
+   *  Honours the from-pin, the no-customs-source flag, and supply reserves. */
+  private bestSupply(
+    d: LogisticsDemand,
+    flood: FloodResult,
+    accessOf: (b: BuildingInst) => { x: number; y: number }[],
+  ): { supplier: BuildingInst; path: { x: number; y: number }[]; cost: number } | null {
+    let bestSupplier: BuildingInst | null = null;
+    let bestTile: { x: number; y: number } | null = null;
+    let bestD = Infinity;
+    for (const s of this.buildings.values()) {
+      if (s.id === d.b.id) continue;
+      if (d.from !== undefined && s.id !== d.from) continue;
+      if (d.noCustomsSrc && this.def(s).isCustoms) continue; // staging never drains the border back inland
+      if (!d.bonded && this.supplyOf(s, d.r) < 1) continue;   // bonded: customs is an infinite paid source
+      for (const t of accessOf(s)) {
+        const dd = flood.distanceAt(t.x, t.y);
+        if (dd >= 0 && dd < bestD) { bestD = dd; bestSupplier = s; bestTile = t; }
+      }
+    }
+    if (!bestSupplier || !bestTile) return null;
+    return { supplier: bestSupplier, path: flood.pathFrom(bestTile.x, bestTile.y)!, cost: bestD };
   }
 
   /**
@@ -1531,7 +1733,16 @@ export class GameEngine {
   // ---------------- construction ----------------
 
   private construction() {
-    let pool = this.builderPool();
+    // Domestic-first labor: citizens manning offices build free; builders beyond
+    // them are imported (foreign) and cost ₽/day, capped by what we can afford.
+    const domestic = this.domesticBuilderPool();
+    const total = this.builderPool();
+    const foreignAvail = Math.max(0, total - domestic);
+    const perDay = BALANCE.foreignLaborPerDay * DIFFICULTIES[this.difficulty].importPriceMult;
+    const affordableForeign = perDay > 0 ? Math.floor(this.rubles / perDay) : foreignAvail;
+    const usableForeign = this.foreignLaborEnabled ? Math.min(foreignAvail, affordableForeign) : 0;
+    let pool = domestic + usableForeign;
+    const startPool = pool;
     if (pool <= 0) return;
     const buildMult = WEATHER[this.weather.condition].buildMult;
     for (const b of this.buildings.values()) {
@@ -1567,6 +1778,14 @@ export class GameEngine {
         this.seedWearBins(b);
         this.pushEvent(`${def.name} completed!`, 'good', 'check');
       }
+    }
+    // pay for the foreign builder-days actually used (domestic-first). Bounded
+    // by usableForeign ≤ affordableForeign, so rubles can never go negative.
+    const foreignUsed = Math.max(0, (startPool - pool) - domestic);
+    if (foreignUsed > 0) {
+      const cost = foreignUsed * perDay;
+      this.rubles -= cost;
+      this.tradeLedger.today.foreignLabor -= cost;
     }
   }
 
@@ -1745,12 +1964,12 @@ export class GameEngine {
 
   private updateAlerts() {
     const a: Alert[] = [];
-    // stranded construction sites: need materials but no finished road AND no
-    // neighboring road/bridge site (normal frontier road chains stay quiet)
+    // stranded construction sites: truly unreachable (no road AND no off-road
+    // route) and not part of a frontier road/bridge chain (which stays quiet)
     let stranded = 0;
     for (const b of this.buildings.values()) {
       if (b.constructed) continue;
-      if (this.adjacentRoads(b).length > 0) continue;
+      if (b.connected) continue; // reachable by road or off-road → will be served
       let nearSite = false;
       for (let dy = -1; dy <= b.h && !nearSite; dy++) for (let dx = -1; dx <= b.w && !nearSite; dx++) {
         const onEdge = dx === -1 || dx === b.w || dy === -1 || dy === b.h;
@@ -1760,7 +1979,7 @@ export class GameEngine {
       }
       if (!nearSite) stranded++;
     }
-    if (stranded > 0) a.push({ id: 'sites', icon: 'road', text: `${stranded} construction site${stranded > 1 ? 's' : ''} unreachable by road — deliveries cannot arrive`, level: 'warn' });
+    if (stranded > 0) a.push({ id: 'sites', icon: 'road', text: `${stranded} construction site${stranded > 1 ? 's' : ''} unreachable — no delivery route (road or off-road)`, level: 'warn' });
     if (this.pop > 5 && this.sat.food < 0.5) a.push({ id: 'food', icon: 'food', text: 'Food shortage — citizens are hungry', level: 'bad' });
     const hasPlant = [...this.buildings.values()].some(b => this.def(b).powerOutput && b.constructed);
     if (this.powerDemand > this.powerProduced + 0.01 && (hasPlant || this.pop > 0)) a.push({ id: 'power', icon: 'power', text: `Power deficit (${this.powerDemand.toFixed(1)} MW needed, ${this.powerProduced.toFixed(1)} MW generated)`, level: 'warn' });
@@ -1772,8 +1991,10 @@ export class GameEngine {
     if (tomorrow.condition === 'storm' || tomorrow.condition === 'blizzard') {
       a.push({ id: 'stormfront', icon: tomorrow.condition, text: `${tomorrow.condition === 'storm' ? 'Storm' : 'Blizzard'} front approaches — expect slow roads tomorrow`, level: 'warn' });
     }
-    const unconnected = [...this.buildings.values()].filter(b => b.constructed && !b.connected).length;
-    if (unconnected > 0) a.push({ id: 'roads', icon: 'road', text: `${unconnected} building${unconnected > 1 ? 's' : ''} not connected to a road`, level: 'warn' });
+    const isolated = [...this.buildings.values()].filter(b => b.constructed && !b.connected).length;
+    if (isolated > 0) a.push({ id: 'roads', icon: 'road', text: `${isolated} building${isolated > 1 ? 's' : ''} isolated — no delivery route`, level: 'warn' });
+    const offroadOnly = [...this.buildings.values()].filter(b => b.constructed && b.connected && !b.roadConnected).length;
+    if (offroadOnly > 0) a.push({ id: 'offroad', icon: 'road', text: `${offroadOnly} building${offroadOnly > 1 ? 's' : ''} reachable only off-road — slow deliveries; lay a road`, level: 'warn' });
     const sites = [...this.buildings.values()].filter(b => !b.constructed);
     if (sites.length > 0 && this.builderPool() === 0) a.push({ id: 'builders', icon: 'builders', text: 'No builders available — construction halted', level: 'warn' });
     if (this.maxTrucks() === 0) a.push({ id: 'trucks', icon: 'truck', text: 'No trucks — staff a Construction Office to haul goods', level: 'warn' });
@@ -1874,6 +2095,11 @@ export class GameEngine {
     this.bump();
   }
 
+  setForeignLaborEnabled(on: boolean) {
+    this.foreignLaborEnabled = on;
+    this.bump();
+  }
+
   /** One rule per resource: import OR export — setting one replaces the other (no buy-high/sell-low churn). */
   setAutoTradeRule(r: ResourceId, rule: AutoTradeRule | null) {
     if (rule) this.autoTrade.rules[r] = { ...rule, level: Math.max(0, Math.round(rule.level)) };
@@ -1912,7 +2138,7 @@ export class GameEngine {
   serialize(): SaveGameV1 {
     const cloneTruck = (t: Truck): Truck => ({ ...t, points: t.points.map(p => ({ ...p })) });
     const cloneLedger = (l: TradeDayLedger): TradeDayLedger =>
-      ({ imports: { ...l.imports }, exports: { ...l.exports }, rubles: l.rubles, dollars: l.dollars, used: l.used, capacity: l.capacity, blocked: [...l.blocked] });
+      ({ imports: { ...l.imports }, exports: { ...l.exports }, rubles: l.rubles, dollars: l.dollars, used: l.used, capacity: l.capacity, blocked: [...l.blocked], foreignLabor: l.foreignLabor ?? 0 });
     const rules: Partial<Record<ResourceId, AutoTradeRule>> = {};
     for (const [r, rule] of Object.entries(this.autoTrade.rules) as [ResourceId, AutoTradeRule][]) rules[r] = { ...rule };
     return {
@@ -1942,6 +2168,7 @@ export class GameEngine {
         priceFactorEast: this.priceFactorEast,
         priceFactorWest: this.priceFactorWest,
         autoTrade: { enabled: this.autoTrade.enabled, reserveRubles: this.autoTrade.reserveRubles, reserveDollars: this.autoTrade.reserveDollars, rules },
+        foreignLaborEnabled: this.foreignLaborEnabled,
         tradeLedger: { today: cloneLedger(this.tradeLedger.today), yesterday: cloneLedger(this.tradeLedger.yesterday) },
         contracts: this.contracts.map(c => ({ ...c })),
         relationsPenalty: { ...this.relationsPenalty },
@@ -2003,8 +2230,9 @@ export class GameEngine {
       reserveDollars: body.autoTrade.reserveDollars,
       rules: Object.fromEntries((Object.entries(body.autoTrade.rules) as [ResourceId, AutoTradeRule][]).map(([r, rule]) => [r, { ...rule }])),
     };
+    e.foreignLaborEnabled = body.foreignLaborEnabled ?? true;
     const cloneLedger = (l: TradeDayLedger): TradeDayLedger =>
-      ({ imports: { ...l.imports }, exports: { ...l.exports }, rubles: l.rubles, dollars: l.dollars, used: l.used, capacity: l.capacity, blocked: [...l.blocked] });
+      ({ imports: { ...l.imports }, exports: { ...l.exports }, rubles: l.rubles, dollars: l.dollars, used: l.used, capacity: l.capacity, blocked: [...l.blocked], foreignLabor: l.foreignLabor ?? 0 });
     e.tradeLedger = { today: cloneLedger(body.tradeLedger.today), yesterday: cloneLedger(body.tradeLedger.yesterday) };
     e.contracts = body.contracts.map(c => ({ ...c }));
     e.dryStreak = body.streaks.dry;
@@ -2030,7 +2258,7 @@ export class GameEngine {
     // hydrate over defaults so future BuildingInst fields load from old saves
     for (const saved of body.buildings) {
       const inst: BuildingInst = Object.assign(
-        { staff: 0, eff: 0, powered: false, heated: false, connected: false, coalFactor: 0, farmFields: 0 },
+        { staff: 0, eff: 0, powered: false, heated: false, connected: false, roadConnected: false, coalFactor: 0, farmFields: 0 },
         saved,
         { stock: { ...saved.stock }, incoming: { ...saved.incoming } },
       );

@@ -945,6 +945,8 @@ function drawBuilding(ctx: CanvasRenderingContext2D, b: BuildingInst, cam: Camer
   const badges: { icon: string; color: string }[] = [];
   if (unpowered) badges.push({ icon: 'power', color: frame.palette.badgePower });
   if (!b.connected) badges.push({ icon: 'ban', color: '#ff6b5e' });
+  else if (b.constructed && !b.roadConnected) badges.push({ icon: 'road', color: '#e0a94a' }); // off-road only — slow
+
   if (def.heat > 0 && !b.heated) badges.push({ icon: 'freeze', color: frame.palette.badgeCold });
   if (buildingWorn(b)) badges.push({ icon: 'machinery', color: frame.palette.badgeWorn });
   let sx = mid.x - ((badges.length - 1) * 12 * cam.z) / 2;

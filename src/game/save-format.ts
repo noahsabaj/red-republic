@@ -51,6 +51,7 @@ export interface SaveBodyV1 {
   priceFactorEast: number;
   priceFactorWest: number;
   autoTrade: { enabled: boolean; reserveRubles: number; reserveDollars: number; rules: Partial<Record<ResourceId, AutoTradeRule>> };
+  foreignLaborEnabled?: boolean; // optional: old saves default to true
   tradeLedger: { today: TradeDayLedger; yesterday: TradeDayLedger };
   contracts: Contract[];
   relationsPenalty: { east: number; west: number };

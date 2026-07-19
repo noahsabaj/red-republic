@@ -9,6 +9,7 @@ import type { PanelMode } from './HUD';
 import { useEngineVersion } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
 import { buildCostText, buildCostTotalText } from '@/ui/build-cost';
+import type { BuildPayMode } from '@/ui/build-cost';
 import { audio } from '@/audio';
 
 interface Props {
@@ -16,13 +17,15 @@ interface Props {
   mode: PanelMode;
   selection: SelectionItem[];
   instantBuild: boolean;
+  autoBuy: boolean;
   onClose: () => void;
   onOpenTrade: () => void;
   onArmBuild: (defId: string) => void;
   notify: (msg: string, kind: 'good' | 'bad' | 'info') => void;
 }
 
-export default function SidePanel({ engine, mode, selection, instantBuild, onClose, onOpenTrade, onArmBuild, notify }: Props) {
+export default function SidePanel({ engine, mode, selection, instantBuild, autoBuy, onClose, onOpenTrade, onArmBuild, notify }: Props) {
+  const payMode: BuildPayMode = instantBuild ? 'instant' : autoBuy ? 'autoBuy' : 'materials';
   // the open detail panel mirrors live engine state — re-render on every bump
   useEngineVersion(engine);
   const single = selection.length === 1 ? selection[0] : null;
@@ -44,9 +47,9 @@ export default function SidePanel({ engine, mode, selection, instantBuild, onClo
         <div className="flex-1 overflow-y-auto soviet-scroll p-3">
           {mode === 'building' && (
             selection.length > 1
-              ? <MultiInfo engine={engine} items={selection} instant={instantBuild} onArmBuild={onArmBuild} />
+              ? <MultiInfo engine={engine} items={selection} payMode={payMode} onArmBuild={onArmBuild} />
               : single?.kind === 'deposit'
-                ? <DepositInfo engine={engine} x={single.x} y={single.y} instant={instantBuild} onArmBuild={onArmBuild} />
+                ? <DepositInfo engine={engine} x={single.x} y={single.y} payMode={payMode} onArmBuild={onArmBuild} />
                 : <BuildingInfo engine={engine} id={single?.kind === 'building' ? single.id : null} onOpenTrade={onOpenTrade} />
           )}
           {mode === 'trade' && <TradePanel engine={engine} notify={notify} />}
@@ -134,7 +137,7 @@ function StockpilesPanel({ engine }: { engine: GameEngine }) {
 
 // ------------------------------------------------------------
 
-function MultiInfo({ engine, items, instant, onArmBuild }: { engine: GameEngine; items: SelectionItem[]; instant: boolean; onArmBuild: (defId: string) => void }) {
+function MultiInfo({ engine, items, payMode, onArmBuild }: { engine: GameEngine; items: SelectionItem[]; payMode: BuildPayMode; onArmBuild: (defId: string) => void }) {
   const buildings = items
     .filter((i): i is Extract<SelectionItem, { kind: 'building' }> => i.kind === 'building')
     .map(i => engine.buildings.get(i.id))
@@ -226,14 +229,14 @@ function MultiInfo({ engine, items, instant, onArmBuild }: { engine: GameEngine;
                       {outputsPerMine.map(([r, a]) => (
                         <span key={r} className="inline-flex items-center gap-0.5"><GameIcon name={RESOURCES[r].icon} size={11} />{fmtRate(a * g.free)}/day</span>
                       ))}
-                      <span className="text-yellow-200/60"> · {miner.workers * g.free} workers · {buildCostTotalText(engine, miner.id, g.free, instant)} total</span>
+                      <span className="text-yellow-200/60"> · {miner.workers * g.free} workers · {buildCostTotalText(engine, miner.id, g.free, payMode)} total</span>
                     </div>
                     <button
                       onClick={() => onArmBuild(miner.id)}
                       data-sfx="none" // the setTool funnel voices toolArm
                       className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1 hover:bg-yellow-400"
                     >
-                      <GameIcon name="builders" size={12} /> Build {miner.name} ({buildCostText(engine, miner.id, instant)} each)
+                      <GameIcon name="builders" size={12} /> Build {miner.name} ({buildCostText(engine, miner.id, payMode)} each)
                     </button>
                   </>
                 )}
@@ -254,7 +257,7 @@ function MultiInfo({ engine, items, instant, onArmBuild }: { engine: GameEngine;
 
 const DEPOSIT_NAMES: Record<string, string> = { coal: 'Coal', ironOre: 'Iron Ore', oil: 'Oil', gravel: 'Gravel' };
 
-function DepositInfo({ engine, x, y, instant, onArmBuild }: { engine: GameEngine; x: number; y: number; instant: boolean; onArmBuild: (defId: string) => void }) {
+function DepositInfo({ engine, x, y, payMode, onArmBuild }: { engine: GameEngine; x: number; y: number; payMode: BuildPayMode; onArmBuild: (defId: string) => void }) {
   const cluster = engine.depositClusterAt(x, y);
   if (!cluster) return <div className="text-xs text-yellow-200/60">Nothing of value here.</div>;
   const res = RESOURCES[cluster.kind];
@@ -297,7 +300,7 @@ function DepositInfo({ engine, x, y, instant, onArmBuild }: { engine: GameEngine
           className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1.5 hover:bg-yellow-400"
           title={`Arm the build tool — place the ${miner.name} on one of this cluster's tiles`}
         >
-          <GameIcon name="builders" size={12} /> Build {miner.name} ({buildCostText(engine, miner.id, instant)})
+          <GameIcon name="builders" size={12} /> Build {miner.name} ({buildCostText(engine, miner.id, payMode)})
         </button>
       )}
     </div>
@@ -350,7 +353,11 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
         <div className="space-y-2">
           <div className="grid grid-cols-2 gap-x-2">
             {def.workers > 0 && <Row label={<><GameIcon name="staff" size={12} /> Staff</>} value={`${b.staff}/${def.workers}`} ok={b.staff >= def.workers * 0.8} />}
-            <Row label={<><GameIcon name="road" size={12} /> Road</>} value={b.connected ? 'Connected' : 'No road!'} ok={b.connected} />
+            <Row
+              label={<><GameIcon name="road" size={12} /> Road</>}
+              value={b.roadConnected ? 'Connected' : b.connected ? 'Off-road — slow' : 'Isolated!'}
+              ok={b.roadConnected}
+            />
             {def.power > 0 && <Row label={<><GameIcon name="power" size={12} /> Power</>} value={b.powered ? `${def.power} MW` : 'No power!'} ok={b.powered} />}
             {def.powerOutput !== undefined && <Row label={<><GameIcon name="power" size={12} /> Output</>} value={`${(def.powerOutput * b.eff * b.coalFactor).toFixed(1)} MW`} />}
             {def.heatOutput !== undefined && <Row label={<><GameIcon name="heat" size={12} /> Output</>} value={(def.heatOutput * b.eff * b.coalFactor).toFixed(1)} />}

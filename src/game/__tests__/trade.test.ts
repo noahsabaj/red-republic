@@ -29,12 +29,14 @@ describe('trade', () => {
     expect(plant.stock.coal).toBe(6);
   });
 
-  it('sell() only reaches road-connected buildings', () => {
+  it('sell() reaches any drivable building — road or off-road', () => {
     const e = withCustoms();
-    const far = placeBuilt(e, 'warehouse', 25, 15); // no road contact
+    const far = placeBuilt(e, 'warehouse', 25, 15); // no road contact — reachable off-road only
     far.stock.steel = 20;
-    expect(e.sellableStock('steel')).toBe(0);
-    expect(e.sell('steel', 10, 'west').ok).toBe(false);
+    // off-road reachability now counts: goods that can physically reach the
+    // border (however slowly) are sellable
+    expect(e.sellableStock('steel')).toBe(20);
+    expect(e.sell('steel', 10, 'west').ok).toBe(true);
   });
 
   it('buy() imports the affordable partial amount instead of rejecting', () => {

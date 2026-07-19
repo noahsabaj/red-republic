@@ -88,6 +88,34 @@ describe('road construction lifecycle', () => {
     expect(e.canPlace('road', 15, 9).ok).toBe(true); // tile is placeable again
   });
 
+  it('bulldozing a site returns its ALREADY-DELIVERED stock to storage (no vanish)', () => {
+    const { e, depot } = roadTown();
+    depot.stock.bricks = 0;
+    e.tryPlace('sawmill', 8, 10, false);
+    const site = e.buildingAt(8, 10)!;
+    site.stock.bricks = 5; // materials already trucked into the site
+    const total = totalOf(e, 'bricks');
+    expect(e.bulldozeAt(8, 10)).toBe(true);
+    expect(e.buildingAt(8, 10)).toBeUndefined();
+    expect(e.trucks.some(t => t.cargo === 'bricks')).toBe(true); // a refund truck is hauling them back
+    runDays(e, 12);
+    expect(totalOf(e, 'bricks')).toBeCloseTo(total, 6); // conserved — not dropped into the void
+    expect(depot.stock.bricks ?? 0).toBeGreaterThan(0); // and landed in storage
+  });
+
+  it('a bill larger than one truck refunds in multiple loads', () => {
+    const { e, depot } = roadTown();
+    depot.stock.planks = 0;
+    e.tryPlace('apartment', 7, 11, false);
+    const site = e.buildingAt(7, 11)!;
+    site.stock.planks = 10; // > truckCapacity (6) → needs two return trucks
+    const total = totalOf(e, 'planks');
+    e.bulldozeAt(7, 11);
+    expect(e.trucks.filter(t => t.cargo === 'planks').length).toBeGreaterThanOrEqual(2);
+    runDays(e, 14);
+    expect(totalOf(e, 'planks')).toBeCloseTo(total, 6);
+  });
+
   it('instant mode imports the prefab: dollars, immediate tile, no site', () => {
     const { e } = roadTown();
     e.dollars = 100;
@@ -108,16 +136,18 @@ describe('road construction lifecycle', () => {
     expect(e.rubles).toBe(0);
   });
 
-  it('flags stranded sites, but never a frontier road chain', () => {
+  it('a frontier road chain stays quiet; an off-road-only building advises a road', () => {
     const { e } = roadTown();
     // a chain extending the network stays quiet
     for (const x of [15, 16, 17]) e.tryPlace('road', x, 9, false);
     runDays(e, 1);
     expect(e.alerts.some(a => a.id === 'sites')).toBe(false);
-    // an isolated site with no road and no neighboring site raises the alert
-    e.tryPlace('house', 30, 30, false);
+    // a finished building off the road network is reachable off-road (slow):
+    // not "stranded", but the soft advisory to lay a road
+    placeBuilt(e, 'house', 30, 30);
     runDays(e, 1);
-    expect(e.alerts.some(a => a.id === 'sites')).toBe(true);
+    expect(e.alerts.some(a => a.id === 'sites')).toBe(false);   // not truly unreachable
+    expect(e.alerts.some(a => a.id === 'offroad')).toBe(true);  // "lay a road" advisory
   });
 });
 

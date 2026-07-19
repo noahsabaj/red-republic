@@ -97,7 +97,7 @@ describe('parseSave validation', () => {
     s.body.buildings = [{
       id: 900, defId: 'house', x: 5, y: 5, w: 1, h: 1, constructed: true, progress: 60,
       stock: {}, incoming: {}, staff: 0, eff: 0, powered: false, heated: false,
-      connected: false, coalFactor: 0, farmFields: 0,
+      connected: false, roadConnected: false, coalFactor: 0, farmFields: 0,
     }];
     s.body.counters.building = 1;
     const save = parseSave(JSON.stringify(s));

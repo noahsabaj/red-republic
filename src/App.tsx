@@ -34,6 +34,10 @@ export default function App() {
   const [tool, setTool] = useState<Tool>({ kind: 'select' });
   const [selection, setSelection] = useState<SelectionItem[]>([]);
   const [instantBuild, setInstantBuild] = useState(false);
+  const [autoBuy, setAutoBuy] = useState(false);
+  // instant ($) and auto-buy (₽) are both pay-upfront modes — checking one clears the other
+  const armInstant = useCallback((v: boolean) => { setInstantBuild(v); if (v) setAutoBuy(false); }, []);
+  const armAutoBuy = useCallback((v: boolean) => { setAutoBuy(v); if (v) setInstantBuild(false); }, []);
   const [panel, setPanel] = useState<PanelMode | null>(null);
   const [briefingVisible, setBriefingVisible] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -284,6 +288,7 @@ export default function App() {
           selection={selection}
           onSelect={handleSelect}
           instantBuild={instantBuild}
+          autoBuy={autoBuy}
           hotkeysEnabled={hotkeysEnabled}
           onError={(msg) => push(msg, 'bad')}
           onOpenMenu={openPause}
@@ -307,7 +312,9 @@ export default function App() {
             tool={tool}
             setTool={setToolSfx}
             instantBuild={instantBuild}
-            setInstantBuild={setInstantBuild}
+            setInstantBuild={armInstant}
+            autoBuy={autoBuy}
+            setAutoBuy={armAutoBuy}
           />
           {panel && (
             <SidePanel
@@ -315,6 +322,7 @@ export default function App() {
               mode={panel}
               selection={selection}
               instantBuild={instantBuild}
+              autoBuy={autoBuy}
               onClose={() => setPanel(null)}
               onOpenTrade={() => setPanel('trade')}
               onArmBuild={(defId) => setToolSfx({ kind: 'build', defId })}
