@@ -24,7 +24,7 @@ export function UpdateBanner({ version, install, onDismiss, notify }: Props) {
       <p className="mt-1.5 text-[0.6875rem] leading-snug text-yellow-100/75">
         {busy
           ? 'Downloading — the app restarts when the update is ready.'
-          : 'Restart now to install, or keep playing and update on the next launch.'}
+          : 'Restart now to install, or keep playing — the offer returns next launch.'}
       </p>
       <div className="mt-2.5 flex justify-end gap-2">
         <button className={secondaryBtn} disabled={busy} onClick={onDismiss}>Later</button>

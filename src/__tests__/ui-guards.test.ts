@@ -5,6 +5,8 @@
 // 2. no emoji in first-party sources — the game uses the icon system
 // 3. Tailwind color-opacity modifiers must be real opacity steps —
 //    an invalid step (e.g. bg-red-950/97) silently generates NO css
+// 4. full-viewport stacking layers must be modals or pointer-transparent —
+//    a transparent inset-0 z-layer silently eats clicks for overlays below
 // ============================================================
 import { describe, expect, it } from 'vitest';
 import { BUILDINGS, RESOURCES } from '@/game/config';
@@ -44,6 +46,28 @@ describe('no emoji in first-party sources', () => {
       src.split('\n').forEach((line, i) => {
         if (emoji.test(line.replace(typographic, ''))) offenders.push(`${path}:${i + 1} ${line.trim().slice(0, 80)}`);
       });
+    }
+    expect(offenders, offenders.join('\n')).toEqual([]);
+  });
+});
+
+describe('full-viewport stacking layers', () => {
+  it('every inset-0 z-layer is a real modal or pointer-events-none', () => {
+    // The class this guards: MainMenu's transparent z-40 layout layer used to
+    // swallow every click aimed at the z-30 UpdateBanner beneath it — layout
+    // containers must pass pointers through; only actual modals may block.
+    const offenders: string[] = [];
+    for (const [path, src] of firstParty) {
+      if (!path.endsWith('.tsx')) continue;
+      for (const m of src.matchAll(/(["'`])[^"'`]*?\binset-0\b[^"'`]*?\1/g)) {
+        const cls = m[0];
+        if (!/\bz-\d/.test(cls)) continue;                  // no stacking level -> follows document order, fine
+        if (cls.includes('pointer-events-none')) continue;  // pointer-transparent layout layer
+        const tagBefore = src.slice(Math.max(0, m.index - 300), m.index);
+        if (/aria-modal|role="dialog"/.test(tagBefore)) continue; // real modal, blocking is the point
+        const line = src.slice(0, m.index).split('\n').length;
+        offenders.push(`${path}:${line} ${cls.slice(0, 70)}`);
+      }
     }
     expect(offenders, offenders.join('\n')).toEqual([]);
   });
