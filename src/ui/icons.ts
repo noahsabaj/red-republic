@@ -14,7 +14,7 @@ import {
   Magnet, Map as MapIcon, Menu, Package, Pause, Pickaxe, Play, RotateCcw, Route, Ruler, Save,
   ScrollText, Settings, ShoppingBasket, Shirt, Shovel, Slice, Smile, Snowflake, Sprout, Square, Star,
   Sun, Target, Tractor, TreePine, Trash2, Truck, Upload, Users, Warehouse, Wheat, Wind, X, Zap, BedDouble,
-  ChevronDown, Pin,
+  ChevronDown, Pin, Music, SkipForward, SkipBack, Shuffle, Repeat, Repeat1, Volume2,
 } from 'lucide';
 
 export const GAME_ICONS = {
@@ -92,6 +92,14 @@ export const GAME_ICONS = {
   map: MapIcon,
   pick: Pickaxe,
   keyboard: Keyboard,
+  // music player
+  music: Music,
+  skipForward: SkipForward,
+  skipBack: SkipBack,
+  shuffle: Shuffle,
+  repeat: Repeat,
+  repeatOne: Repeat1,
+  volume: Volume2,
   // menus / save system
   menu: Menu,
   settings: Settings,

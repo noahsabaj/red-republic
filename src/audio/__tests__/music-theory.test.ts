@@ -4,6 +4,7 @@ import {
   CHORD_MARKOV, CHORD_TONES, PENTATONIC, ROOT_MIDI, clickHz, midiToHz, nextChord, phrase,
 } from '../music-theory';
 import type { Degree } from '../music-theory';
+import { PLAYLIST } from '../tracks';
 
 const DEGREES = Object.keys(CHORD_TONES) as Degree[];
 
@@ -60,4 +61,39 @@ describe('generative pickers', () => {
       for (const n of notes) expect(PENTATONIC).toContain(n);
     }
   });
+});
+
+describe('soundtrack tracks', () => {
+  for (const t of PLAYLIST) {
+    const degrees = Object.keys(t.chords.tones);
+
+    it(`${t.id}: Markov rows sum to 1, name real degrees, start is real`, () => {
+      expect(degrees).toContain(t.chords.start);
+      for (const d of degrees) {
+        const row = t.chords.markov[d];
+        expect(row.reduce((a, [, p]) => a + p, 0)).toBeCloseTo(1, 9);
+        for (const [target] of row) expect(degrees).toContain(target);
+      }
+    });
+
+    it(`${t.id}: clickHz stays finite & positive in-key for every chord tone`, () => {
+      // clicks feed exponential frequency ramps — a NaN/0 in the track's key would break them
+      for (const d of degrees) {
+        for (let i = 0; i < 3; i++) {
+          const hz = clickHz(t.chords.tones[d], i, 1, t.root);
+          expect(Number.isFinite(hz)).toBe(true);
+          expect(hz).toBeGreaterThan(0);
+        }
+      }
+    });
+
+    it(`${t.id}: nextChord stays within the track's degree set`, () => {
+      const rng = mulberry32(19);
+      let d = t.chords.start;
+      for (let i = 0; i < 40; i++) {
+        d = nextChord(d, rng, t.chords.markov);
+        expect(degrees).toContain(d);
+      }
+    });
+  }
 });

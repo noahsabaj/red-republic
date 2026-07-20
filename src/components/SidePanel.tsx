@@ -13,6 +13,7 @@ import type { BuildPayMode } from '@/ui/build-cost';
 import { ToggleButton } from '@/components/menu/controls';
 import type { BuildPolicy } from './GameCanvas';
 import { audio } from '@/audio';
+import MusicPanel from './MusicPanel';
 
 interface Props {
   engine: GameEngine;
@@ -34,9 +35,10 @@ export default function SidePanel({ engine, mode, selection, policy, onClose, on
   const title = mode === 'trade' ? 'Foreign Trade'
     : mode === 'objectives' ? 'Five-Year Plan'
     : mode === 'stockpiles' ? 'National Stockpiles'
+    : mode === 'music' ? 'State Radio'
     : selection.length > 1 ? `${selection.length} selected`
     : single?.kind === 'deposit' ? 'Deposit' : 'Building';
-  const titleIcon = mode === 'trade' ? 'trade' : mode === 'objectives' ? 'plan' : mode === 'stockpiles' ? 'stockpiles' : null;
+  const titleIcon = mode === 'trade' ? 'trade' : mode === 'objectives' ? 'plan' : mode === 'stockpiles' ? 'stockpiles' : mode === 'music' ? 'music' : null;
   return (
     <div className="absolute right-0 top-24 bottom-16 z-10 flex pointer-events-none">
       <div className="pointer-events-auto flex flex-col w-72 m-2 rounded-lg border-2 border-yellow-600/60 bg-red-950/95 text-yellow-50 shadow-2xl overflow-hidden">
@@ -57,6 +59,7 @@ export default function SidePanel({ engine, mode, selection, policy, onClose, on
           {mode === 'trade' && <TradePanel engine={engine} notify={notify} />}
           {mode === 'objectives' && <ObjectivesPanel engine={engine} />}
           {mode === 'stockpiles' && <StockpilesPanel engine={engine} />}
+          {mode === 'music' && <MusicPanel />}
         </div>
       </div>
     </div>

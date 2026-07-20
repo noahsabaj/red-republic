@@ -3,7 +3,7 @@ import { BALANCE, WEATHER } from '@/game/config';
 import { useEngineSignature } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
 
-export type PanelMode = 'building' | 'trade' | 'objectives' | 'stockpiles';
+export type PanelMode = 'building' | 'trade' | 'objectives' | 'stockpiles' | 'music';
 
 interface Props {
   engine: GameEngine;
@@ -12,11 +12,12 @@ interface Props {
   onOpenStockpiles: () => void;
   onOpenObjectives: () => void;
   onOpenTrade: () => void;
+  onOpenMusic: () => void;
   onOpenHelp: () => void;
   onOpenMenu: () => void;
 }
 
-export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, onOpenObjectives, onOpenTrade, onOpenHelp, onOpenMenu }: Props) {
+export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, onOpenObjectives, onOpenTrade, onOpenMusic, onOpenHelp, onOpenMenu }: Props) {
   // re-render only when something the HUD actually displays changes
   useEngineSignature(engine, (e) => [
     e.day, e.month, e.year, e.speed,
@@ -138,6 +139,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
             'trade', activePanel === 'trade', onOpenTrade,
             engine.autoTrade.enabled || offersPending > 0,
           )}
+          {panelBtn('State Radio (music)', 'music', activePanel === 'music', onOpenMusic)}
           {panelBtn('Help', 'help', helpOpen, onOpenHelp)}
           {panelBtn('Menu (Esc)', 'menu', false, onOpenMenu)}
         </div>

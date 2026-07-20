@@ -95,4 +95,25 @@ describe('settings store', () => {
     expect(getSettings()).toEqual(defaultSettings());
     expect(notified).toBe(1);
   });
+
+  it('defaults and sanitizes the music player preferences', () => {
+    const d = defaultSettings();
+    expect(d.musicShuffle).toBe(false);
+    expect(d.musicRepeat).toBe('all');
+    expect(d.musicTrackId).toBe('');
+
+    vi.stubGlobal('localStorage', fakeStorage({
+      'rr.settings.v1': JSON.stringify({ musicShuffle: 'yes', musicRepeat: 'sometimes', musicTrackId: 42 }),
+    }));
+    reloadSettingsFromStorage();
+    const s = getSettings();
+    expect(s.musicShuffle).toBe(false);   // bad type → default
+    expect(s.musicRepeat).toBe('all');    // not in the allowed set → default
+    expect(s.musicTrackId).toBe('');      // non-string → default
+
+    updateSettings({ musicShuffle: true, musicRepeat: 'one', musicTrackId: 'march' });
+    expect(getSettings().musicShuffle).toBe(true);
+    expect(getSettings().musicRepeat).toBe('one');
+    expect(getSettings().musicTrackId).toBe('march');
+  });
 });

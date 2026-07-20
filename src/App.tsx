@@ -312,6 +312,7 @@ export default function App() {
             onOpenStockpiles={() => togglePanel('stockpiles')}
             onOpenObjectives={() => togglePanel('objectives')}
             onOpenTrade={() => togglePanel('trade')}
+            onOpenMusic={() => togglePanel('music')}
             onOpenHelp={() => setShowHelp(true)}
             onOpenMenu={openPause}
           />

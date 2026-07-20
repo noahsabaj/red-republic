@@ -31,6 +31,9 @@ export interface Settings {
   hoverSounds: boolean;       // whisper tick when the pointer crosses a control
   muted: boolean;             // master mute
   muteWhenHidden: boolean;    // suspend audio while the tab is hidden
+  musicShuffle: boolean;      // shuffle the soundtrack order
+  musicRepeat: 'off' | 'all' | 'one'; // playlist repeat mode
+  musicTrackId: string;       // last-played track id ('' → default)
   // accessibility
   colorblind: boolean;        // colorblind-safe status palette on the canvas
   reducedMotion: boolean;     // no decorative animation (weather particles, shimmer)
@@ -63,6 +66,9 @@ export function defaultSettings(): Settings {
     hoverSounds: true,
     muted: false,
     muteWhenHidden: true,
+    musicShuffle: false,
+    musicRepeat: 'all',
+    musicTrackId: '',
     colorblind: false,
     reducedMotion: prefersReducedMotion(),
   };
@@ -97,6 +103,9 @@ function sanitize(raw: unknown): Settings {
     hoverSounds: bool(r.hoverSounds, d.hoverSounds),
     muted: bool(r.muted, d.muted),
     muteWhenHidden: bool(r.muteWhenHidden, d.muteWhenHidden),
+    musicShuffle: bool(r.musicShuffle, d.musicShuffle),
+    musicRepeat: oneOf(r.musicRepeat, ['off', 'all', 'one'] as const, d.musicRepeat),
+    musicTrackId: typeof r.musicTrackId === 'string' ? r.musicTrackId : d.musicTrackId,
     colorblind: bool(r.colorblind, d.colorblind),
     reducedMotion: bool(r.reducedMotion, d.reducedMotion),
   };

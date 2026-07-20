@@ -44,13 +44,22 @@ export function midiToHz(midi: number): number {
  * chord through this so they're always consonant with the score.
  * clickHz(CHORD_TONES.i) === 220 (A3).
  */
-export function clickHz(chord: readonly number[], index = 0, octave = 1): number {
+export function clickHz(chord: readonly number[], index = 0, octave = 1, root = ROOT_MIDI): number {
   const tone = chord[((index % chord.length) + chord.length) % chord.length] ?? 0;
-  return midiToHz(ROOT_MIDI + tone + octave * 12);
+  return midiToHz(root + tone + octave * 12);
 }
 
-export function nextChord(current: Degree, rng: () => number): Degree {
-  const row = CHORD_MARKOV[current];
+/**
+ * Weighted-random next degree. The chord table defaults to the module
+ * A-minor Markov graph, so `nextChord(d, rng)` is unchanged; a track with
+ * its own key/progression passes its own `markov`.
+ */
+export function nextChord<D extends string>(
+  current: D,
+  rng: () => number,
+  markov: Record<D, [D, number][]> = CHORD_MARKOV as unknown as Record<D, [D, number][]>,
+): D {
+  const row = markov[current];
   let roll = rng();
   for (const [degree, p] of row) {
     roll -= p;
@@ -60,21 +69,27 @@ export function nextChord(current: Degree, rng: () => number): Degree {
 }
 
 /**
- * A short melodic fragment over a chord: 3-6 pentatonic offsets, starting
- * on a chord tone, wandering by small steps, ending near the chord root.
+ * A short melodic fragment over a chord: 3-6 scale offsets, starting on a
+ * chord tone, wandering by small steps, ending near the chord root. Tables
+ * default to the module A-minor pentatonic; a track passes its own.
  */
-export function phrase(degree: Degree, rng: () => number): number[] {
-  const tones = CHORD_TONES[degree];
+export function phrase<D extends string>(
+  degree: D,
+  rng: () => number,
+  tones: Record<D, [number, number, number]> = CHORD_TONES as unknown as Record<D, [number, number, number]>,
+  scale: readonly number[] = PENTATONIC,
+): number[] {
+  const chord = tones[degree];
   const len = 3 + Math.floor(rng() * 4);
   const notes: number[] = [];
-  // start on a chord tone that exists in the pentatonic set (fall back to root)
-  const starts = tones.filter(t => (PENTATONIC as readonly number[]).includes(t % 12));
-  let idx = PENTATONIC.indexOf(((starts[Math.floor(rng() * starts.length)] ?? tones[0]) % 12) as typeof PENTATONIC[number]);
+  // start on a chord tone that exists in the scale (fall back to root)
+  const starts = chord.filter(t => scale.includes(t % 12));
+  let idx = scale.indexOf((starts[Math.floor(rng() * starts.length)] ?? chord[0]) % 12);
   if (idx < 0) idx = 0;
   for (let i = 0; i < len; i++) {
-    notes.push(PENTATONIC[idx]);
+    notes.push(scale[idx]);
     const step = rng() < 0.5 ? -1 : 1;
-    idx = Math.min(PENTATONIC.length - 1, Math.max(0, idx + step));
+    idx = Math.min(scale.length - 1, Math.max(0, idx + step));
   }
   return notes;
 }
