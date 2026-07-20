@@ -80,5 +80,8 @@ describe('campaign pacing', () => {
     expect(paidForeignLabor, 'foreign labor was hired and paid').toBe(true);
     // and no construction site is stranded at the end of the plan
     expect([...engine.buildings.values()].filter(b => !b.constructed)).toHaveLength(0);
-  });
+    // ~3.5s locally but 7s+ under CI parallel-worker contention — a generous
+    // wall-clock ceiling (well past the worst case) stops the flaky false-red
+    // without masking a real hang; the assertions above are the actual tripwire.
+  }, 30_000);
 });
