@@ -93,7 +93,7 @@ describe('save round-trip', () => {
     works.stock.steel = 30;
     factory.stock.crops = 40;
     factory.stock.machinery = 0; // born worn — the penalty must survive the trip
-    for (const x of [21, 22, 23]) e.tryPlace('road', x, 9, false); // a paint mid-flight
+    for (const x of [21, 22, 23]) e.tryPlace('road', x, 9); // a paint mid-flight
     runDays(e, 4); // trucks en route, some tiles complete, wear ticking
 
     const snap = e.serialize();
@@ -107,6 +107,31 @@ describe('save round-trip', () => {
     expect(e.tiles[9][23].road).toBe(e2.tiles[9][23].road);
   });
 
+  it('round-trips per-site policy: a planned blueprint, a $-West bonded site, the global switch off', () => {
+    const e = makeEngine();
+    e.rubles = 1e9; e.dollars = 1e9;
+    layRoad(e, 4, 9, 22, 9);
+    placeBuilt(e, 'depot', 5, 10);
+    placeBuilt(e, 'constructionOffice', 7, 10);
+    placeBuilt(e, 'customs', 9, 10);
+    e.setForeignLaborEnabled(false);                                   // global master switch state
+    e.tryPlace('house', 12, 10, { plan: true });                      // paused blueprint
+    e.tryPlace('house', 14, 10, { autoBuy: true, currency: 'west' }); // $-West bonded site, trucks en route
+    e.tryPlace('house', 16, 10, { foreignLabor: false });             // domestic-only site
+    runDays(e, 3);
+
+    const snap = e.serialize();
+    const e2 = GameEngine.fromSave(snap, { weatherScript: CALM_WEATHER });
+    expect(stable(e2.serialize())).toEqual(stable(snap));
+    expect(e2.foreignLaborEnabled).toBe(false);
+    expect(e2.buildingAt(12, 10)!.paused).toBe(true);
+    expect(e2.buildingAt(14, 10)!.importCurrency).toBe('west');
+    expect(e2.buildingAt(16, 10)!.foreignLabor).toBe(false);
+
+    runDays(e, 30); runDays(e2, 30);
+    expect(stable(e2.serialize())).toEqual(stable(e.serialize()));
+  });
+
   it('ids allocated after a load never collide with saved entities', () => {
     const e = makeEngine();
     e.rubles = 1e9;
@@ -114,7 +139,7 @@ describe('save round-trip', () => {
     const b = placeBuilt(e, 'house', 12, 11);
     const e2 = GameEngine.fromSave(e.serialize());
     e2.rubles = 1e9;
-    const res = e2.tryPlace('house', 14, 11, true);
+    const res = e2.tryPlace('house', 14, 11, { instant: true });
     expect(res.ok).toBe(true);
     const placed = e2.buildingAt(14, 11)!;
     expect(placed.id).toBeGreaterThan(b.id);

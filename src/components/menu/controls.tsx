@@ -30,6 +30,34 @@ export function Toggle({ checked, onChange, label }: { checked: boolean; onChang
   );
 }
 
+/**
+ * Pressed toggle button: a labelled pill that lights solid when ON and shows a
+ * dim outline when OFF — the in-world gameplay idiom (build modes, per-site
+ * policy, Auto-trade), the checkbox replacement. `aria-pressed` + `data-sfx="toggle"`
+ * give it the correct on/off interface voice.
+ */
+export function ToggleButton({ on, onChange, icon, label, title, disabled, className }: {
+  on: boolean; onChange: (v: boolean) => void;
+  icon?: string; label?: ReactNode; title?: string; disabled?: boolean; className?: string;
+}) {
+  return (
+    <button
+      aria-pressed={on}
+      data-sfx="toggle"
+      title={title}
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+      className={`flex items-center gap-1.5 rounded px-2 py-1 text-[0.6875rem] font-bold transition-colors disabled:opacity-40 ${
+        on ? 'bg-yellow-500 text-red-950'
+           : 'border border-yellow-600/30 bg-red-950/50 text-yellow-100/70 hover:bg-red-900/70'
+      } ${className ?? ''}`}
+    >
+      {icon && <GameIcon name={icon} size={13} />}
+      {label}
+    </button>
+  );
+}
+
 export function RangeSlider({ value, min, max, step, onChange, label, format }: {
   value: number; min: number; max: number; step: number;
   onChange: (v: number) => void; label: string; format?: (v: number) => string;

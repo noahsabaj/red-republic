@@ -24,6 +24,7 @@ function makeCtrl(overrides: { tool?: Tool; hotkeys?: boolean; opts?: Partial<In
     setHover: (x, y) => log.calls.push(['setHover', x, y]),
     clearHover: () => log.calls.push(['clearHover']),
     cancelTool: () => log.calls.push(['cancelTool']),
+    toggleBulldoze: () => log.calls.push(['toggleBulldoze']),
     openMenu: () => log.calls.push(['openMenu']),
     togglePause: () => log.calls.push(['togglePause']),
     setSpeed: (s) => log.calls.push(['setSpeed', s]),
@@ -148,6 +149,12 @@ describe('hotkeys', () => {
     expect(t.ctrl.key({ key: ' ', code: 'Space', repeat: true })).toBe(true);
     expect(t.ctrl.key({ key: ' ', code: 'Space', repeat: true })).toBe(true);
     expect(t.of('togglePause')).toHaveLength(1);
+  });
+
+  it('X arms/disarms the bulldoze tool from anywhere', () => {
+    expect(t.ctrl.key({ key: 'x', code: 'KeyX', repeat: false })).toBe(true);
+    expect(t.ctrl.key({ key: 'X', code: 'KeyX', repeat: false })).toBe(true);
+    expect(t.of('toggleBulldoze')).toHaveLength(2);
   });
 
   it('Esc with a tool armed cancels it; digits set speed', () => {

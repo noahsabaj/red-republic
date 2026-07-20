@@ -36,7 +36,7 @@ export interface CampaignStep { day: number; act: (e: GameEngine) => void }
 
 /** Assert-ok placement helper for build-order steps. */
 function place(e: GameEngine, defId: string, x: number, y: number) {
-  const res = e.tryPlace(defId, x, y, false);
+  const res = e.tryPlace(defId, x, y);
   if (!res.ok) throw new Error(`campaign: place ${defId}@${x},${y} failed: ${res.reason}`);
 }
 

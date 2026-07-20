@@ -21,7 +21,7 @@ describe('auto-buy placement', () => {
     const { e } = autoBuyTown();
     const cost = e.autoBuyImportCost('house');
     const before = e.rubles;
-    expect(e.tryPlace('house', 12, 10, false, true).ok).toBe(true);
+    expect(e.tryPlace('house', 12, 10, { autoBuy: true }).ok).toBe(true);
     expect(before - e.rubles).toBe(cost);       // shown == charged
     const site = e.buildingAt(12, 10)!;
     expect(site.autoBought).toBe(true);
@@ -31,7 +31,7 @@ describe('auto-buy placement', () => {
   it('builds from bonded imports with no domestic stock', () => {
     const { e } = autoBuyTown();
     // no planks/bricks anywhere domestically — only the border can supply them
-    e.tryPlace('house', 12, 10, false, true);
+    e.tryPlace('house', 12, 10, { autoBuy: true });
     runDays(e, 30);
     expect(e.buildingAt(12, 10)?.constructed).toBe(true);
   });
@@ -40,7 +40,7 @@ describe('auto-buy placement', () => {
     const { e } = autoBuyTown();
     e.rubles = e.autoBuyImportCost('house') - 1;
     const before = e.rubles;
-    const res = e.tryPlace('house', 12, 10, false, true);
+    const res = e.tryPlace('house', 12, 10, { autoBuy: true });
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/rubles/i);
     expect(e.rubles).toBe(before);
@@ -52,7 +52,7 @@ describe('auto-buy placement', () => {
     layRoad(e, 4, 9, 12, 9);
     placeBuilt(e, 'constructionOffice', 7, 10);
     e.rubles = 100_000;
-    const res = e.tryPlace('house', 10, 10, false, true);
+    const res = e.tryPlace('house', 10, 10, { autoBuy: true });
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/customs/i);
   });
@@ -60,7 +60,7 @@ describe('auto-buy placement', () => {
   it('plain roads ignore auto-buy — gravel is sourced domestically, no ₽ charged', () => {
     const { e } = autoBuyTown();
     const before = e.rubles;
-    expect(e.tryPlace('road', 13, 11, false, true).ok).toBe(true); // fresh grass tile → normal road site
+    expect(e.tryPlace('road', 13, 11, { autoBuy: true }).ok).toBe(true); // fresh grass tile → normal road site
     expect(e.rubles).toBe(before);
   });
 });
@@ -69,8 +69,8 @@ describe('auto-buy earmarking (bonded virtual source)', () => {
   it('two sites never cross-feed, and customs stock is never touched', () => {
     const { e, customs } = autoBuyTown();
     customs.stock.planks = 0; customs.stock.bricks = 0;
-    e.tryPlace('house', 12, 10, false, true); // site A
-    e.tryPlace('house', 14, 10, false, true); // site B
+    e.tryPlace('house', 12, 10, { autoBuy: true }); // site A
+    e.tryPlace('house', 14, 10, { autoBuy: true }); // site B
     runDays(e, 40);
     expect(e.buildingAt(12, 10)?.constructed).toBe(true);
     expect(e.buildingAt(14, 10)?.constructed).toBe(true);
@@ -82,7 +82,7 @@ describe('auto-buy earmarking (bonded virtual source)', () => {
   it('a bill larger than the customs cap still delivers (cap-exempt)', () => {
     const { e, customs } = autoBuyTown();
     customs.stock.bricks = 80; // the bricks bin is FULL — a real import would be blocked
-    e.tryPlace('apartment', 12, 10, false, true); // needs 30 bricks
+    e.tryPlace('apartment', 12, 10, { autoBuy: true }); // needs 30 bricks
     runDays(e, 70);
     expect(e.buildingAt(12, 10)?.constructed).toBe(true);
     expect(customs.stock.bricks).toBe(80); // untouched — the bonded bricks bypassed it
@@ -92,7 +92,7 @@ describe('auto-buy earmarking (bonded virtual source)', () => {
     const { e, customs } = autoBuyTown();
     customs.stock.planks = 0; customs.stock.bricks = 0;
     e.setForeignLaborEnabled(false); // isolate the money check from labor charges
-    e.tryPlace('house', 12, 10, false, true);
+    e.tryPlace('house', 12, 10, { autoBuy: true });
     const site = e.buildingAt(12, 10)!;
     for (let i = 0; i < 25 && (site.stock.planks ?? 0) + (site.stock.bricks ?? 0) < 1; i++) runDays(e, 1);
     const delivered = (site.stock.planks ?? 0) + (site.stock.bricks ?? 0);

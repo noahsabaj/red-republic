@@ -17,7 +17,7 @@ interface Props {
 export function UpdateBanner({ version, install, onDismiss, notify }: Props) {
   const [busy, setBusy] = useState(false);
   return (
-    <div className="absolute bottom-4 right-4 z-30 w-72 rounded-lg border-2 border-yellow-600/60 bg-red-950/95 p-3 text-yellow-50 shadow-2xl">
+    <div className="absolute bottom-20 right-4 z-30 w-72 rounded-lg border-2 border-yellow-600/60 bg-red-950/95 p-3 text-yellow-50 shadow-2xl">
       <div className="flex items-center gap-2 text-xs font-black uppercase tracking-widest text-yellow-400">
         <GameIcon name="download" size={14} />Update {version} available
       </div>

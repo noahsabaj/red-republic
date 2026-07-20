@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import GameCanvas, { type SelectionItem, type Tool } from './components/GameCanvas';
+import GameCanvas, { type BuildPolicy, type SelectionItem, type Tool } from './components/GameCanvas';
 import { updateSelection } from './game/selection';
 import HUD, { type PanelMode } from './components/HUD';
-import BuildMenu from './components/BuildMenu';
+import BottomBar from './components/BottomBar';
 import SidePanel from './components/SidePanel';
 import { IntroOverlay, HelpOverlay, ToastStack } from './components/Overlays';
 import { MainMenu } from './components/menu/MainMenu';
@@ -21,7 +21,7 @@ import { SaveError } from './game/save-format';
 import type { SaveGameV1 } from './game/save-format';
 import { QUICKSAVE_SLOT, readSlot, writeSlot } from './game/save-slots';
 import { onStorageFlushError } from './platform/storage';
-import { onUpdateAvailable, quitApp, setCloseRequestHandler } from './platform/desktop';
+import { isTauri, onUpdateAvailable, quitApp, setCloseRequestHandler } from './platform/desktop';
 import type { PendingUpdate } from './platform/desktop';
 import { UpdateBanner } from './components/UpdateBanner';
 import { audio, installUiSounds } from './audio';
@@ -33,11 +33,19 @@ export default function App() {
   const [screen, dispatch] = useReducer(screenReducer, undefined, () => (session ? PLAYING : MENU_ROOT));
   const [tool, setTool] = useState<Tool>({ kind: 'select' });
   const [selection, setSelection] = useState<SelectionItem[]>([]);
-  const [instantBuild, setInstantBuild] = useState(false);
-  const [autoBuy, setAutoBuy] = useState(false);
-  // instant ($) and auto-buy (₽) are both pay-upfront modes — checking one clears the other
-  const armInstant = useCallback((v: boolean) => { setInstantBuild(v); if (v) setAutoBuy(false); }, []);
-  const armAutoBuy = useCallback((v: boolean) => { setAutoBuy(v); if (v) setInstantBuild(false); }, []);
+  // placement defaults stamped onto each new site (foreign-labor default is engine state)
+  const [policy, setPolicyState] = useState<BuildPolicy>({ autoBuy: false, currency: 'east', instant: false, plan: false });
+  // instant ($) completes now, so it's exclusive with the deferred/paid modes;
+  // auto-buy is exclusive with instant; plan may combine with auto-buy.
+  const setPolicy = useCallback((patch: Partial<BuildPolicy>) => {
+    setPolicyState(p => {
+      const next = { ...p, ...patch };
+      if (patch.instant) { next.autoBuy = false; next.plan = false; }
+      if (patch.autoBuy) next.instant = false;
+      if (patch.plan) next.instant = false;
+      return next;
+    });
+  }, []);
   const [panel, setPanel] = useState<PanelMode | null>(null);
   const [briefingVisible, setBriefingVisible] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -268,6 +276,7 @@ export default function App() {
 
   const hotkeysEnabled =
     screen.phase === 'playing' && screen.overlay === null && !showHelp && !briefingVisible;
+  const canQuit = isTauri(); // desktop: main-menu Exit Game + pause Exit-to-Desktop; web has neither
 
   const saveLoadShared = {
     unsavedDays,
@@ -287,8 +296,7 @@ export default function App() {
           setTool={setToolSfx}
           selection={selection}
           onSelect={handleSelect}
-          instantBuild={instantBuild}
-          autoBuy={autoBuy}
+          policy={policy}
           hotkeysEnabled={hotkeysEnabled}
           onError={(msg) => push(msg, 'bad')}
           onOpenMenu={openPause}
@@ -307,22 +315,19 @@ export default function App() {
             onOpenHelp={() => setShowHelp(true)}
             onOpenMenu={openPause}
           />
-          <BuildMenu
+          <BottomBar
             engine={session.engine}
             tool={tool}
             setTool={setToolSfx}
-            instantBuild={instantBuild}
-            setInstantBuild={armInstant}
-            autoBuy={autoBuy}
-            setAutoBuy={armAutoBuy}
+            policy={policy}
+            setPolicy={setPolicy}
           />
           {panel && (
             <SidePanel
               engine={session.engine}
               mode={panel}
               selection={selection}
-              instantBuild={instantBuild}
-              autoBuy={autoBuy}
+              policy={policy}
               onClose={() => setPanel(null)}
               onOpenTrade={() => setPanel('trade')}
               onArmBuild={(defId) => setToolSfx({ kind: 'build', defId })}
@@ -348,6 +353,7 @@ export default function App() {
               onLoad={() => dispatch({ type: 'MENU_GOTO', sub: 'load' })}
               onOptions={() => dispatch({ type: 'MENU_GOTO', sub: 'options' })}
               onManual={() => setShowHelp(true)}
+              onExit={canQuit ? () => void quitApp() : undefined}
             />
           )}
           {screen.sub === 'new-game' && (
@@ -380,11 +386,17 @@ export default function App() {
             onManual={() => setShowHelp(true)}
             onRestartRequest={() => dispatch({ type: 'PAUSE_GOTO', sub: 'confirm-restart' })}
             onRestartConfirm={restart}
+            canQuit={canQuit}
+            onExitChooser={() => dispatch({ type: 'PAUSE_GOTO', sub: 'exit' })}
             onExitRequest={() => {
               if (unsavedDays > 0) dispatch({ type: 'PAUSE_GOTO', sub: 'confirm-exit' });
               else exitToMenu();
             }}
             onExitConfirm={exitToMenu}
+            onQuitRequest={() => {
+              if (unsavedDays > 0) dispatch({ type: 'PAUSE_GOTO', sub: 'confirm-quit' });
+              else void quitApp();
+            }}
             onQuitConfirm={() => void quitApp()}
             onBack={back}
           />

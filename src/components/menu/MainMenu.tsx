@@ -11,10 +11,11 @@ interface Props {
   onLoad: () => void;
   onOptions: () => void;
   onManual: () => void;
+  onExit?: () => void; // desktop only — quit the application (absent on web)
 }
 
 /** The landing screen. Lives over the MenuBackdrop attract canvas. */
-export function MainMenu({ onContinue, onNewGame, onLoad, onOptions, onManual }: Props) {
+export function MainMenu({ onContinue, onNewGame, onLoad, onOptions, onManual, onExit }: Props) {
   const trapRef = useFocusTrap<HTMLDivElement>();
   // remounts on every return to the menu root, so this stays fresh
   const latest = useMemo(() => listSlots()[0] ?? null, []);
@@ -52,6 +53,7 @@ export function MainMenu({ onContinue, onNewGame, onLoad, onOptions, onManual }:
         {item('Load Game', 'load', onLoad)}
         {item('Options', 'settings', onOptions)}
         {item('Manual', 'help', onManual)}
+        {onExit && item('Exit Game', 'exit', onExit)}
       </div>
 
       <div className="absolute bottom-4 text-[0.625rem] uppercase tracking-widest text-yellow-200/40">

@@ -50,6 +50,7 @@ export interface InputCallbacks {
   setHover(sx: number, sy: number): void;
   clearHover(): void;
   cancelTool(): void;
+  toggleBulldoze(): void; // X hotkey — arm/disarm the demolish tool from anywhere
   openMenu(): void; // Escape with no tool armed — the pause menu
   togglePause(): void;
   setSpeed(s: 1 | 2 | 4): void;
@@ -268,6 +269,7 @@ export class InputController {
       if (!e.repeat) this.cb.togglePause(); // auto-repeat must not rapid-toggle
       return true;
     }
+    if (e.key === 'x' || e.key === 'X') { this.cb.toggleBulldoze(); return true; }
     if (e.key === '1') { this.cb.setSpeed(1); return true; }
     if (e.key === '2') { this.cb.setSpeed(2); return true; }
     if (e.key === '3') { this.cb.setSpeed(4); return true; }

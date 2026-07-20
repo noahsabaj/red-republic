@@ -16,25 +16,34 @@ function materialsText(defId: string): string {
   return entries.map(([r, amt]) => `${amt} ${RESOURCES[r].name}`).join(', ');
 }
 
-export function buildCostText(engine: GameEngine, defId: string, mode: BuildPayMode): string {
+export function buildCostText(engine: GameEngine, defId: string, mode: BuildPayMode, currency: 'east' | 'west' = 'east'): string {
   if (mode === 'instant') return `$${engine.instantCost(defId).toLocaleString()}`;
-  if (mode === 'autoBuy') return `₽${engine.autoBuyImportCost(defId).toLocaleString()}`;
+  if (mode === 'autoBuy') {
+    const cost = engine.autoBuyImportCost(defId, undefined, undefined, currency).toLocaleString();
+    return currency === 'east' ? `₽${cost}` : `$${cost}`;
+  }
   return materialsText(defId);
 }
 
-export function buildCostTotalText(engine: GameEngine, defId: string, count: number, mode: BuildPayMode): string {
+export function buildCostTotalText(engine: GameEngine, defId: string, count: number, mode: BuildPayMode, currency: 'east' | 'west' = 'east'): string {
   if (mode === 'instant') return `$${(engine.instantCost(defId) * count).toLocaleString()}`;
-  if (mode === 'autoBuy') return `₽${(engine.autoBuyImportCost(defId) * count).toLocaleString()}`;
+  if (mode === 'autoBuy') {
+    const cost = (engine.autoBuyImportCost(defId, undefined, undefined, currency) * count).toLocaleString();
+    return currency === 'east' ? `₽${cost}` : `$${cost}`;
+  }
   const entries = Object.entries(BUILDINGS[defId].materials) as [ResourceId, number][];
   if (!entries.length) return 'labor only';
   return entries.map(([r, amt]) => `${amt * count} ${RESOURCES[r].name}`).join(', ');
 }
 
-/** Placement is money-gated only in instant ($) and auto-buy (₽) modes —
+/** Placement is money-gated only in instant ($) and auto-buy (₽/$) modes —
  *  plain material sites always "afford", they just wait for deliveries. */
-export function canAffordBuild(engine: GameEngine, defId: string, mode: BuildPayMode): boolean {
+export function canAffordBuild(engine: GameEngine, defId: string, mode: BuildPayMode, currency: 'east' | 'west' = 'east'): boolean {
   if (mode === 'instant') return engine.dollars >= engine.instantCost(defId);
-  if (mode === 'autoBuy') return engine.rubles >= engine.autoBuyImportCost(defId);
+  if (mode === 'autoBuy') {
+    const cost = engine.autoBuyImportCost(defId, undefined, undefined, currency);
+    return (currency === 'east' ? engine.rubles : engine.dollars) >= cost;
+  }
   return true;
 }
 

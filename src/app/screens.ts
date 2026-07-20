@@ -5,7 +5,7 @@
 // ============================================================
 
 export type MenuScreen = 'root' | 'new-game' | 'load' | 'options';
-export type PauseScreen = 'root' | 'save' | 'load' | 'options' | 'confirm-exit' | 'confirm-restart' | 'confirm-quit';
+export type PauseScreen = 'root' | 'save' | 'load' | 'options' | 'exit' | 'confirm-exit' | 'confirm-restart' | 'confirm-quit';
 
 export type AppScreen =
   | { phase: 'menu'; sub: MenuScreen }

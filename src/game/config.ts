@@ -351,6 +351,48 @@ export const BUILD_LIST: string[] = [
   'warehouse', 'depot', 'port', 'customs',
 ];
 
+/** One drill-down group inside a category: a labelled cluster of buildings. */
+export interface SubCategory { id: string; name: string; ids: string[] }
+
+/** The bottom bar's 3-tier taxonomy: category → sub-category → buildings. Every
+ *  BUILD_LIST id appears in exactly one sub-category (a guard test enforces it,
+ *  so a newly-added building can never silently fall out of the menu). */
+export const SUBCATEGORIES: Record<Category, SubCategory[]> = {
+  infra: [
+    { id: 'roads', name: 'Roads', ids: ['road'] },
+    { id: 'construction', name: 'Construction', ids: ['constructionOffice'] },
+  ],
+  housing: [
+    { id: 'homes', name: 'Homes', ids: ['house', 'apartment'] },
+  ],
+  industry: [
+    { id: 'timber', name: 'Timber', ids: ['woodcutter', 'sawmill'] },
+    { id: 'mining', name: 'Mining', ids: ['gravelQuarry', 'coalMine', 'ironMine'] },
+    { id: 'energy', name: 'Energy & Fuel', ids: ['powerPlant', 'heatingPlant', 'oilPump', 'refinery'] },
+    { id: 'materials', name: 'Materials', ids: ['brickworks', 'steelMill', 'machineWorks'] },
+    { id: 'consumer', name: 'Food & Textile', ids: ['farm', 'foodFactory', 'textileMill'] },
+  ],
+  services: [
+    { id: 'shops', name: 'Shops', ids: ['store'] },
+    { id: 'health', name: 'Health', ids: ['clinic'] },
+    { id: 'culture', name: 'Culture', ids: ['pub'] },
+  ],
+  trade: [
+    { id: 'storage', name: 'Storage', ids: ['warehouse', 'depot'] },
+    { id: 'border', name: 'Border', ids: ['port', 'customs'] },
+  ],
+};
+
+/** Ordered top-level categories for the bottom build bar: label, icon, and a
+ *  Soviet-muted accent tint that groups each cluster visually over the red base. */
+export const CATEGORIES: { id: Category; name: string; icon: string; accent: string }[] = [
+  { id: 'infra',    name: CATEGORY_NAMES.infra,    icon: 'cat-infra',    accent: '#8ca0b3' },
+  { id: 'housing',  name: CATEGORY_NAMES.housing,  icon: 'cat-housing',  accent: '#e0a83e' },
+  { id: 'industry', name: CATEGORY_NAMES.industry, icon: 'cat-industry', accent: '#d97a34' },
+  { id: 'services', name: CATEGORY_NAMES.services, icon: 'cat-services', accent: '#6fb86a' },
+  { id: 'trade',    name: CATEGORY_NAMES.trade,    icon: 'cat-trade',    accent: '#5fa6c9' },
+];
+
 // Instant build = importing a Western prefab: priced from the materials bill
 // at Western import prices plus a labor surcharge, with a convenience premium.
 export const INSTANT_BUILD = {

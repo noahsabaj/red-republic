@@ -20,7 +20,7 @@ describe('road construction lifecycle', () => {
   it('paint → site → gravel delivery → crew → drivable tile, counted at completion', () => {
     const { e } = roadTown();
     const before = e.stats.roadsBuilt;
-    const res = e.tryPlace('road', 15, 9, false); // extends the row eastward
+    const res = e.tryPlace('road', 15, 9); // extends the row eastward
     expect(res.ok).toBe(true);
     const site = e.buildingAt(15, 9)!;
     expect(site.defId).toBe('road');
@@ -40,7 +40,7 @@ describe('road construction lifecycle', () => {
     const { e, depot } = roadTown();
     depot.stock.food = 60;
     const store = placeBuilt(e, 'store', 16, 9); // reachable ONLY through tile (15,9)
-    e.tryPlace('road', 15, 9, false);
+    e.tryPlace('road', 15, 9);
     runDays(e, 2); // site placed, likely still incomplete this early
     if (!e.tiles[9][15].road) {
       expect(store.stock.food ?? 0).toBe(0); // nothing crossed the gap
@@ -52,7 +52,7 @@ describe('road construction lifecycle', () => {
 
   it('a painted spur crawls outward: frontier tiles complete network-first', () => {
     const { e } = roadTown();
-    for (const x of [15, 16, 17]) expect(e.tryPlace('road', x, 9, false).ok).toBe(true);
+    for (const x of [15, 16, 17]) expect(e.tryPlace('road', x, 9).ok).toBe(true);
     const doneDay: Record<number, number> = {};
     for (let d = 1; d <= 45; d++) {
       runDays(e, 1);
@@ -69,8 +69,8 @@ describe('road construction lifecycle', () => {
 
   it('painting over an in-flight site is rejected', () => {
     const { e } = roadTown();
-    expect(e.tryPlace('road', 15, 9, false).ok).toBe(true);
-    const again = e.tryPlace('road', 15, 9, false);
+    expect(e.tryPlace('road', 15, 9).ok).toBe(true);
+    const again = e.tryPlace('road', 15, 9);
     expect(again.ok).toBe(false);
     expect(again.reason).toMatch(/Occupied/i);
   });
@@ -78,7 +78,7 @@ describe('road construction lifecycle', () => {
   it('bulldozing a site mid-delivery conserves gravel (the truck turns back)', () => {
     const { e } = roadTown();
     const total = totalOf(e, 'gravel');
-    e.tryPlace('road', 15, 9, false);
+    e.tryPlace('road', 15, 9);
     // step until a truck is actually en route with gravel
     for (let i = 0; i < 10 && !e.trucks.some(t => t.cargo === 'gravel'); i++) runDays(e, 1);
     expect(e.trucks.some(t => t.cargo === 'gravel')).toBe(true);
@@ -91,7 +91,7 @@ describe('road construction lifecycle', () => {
   it('bulldozing a site returns its ALREADY-DELIVERED stock to storage (no vanish)', () => {
     const { e, depot } = roadTown();
     depot.stock.bricks = 0;
-    e.tryPlace('sawmill', 8, 10, false);
+    e.tryPlace('sawmill', 8, 10);
     const site = e.buildingAt(8, 10)!;
     site.stock.bricks = 5; // materials already trucked into the site
     const total = totalOf(e, 'bricks');
@@ -106,7 +106,7 @@ describe('road construction lifecycle', () => {
   it('a bill larger than one truck refunds in multiple loads', () => {
     const { e, depot } = roadTown();
     depot.stock.planks = 0;
-    e.tryPlace('apartment', 7, 11, false);
+    e.tryPlace('apartment', 7, 11);
     const site = e.buildingAt(7, 11)!;
     site.stock.planks = 10; // > truckCapacity (6) → needs two return trucks
     const total = totalOf(e, 'planks');
@@ -120,7 +120,7 @@ describe('road construction lifecycle', () => {
     const { e } = roadTown();
     e.dollars = 100;
     const cost = e.instantCost('road');
-    expect(e.tryPlace('road', 15, 9, true).ok).toBe(true);
+    expect(e.tryPlace('road', 15, 9, { instant: true }).ok).toBe(true);
     expect(e.dollars).toBe(100 - cost);
     expect(e.tiles[9][15].road).toBe(true);
     expect(e.buildingAt(15, 9)).toBeUndefined();
@@ -129,17 +129,17 @@ describe('road construction lifecycle', () => {
   it('nothing domestic ever charges rubles', () => {
     const { e } = roadTown();
     e.rubles = 0;
-    expect(e.tryPlace('road', 15, 9, false).ok).toBe(true);
-    expect(e.tryPlace('house', 5, 12, false).ok).toBe(true);
-    expect(e.tryPlace('sawmill', 8, 12, false).ok).toBe(true);
-    expect(e.tryPlace('machineWorks', 11, 12, false).ok).toBe(true);
+    expect(e.tryPlace('road', 15, 9).ok).toBe(true);
+    expect(e.tryPlace('house', 5, 12).ok).toBe(true);
+    expect(e.tryPlace('sawmill', 8, 12).ok).toBe(true);
+    expect(e.tryPlace('machineWorks', 11, 12).ok).toBe(true);
     expect(e.rubles).toBe(0);
   });
 
   it('a frontier road chain stays quiet; an off-road-only building advises a road', () => {
     const { e } = roadTown();
     // a chain extending the network stays quiet
-    for (const x of [15, 16, 17]) e.tryPlace('road', x, 9, false);
+    for (const x of [15, 16, 17]) e.tryPlace('road', x, 9);
     runDays(e, 1);
     expect(e.alerts.some(a => a.id === 'sites')).toBe(false);
     // a finished building off the road network is reachable off-road (slow):
@@ -154,7 +154,7 @@ describe('road construction lifecycle', () => {
 describe('fractional deliveries', () => {
   it('a dribble-fed site still receives its sub-1 remainder and completes', () => {
     const { e } = roadTown();
-    e.tryPlace('road', 15, 9, false);
+    e.tryPlace('road', 15, 9);
     const site = e.buildingAt(15, 9)!;
     site.stock.gravel = 1.4; // a supply-starved truck delivered a fraction
     runDays(e, 15);
@@ -165,7 +165,7 @@ describe('fractional deliveries', () => {
 describe('road sites and the world', () => {
   it('buildings cannot be placed on a road site, nor sites on roads', () => {
     const { e } = roadTown();
-    e.tryPlace('road', 15, 9, false);
+    e.tryPlace('road', 15, 9);
     expect(e.canPlace('house', 15, 9).ok).toBe(false);
     expect(e.canPlace('road', 10, 9).ok).toBe(false); // finished road blocks a site
   });

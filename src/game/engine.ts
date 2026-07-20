@@ -34,8 +34,20 @@ export interface BuildingInst {
   coalFactor: number;
   farmFields: number;
   priorityHigh?: boolean;
-  autoBought?: boolean;     // paid ₽ upfront at placement; materials arrive as bonded imports
+  autoBought?: boolean;     // materials imported (bonded) not domestic — paid at placement, or at commence for a planned site
   bondedCustomsId?: number; // the customs house those bonded goods ship from
+  importCurrency?: 'east' | 'west'; // which bloc auto-buy pays (default east)
+  foreignLabor?: boolean;   // per-site: may hire paid foreign builders beyond citizens (default = menu default)
+  paused?: boolean;         // planning mode: placed but not commenced — draws no materials/builders
+}
+
+/** Placement policy stamped onto a new site — defaults come from the build-menu toggles. */
+export interface PlacePolicy {
+  instant?: boolean;          // $ Western prefab, completes immediately (no site)
+  autoBuy?: boolean;          // import the material bill rather than use domestic stock
+  currency?: 'east' | 'west'; // auto-buy pays ₽ (east) or $ (west)
+  foreignLabor?: boolean;     // may hire paid foreign builders (default = engine.foreignLaborEnabled)
+  plan?: boolean;             // place paused (planning mode) — commence later
 }
 
 export interface Truck {
@@ -552,10 +564,10 @@ export class GameEngine {
     return { ok: true };
   }
 
-  tryPlace(defId: string, x: number, y: number, instant: boolean, autoBuy = false): { ok: boolean; reason?: string } {
+  tryPlace(defId: string, x: number, y: number, policy: PlacePolicy = {}): { ok: boolean; reason?: string } {
     const chk = this.canPlace(defId, x, y);
     if (!chk.ok) return chk;
-    if (instant) {
+    if (policy.instant) {
       // instant build = importing a Western prefab: dollars, no site, no wait
       const cost = this.instantCost(defId, x, y);
       if (this.dollars < cost) return { ok: false, reason: `Not enough dollars ($${cost})` };
@@ -574,21 +586,33 @@ export class GameEngine {
     // A road painted on water becomes a bridge site (plank+steel bill).
     const effId = defId === 'road' && this.tiles[y][x].terrain === 'water' ? 'bridge' : defId;
     const def = BUILDINGS[effId];
+    const currency: 'east' | 'west' = policy.currency ?? 'east';
+    const wantsImport = !!policy.autoBuy && effId !== 'road'; // roads use domestic gravel; bridges DO import
 
-    // Auto-buy: pay the import bill upfront in ₽; the exact materials then
-    // arrive as bonded imports earmarked to THIS site (plain roads excepted —
-    // gravel comes domestically; bridges DO import their plank+steel bill).
     let autoBought = false;
+    let importCurrency: 'east' | 'west' | undefined;
     let bondedCustomsId: number | undefined;
-    if (autoBuy && effId !== 'road') {
+
+    if (policy.plan) {
+      // Planning mode: place the blueprint but order and charge NOTHING —
+      // materials and labor wait until commenceSite() pays and unpauses it.
+      // Carry the import intent so commence knows which currency to charge.
+      if (wantsImport) { autoBought = true; importCurrency = currency; }
+    } else if (wantsImport) {
+      // Auto-buy: pay the import bill upfront (₽ East / $ West); the exact
+      // materials then arrive as bonded imports earmarked to THIS site.
       const customs = this.nearestConstructedCustoms(x, y);
       if (!customs) return { ok: false, reason: 'Build a Customs House first' };
-      const cost = this.autoBuyImportCost(defId, x, y);
-      if (this.rubles < cost) return { ok: false, reason: `Not enough rubles (₽${cost.toLocaleString()})` };
-      this.rubles -= cost;
+      const cost = this.autoBuyImportCost(defId, x, y, currency);
+      const funds = currency === 'east' ? this.rubles : this.dollars;
+      if (funds < cost) return { ok: false, reason: currency === 'east'
+        ? `Not enough rubles (₽${cost.toLocaleString()})`
+        : `Not enough dollars ($${cost.toLocaleString()})` };
+      if (currency === 'east') this.rubles -= cost; else this.dollars -= cost;
       for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][])
         this.stats.imported[r] = (this.stats.imported[r] ?? 0) + amt;
       autoBought = true;
+      importCurrency = currency;
       bondedCustomsId = customs.id;
     }
 
@@ -597,7 +621,9 @@ export class GameEngine {
       constructed: false, progress: 0, stock: {}, incoming: {},
       staff: 0, eff: 0, powered: false, heated: false, connected: false, roadConnected: false,
       coalFactor: 1, farmFields: 0,
-      autoBought, bondedCustomsId,
+      autoBought, bondedCustomsId, importCurrency,
+      foreignLabor: policy.foreignLabor ?? this.foreignLaborEnabled,
+      paused: policy.plan ?? false,
     };
     this.buildings.set(b.id, b);
     for (let dy = 0; dy < b.h; dy++)
@@ -626,16 +652,17 @@ export class GameEngine {
       (mats * IMPORT_MARKUP + def.labor * INSTANT_BUILD.laborDollars) * INSTANT_BUILD.premium));
   }
 
-  /** ₽ to import a building's full material bill at current East prices — what
-   *  auto-buy charges upfront and the build menu displays. Bridge-aware via
-   *  coords (a road on water prices its plank+steel bridge bill). */
-  autoBuyImportCost(defId: string, x?: number, y?: number): number {
+  /** Money to import a building's full material bill at current import prices —
+   *  what auto-buy charges upfront and the build menu displays. `currency`
+   *  picks the bloc (₽ East / $ West). Bridge-aware via coords (a road on water
+   *  prices its plank+steel bridge bill). */
+  autoBuyImportCost(defId: string, x?: number, y?: number, currency: 'east' | 'west' = 'east'): number {
     const effId = defId === 'road' && x !== undefined
       && this.tiles[y!]?.[x]?.terrain === 'water' ? 'bridge' : defId;
     const def = BUILDINGS[effId];
     let total = 0;
     for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
-      total += amt * this.importPriceOf(r, 'east');
+      total += amt * this.importPriceOf(r, currency);
     }
     return Math.round(total);
   }
@@ -651,6 +678,154 @@ export class GameEngine {
       if (d < bestD) { bestD = d; best = b; }
     }
     return best;
+  }
+
+  /** Money to import a SITE's still-needed materials (bill minus delivered and
+   *  in-flight) at current import prices — what enabling auto-buy mid-build, or
+   *  commencing a planned auto-buy site, charges. */
+  autoBuyRemainingCost(id: number, currency: 'east' | 'west' = 'east'): number {
+    const b = this.buildings.get(id);
+    if (!b || b.constructed) return 0;
+    const def = this.def(b);
+    let total = 0;
+    for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
+      const missing = Math.max(0, amt - this.stockOf(b, r) - this.incomingOf(b, r));
+      total += missing * this.importPriceOf(r, currency);
+    }
+    return Math.round(total);
+  }
+
+  /** $ to instantly finish an existing site: the Western-prefab price of the
+   *  work that REMAINS (undelivered materials + unbuilt labor), same markup and
+   *  premium as a fresh instant build. */
+  instantFinishCost(id: number): number {
+    const b = this.buildings.get(id);
+    if (!b || b.constructed) return 0;
+    const def = this.def(b);
+    let mats = 0;
+    for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
+      mats += Math.max(0, amt - this.stockOf(b, r)) * RESOURCES[r].priceWest;
+    }
+    const laborLeft = Math.max(0, def.labor - b.progress);
+    return Math.max(1, Math.ceil(
+      (mats * IMPORT_MARKUP + laborLeft * INSTANT_BUILD.laborDollars) * INSTANT_BUILD.premium));
+  }
+
+  /** Begin construction on a planned (paused) site: charge any auto-buy bill NOW
+   *  (planning defers it to commence, not placement), then unpause so materials
+   *  and builders flow. Fails if the site isn't planned or the bill can't be paid. */
+  commenceSite(id: number): { ok: boolean; reason?: string } {
+    const b = this.buildings.get(id);
+    if (!b || b.constructed || !b.paused) return { ok: false, reason: 'Not a planned site' };
+    if (b.autoBought) {
+      const currency = b.importCurrency ?? 'east';
+      const customs = this.nearestConstructedCustoms(b.x, b.y);
+      if (!customs) return { ok: false, reason: 'Build a Customs House first' };
+      const cost = this.autoBuyRemainingCost(id, currency);
+      const funds = currency === 'east' ? this.rubles : this.dollars;
+      if (funds < cost) return { ok: false, reason: currency === 'east'
+        ? `Not enough rubles (₽${cost.toLocaleString()})`
+        : `Not enough dollars ($${cost.toLocaleString()})` };
+      if (currency === 'east') this.rubles -= cost; else this.dollars -= cost;
+      const def = this.def(b);
+      for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
+        const missing = Math.max(0, amt - this.stockOf(b, r) - this.incomingOf(b, r));
+        if (missing > 0) this.stats.imported[r] = (this.stats.imported[r] ?? 0) + missing;
+      }
+      b.bondedCustomsId = customs.id;
+    }
+    b.paused = false;
+    this.bump();
+    return { ok: true };
+  }
+
+  /** Commence every planned site the treasury can afford, in id order.
+   *  Returns the number started. */
+  commenceAllPlanned(): number {
+    let n = 0;
+    for (const b of [...this.buildings.values()]) {
+      if (b.paused && this.commenceSite(b.id).ok) n++;
+    }
+    return n;
+  }
+
+  /** Toggle whether a site may hire paid foreign builders beyond its citizens. */
+  setSiteForeignLabor(id: number, on: boolean): void {
+    const b = this.buildings.get(id);
+    if (!b || b.constructed) return;
+    b.foreignLabor = on;
+    this.bump();
+  }
+
+  /** Turn a site's material import (auto-buy) on — paying the REMAINING bill now
+   *  in the chosen bloc's currency — or off. Enabling requires a constructed
+   *  customs and the funds; a paused site only records the intent (charged at
+   *  commence); disabling stops future bonded top-ups (paid cargo is not refunded). */
+  setSiteImport(id: number, currency: 'east' | 'west' | null): { ok: boolean; reason?: string } {
+    const b = this.buildings.get(id);
+    if (!b || b.constructed) return { ok: false, reason: 'Not a construction site' };
+    if (currency === null) {
+      b.autoBought = false;
+      b.bondedCustomsId = undefined;
+      this.bump();
+      return { ok: true };
+    }
+    if (b.paused) {
+      // planning mode: record the intent; commenceSite() pays the bill.
+      b.autoBought = true;
+      b.importCurrency = currency;
+      this.bump();
+      return { ok: true };
+    }
+    const customs = this.nearestConstructedCustoms(b.x, b.y);
+    if (!customs) return { ok: false, reason: 'Build a Customs House first' };
+    const cost = this.autoBuyRemainingCost(id, currency);
+    const funds = currency === 'east' ? this.rubles : this.dollars;
+    if (funds < cost) return { ok: false, reason: currency === 'east'
+      ? `Not enough rubles (₽${cost.toLocaleString()})`
+      : `Not enough dollars ($${cost.toLocaleString()})` };
+    if (currency === 'east') this.rubles -= cost; else this.dollars -= cost;
+    const def = this.def(b);
+    for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
+      const missing = Math.max(0, amt - this.stockOf(b, r) - this.incomingOf(b, r));
+      if (missing > 0) this.stats.imported[r] = (this.stats.imported[r] ?? 0) + missing;
+    }
+    b.autoBought = true;
+    b.importCurrency = currency;
+    b.bondedCustomsId = customs.id;
+    this.bump();
+    return { ok: true };
+  }
+
+  /** Pay $ to finish a site immediately — a Western prefab completes the rest.
+   *  Consumes whatever materials are already on site; the prefab covers the
+   *  shortfall. A road/bridge site dissolves into its finished tile. */
+  finishSiteInstant(id: number): { ok: boolean; reason?: string } {
+    const b = this.buildings.get(id);
+    if (!b || b.constructed) return { ok: false, reason: 'Not a construction site' };
+    const cost = this.instantFinishCost(id);
+    if (this.dollars < cost) return { ok: false, reason: `Not enough dollars ($${cost.toLocaleString()})` };
+    this.dollars -= cost;
+    const def = this.def(b);
+    if (def.becomesRoad) {
+      this.tiles[b.y][b.x].road = true;
+      this.tiles[b.y][b.x].buildingId = undefined;
+      this.buildings.delete(b.id);
+      this.stats.roadsBuilt++;
+      this.bump();
+      return { ok: true };
+    }
+    for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
+      const have = this.stockOf(b, r);
+      if (have > 0) this.addStock(b, r, -Math.min(have, amt)); // prefab supplies the rest
+    }
+    b.paused = false;
+    b.constructed = true;
+    b.progress = def.labor;
+    this.seedWearBins(b);
+    this.pushEvent(`${def.name} completed!`, 'good', 'check');
+    this.bump();
+    return { ok: true };
   }
 
   /**
@@ -1448,6 +1623,7 @@ export class GameEngine {
 
     for (const b of this.buildings.values()) {
       const def = this.def(b);
+      if (b.paused) continue; // planning mode: a paused site orders no materials
       if (!b.constructed) {
         // construction site materials. Threshold is ~0, not 1: a supply-starved
         // truck can deliver a fraction (e.g. 1.4/2 gravel), and the remainder
@@ -1733,60 +1909,84 @@ export class GameEngine {
   // ---------------- construction ----------------
 
   private construction() {
-    // Domestic-first labor: citizens manning offices build free; builders beyond
-    // them are imported (foreign) and cost ₽/day, capped by what we can afford.
-    const domestic = this.domesticBuilderPool();
-    const total = this.builderPool();
-    const foreignAvail = Math.max(0, total - domestic);
+    // Two-phase, domestic-first labor. Phase 1 spends citizens' FREE labor across
+    // every ready site (id order); phase 2 tops each up with PAID foreign builders
+    // — but only sites whose per-site policy permits them, and only as far as the
+    // treasury can afford. Each site's crew (domestic + foreign) is applied in ONE
+    // progress step, so with every site permitting foreign labor this is identical
+    // to the old single-pool distribution; the divergence is domestic-only sites.
+    const domesticPool = this.domesticBuilderPool();
+    const foreignPool = Math.max(0, this.builderPool() - domesticPool);
     const perDay = BALANCE.foreignLaborPerDay * DIFFICULTIES[this.difficulty].importPriceMult;
-    const affordableForeign = perDay > 0 ? Math.floor(this.rubles / perDay) : foreignAvail;
-    const usableForeign = this.foreignLaborEnabled ? Math.min(foreignAvail, affordableForeign) : 0;
-    let pool = domestic + usableForeign;
-    const startPool = pool;
-    if (pool <= 0) return;
+    const affordableForeign = perDay > 0 ? Math.floor(this.rubles / perDay) : foreignPool;
+    let domestic = domesticPool;
+    let foreign = this.foreignLaborEnabled ? Math.min(foreignPool, affordableForeign) : 0;
+    if (domestic + foreign <= 0) return;
     const buildMult = WEATHER[this.weather.condition].buildMult;
+    // a 3-labor road tile must not burn a full 10-builder slot for the day
+    const needOf = (b: BuildingInst) => Math.ceil((this.def(b).labor - b.progress) / Math.max(1e-4, buildMult));
+
+    // Phase 1 — free domestic labor; record intended crew, apply no progress yet.
+    const domCrew = new Map<number, number>();
     for (const b of this.buildings.values()) {
-      if (pool <= 0) break;
-      if (b.constructed) continue;
-      const def = this.def(b);
-      // all materials delivered?
-      const ready = (Object.entries(def.materials) as [ResourceId, number][])
-        .every(([r, amt]) => this.stockOf(b, r) >= amt - 0.001);
-      if (!ready) continue;
-      // a 3-labor road tile must not burn a full 10-builder slot for the day
-      const needed = Math.ceil((def.labor - b.progress) / Math.max(1e-4, buildMult));
-      const crew = Math.min(BALANCE.buildersPerSite, pool, needed);
-      b.progress += crew * buildMult; // storms slow the site
-      pool -= crew;
-      if (b.progress >= def.labor) {
-        if (def.becomesRoad) {
-          // the site completes INTO a road tile — the instance dissolves.
-          // Silent by design: a 30-tile paint must not fire 30 toasts.
-          this.tiles[b.y][b.x].road = true;
-          this.tiles[b.y][b.x].buildingId = undefined;
-          this.buildings.delete(b.id);
-          this.stats.roadsBuilt++;
-          continue;
-        }
-        b.constructed = true;
-        b.progress = def.labor;
-        // consume materials
-        for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
-          this.addStock(b, r, -amt);
-        }
-        // part of the bill survives as installed spares — nothing is born worn
-        this.seedWearBins(b);
-        this.pushEvent(`${def.name} completed!`, 'good', 'check');
-      }
+      if (domestic <= 0) break;
+      if (b.constructed || b.paused || !this.siteReady(b)) continue;
+      const crew = Math.min(BALANCE.buildersPerSite, domestic, needOf(b));
+      if (crew <= 0) continue;
+      domestic -= crew;
+      domCrew.set(b.id, crew);
     }
-    // pay for the foreign builder-days actually used (domestic-first). Bounded
-    // by usableForeign ≤ affordableForeign, so rubles can never go negative.
-    const foreignUsed = Math.max(0, (startPool - pool) - domestic);
+
+    // Phase 2 — paid foreign top-up, then apply each site's total progress once.
+    let foreignUsed = 0;
+    for (const b of this.buildings.values()) {
+      if (b.constructed || b.paused || !this.siteReady(b)) continue;
+      const dom = domCrew.get(b.id) ?? 0;
+      let crew = dom;
+      if (foreign > 0 && b.foreignLabor) {
+        const f = Math.min(BALANCE.buildersPerSite - dom, foreign, Math.max(0, needOf(b) - dom));
+        if (f > 0) { foreign -= f; foreignUsed += f; crew += f; }
+      }
+      if (crew <= 0) continue;
+      b.progress += crew * buildMult; // storms slow the site
+      if (b.progress >= this.def(b).labor) this.completeSite(b);
+    }
+
+    // pay for the foreign builder-days actually used. foreignUsed ≤ affordableForeign
+    // (= floor(rubles/perDay)), so cost ≤ rubles — the treasury never goes negative.
     if (foreignUsed > 0) {
       const cost = foreignUsed * perDay;
       this.rubles -= cost;
       this.tradeLedger.today.foreignLabor -= cost;
     }
+  }
+
+  /** All of a site's construction materials delivered? */
+  private siteReady(b: BuildingInst): boolean {
+    const def = this.def(b);
+    return (Object.entries(def.materials) as [ResourceId, number][])
+      .every(([r, amt]) => this.stockOf(b, r) >= amt - 0.001);
+  }
+
+  /** Finish a site whose progress reached its labor bill: a road/bridge site
+   *  dissolves into its tile (silent — a 30-tile paint must not fire 30 toasts);
+   *  a building consumes its materials and installs wear spares. */
+  private completeSite(b: BuildingInst) {
+    const def = this.def(b);
+    if (def.becomesRoad) {
+      this.tiles[b.y][b.x].road = true;
+      this.tiles[b.y][b.x].buildingId = undefined;
+      this.buildings.delete(b.id);
+      this.stats.roadsBuilt++;
+      return;
+    }
+    b.constructed = true;
+    b.progress = def.labor;
+    for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
+      this.addStock(b, r, -amt);
+    }
+    this.seedWearBins(b);
+    this.pushEvent(`${def.name} completed!`, 'good', 'check');
   }
 
   // ---------------- citizens ----------------
@@ -2262,6 +2462,11 @@ export class GameEngine {
         saved,
         { stock: { ...saved.stock }, incoming: { ...saved.incoming } },
       );
+      // Per-site policy fields live only on sites (constructed buildings never
+      // need them, keeping the blob lean and the round-trip stable). Old saves
+      // predate per-site foreign labor — their in-progress sites kept building
+      // under the old global default (on), so migrate a missing flag → true.
+      if (!inst.constructed && inst.foreignLabor === undefined) inst.foreignLabor = true;
       e.buildings.set(inst.id, inst);
       for (let dy = 0; dy < inst.h; dy++) {
         for (let dx = 0; dx < inst.w; dx++) {

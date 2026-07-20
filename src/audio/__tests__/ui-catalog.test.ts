@@ -38,9 +38,12 @@ describe('classify — explicit tags (data-sfx wins)', () => {
     expect(classify(desc({ dataSfx: 'panel', ariaPressed: 'false' }))).toBe('open');
     expect(classify(desc({ dataSfx: 'panel', ariaPressed: 'true' }))).toBe('back');
   });
-  it('toggle splits on aria-checked (about-to-flip)', () => {
+  it('toggle splits on aria-checked (switch) or aria-pressed (pressed toggle button)', () => {
     expect(classify(desc({ dataSfx: 'toggle', ariaChecked: 'false' }))).toBe('toggleOn');
     expect(classify(desc({ dataSfx: 'toggle', ariaChecked: 'true' }))).toBe('toggleOff');
+    // a pressed ToggleButton carries aria-pressed, not aria-checked
+    expect(classify(desc({ dataSfx: 'toggle', ariaPressed: 'false' }))).toBe('toggleOn');
+    expect(classify(desc({ dataSfx: 'toggle', ariaPressed: 'true' }))).toBe('toggleOff');
   });
   it('a direct family passes through; an unknown tag degrades to neutral', () => {
     expect(classify(desc({ dataSfx: 'confirm' }))).toBe('confirm');

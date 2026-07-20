@@ -16,7 +16,7 @@ function laborTown() {
 
 /** A road-adjacent site with its full material bill already delivered. */
 function readyHouse(e: ReturnType<typeof laborTown>, x = 10, y = 10) {
-  e.tryPlace('house', x, y, false);
+  e.tryPlace('house', x, y);
   const site = e.buildingAt(x, y)!;
   site.stock.planks = 6; site.stock.bricks = 4; // house bill → ready to build
   return site;
@@ -63,16 +63,16 @@ describe('foreign labor', () => {
     expect(e.buildingAt(10, 10)!.constructed).toBe(false);
   });
 
-  it('the toggle stops hiring (and paying) — construction stalls at pop 0', () => {
+  it('the global master switch stops hiring (and paying) — construction stalls at pop 0', () => {
     const e = laborTown();
     e.rubles = 10_000;
-    e.setForeignLaborEnabled(false);
-    readyHouse(e);
+    readyHouse(e);                   // placed while foreign labor is on → the site permits it
+    e.setForeignLaborEnabled(false); // master switch off gates every site, whatever its own policy
     const before = e.rubles;
     runDays(e, 3);
-    expect(e.buildingAt(10, 10)!.progress).toBe(0); // no domestic builders, none hired
+    expect(e.buildingAt(10, 10)!.progress).toBe(0); // no domestic builders, master switch blocks foreign
     expect(e.rubles).toBe(before);                  // nothing charged
-    // turn it back on → work resumes and the ledger shows the spend
+    // master switch back on → work resumes and the ledger shows the spend
     e.setForeignLaborEnabled(true);
     runDays(e, 1);
     expect(e.buildingAt(10, 10)!.progress).toBeGreaterThan(0);

@@ -26,7 +26,7 @@ export function seedDemoTown(e: GameEngine) {
   for (let x = Math.min(sx, gx); x <= Math.max(sx, gx); x++) road(x, sy - 1);
   for (let y = Math.min(sy - 1, gy - 1); y <= Math.max(sy - 1, gy - 1); y++) road(gx, y);
 
-  const put = (defId: string, x: number, y: number) => e.tryPlace(defId, x, y, true);
+  const put = (defId: string, x: number, y: number) => e.tryPlace(defId, x, y, { instant: true });
 
   // housing & services
   put('house', gx - 11, gy);

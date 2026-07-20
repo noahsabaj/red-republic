@@ -157,7 +157,7 @@ describe('imports and the Machine Works', () => {
     depot.stock.bricks = 60;
     depot.stock.steel = 30;
     depot.stock.planks = 30;
-    expect(e.tryPlace('foodFactory', 14, 10, false).ok).toBe(true);
+    expect(e.tryPlace('foodFactory', 14, 10).ok).toBe(true);
     const site = e.buildingAt(14, 10)!;
     runDays(e, 30);
     expect(site.constructed).toBe(true);

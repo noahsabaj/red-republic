@@ -40,7 +40,7 @@ export function makeEngine(opts: { withBase?: boolean; weather?: (dayIndex: numb
 /** Instant-build a constructed building, throwing on invalid placement. */
 export function placeBuilt(e: GameEngine, defId: string, x: number, y: number) {
   e.dollars = 1e9;
-  const res = e.tryPlace(defId, x, y, true);
+  const res = e.tryPlace(defId, x, y, { instant: true });
   if (!res.ok) throw new Error(`placeBuilt ${defId}@${x},${y}: ${res.reason}`);
   return e.buildingAt(x, y)!;
 }

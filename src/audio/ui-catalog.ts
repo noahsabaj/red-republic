@@ -59,7 +59,11 @@ export function classify(d: ElementDesc): UiFamily | 'none' | null {
   if (t === 'none') return 'none';
   if (t === 'destructive') return d.dataArmed === 'true' ? 'commit' : 'arm';
   if (t === 'panel') return d.ariaPressed === 'true' ? 'back' : 'open';
-  if (t === 'toggle') return d.ariaChecked === 'true' ? 'toggleOff' : 'toggleOn';
+  if (t === 'toggle') {
+    // switches carry aria-checked; pressed toggle buttons carry aria-pressed
+    const on = d.ariaChecked ?? d.ariaPressed;
+    return on === 'true' ? 'toggleOff' : 'toggleOn';
+  }
   if (t) return FAMILY_SET.has(t) ? (t as UiFamily) : 'neutral';
 
   // ---- inference fallback for untagged controls ----

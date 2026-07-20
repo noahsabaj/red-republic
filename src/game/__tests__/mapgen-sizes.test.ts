@@ -83,8 +83,8 @@ describe('engine on a non-default map size', () => {
     expect(e.mapH).toBe(96);
 
     // bounds checks use the real dimensions
-    expect(e.tryPlace('road', 95, 95, true).ok || true).toBe(true); // either ok or a domain reason
-    expect(e.tryPlace('road', 96, 50, true).ok).toBe(false);
+    expect(e.tryPlace('road', 95, 95, { instant: true }).ok || true).toBe(true); // either ok or a domain reason
+    expect(e.tryPlace('road', 96, 50, { instant: true }).ok).toBe(false);
 
     // find a free grass spot in the far quadrant (x,y > 47 — beyond the old 48 range)
     let spot: { x: number; y: number } | null = null;
@@ -96,7 +96,7 @@ describe('engine on a non-default map size', () => {
     }
     expect(spot).not.toBeNull();
     e.dollars = 1e9;
-    const res = e.tryPlace('house', spot!.x, spot!.y, true);
+    const res = e.tryPlace('house', spot!.x, spot!.y, { instant: true });
     expect(res.ok).toBe(true);
 
     // the simulation runs without touching out-of-range indices

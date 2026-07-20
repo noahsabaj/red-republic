@@ -10,22 +10,24 @@ import { useEngineVersion } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
 import { buildCostText, buildCostTotalText } from '@/ui/build-cost';
 import type { BuildPayMode } from '@/ui/build-cost';
+import { ToggleButton } from '@/components/menu/controls';
+import type { BuildPolicy } from './GameCanvas';
 import { audio } from '@/audio';
 
 interface Props {
   engine: GameEngine;
   mode: PanelMode;
   selection: SelectionItem[];
-  instantBuild: boolean;
-  autoBuy: boolean;
+  policy: BuildPolicy;
   onClose: () => void;
   onOpenTrade: () => void;
   onArmBuild: (defId: string) => void;
   notify: (msg: string, kind: 'good' | 'bad' | 'info') => void;
 }
 
-export default function SidePanel({ engine, mode, selection, instantBuild, autoBuy, onClose, onOpenTrade, onArmBuild, notify }: Props) {
-  const payMode: BuildPayMode = instantBuild ? 'instant' : autoBuy ? 'autoBuy' : 'materials';
+export default function SidePanel({ engine, mode, selection, policy, onClose, onOpenTrade, onArmBuild, notify }: Props) {
+  const payMode: BuildPayMode = policy.instant ? 'instant' : policy.autoBuy ? 'autoBuy' : 'materials';
+  const currency = policy.currency;
   // the open detail panel mirrors live engine state — re-render on every bump
   useEngineVersion(engine);
   const single = selection.length === 1 ? selection[0] : null;
@@ -36,7 +38,7 @@ export default function SidePanel({ engine, mode, selection, instantBuild, autoB
     : single?.kind === 'deposit' ? 'Deposit' : 'Building';
   const titleIcon = mode === 'trade' ? 'trade' : mode === 'objectives' ? 'plan' : mode === 'stockpiles' ? 'stockpiles' : null;
   return (
-    <div className="absolute right-0 top-24 bottom-0 z-10 flex pointer-events-none">
+    <div className="absolute right-0 top-24 bottom-16 z-10 flex pointer-events-none">
       <div className="pointer-events-auto flex flex-col w-72 m-2 rounded-lg border-2 border-yellow-600/60 bg-red-950/95 text-yellow-50 shadow-2xl overflow-hidden">
         <div className="flex items-center justify-between px-3 py-2 bg-red-900/60 border-b border-yellow-600/30">
           <span className="flex items-center gap-1.5 text-xs font-black uppercase tracking-widest text-yellow-400">
@@ -47,10 +49,10 @@ export default function SidePanel({ engine, mode, selection, instantBuild, autoB
         <div className="flex-1 overflow-y-auto soviet-scroll p-3">
           {mode === 'building' && (
             selection.length > 1
-              ? <MultiInfo engine={engine} items={selection} payMode={payMode} onArmBuild={onArmBuild} />
+              ? <MultiInfo engine={engine} items={selection} payMode={payMode} currency={currency} onArmBuild={onArmBuild} />
               : single?.kind === 'deposit'
-                ? <DepositInfo engine={engine} x={single.x} y={single.y} payMode={payMode} onArmBuild={onArmBuild} />
-                : <BuildingInfo engine={engine} id={single?.kind === 'building' ? single.id : null} onOpenTrade={onOpenTrade} />
+                ? <DepositInfo engine={engine} x={single.x} y={single.y} payMode={payMode} currency={currency} onArmBuild={onArmBuild} />
+                : <BuildingInfo engine={engine} id={single?.kind === 'building' ? single.id : null} onOpenTrade={onOpenTrade} notify={notify} />
           )}
           {mode === 'trade' && <TradePanel engine={engine} notify={notify} />}
           {mode === 'objectives' && <ObjectivesPanel engine={engine} />}
@@ -137,7 +139,7 @@ function StockpilesPanel({ engine }: { engine: GameEngine }) {
 
 // ------------------------------------------------------------
 
-function MultiInfo({ engine, items, payMode, onArmBuild }: { engine: GameEngine; items: SelectionItem[]; payMode: BuildPayMode; onArmBuild: (defId: string) => void }) {
+function MultiInfo({ engine, items, payMode, currency, onArmBuild }: { engine: GameEngine; items: SelectionItem[]; payMode: BuildPayMode; currency: 'east' | 'west'; onArmBuild: (defId: string) => void }) {
   const buildings = items
     .filter((i): i is Extract<SelectionItem, { kind: 'building' }> => i.kind === 'building')
     .map(i => engine.buildings.get(i.id))
@@ -229,14 +231,14 @@ function MultiInfo({ engine, items, payMode, onArmBuild }: { engine: GameEngine;
                       {outputsPerMine.map(([r, a]) => (
                         <span key={r} className="inline-flex items-center gap-0.5"><GameIcon name={RESOURCES[r].icon} size={11} />{fmtRate(a * g.free)}/day</span>
                       ))}
-                      <span className="text-yellow-200/60"> · {miner.workers * g.free} workers · {buildCostTotalText(engine, miner.id, g.free, payMode)} total</span>
+                      <span className="text-yellow-200/60"> · {miner.workers * g.free} workers · {buildCostTotalText(engine, miner.id, g.free, payMode, currency)} total</span>
                     </div>
                     <button
                       onClick={() => onArmBuild(miner.id)}
                       data-sfx="none" // the setTool funnel voices toolArm
                       className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1 hover:bg-yellow-400"
                     >
-                      <GameIcon name="builders" size={12} /> Build {miner.name} ({buildCostText(engine, miner.id, payMode)} each)
+                      <GameIcon name="builders" size={12} /> Build {miner.name} ({buildCostText(engine, miner.id, payMode, currency)} each)
                     </button>
                   </>
                 )}
@@ -257,7 +259,7 @@ function MultiInfo({ engine, items, payMode, onArmBuild }: { engine: GameEngine;
 
 const DEPOSIT_NAMES: Record<string, string> = { coal: 'Coal', ironOre: 'Iron Ore', oil: 'Oil', gravel: 'Gravel' };
 
-function DepositInfo({ engine, x, y, payMode, onArmBuild }: { engine: GameEngine; x: number; y: number; payMode: BuildPayMode; onArmBuild: (defId: string) => void }) {
+function DepositInfo({ engine, x, y, payMode, currency, onArmBuild }: { engine: GameEngine; x: number; y: number; payMode: BuildPayMode; currency: 'east' | 'west'; onArmBuild: (defId: string) => void }) {
   const cluster = engine.depositClusterAt(x, y);
   if (!cluster) return <div className="text-xs text-yellow-200/60">Nothing of value here.</div>;
   const res = RESOURCES[cluster.kind];
@@ -300,7 +302,7 @@ function DepositInfo({ engine, x, y, payMode, onArmBuild }: { engine: GameEngine
           className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1.5 hover:bg-yellow-400"
           title={`Arm the build tool — place the ${miner.name} on one of this cluster's tiles`}
         >
-          <GameIcon name="builders" size={12} /> Build {miner.name} ({buildCostText(engine, miner.id, payMode)})
+          <GameIcon name="builders" size={12} /> Build {miner.name} ({buildCostText(engine, miner.id, payMode, currency)})
         </button>
       )}
     </div>
@@ -309,7 +311,7 @@ function DepositInfo({ engine, x, y, payMode, onArmBuild }: { engine: GameEngine
 
 // ------------------------------------------------------------
 
-function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: number | null; onOpenTrade: () => void }) {
+function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine; id: number | null; onOpenTrade: () => void; notify: (msg: string, kind: 'good' | 'bad' | 'info') => void }) {
   const b: BuildingInst | undefined = id ? engine.buildings.get(id) : undefined;
   if (!b) return <div className="text-xs text-yellow-200/60">Select a building on the map to inspect it.</div>;
   const def = BUILDINGS[b.defId];
@@ -327,11 +329,14 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
       {!b.constructed ? (
         <div className="space-y-1.5">
           <div className="text-xs font-bold text-yellow-400 flex items-center gap-1">
-            <GameIcon name="builders" size={12} /> Under construction — {Math.round((b.progress / def.labor) * 100)}%
+            <GameIcon name={b.paused ? 'contract' : 'builders'} size={12} />
+            {b.paused ? ' Planned — not started' : ` Under construction — ${Math.round((b.progress / def.labor) * 100)}%`}
           </div>
-          <div className="h-2 rounded bg-red-900 overflow-hidden">
-            <div className="h-full bg-yellow-500" style={{ width: `${(b.progress / def.labor) * 100}%` }} />
-          </div>
+          {!b.paused && (
+            <div className="h-2 rounded bg-red-900 overflow-hidden">
+              <div className="h-full bg-yellow-500" style={{ width: `${(b.progress / def.labor) * 100}%` }} />
+            </div>
+          )}
           <div className="text-[0.6875rem] text-yellow-200/70">
             Labor: {Math.floor(b.progress)} / {def.labor} worker-days
           </div>
@@ -347,6 +352,67 @@ function BuildingInfo({ engine, id, onOpenTrade }: { engine: GameEngine; id: num
               />
             );
           })}
+          <Row
+            label={<><GameIcon name="road" size={12} /> Road</>}
+            value={b.roadConnected ? 'Connected' : b.connected ? 'Off-road — slow' : 'Isolated!'}
+            ok={b.roadConnected}
+          />
+
+          {/* ---- this site's construction policy ---- */}
+          <div className="space-y-1.5 border-t border-yellow-600/20 pt-2">
+            {b.paused && (
+              <button
+                onClick={() => { const r = engine.commenceSite(b.id); if (!r.ok && r.reason) notify(r.reason, 'bad'); }}
+                data-sfx="confirm"
+                className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1.5 hover:bg-yellow-400"
+              >
+                <GameIcon name="builders" size={12} /> Begin construction
+              </button>
+            )}
+
+            <div>
+              <div className="mb-1 text-[0.625rem] font-black uppercase tracking-wider text-yellow-400/80">Import remaining materials</div>
+              <div className="flex gap-1.5">
+                {(['east', 'west'] as const).map(cur => {
+                  const active = !!b.autoBought && (b.importCurrency ?? 'east') === cur;
+                  const cost = engine.autoBuyRemainingCost(b.id, cur);
+                  return (
+                    <button
+                      key={cur}
+                      aria-pressed={active}
+                      data-sfx="toggle"
+                      disabled={!!b.autoBought && !active}
+                      onClick={() => { const r = engine.setSiteImport(b.id, active ? null : cur); if (!r.ok && r.reason) notify(r.reason, 'bad'); }}
+                      className={`flex-1 rounded px-2 py-1.5 text-xs font-bold tabular-nums disabled:opacity-30 ${active ? 'bg-yellow-500 text-red-950' : 'border border-yellow-600/30 bg-red-900/50 text-yellow-100/80 hover:bg-red-800'}`}
+                      title={active ? 'Stop importing — already-paid cargo still arrives' : `Pay to import the remaining bill from the ${cur === 'east' ? 'East (₽)' : 'West ($)'}`}
+                    >
+                      {cur === 'east' ? '₽' : '$'}{cost.toLocaleString()}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <button
+              aria-pressed={b.foreignLabor !== false}
+              data-sfx="toggle"
+              onClick={() => engine.setSiteForeignLabor(b.id, b.foreignLabor === false)}
+              className={`w-full rounded font-bold text-xs py-1.5 ${b.foreignLabor !== false ? 'bg-yellow-500 text-red-950' : 'border border-yellow-600/30 bg-red-900/50 text-yellow-100/80 hover:bg-red-800'}`}
+              title="Whether this site may hire paid foreign builders beyond your citizens"
+            >
+              <GameIcon name="users" size={12} /> Foreign builders: {b.foreignLabor !== false ? 'ON' : 'OFF'}
+            </button>
+
+            <button
+              onClick={() => { const r = engine.finishSiteInstant(b.id); if (!r.ok && r.reason) notify(r.reason, 'bad'); }}
+              data-sfx="confirm"
+              className="w-full rounded border border-green-600/40 bg-green-900/40 text-green-100 font-bold text-xs py-1.5 hover:bg-green-800/60"
+              title="Complete this site immediately with an imported Western prefab, paid in dollars"
+            >
+              <GameIcon name="download" size={12} /> Instant finish (${engine.instantFinishCost(b.id).toLocaleString()})
+            </button>
+          </div>
+
           <div className="text-[0.625rem] text-yellow-200/50">Materials arrive by truck. Builders come from a staffed Construction Office.</div>
         </div>
       ) : (
@@ -499,10 +565,13 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
   return (
     <div className="space-y-3">
       <section className="rounded bg-red-900/40 p-2 space-y-1.5">
-        <label className="flex items-center gap-2 cursor-pointer select-none">
-          <input type="checkbox" checked={at.enabled} onChange={ev => engine.setAutoTradeEnabled(ev.target.checked)} className="accent-yellow-500" />
-          <span className="text-xs font-black uppercase tracking-wider text-yellow-400">Auto-trade</span>
-        </label>
+        <ToggleButton
+          on={at.enabled}
+          onChange={v => engine.setAutoTradeEnabled(v)}
+          icon="trade"
+          label="Auto-trade"
+          className="uppercase tracking-wider"
+        />
         <div className="text-[0.625rem] text-yellow-200/60 leading-tight">
           Standing orders of the Foreign Trade Directorate. Each staffed Customs House clears up to {BALANCE.customsThroughputPerDay} units a day; set per-good rules below.
         </div>

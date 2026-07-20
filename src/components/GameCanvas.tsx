@@ -8,6 +8,10 @@ import { audio } from '@/audio';
 
 export type { SelectionItem, Tool };
 
+/** The build-menu placement defaults stamped onto each new site. The foreign-labor
+ *  default lives in engine.foreignLaborEnabled; this is a valid engine PlacePolicy. */
+export interface BuildPolicy { autoBuy: boolean; currency: 'east' | 'west'; instant: boolean; plan: boolean }
+
 interface Props {
   engine: GameEngine;
   tool: Tool;
@@ -15,22 +19,20 @@ interface Props {
   selection: SelectionItem[];
   /** item = null means empty ground was clicked */
   onSelect: (item: SelectionItem | null, additive: boolean) => void;
-  instantBuild: boolean;
-  autoBuy: boolean;
+  policy: BuildPolicy;
   hotkeysEnabled: boolean;
   onError: (msg: string) => void;
   /** Escape with no tool armed — App opens the pause menu. */
   onOpenMenu: () => void;
 }
 
-export default function GameCanvas({ engine, tool, setTool, selection, onSelect, instantBuild, autoBuy, hotkeysEnabled, onError, onOpenMenu }: Props) {
+export default function GameCanvas({ engine, tool, setTool, selection, onSelect, policy, hotkeysEnabled, onError, onOpenMenu }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const camRef = useRef<Camera>({ x: 0, y: 0, z: 0.8 });
   const uiRef = useRef<UIState>({ hoverTile: null, tool, selection, time: 0 });
   const engineRef = useRef(engine);
   const cbRef = useRef({ setTool, onSelect, onError, onOpenMenu });
-  const instantRef = useRef(instantBuild);
-  const autoBuyRef = useRef(autoBuy);
+  const policyRef = useRef(policy);
   const hotkeysRef = useRef(hotkeysEnabled);
 
   // mirror props into refs after render (writing refs during render is
@@ -40,8 +42,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
     uiRef.current.selection = selection;
     engineRef.current = engine;
     cbRef.current = { setTool, onSelect, onError, onOpenMenu };
-    instantRef.current = instantBuild;
-    autoBuyRef.current = autoBuy;
+    policyRef.current = policy;
     hotkeysRef.current = hotkeysEnabled;
   });
 
@@ -121,7 +122,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
         const tl = uiRef.current.tool;
         if (tl.kind !== 'build') return;
         const t = tileOf(sx, sy);
-        const res = engineRef.current.tryPlace(tl.defId, t.x, t.y, instantRef.current, autoBuyRef.current);
+        const res = engineRef.current.tryPlace(tl.defId, t.x, t.y, policyRef.current);
         audio.sfx(res.ok ? 'buildPlace' : 'error');
         if (!res.ok && res.reason) cbRef.current.onError(res.reason);
       },
@@ -134,7 +135,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
         const tl = uiRef.current.tool;
         const eng = engineRef.current;
         if (tl.kind === 'build' && tl.defId === 'road') {
-          if (eng.tryPlace('road', t.x, t.y, instantRef.current, autoBuyRef.current).ok) audio.sfx('roadPaint');
+          if (eng.tryPlace('road', t.x, t.y, policyRef.current).ok) audio.sfx('roadPaint');
         } else if (tl.kind === 'bulldoze') {
           if (eng.bulldozeAt(t.x, t.y)) {
             audio.sfx('bulldoze');
@@ -164,6 +165,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
       clearHover: () => { uiRef.current.hoverTile = null; },
       // setTool flows through App's setToolSfx funnel → toolCancel on disarm
       cancelTool: () => cbRef.current.setTool({ kind: 'select' }),
+      toggleBulldoze: () => cbRef.current.setTool(uiRef.current.tool.kind === 'bulldoze' ? { kind: 'select' } : { kind: 'bulldoze' }),
       openMenu: () => { audio.ui('open'); cbRef.current.onOpenMenu(); },
       togglePause: () => { audio.ui('speed'); engineRef.current.togglePause(); },
       setSpeed: (s) => { audio.ui('speed'); engineRef.current.setSpeed(s); },

@@ -13,7 +13,7 @@ describe('bridges', () => {
     carveChannel(e, 20, 20, 5, 15);
     expect(e.canPlace('road', 20, 10).ok).toBe(true);
     e.rubles = 1000;
-    e.tryPlace('road', 20, 10, false);
+    e.tryPlace('road', 20, 10);
     expect(e.rubles).toBe(1000); // domestic construction never touches the treasury
     const site = e.buildingAt(20, 10)!;
     expect(site.defId).toBe('bridge'); // plank+steel bill, not gravel
@@ -23,7 +23,7 @@ describe('bridges', () => {
     e.dollars = 1000;
     const cost = e.instantCost('road', 20, 11);
     expect(cost).toBeGreaterThan(e.instantCost('road')); // bridge > land road
-    e.tryPlace('road', 20, 11, true);
+    e.tryPlace('road', 20, 11, { instant: true });
     expect(e.dollars).toBe(1000 - cost);
     expect(e.tiles[11][20].road).toBe(true); // instant = built immediately
   });
@@ -66,7 +66,7 @@ describe('ports and barges', () => {
     const portE = placeBuilt(e, 'port', 23, 10);
     layRoad(e, 23, 9, 32, 9);
     e.rubles = 10000;
-    const placed = e.tryPlace('house', 30, 10, false); // needs 6 planks + 4 bricks
+    const placed = e.tryPlace('house', 30, 10); // needs 6 planks + 4 bricks
     expect(placed.ok).toBe(true);
     const site = e.buildingAt(30, 10)!;
     expect(site.constructed).toBe(false);
