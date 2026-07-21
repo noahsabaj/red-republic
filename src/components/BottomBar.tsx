@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { BUILDINGS, CATEGORIES, RESOURCES, SUBCATEGORIES } from '@/game/config';
 import type { Category, ResourceId } from '@/game/config';
 import type { GameEngine } from '@/game/engine';
+import { fmtMoney } from '@/game/format';
 import { useEngineSignature } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
 import { ToggleButton } from '@/components/menu/controls';
@@ -76,8 +77,8 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
   const plannedN = engine.plannedCount();
   const commenceCost = plannedN > 0 ? engine.plannedCommenceCost() : null;
   const commenceCostText = commenceCost
-    ? [commenceCost.rubles ? `₽${commenceCost.rubles.toLocaleString()}` : null,
-       commenceCost.dollars ? `$${commenceCost.dollars.toLocaleString()}` : null].filter(Boolean).join(' / ') || 'free'
+    ? [commenceCost.rubles ? `₽${fmtMoney(commenceCost.rubles)}` : null,
+       commenceCost.dollars ? `$${fmtMoney(commenceCost.dollars)}` : null].filter(Boolean).join(' / ') || 'free'
     : '';
 
   const openCat = (c: Category) => {

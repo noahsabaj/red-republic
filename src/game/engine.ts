@@ -17,6 +17,7 @@ import { TopologyIndex, shareAnyComponent, unionComponents, forEachPerimeterTile
 import type { RoutingTile, TopologyAccess, TopologyDomain, TopologyPos } from './topology';
 import { WeatherTimeline } from './weather';
 import type { DayWeather } from './weather';
+import { fmtQty, fmtOwed, fmtMoney } from './format';
 
 export interface BuildingInst {
   id: number;
@@ -1255,6 +1256,9 @@ export class GameEngine {
   private exportPayout(r: ResourceId, bloc: 'east' | 'west', amt: number): number {
     const c = this.contracts.find(k => k.state === 'active' && k.r === r && k.bloc === bloc);
     if (!c) return amt * this.priceOf(r, bloc);
+    // Callers pass whole units (buy/sell/auto-trade all floor at the border), so
+    // `delivered` stays integer. Do NOT floor `credited` here — the caller already
+    // removed `amt` from stock, so flooring would make the sub-unit remainder vanish.
     const credited = Math.min(amt, c.amount - c.delivered);
     c.delivered += credited;
     if (c.delivered >= c.amount - 1e-9) {
@@ -1268,21 +1272,26 @@ export class GameEngine {
   sell(r: ResourceId, amount: number, currency: 'east' | 'west'): { ok: boolean; msg: string } {
     const sources = this.sellableSources(r);
     if (!sources.length) return { ok: false, msg: 'No sellable goods connected to a Customs House' };
-    let remaining = amount;
+    // The border trades in whole units only (like buy()/auto-trade, which floor):
+    // cap the sale to whole available units so no fraction of stock crosses the
+    // border and contract `delivered` stays integer. Sub-unit surplus stays home.
+    const available = sources.reduce((s, x) => s + x.amt, 0);
+    const target = Math.min(amount, Math.floor(available));
+    if (target <= 0) return { ok: false, msg: 'Nothing to sell' };
+    let remaining = target;
     for (const s of sources) {
       const take = Math.min(remaining, s.amt);
       this.addStock(s.b, r, -take);
       remaining -= take;
-      if (remaining <= 0.001) break;
+      if (remaining <= 1e-9) break;
     }
-    const sold = amount - Math.max(0, remaining);
-    if (sold <= 0) return { ok: false, msg: 'Nothing to sell' };
+    const sold = target; // fully covered: target ≤ floor(available), so Σtake = target
     const payout = this.exportPayout(r, currency, sold);
     if (currency === 'east') this.rubles += payout;
     else this.dollars += payout;
     this.stats.exportedValue += currency === 'east' ? payout : payout * 10;
     this.bump();
-    return { ok: true, msg: `Sold ${sold.toFixed(0)} ${RESOURCES[r].name}` };
+    return { ok: true, msg: `Sold ${fmtQty(sold)} ${RESOURCES[r].name}` };
   }
 
   buy(r: ResourceId, amount: number, currency: 'east' | 'west'): { ok: boolean; msg: string } {
@@ -1300,7 +1309,7 @@ export class GameEngine {
     this.addStock(customs, r, delivered);
     this.stats.imported[r] = (this.stats.imported[r] ?? 0) + delivered;
     this.bump();
-    return { ok: true, msg: `Imported ${delivered.toFixed(0)} ${RESOURCES[r].name} to Customs` };
+    return { ok: true, msg: `Imported ${fmtQty(delivered)} ${RESOURCES[r].name} to Customs` };
   }
 
   // ---------------- main loop ----------------
@@ -1484,7 +1493,7 @@ export class GameEngine {
         this.relationsPenalty[c.bloc] = Math.min(CONTRACTS.relationsCap, this.relationsPenalty[c.bloc] + CONTRACTS.relationsHit);
         const cur = c.bloc === 'east' ? '₽' : '$';
         this.pushEvent(
-          `Contract failed: ${c.amount - c.delivered} ${RESOURCES[c.r].name} undelivered. Fined ${cur}${fine.toFixed(0)}; the ${c.bloc === 'east' ? 'East' : 'West'} sours on us.`,
+          `Contract failed: ${fmtOwed(c.amount - c.delivered)} ${RESOURCES[c.r].name} undelivered. Fined ${cur}${fmtMoney(fine)}; the ${c.bloc === 'east' ? 'East' : 'West'} sours on us.`,
           'bad', 'contract');
         continue;
       }
@@ -2851,7 +2860,7 @@ export class GameEngine {
     if (risky) {
       a.push({
         id: 'contract', icon: 'contract',
-        text: `Contract deadline in ${Math.max(0, this.contractDaysLeft(risky))} days — ${Math.ceil(risky.amount - risky.delivered)} ${RESOURCES[risky.r].name} still owed`,
+        text: `Contract deadline in ${Math.max(0, this.contractDaysLeft(risky))} days — ${fmtOwed(risky.amount - risky.delivered)} ${RESOURCES[risky.r].name} still owed`,
         level: 'warn',
       });
     }

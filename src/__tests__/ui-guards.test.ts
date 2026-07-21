@@ -7,6 +7,9 @@
 //    an invalid step (e.g. bg-red-950/97) silently generates NO css
 // 4. full-viewport stacking layers must be modals or pointer-transparent —
 //    a transparent inset-0 z-layer silently eats clicks for overlays below
+// 5. resource quantities in engine event strings must go through the format
+//    vocabulary — a raw `${amount - delivered}` beside a resource name was the
+//    float-tail bug (`42.1423… coal undelivered`) this whole effort started from
 // ============================================================
 import { describe, expect, it } from 'vitest';
 import { BUILDINGS, RESOURCES } from '@/game/config';
@@ -81,6 +84,26 @@ describe('tailwind color-opacity steps', () => {
       if (!path.endsWith('.tsx')) continue;
       for (const m of src.matchAll(/(?:bg|text|border|from|to|via|ring|fill|stroke|divide|outline|decoration|accent|shadow)-[a-z]+-\d{2,3}\/(\d{1,3})/g)) {
         if (!allowed.has(m[1])) offenders.push(`${path}: ${m[0]}`);
+      }
+    }
+    expect(offenders, offenders.join('\n')).toEqual([]);
+  });
+});
+
+describe('resource quantities in engine events use the format vocabulary', () => {
+  it('never interpolates a raw arithmetic quantity beside a resource name', () => {
+    // The bug this whole effort started from: a contract-failure toast printed
+    // `${c.amount - c.delivered}` raw, leaking a float tail. Any number shown
+    // next to a resource name must route through the format.ts vocabulary
+    // (fmtQty / fmtOwed / …). A bare field like `${c.amount}` (integer by
+    // construction) is fine; raw arithmetic in the slot is not.
+    const src = allSources['../game/engine.ts'];
+    const offenders: string[] = [];
+    for (const m of src.matchAll(/\$\{([^{}]+)\}\s+\$\{RESOURCES\[/g)) {
+      const expr = m[1].trim();
+      if (/[-+*/]/.test(expr) && !expr.startsWith('fmt')) {
+        const line = src.slice(0, m.index).split('\n').length;
+        offenders.push(`engine.ts:${line}  \${${expr}}  — wrap in a format.ts helper (fmtQty/fmtOwed/…)`);
       }
     }
     expect(offenders, offenders.join('\n')).toEqual([]);

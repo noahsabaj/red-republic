@@ -1,5 +1,6 @@
 import type { GameEngine } from '@/game/engine';
 import { BALANCE, WEATHER } from '@/game/config';
+import { fmtMoney } from '@/game/format';
 import { useEngineSignature } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
 
@@ -38,9 +39,9 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
   ]);
   const offersPending = engine.contracts.filter(c => c.state === 'offer').length;
   const tradeNote = (v: number, sym: string) =>
-    Math.round(v) !== 0 ? ` · auto-trade yesterday ${v > 0 ? '+' : '−'}${sym}${Math.abs(Math.round(v)).toLocaleString()}` : '';
+    Math.round(v) !== 0 ? ` · auto-trade yesterday ${v > 0 ? '+' : '−'}${sym}${fmtMoney(Math.abs(v))}` : '';
   const laborNote = (v: number) =>
-    Math.round(v) !== 0 ? ` · foreign labor −₽${Math.abs(Math.round(v)).toLocaleString()}/day` : '';
+    Math.round(v) !== 0 ? ` · foreign labor −₽${fmtMoney(Math.abs(v))}/day` : '';
 
   const season = engine.season();
   const speedBtn = (s: 0 | 1 | 2 | 4, label: React.ReactNode, name: string) => (
@@ -115,8 +116,8 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
         <div className="h-5 w-px bg-yellow-600/40" />
 
         <div className="flex items-center gap-3 text-xs font-bold">
-          <span title={`Rubles — foreign currency earned from trade with the East; buys imports and machinery${tradeNote(engine.tradeLedger.yesterday.rubles, '₽')}${laborNote(engine.tradeLedger.yesterday.foreignLabor)}`}>₽ {Math.floor(engine.rubles).toLocaleString()}</span>
-          <span title={`Dollars — hard currency from the West${tradeNote(engine.tradeLedger.yesterday.dollars, '$')}`} className="text-green-300">$ {Math.floor(engine.dollars).toLocaleString()}</span>
+          <span title={`Rubles — foreign currency earned from trade with the East; buys imports and machinery${tradeNote(engine.tradeLedger.yesterday.rubles, '₽')}${laborNote(engine.tradeLedger.yesterday.foreignLabor)}`}>₽ {fmtMoney(engine.rubles)}</span>
+          <span title={`Dollars — hard currency from the West${tradeNote(engine.tradeLedger.yesterday.dollars, '$')}`} className="text-green-300">$ {fmtMoney(engine.dollars)}</span>
           <span title={`Citizens: ${engine.pop} / housing ${engine.capacity} · workers ${engine.workers} · employed ${engine.employed}`} className="flex items-center gap-1">
             <GameIcon name="users" size={12} /> {engine.pop}<span className="text-yellow-200/50">/{engine.capacity}</span>
           </span>

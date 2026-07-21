@@ -4,6 +4,7 @@ import type { GameEngine, BuildingInst } from '@/game/engine';
 import { BALANCE, BUILDINGS, RESOURCES, ALL_RESOURCES, OBJECTIVES, FARM_SEASON } from '@/game/config';
 import type { DepositType, ResourceId } from '@/game/config';
 import type { Contract } from '@/game/engine';
+import { fmtQty, fmtLevel, fmtRate, fmtPct } from '@/game/format';
 import type { SelectionItem } from '@/game/selection';
 import type { PanelMode } from './HUD';
 import { useEngineVersion } from '@/hooks/use-engine';
@@ -79,8 +80,6 @@ function Row({ label, value, ok }: { label: ReactNode; value: ReactNode; ok?: bo
   );
 }
 
-const fmtRate = (n: number) => (n < 10 ? n.toFixed(1) : String(Math.round(n)));
-
 /** "iron 2.0 + coal 1.0 → steel 1.5" as icon-annotated JSX */
 function FlowLine({ ins, outs }: { ins: [ResourceId, number][]; outs: [ResourceId, number][] }) {
   if (ins.length === 0 && outs.length === 0) return <span className="text-yellow-200/50">idle</span>;
@@ -104,7 +103,7 @@ function StorageBar({ r, v, cap, inc }: { r: ResourceId; v: number; cap: number;
     <div className="text-[0.6875rem]">
       <div className="flex justify-between">
         <span className="flex items-center gap-1"><GameIcon name={RESOURCES[r].icon} size={12} /> {RESOURCES[r].name}</span>
-        <span className="font-bold">{v.toFixed(1)}/{cap}{inc > 0.05 ? <span className="text-yellow-200/60"> (+{inc.toFixed(0)} <GameIcon name="truck" size={11} />)</span> : null}</span>
+        <span className="font-bold">{fmtLevel(v)}/{cap}{inc > 0.05 ? <span className="text-yellow-200/60"> (+{fmtQty(inc)} <GameIcon name="truck" size={11} />)</span> : null}</span>
       </div>
       <div className="h-1.5 rounded bg-red-900 overflow-hidden">
         <div className="h-full bg-yellow-500/80" style={{ width: `${cap > 0 ? Math.min(100, (v / cap) * 100) : 0}%` }} />
@@ -131,20 +130,20 @@ function StockpilesPanel({ engine }: { engine: GameEngine }) {
       </div>
       {ALL_RESOURCES.map(r => {
         const def = RESOURCES[r];
-        const stock = Math.floor(engine.totals[r]);
-        const sellable = Math.floor(engine.sellableStock(r));
+        const stock = fmtQty(engine.totals[r]);
+        const sellable = fmtQty(engine.sellableStock(r));
         const net = (flow[r] ?? 0) - engine.citizenDemandOf(r);
         const idle = Math.abs(net) < 0.05;
         return (
           <div
             key={r}
             className="grid grid-cols-[1fr_auto_auto] gap-x-3 items-center rounded px-1 py-0.5 text-xs hover:bg-red-900/40"
-            title={`${def.name}: production net ${(flow[r] ?? 0) >= 0 ? '+' : ''}${(flow[r] ?? 0).toFixed(1)}/day · citizen demand −${engine.citizenDemandOf(r).toFixed(1)}/day`}
+            title={`${def.name}: production net ${(flow[r] ?? 0) >= 0 ? '+' : ''}${fmtRate(flow[r] ?? 0)}/day · citizen demand −${fmtRate(engine.citizenDemandOf(r))}/day`}
           >
             <span className="flex items-center gap-1.5"><GameIcon name={def.icon} size={13} /> {def.name}</span>
             <span className="text-right font-bold">{stock}<span className="text-yellow-200/40 font-normal"> ({sellable})</span></span>
             <span className={`text-right font-bold ${idle ? 'text-yellow-200/40' : net > 0 ? 'text-green-300' : 'text-red-300'}`}>
-              {idle ? '—' : `${net > 0 ? '+' : ''}${net.toFixed(1)}`}
+              {idle ? '—' : `${net > 0 ? '+' : ''}${fmtRate(net)}`}
             </span>
           </div>
         );
@@ -372,7 +371,7 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
         <div className="space-y-1.5">
           <div className="text-xs font-bold text-yellow-400 flex items-center gap-1">
             <GameIcon name={b.paused ? 'contract' : 'builders'} size={12} />
-            {b.paused ? ' Planned — not started' : ` Under construction — ${Math.round((b.progress / def.labor) * 100)}%`}
+            {b.paused ? ' Planned — not started' : ` Under construction — ${fmtPct(b.progress / def.labor)}%`}
           </div>
           {!b.paused && (
             <div className="h-2 rounded bg-red-900 overflow-hidden">
@@ -380,7 +379,7 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
             </div>
           )}
           <div className="text-[0.6875rem] text-yellow-200/70">
-            Labor: {Math.floor(b.progress)} / {def.labor} worker-days
+            Labor: {fmtQty(b.progress)} / {def.labor} worker-days
           </div>
           {Object.entries(def.materials).map(([r, amt]) => {
             const stock = b.stock[r as ResourceId] ?? 0;
@@ -389,7 +388,7 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
               <Row
                 key={r}
                 label={<><GameIcon name={RESOURCES[r as ResourceId].icon} size={12} /> {RESOURCES[r as ResourceId].name}</>}
-                value={<>{Math.floor(stock)}{inc > 0.05 ? <span className="text-yellow-200/60"> (+{Math.floor(inc)} <GameIcon name="truck" size={11} />)</span> : null} / {amt}</>}
+                value={<>{fmtQty(stock)}{inc > 0.05 ? <span className="text-yellow-200/60"> (+{fmtQty(inc)} <GameIcon name="truck" size={11} />)</span> : null} / {amt}</>}
                 ok={stock >= amt}
               />
             );
@@ -494,11 +493,11 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
             {def.housingCapacity && <Row label={<><GameIcon name="beds" size={12} /> Capacity</>} value={`${def.housingCapacity} citizens`} />}
             {def.serviceRadius && <Row label={<><GameIcon name="coverage" size={12} /> Coverage</>} value={`${def.serviceRadius} tiles`} />}
             {def.isFarm && <Row label={<><GameIcon name="fields" size={12} /> Fields</>} value={`${b.farmFields} plots · season ×${(FARM_SEASON[engine.month] ?? 0).toFixed(2)}`} />}
-            {def.workers > 0 && <Row label={<><GameIcon name="eff" size={12} /> Efficiency</>} value={`${Math.round(b.eff * 100)}%`} ok={b.eff > 0.6} />}
+            {def.workers > 0 && <Row label={<><GameIcon name="eff" size={12} /> Efficiency</>} value={`${fmtPct(b.eff)}%`} ok={b.eff > 0.6} />}
             {def.isCustoms && <Row label={<><GameIcon name="trade" size={12} /> Clears</>} value={`${Math.floor(BALANCE.customsThroughputPerDay * b.eff)}/day`} ok={b.eff > 0} />}
             {def.wear && <Row label={<><GameIcon name="machinery" size={12} /> Machines</>} value={buildingWorn(b) ? 'Worn — deliver machinery!' : 'Maintained'} ok={!buildingWorn(b)} />}
             {def.isMotorDepot && <Row label={<><GameIcon name="truck" size={12} /> Fleet</>} value={`${engine.trucksFrom(b)} trucks`} ok={b.connected && b.staff > 0} />}
-            {def.isGasStation && <Row label={<><GameIcon name="fuel" size={12} /> Fuels fleet</>} value={(b.stock.fuel ?? 0) < 1 ? 'empty — refill!' : `${(b.stock.fuel ?? 0).toFixed(0)} on hand`} ok={(b.stock.fuel ?? 0) >= 1} />}
+            {def.isGasStation && <Row label={<><GameIcon name="fuel" size={12} /> Fuels fleet</>} value={(b.stock.fuel ?? 0) < 1 ? 'empty — refill!' : `${fmtQty(b.stock.fuel ?? 0)} on hand`} ok={(b.stock.fuel ?? 0) >= 1} />}
           </div>
 
           {(def.inputs || def.outputs) && (() => {
@@ -614,7 +613,7 @@ function ContractCard({ engine, c }: { engine: GameEngine; c: Contract }) {
             <div className="h-full bg-yellow-500/80" style={{ width: `${Math.min(100, (c.delivered / c.amount) * 100)}%` }} />
           </div>
           <div className="flex justify-between text-[0.625rem] text-yellow-200/60">
-            <span>{Math.floor(c.delivered)}/{c.amount} delivered</span>
+            <span>{fmtQty(c.delivered)}/{c.amount} delivered</span>
             <span className={daysLeft <= 15 ? 'text-red-300 font-bold' : ''}>{Math.max(0, daysLeft)} days left</span>
           </div>
         </>
@@ -660,7 +659,7 @@ function LogisticsPanel({ engine }: { engine: GameEngine }) {
       <section className="rounded bg-red-900/40 p-2 space-y-1">
         <div className="flex items-center justify-between">
           <span className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400">Fuel</span>
-          <span className="font-bold flex items-center gap-1"><GameIcon name="fuel" size={12} /> {f.gasFuel.toFixed(0)}</span>
+          <span className="font-bold flex items-center gap-1"><GameIcon name="fuel" size={12} /> {fmtQty(f.gasFuel)}</span>
         </div>
         <div className="text-[0.625rem] text-yellow-200/70 leading-relaxed">
           {stations.length === 0
@@ -677,7 +676,7 @@ function LogisticsPanel({ engine }: { engine: GameEngine }) {
         <section className="space-y-1">
           <div className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400">Fleet buildings</div>
           {depots.map(b => line(b.id, 'Motor Depot', 'truck', `${engine.trucksFrom(b)} trucks`, `${b.staff}/${BUILDINGS[b.defId].workers} drivers`, !b.connected))}
-          {stations.map(b => line(b.id, 'Gas Station', 'fuel', `${(b.stock.fuel ?? 0).toFixed(0)}/${BUILDINGS[b.defId].storage.fuel}`, !b.connected ? 'isolated' : (b.stock.fuel ?? 0) < 1 ? 'empty' : 'fuelling', !b.connected || (b.stock.fuel ?? 0) < 1))}
+          {stations.map(b => line(b.id, 'Gas Station', 'fuel', `${fmtQty(b.stock.fuel ?? 0)}/${BUILDINGS[b.defId].storage.fuel}`, !b.connected ? 'isolated' : (b.stock.fuel ?? 0) < 1 ? 'empty' : 'fuelling', !b.connected || (b.stock.fuel ?? 0) < 1))}
           {offices.map(b => line(b.id, 'Construction Office', 'constructionOffice', `${engine.trucksFrom(b)} trucks`, `${b.staff}/${BUILDINGS[b.defId].workers} staff`, !b.connected))}
         </section>
       )}
@@ -788,7 +787,7 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
           </div>
           {(['east', 'west'] as const).map(bloc => engine.relationsPenalty[bloc] > 0.001 && (
             <div key={bloc} className="text-[0.625rem] text-red-300">
-              Relations soured with the {bloc === 'east' ? 'East' : 'West'} — prices {Math.round(engine.relationsPenalty[bloc] * 100)}% worse until it blows over.
+              Relations soured with the {bloc === 'east' ? 'East' : 'West'} — prices {fmtPct(engine.relationsPenalty[bloc])}% worse until it blows over.
             </div>
           ))}
           {[...offers, ...active].map(c => <ContractCard key={c.id} engine={engine} c={c} />)}
@@ -831,7 +830,7 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-bold flex items-center gap-1"><GameIcon name={def.icon} size={12} /> {def.name}</span>
                   <span className="text-yellow-200/70" title="sellable = customs-connected stock minus what shops and industry keep for themselves">
-                    sellable {Math.floor(sellable)} / {Math.floor(total)}
+                    sellable {fmtQty(sellable)} / {fmtQty(total)}
                   </span>
                 </div>
                 <div className="flex items-center gap-1 mt-1">

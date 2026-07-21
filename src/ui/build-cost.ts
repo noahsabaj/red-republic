@@ -7,6 +7,7 @@
 import { BUILDINGS, RESOURCES } from '@/game/config';
 import type { ResourceId } from '@/game/config';
 import type { GameEngine } from '@/game/engine';
+import { fmtMoney } from '@/game/format';
 
 export type BuildPayMode = 'materials' | 'instant' | 'autoBuy';
 
@@ -17,18 +18,18 @@ function materialsText(defId: string): string {
 }
 
 export function buildCostText(engine: GameEngine, defId: string, mode: BuildPayMode, currency: 'east' | 'west' = 'east'): string {
-  if (mode === 'instant') return `$${engine.instantCost(defId).toLocaleString()}`;
+  if (mode === 'instant') return `$${fmtMoney(engine.instantCost(defId))}`;
   if (mode === 'autoBuy') {
-    const cost = engine.autoBuyImportCost(defId, undefined, undefined, currency).toLocaleString();
+    const cost = fmtMoney(engine.autoBuyImportCost(defId, undefined, undefined, currency));
     return currency === 'east' ? `₽${cost}` : `$${cost}`;
   }
   return materialsText(defId);
 }
 
 export function buildCostTotalText(engine: GameEngine, defId: string, count: number, mode: BuildPayMode, currency: 'east' | 'west' = 'east'): string {
-  if (mode === 'instant') return `$${(engine.instantCost(defId) * count).toLocaleString()}`;
+  if (mode === 'instant') return `$${fmtMoney(engine.instantCost(defId) * count)}`;
   if (mode === 'autoBuy') {
-    const cost = (engine.autoBuyImportCost(defId, undefined, undefined, currency) * count).toLocaleString();
+    const cost = fmtMoney(engine.autoBuyImportCost(defId, undefined, undefined, currency) * count);
     return currency === 'east' ? `₽${cost}` : `$${cost}`;
   }
   const entries = Object.entries(BUILDINGS[defId].materials) as [ResourceId, number][];
