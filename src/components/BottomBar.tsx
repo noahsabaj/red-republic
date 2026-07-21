@@ -4,7 +4,7 @@ import type { Category, ResourceId } from '@/game/config';
 import type { GameEngine } from '@/game/engine';
 import { useEngineSignature } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
-import { ToggleButton, TwoStepButton } from '@/components/menu/controls';
+import { ToggleButton } from '@/components/menu/controls';
 import { buildCostText, canAffordBuild, materialsShort } from '@/ui/build-cost';
 import type { BuildPayMode } from '@/ui/build-cost';
 import type { BuildPolicy, Tool } from './GameCanvas';
@@ -177,20 +177,20 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
           <ToggleButton on={policy.plan} onChange={v => setPolicy({ plan: v })} className={BAR_CTL}
             icon="contract" label="Plan" title="Place sites without commencing — begin construction later" />
           {plannedN > 0 && (
-            <TwoStepButton
-              title="Commence every planned site the treasury can afford, highest priority first"
-              label={<><GameIcon name="builders" size={14} /> Commence All ({plannedN})</>}
-              confirmLabel={<>Commence {plannedN} — {commenceCostText}?</>}
+            <button
+              title={`Commence every planned site the treasury can afford, highest priority first${commenceCostText ? ` — ${commenceCostText}` : ''}`}
+              data-sfx="confirm"
               className={`${BAR_CTL} flex items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[0.6875rem] font-bold bg-yellow-500 text-red-950 hover:bg-yellow-400`}
-              armedClassName={`${BAR_CTL} flex items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[0.6875rem] font-bold bg-green-500 text-red-950 hover:bg-green-400`}
-              onConfirm={() => {
+              onClick={() => {
                 const started = engine.commenceAllPlanned();
                 push(started < plannedN
                   ? `Commenced ${started} of ${plannedN} — the rest are unaffordable`
                   : `Commenced ${started} planned site${started === 1 ? '' : 's'}`,
                   started < plannedN ? 'bad' : 'good', 'builders');
               }}
-            />
+            >
+              <GameIcon name="builders" size={14} /> Commence All ({plannedN})
+            </button>
           )}
         </div>
 
