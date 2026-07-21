@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BALANCE, WEATHER } from '../config';
 import { GameEngine } from '../engine';
+import type { TilePatch } from '../engine';
 import { WeatherTimeline } from '../weather';
 import type { DayWeather, WeatherCondition } from '../weather';
 import { flatMap, layRoad, makeEngine, placeBuilt, runDays } from './helpers';
@@ -104,7 +105,9 @@ describe('weather gameplay effects', () => {
       seed: 1, map: flatMap(), skipStartingBase: true,
       weatherScript: () => ({ tempC: 15, condition: 'clear', snowDepth: 0, riverFrozen: frozen }),
     });
-    for (let y = 0; y < 48; y++) for (let x = 20; x <= 22; x++) e.tiles[y][x].terrain = 'water';
+    const water: TilePatch[] = [];
+    for (let y = 0; y < 48; y++) for (let x = 20; x <= 22; x++) water.push({ x, y, terrain: 'water' });
+    e.applyTilePatches(water);
     const depot = placeBuilt(e, 'depot', 5, 10);
     placeBuilt(e, 'constructionOffice', 10, 10);
     placeBuilt(e, 'port', 18, 10);

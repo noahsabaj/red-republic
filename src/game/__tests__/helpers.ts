@@ -1,4 +1,5 @@
 import { GameEngine } from '../engine';
+import type { TilePatch } from '../engine';
 import { BALANCE } from '../config';
 import type { ResourceId } from '../config';
 import type { MapData, Tile } from '../mapgen';
@@ -47,9 +48,11 @@ export function placeBuilt(e: GameEngine, defId: string, x: number, y: number) {
 
 /** Paint a road rectangle directly (no cost, no stats). */
 export function layRoad(e: GameEngine, x0: number, y0: number, x1: number, y1: number) {
+  const patches: TilePatch[] = [];
   for (let y = Math.min(y0, y1); y <= Math.max(y0, y1); y++)
     for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++)
-      e.tiles[y][x].road = true;
+      patches.push({ x, y, road: true });
+  e.applyTilePatches(patches);
 }
 
 export function runDays(e: GameEngine, n: number) {

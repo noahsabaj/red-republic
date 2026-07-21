@@ -1,13 +1,14 @@
 {
   "name": "red-republic",
   "private": true,
-  "version": "1.7.0",
+  "version": "1.7.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test": "vitest run",
+    "bench:logistics": "vitest bench --run src/game/__benchmarks__/logistics.bench.ts",
     "check": "tsc -b && eslint . && vitest run",
     "preview": "vite preview",
     "tauri": "tauri",

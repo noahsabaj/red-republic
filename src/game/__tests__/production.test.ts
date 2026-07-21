@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { GameEngine } from '../engine';
+import type { TilePatch } from '../engine';
 import { seedDemoTown } from '../demo';
 import { layRoad, makeEngine, placeBuilt, runDays } from './helpers';
 
@@ -8,14 +9,16 @@ describe('farm placement', () => {
     const e = makeEngine();
     // Wall off the farm's 7x7 scan window; leave the 2x2 footprint grass
     // plus exactly 2 open tiles — the OLD code counted 4+2=6 and passed.
-    for (let y = 7; y <= 13; y++) for (let x = 7; x <= 13; x++) e.tiles[y][x].terrain = 'rock';
-    for (let y = 10; y <= 11; y++) for (let x = 10; x <= 11; x++) e.tiles[y][x].terrain = 'grass';
-    e.tiles[7][7].terrain = 'grass';
-    e.tiles[7][8].terrain = 'grass';
+    const terrain: TilePatch[] = [];
+    for (let y = 7; y <= 13; y++) for (let x = 7; x <= 13; x++) terrain.push({ x, y, terrain: 'rock' });
+    for (let y = 10; y <= 11; y++) for (let x = 10; x <= 11; x++) terrain.push({ x, y, terrain: 'grass' });
+    terrain.push({ x: 7, y: 7, terrain: 'grass' }, { x: 8, y: 7, terrain: 'grass' });
+    e.applyTilePatches(terrain);
     expect(e.canPlace('farm', 10, 10).ok).toBe(false);
 
     // 6 open tiles OUTSIDE the footprint → legal
-    for (const [x, y] of [[9, 7], [10, 7], [11, 7], [12, 7]] as const) e.tiles[y][x].terrain = 'grass';
+    e.applyTilePatches(([[9, 7], [10, 7], [11, 7], [12, 7]] as const)
+      .map(([x, y]) => ({ x, y, terrain: 'grass' as const })));
     expect(e.canPlace('farm', 10, 10).ok).toBe(true);
   });
 });
@@ -77,7 +80,8 @@ describe('productionRates', () => {
     const e = makeEngine();
     layRoad(e, 4, 9, 33, 9);
     placeBuilt(e, 'depot', 5, 10);
-    for (const [x, y] of [[9, 11], [9, 12], [11, 11], [11, 12]] as const) e.tiles[y][x].terrain = 'forest';
+    e.applyTilePatches(([[9, 11], [9, 12], [11, 11], [11, 12]] as const)
+      .map(([x, y]) => ({ x, y, terrain: 'forest' as const })));
     const wc = placeBuilt(e, 'woodcutter', 10, 10); // road-adjacent, forest in reach
     placeBuilt(e, 'apartment', 30, 10);
     e.pop = 40; // exactly the beds placed

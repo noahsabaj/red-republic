@@ -26,7 +26,7 @@ describe('logistics', () => {
     layRoad(e, 4, 9, 25, 9);
     const depot = placeBuilt(e, 'depot', 20, 10);
     placeBuilt(e, 'constructionOffice', 15, 10);
-    e.tiles[10][10].deposit = 'coal';
+    e.applyTilePatches([{ x: 10, y: 10, deposit: 'coal' }]);
     const mine = placeBuilt(e, 'coalMine', 10, 10);
     mine.stock.coal = 55;  // > 80% of its 60 cap
     depot.stock.coal = 30; // stocked storage that the OLD code would have drained instead
@@ -67,9 +67,9 @@ describe('logistics', () => {
   it('does not treat a corner-diagonal road as adjacent', () => {
     const e = makeEngine();
     const house = placeBuilt(e, 'house', 10, 10);
-    e.tiles[9][9].road = true; // touches only the NW corner
+    e.applyTilePatches([{ x: 9, y: 9, road: true }]); // touches only the NW corner
     expect(e.adjacentRoads(house)).toEqual([]);
-    e.tiles[9][10].road = true; // orthogonal edge contact
+    e.applyTilePatches([{ x: 10, y: 9, road: true }]); // orthogonal edge contact
     expect(e.adjacentRoads(house)).toEqual([{ x: 10, y: 9 }]);
   });
 

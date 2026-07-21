@@ -11,8 +11,10 @@ import { generateMap, mulberry32 } from './mapgen';
 import type { BorderEdge, MapData, SeededRng, Tile } from './mapgen';
 import { SAVE_FORMAT_VERSION, packTiles, unpackTiles, validateSave } from './save-format';
 import type { SaveGameV1 } from './save-format';
-import { floodRoads, floodCost, FloodResult } from './pathfind';
-import type { DistanceField } from './pathfind';
+import { floodCost, shortestPathToAny, FloodResult } from './pathfind';
+import type { NearestPath, RankedGoal } from './pathfind';
+import { TopologyIndex, shareAnyComponent, unionComponents, forEachPerimeterTile } from './topology';
+import type { RoutingTile, TopologyAccess, TopologyDomain, TopologyPos } from './topology';
 import { WeatherTimeline } from './weather';
 import type { DayWeather } from './weather';
 
@@ -124,12 +126,125 @@ export interface Contract {
 
 interface LogisticsDemand { b: BuildingInst; r: ResourceId; amt: number; prio: number; from?: number; noCustomsSrc?: boolean; bonded?: boolean; repairImport?: 'east' | 'west' }
 
+interface IndexedFacility {
+  b: BuildingInst;
+  buildingRank: number;
+  isCustoms: boolean;
+  road: TopologyAccess;
+  land: TopologyAccess;
+}
+
+interface ComponentAvailability {
+  all: Map<number, number>;
+  nonCustoms: Map<number, number>;
+}
+
+interface SupplierCandidate {
+  facility: IndexedFacility;
+  active: boolean;
+}
+
+interface ResourceSupplyState {
+  candidates: SupplierCandidate[];
+  road: ComponentAvailability;
+  land: ComponentAvailability;
+}
+
+interface LogisticsRoutingContext {
+  facilities: Map<number, IndexedFacility>;
+  orderedFacilities: IndexedFacility[];
+  /** Lazily built per resource on first demand (see ensureSupply). */
+  supply: Map<ResourceId, ResourceSupplyState>;
+  /** Resources whose supply has been built — memoizes even the no-supplier case. */
+  builtResources: Set<ResourceId>;
+  /** Topology revisions captured at build; the context's cached component IDs are
+   *  only comparable within this generation, so a mid-pass rebuild must throw. */
+  roadRevision: number;
+  landRevision: number;
+}
+
+interface SupplyPick {
+  supplier: BuildingInst;
+  candidate: SupplierCandidate | null;
+  path: { x: number; y: number }[];
+  cost: number;
+}
+
+/** Controlled setup/debug mutation. Footprint ownership is deliberately absent:
+ * buildingId is owned exclusively by GameEngine's placement lifecycle. */
+export interface TilePatch {
+  x: number;
+  y: number;
+  terrain?: Tile['terrain'];
+  deposit?: DepositType | null;
+  road?: boolean;
+  foreign?: boolean;
+  variant?: number;
+}
+
+type InternalTilePatch = TilePatch & { buildingId?: number | null };
+
+export interface RoutingDiagnostics {
+  dayIndex: number;
+  demandsConsidered: number;
+  successfulDispatches: number;
+  componentRejections: number;
+  roadSearches: number;
+  landSearches: number;
+  waterSearches: number;
+  supplierCandidatesChecked: number;
+  settledTiles: number;
+  pathsMaterialized: number;
+  topologyRebuilds: { road: number; land: number; water: number };
+}
+
 const JOB_PRIORITY = [
   'powerPlant', 'heatingPlant', 'store', 'foodFactory',
   'clinic', 'pub', 'customs', 'gasStation', 'motorDepot', 'farm', 'textileMill', 'sawmill', 'brickworks',
   'woodcutter', 'gravelQuarry', 'coalMine', 'ironMine', 'steelMill', 'machineWorks',
   'oilPump', 'refinery', 'port', 'depot', 'warehouse', 'constructionOffice',
 ];
+
+function sameRevisions(a: readonly number[], b: readonly number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/**
+ * Memoizes a sim-internal derived value against a tuple of *dimension revisions*,
+ * recomputing only when the tuple changes. Dependencies are declared as data (a
+ * revision reader), so a cache can never key on the wrong signal — the whole point
+ * of the taxonomy: sim-internal state keys on structural revisions (topology
+ * domains, facilityRevision), never on `version` (which is only the UI-repaint
+ * signal). `compute` may return a value or run a side effect (T = void).
+ */
+class RevisionMemo<T> {
+  private key: readonly number[] | null = null;
+  private value!: T;
+  private readonly deps: () => readonly number[];
+  private readonly compute: () => T;
+  constructor(deps: () => readonly number[], compute: () => T) {
+    this.deps = deps;
+    this.compute = compute;
+  }
+
+  get(): T {
+    const k = this.deps();
+    if (this.key === null || !sameRevisions(this.key, k)) {
+      this.value = this.compute();
+      this.key = k;
+    }
+    return this.value;
+  }
+}
+
+/** Build a bounded-search goal list from a facility's access tiles, ranked by
+ *  (buildingRank, then tile order). `value` is shared across all of a facility's
+ *  tiles (created once by the caller, not per tile). */
+function rankedGoals<T>(tiles: readonly TopologyPos[], buildingRank: number, value: T): RankedGoal<T>[] {
+  return tiles.map((tile, accessRank) => ({ x: tile.x, y: tile.y, value, buildingRank, accessRank }));
+}
 
 /** True when any of the building's machinery (wear) bins ran dry — it then
  *  runs at BALANCE.wornEffMult until spares arrive. Pure; UI-safe. */
@@ -140,7 +255,16 @@ export function buildingWorn(b: BuildingInst): boolean {
 }
 
 export class GameEngine {
-  tiles: Tile[][];
+  private _tiles: Tile[][];
+  /** Read-only world view. All first-party mutations go through engine methods
+   * (applyInternalTilePatches) so the routing topology is never invalidated
+   * silently. The `Readonly<Tile>` element type rejects `engine.tiles[y][x].road = …`
+   * at compile time. NOTE the residual gaps: TypeScript widens `Readonly<Tile>` back
+   * to a mutable `Tile` on assignment (`const t: Tile = engine.tiles[y][x]; t.road = …`
+   * compiles — a known soundness hole), and the dev console (`__redRepublic`) can
+   * mutate at runtime. mutation-guards.test.ts covers the realistic in-engine
+   * regression vector; both residuals are dev-only and out of the type system's reach. */
+  get tiles(): readonly (readonly Readonly<Tile>[])[] { return this._tiles; }
   buildings = new Map<number, BuildingInst>();
   trucks: Truck[] = [];
   boats: Boat[] = [];
@@ -206,6 +330,20 @@ export class GameEngine {
   private events: GameEvent[] = [];
   private listeners = new Set<() => void>();
   private version = 0;
+  private topology: TopologyIndex;
+  private facilityRevision = 0;
+  private routingDay: Omit<RoutingDiagnostics, 'topologyRebuilds'> = {
+    dayIndex: 0,
+    demandsConsidered: 0,
+    successfulDispatches: 0,
+    componentRejections: 0,
+    roadSearches: 0,
+    landSearches: 0,
+    waterSearches: 0,
+    supplierCandidatesChecked: 0,
+    settledTiles: 0,
+    pathsMaterialized: 0,
+  };
 
   readonly TICK_MS = 500; // one game day at 1x speed
 
@@ -248,22 +386,128 @@ export class GameEngine {
     this.weatherScript = opts.weatherScript;
     this.weather = this.weatherAt(this.dayIndex());
     const map = opts.map ?? generateMap(this.seed, opts.mapW, opts.mapH);
-    this.tiles = map.tiles;
-    this.mapH = this.tiles.length;
-    this.mapW = this.tiles[0].length;
+    this._tiles = map.tiles;
+    this.mapH = this._tiles.length;
+    this.mapW = this._tiles[0].length;
+    this.topology = new TopologyIndex({
+      width: this.mapW,
+      height: this.mapH,
+      tiles: () => this._tiles,
+      offRoadCost: BALANCE.offRoadStepCost,
+    });
     this.borderEdge = map.border ?? null;
-    this.hasWater = this.tiles.some(row => row.some(t => t.terrain === 'water'));
+    this.hasWater = this._tiles.some(row => row.some(t => t.terrain === 'water'));
     if (!opts.skipStartingBase) this.setupStartingBase(map);
   }
 
   // ---------------- setup ----------------
 
+  /** Apply controlled non-gameplay tile setup changes as one observable update.
+   * Building ownership is intentionally unavailable here; footprints are only
+   * mutated by add/removeBuilding below. */
+  applyTilePatches(patches: readonly TilePatch[]): void {
+    if (this.applyInternalTilePatches(patches)) this.bump();
+  }
+
+  private applyInternalTilePatches(patches: readonly InternalTilePatch[]): boolean {
+    let changed = false;
+    const dirty = new Set<TopologyDomain>();
+    const owns = (p: InternalTilePatch, key: keyof InternalTilePatch) =>
+      Object.prototype.hasOwnProperty.call(p, key);
+
+    for (const p of patches) {
+      const tile = this._tiles[p.y]?.[p.x];
+      if (!tile) continue;
+
+      // Snapshot the routing-relevant fields before mutating, so the topology's
+      // own cost functions decide which domains this change touches — no hand-kept
+      // field→domain mirror to drift out of sync with the cost predicates.
+      const before: RoutingTile = {
+        terrain: tile.terrain, road: tile.road, buildingId: tile.buildingId, foreign: tile.foreign,
+      };
+      let routingChanged = false;
+
+      if (owns(p, 'road') && p.road !== undefined && !!tile.road !== p.road) {
+        tile.road = p.road; changed = true; routingChanged = true;
+      }
+      if (owns(p, 'terrain') && p.terrain !== undefined && tile.terrain !== p.terrain) {
+        tile.terrain = p.terrain; changed = true; routingChanged = true;
+      }
+      if (owns(p, 'foreign') && p.foreign !== undefined && !!tile.foreign !== p.foreign) {
+        tile.foreign = p.foreign; changed = true; routingChanged = true;
+      }
+      // buildingId/deposit: an explicit `undefined` is a no-op (matching road/terrain/
+      // foreign/variant); `null` is the explicit clear. Only add/removeBuilding pass
+      // buildingId, always as a concrete id or null.
+      if (owns(p, 'buildingId') && p.buildingId !== undefined) {
+        const next = p.buildingId ?? undefined;
+        if (tile.buildingId !== next) { tile.buildingId = next; changed = true; routingChanged = true; }
+      }
+      if (owns(p, 'deposit') && p.deposit !== undefined) {
+        const next = p.deposit ?? undefined;
+        if (tile.deposit !== next) { tile.deposit = next; changed = true; } // routing-irrelevant
+      }
+      if (owns(p, 'variant') && p.variant !== undefined && tile.variant !== p.variant) {
+        tile.variant = p.variant; changed = true;
+      }
+
+      if (routingChanged) {
+        for (const domain of this.topology.affectedDomains(before, tile, p.x, p.y)) dirty.add(domain);
+      }
+    }
+
+    if (dirty.size) this.topology.invalidate(...dirty);
+    if (dirty.has('water')) this.hasWater = this._tiles.some(row => row.some(t => t.terrain === 'water'));
+    return changed;
+  }
+
+  private setRoadTile(x: number, y: number, road: boolean): void {
+    this.applyInternalTilePatches([{ x, y, road }]);
+  }
+
+  private stampFootprint(b: BuildingInst): void {
+    const patches: InternalTilePatch[] = [];
+    for (let dy = 0; dy < b.h; dy++) for (let dx = 0; dx < b.w; dx++) {
+      patches.push({ x: b.x + dx, y: b.y + dy, buildingId: b.id });
+    }
+    this.applyInternalTilePatches(patches);
+  }
+
+  private clearFootprint(b: BuildingInst): void {
+    const patches: InternalTilePatch[] = [];
+    for (let dy = 0; dy < b.h; dy++) for (let dx = 0; dx < b.w; dx++) {
+      patches.push({ x: b.x + dx, y: b.y + dy, buildingId: null });
+    }
+    this.applyInternalTilePatches(patches);
+  }
+
+  private addBuilding(b: BuildingInst): void {
+    this.buildings.set(b.id, b);
+    this.stampFootprint(b);
+    this.facilityRevision++;
+  }
+
+  private removeBuilding(b: BuildingInst): void {
+    // Symmetric with addBuilding's stampFootprint: removeBuilding owns clearing the
+    // footprint so a caller (or a future multi-tile becomesRoad site) can never leave
+    // a phantom buildingId on the map. Callers that must clear earlier for ordering
+    // (bulldoze → refund routing) still may — the second clear is an idempotent no-op.
+    this.clearFootprint(b);
+    this.buildings.delete(b.id);
+    this.facilityRevision++;
+  }
+
+  private markConstructed(b: BuildingInst): void {
+    if (b.constructed) return;
+    b.constructed = true;
+    this.facilityRevision++;
+  }
+
   private setupStartingBase(map: MapData) {
     const sx = map.startX, sy = map.startY;
     // road line north of buildings
-    for (let x = sx - 2; x <= sx + 1; x++) {
-      this.tiles[sy - 1][x].road = true;
-    }
+    this.applyInternalTilePatches(Array.from({ length: 4 }, (_, i) =>
+      ({ x: sx - 2 + i, y: sy - 1, road: true })));
     this.placeFree('depot', sx, sy);
     this.placeFree('constructionOffice', sx - 2, sy);
     if (map.border && map.crossX !== undefined && map.crossY !== undefined) {
@@ -273,7 +517,8 @@ export class GameEngine {
     } else {
       // borderless (test) maps keep the legacy row layout
       this.placeFree('customs', sx + 3, sy);
-      for (let x = sx + 2; x <= sx + 4; x++) this.tiles[sy - 1][x].road = true;
+      this.applyInternalTilePatches(Array.from({ length: 3 }, (_, i) =>
+        ({ x: sx + 2 + i, y: sy - 1, road: true })));
     }
     const depot = [...this.buildings.values()].find(b => b.defId === 'depot')!;
     const mult = DIFFICULTIES[this.difficulty].depotStockMult;
@@ -287,22 +532,25 @@ export class GameEngine {
 
   /** Lane through the foreign strip to the map edge — every customs house is a crossing. */
   private layCrossingLane(edge: BorderEdge, cx: number, cy: number) {
+    const patches: InternalTilePatch[] = [];
     const lay = (x: number, y: number) => {
       const t = this.tiles[y]?.[x];
-      if (t && !t.buildingId) t.road = true; // over water this is a bridge
+      if (t && !t.buildingId) patches.push({ x, y, road: true }); // over water this is a bridge
     };
     if (edge === 'W') for (let x = 0; x < cx; x++) lay(x, cy);
     if (edge === 'E') for (let x = cx + 2; x < this.mapW; x++) lay(x, cy);
     if (edge === 'N') for (let y = 0; y < cy; y++) lay(cx, y);
     if (edge === 'S') for (let y = cy + 2; y < this.mapH; y++) lay(cx, y);
+    this.applyInternalTilePatches(patches);
   }
 
   /** Border crossing: the strip lane plus a domestic link to the base. */
   private layCrossingRoads(edge: BorderEdge, cx: number, cy: number, sx: number, sy: number) {
     this.layCrossingLane(edge, cx, cy);
+    const patches: InternalTilePatch[] = [];
     const lay = (x: number, y: number) => {
       const t = this.tiles[y]?.[x];
-      if (t && !t.buildingId) t.road = true;
+      if (t && !t.buildingId) patches.push({ x, y, road: true });
     };
     // domestic link: the front-door tile, then an L to the base road row
     const front = edge === 'W' ? { x: cx + 2, y: cy }
@@ -311,6 +559,7 @@ export class GameEngine {
       : { x: cx, y: cy - 1 };
     for (let y = Math.min(front.y, sy - 1); y <= Math.max(front.y, sy - 1); y++) lay(front.x, y);
     for (let x = Math.min(front.x, sx - 2); x <= Math.max(front.x, sx + 1); x++) lay(x, sy - 1);
+    this.applyInternalTilePatches(patches);
   }
 
   private placeFree(defId: string, x: number, y: number) {
@@ -322,10 +571,7 @@ export class GameEngine {
       coalFactor: 1, farmFields: 0,
     };
     this.seedWearBins(b);
-    this.buildings.set(b.id, b);
-    for (let dy = 0; dy < b.h; dy++)
-      for (let dx = 0; dx < b.w; dx++)
-        this.tiles[y + dy][x + dx].buildingId = b.id;
+    this.addBuilding(b);
   }
 
   /**
@@ -412,85 +658,76 @@ export class GameEngine {
   }
 
   adjacentRoads(b: BuildingInst): { x: number; y: number }[] {
-    const out: { x: number; y: number }[] = [];
-    for (let dy = -1; dy <= b.h; dy++) {
-      for (let dx = -1; dx <= b.w; dx++) {
-        const onEdge = dx === -1 || dx === b.w || dy === -1 || dy === b.h;
-        const onCorner = (dx === -1 || dx === b.w) && (dy === -1 || dy === b.h);
-        if (!onEdge || onCorner) continue; // corners touch only diagonally — no road access
-        const tx = b.x + dx, ty = b.y + dy;
-        if (this.tiles[ty]?.[tx]?.road) out.push({ x: tx, y: ty });
-      }
+    return this.roadAccess(b).tiles.map(({ x, y }) => ({ x, y }));
+  }
+
+  private roadAccess(b: BuildingInst) {
+    return this.topology.access('road', b);
+  }
+
+  private landAccess(b: BuildingInst) {
+    return this.topology.access('land', b);
+  }
+
+  private waterAccess(b: BuildingInst) {
+    return this.topology.access('water', b);
+  }
+
+  private nearestPath<T>(
+    domain: TopologyDomain,
+    sources: readonly TopologyPos[],
+    goals: readonly RankedGoal<T>[],
+    recordDiagnostics = true,
+  ): NearestPath<T> | null {
+    if (!sources.length || !goals.length) return null;
+    const mask = this.topology.mask(domain);
+    if (recordDiagnostics) {
+      if (domain === 'road') this.routingDay.roadSearches++;
+      else if (domain === 'land') this.routingDay.landSearches++;
+      else this.routingDay.waterSearches++;
     }
-    return out;
+    const result = shortestPathToAny(
+      this.mapW,
+      this.mapH,
+      (x, y) => mask[y * this.mapW + x],
+      sources,
+      goals,
+      this.topology.maxStep(domain), // bound derived from the mask itself — never disagrees
+    );
+    if (recordDiagnostics && result) {
+      this.routingDay.settledTiles += result.settledNodes;
+      this.routingDay.pathsMaterialized++;
+    }
+    return result;
   }
-
-  private floodFrom(sources: { x: number; y: number }[]): FloodResult {
-    return floodRoads(this.mapW, this.mapH, (x, y) => !!this.tiles[y][x].road, sources);
-  }
-
-  /** Can a vehicle occupy this tile? Land only — never water, foreign soil,
-   *  or another building's footprint (roads over their own tile are fine). */
-  private drivable(x: number, y: number): boolean {
-    const t = this.tiles[y]?.[x];
-    return !!t && !t.foreign && t.terrain !== 'water' && (!!t.road || !t.buildingId);
-  }
-
-  /** Entry cost for the weighted terrain flood: 0 impassable, 1 road, K off-road. */
-  private terrainCostAt = (x: number, y: number): number =>
-    !this.drivable(x, y) ? 0 : this.tiles[y][x].road ? 1 : BALANCE.offRoadStepCost;
 
   /** Weighted reachability over land: roads cost 1, off-road land costs K,
    *  water/foreign/footprints are impassable. Roads win purely on cost. */
-  private floodTerrain(sources: { x: number; y: number }[]): FloodResult {
-    return floodCost(this.mapW, this.mapH, this.terrainCostAt, sources, BALANCE.offRoadStepCost);
+  private floodTerrain(sources: readonly TopologyPos[]): FloodResult {
+    const mask = this.topology.mask('land');
+    return floodCost(
+      this.mapW,
+      this.mapH,
+      (x, y) => mask[y * this.mapW + x],
+      [...sources],
+      this.topology.maxStep('land'), // bound derived from the mask itself — never disagrees
+    );
   }
 
   /** Footprint-adjacent drivable tiles (roads AND open land) — a vehicle's
    *  on/off ramps. Superset of adjacentRoads. */
   accessTiles(b: BuildingInst): { x: number; y: number }[] {
-    const out: { x: number; y: number }[] = [];
-    for (let dy = -1; dy <= b.h; dy++) {
-      for (let dx = -1; dx <= b.w; dx++) {
-        const onEdge = dx === -1 || dx === b.w || dy === -1 || dy === b.h;
-        const onCorner = (dx === -1 || dx === b.w) && (dy === -1 || dy === b.h);
-        if (!onEdge || onCorner) continue;
-        const tx = b.x + dx, ty = b.y + dy;
-        if (this.drivable(tx, ty)) out.push({ x: tx, y: ty });
-      }
-    }
-    return out;
+    return this.landAccess(b).tiles.map(({ x, y }) => ({ x, y }));
   }
 
   /** Water tiles orthogonally touching a building's footprint (its docks). */
   adjacentWater(b: BuildingInst): { x: number; y: number }[] {
-    const out: { x: number; y: number }[] = [];
-    for (let dy = -1; dy <= b.h; dy++) {
-      for (let dx = -1; dx <= b.w; dx++) {
-        const onEdge = dx === -1 || dx === b.w || dy === -1 || dy === b.h;
-        const onCorner = (dx === -1 || dx === b.w) && (dy === -1 || dy === b.h);
-        if (!onEdge || onCorner) continue;
-        const tx = b.x + dx, ty = b.y + dy;
-        if (this.tiles[ty]?.[tx]?.terrain === 'water') out.push({ x: tx, y: ty });
-      }
-    }
-    return out;
+    return this.waterAccess(b).tiles.map(({ x, y }) => ({ x, y }));
   }
 
-  private waterFlood(sources: { x: number; y: number }[]): FloodResult {
-    return floodRoads(this.mapW, this.mapH, (x, y) => this.tiles[y][x].terrain === 'water', sources);
-  }
-
-  findPath(from: { x: number; y: number }[], to: { x: number; y: number }[]): { x: number; y: number }[] | null {
+  findPath(from: readonly TopologyPos[], to: readonly TopologyPos[]): { x: number; y: number }[] | null {
     if (!from.length || !to.length) return null;
-    const flood = this.floodFrom(to);
-    let best: { x: number; y: number } | null = null;
-    let bestD = Infinity;
-    for (const f of from) {
-      const d = flood.distanceAt(f.x, f.y);
-      if (d >= 0 && d < bestD) { bestD = d; best = f; }
-    }
-    return best ? flood.pathFrom(best.x, best.y) : null;
+    return this.nearestPath('road', to, rankedGoals(from, 0, null), false)?.path ?? null;
   }
 
   centerOf(b: BuildingInst) { return { x: b.x + b.w / 2, y: b.y + b.h / 2 }; }
@@ -546,12 +783,9 @@ export class GameEngine {
     }
     if (def.isCustoms && this.borderEdge) {
       let atBorder = false;
-      for (let dy = -1; dy <= h && !atBorder; dy++) for (let dx = -1; dx <= w && !atBorder; dx++) {
-        const onEdge = dx === -1 || dx === w || dy === -1 || dy === h;
-        const onCorner = (dx === -1 || dx === w) && (dy === -1 || dy === h);
-        if (!onEdge || onCorner) continue;
-        if (this.tiles[y + dy]?.[x + dx]?.foreign) atBorder = true;
-      }
+      forEachPerimeterTile(x, y, w, h, {}, (px, py) => {
+        if (this.tiles[py]?.[px]?.foreign) { atBorder = true; return true; }
+      });
       if (!atBorder) return { ok: false, reason: 'A Customs House must stand at the national border' };
     }
     if (!depositOk) return { ok: false, reason: `Requires a ${def.requiresDeposit === 'ironOre' ? 'iron ore' : def.requiresDeposit} deposit` };
@@ -563,12 +797,9 @@ export class GameEngine {
     }
     if (def.isPort) {
       let shore = false;
-      for (let dy = -1; dy <= h && !shore; dy++) for (let dx = -1; dx <= w && !shore; dx++) {
-        const onEdge = dx === -1 || dx === w || dy === -1 || dy === h;
-        const onCorner = (dx === -1 || dx === w) && (dy === -1 || dy === h);
-        if (!onEdge || onCorner) continue;
-        if (this.tiles[y + dy]?.[x + dx]?.terrain === 'water') shore = true;
-      }
+      forEachPerimeterTile(x, y, w, h, {}, (px, py) => {
+        if (this.tiles[py]?.[px]?.terrain === 'water') { shore = true; return true; }
+      });
       if (!shore) return { ok: false, reason: 'Must be built on the shore, touching water' };
     }
     return { ok: true };
@@ -583,7 +814,7 @@ export class GameEngine {
       if (this.dollars < cost) return { ok: false, reason: `Not enough dollars ($${cost})` };
       this.dollars -= cost;
       if (defId === 'road') {
-        this.tiles[y][x].road = true;
+        this.setRoadTile(x, y, true);
         this.stats.roadsBuilt++;
       } else {
         this.placeFree(defId, x, y);
@@ -635,10 +866,7 @@ export class GameEngine {
       foreignLabor: policy.foreignLabor ?? this.foreignLaborEnabled,
       paused: policy.plan ?? false,
     };
-    this.buildings.set(b.id, b);
-    for (let dy = 0; dy < b.h; dy++)
-      for (let dx = 0; dx < b.w; dx++)
-        this.tiles[y + dy][x + dx].buildingId = b.id;
+    this.addBuilding(b);
     if (def.isCustoms && this.borderEdge) this.layCrossingLane(this.borderEdge, x, y);
     this.bump();
     return { ok: true };
@@ -845,9 +1073,8 @@ export class GameEngine {
     this.dollars -= cost;
     const def = this.def(b);
     if (def.becomesRoad) {
-      this.tiles[b.y][b.x].road = true;
-      this.tiles[b.y][b.x].buildingId = undefined;
-      this.buildings.delete(b.id);
+      this.applyInternalTilePatches([{ x: b.x, y: b.y, road: true, buildingId: null }]);
+      this.removeBuilding(b);
       this.stats.roadsBuilt++;
       this.bump();
       return { ok: true };
@@ -857,7 +1084,7 @@ export class GameEngine {
       if (have > 0) this.addStock(b, r, -Math.min(have, amt)); // prefab supplies the rest
     }
     b.paused = false;
-    b.constructed = true;
+    this.markConstructed(b);
     b.progress = def.labor;
     this.seedWearBins(b);
     this.pushEvent(`${def.name} completed!`, 'good', 'check');
@@ -930,9 +1157,7 @@ export class GameEngine {
     if (t.buildingId) {
       const b = this.buildings.get(t.buildingId);
       if (!b) return false;
-      for (let dy = 0; dy < b.h; dy++)
-        for (let dx = 0; dx < b.w; dx++)
-          this.tiles[b.y + dy][b.x + dx].buildingId = undefined;
+      this.clearFootprint(b); // refund routing must see the newly opened land
       // trucks and barges en route turn around and return their cargo
       for (const tr of [...this.trucks, ...this.boats]) {
         if (tr.destId === b.id && tr.phase === 'go') {
@@ -943,11 +1168,11 @@ export class GameEngine {
       this.boatOrders = this.boatOrders.filter(o => o.srcId !== b.id && o.destId !== b.id);
       // an unfinished site's delivered materials go back to storage, not the void
       if (!b.constructed) this.refundSiteStock(b);
-      this.buildings.delete(b.id);
+      this.removeBuilding(b);
       this.bump();
       return true;
     }
-    if (t.road) { t.road = false; this.bump(); return true; }
+    if (t.road) { this.setRoadTile(x, y, false); this.bump(); return true; }
     return false;
   }
 
@@ -970,39 +1195,45 @@ export class GameEngine {
       * (1 + this.relationsPenalty[currency]);
   }
 
-  private customsCache: { version: number; field: DistanceField | null } | null = null;
-
-  /** Travel-cost distances from the customs network (road or off-road),
-   *  cached per engine version — "can this good physically reach the border". */
-  private customsField(): DistanceField | null {
-    if (!this.customsCache || this.customsCache.version !== this.version) {
-      const customs = [...this.buildings.values()].filter(b => this.def(b).isCustoms && b.constructed);
-      const access = customs.flatMap(c => this.accessTiles(c));
-      this.customsCache = {
-        version: this.version,
-        field: access.length ? this.floodTerrain(access).snapshot() : null,
-      };
-    }
-    return this.customsCache.field;
-  }
+  /** Land components touched by the constructed customs network — "can this good
+   * physically reach the border". Sim-internal derived state: keyed on the land
+   * topology + facility revisions, so stock changes and UI bumps never rebuild it. */
+  private readonly customsComponentsMemo = new RevisionMemo<readonly number[]>(
+    () => [this.topology.revision('land'), this.facilityRevision],
+    () => {
+      const lists: (readonly number[])[] = [];
+      for (const b of this.buildings.values()) {
+        if (b.constructed && this.def(b).isCustoms) lists.push(this.landAccess(b).components);
+      }
+      return Object.freeze(unionComponents(...lists));
+    },
+  );
+  private customsComponents(): readonly number[] { return this.customsComponentsMemo.get(); }
 
   /** Customs-connected buildings and how much each is willing to sell (supplyOf-protected). */
   private sellableSources(r: ResourceId): { b: BuildingInst; amt: number }[] {
-    const field = this.customsField();
-    if (!field) return [];
+    const customs = this.customsComponents();
+    if (!customs.length) return [];
     const out: { b: BuildingInst; amt: number }[] = [];
     for (const b of this.buildings.values()) {
       if (!b.constructed) continue;
       const amt = this.supplyOf(b, r);
       if (amt < 0.01) continue;
-      if (this.accessTiles(b).some(t => field.reachable(t.x, t.y))) out.push({ b, amt });
+      if (shareAnyComponent(this.landAccess(b).components, customs)) out.push({ b, amt });
     }
     return out;
   }
 
   private sellableCache: { version: number; map: Map<ResourceId, number> } = { version: -1, map: new Map() };
 
-  /** Stock that sell() could actually export right now. Cached per version. */
+  /**
+   * Stock that sell() could actually export right now — a **UI-facing** derived
+   * value (only React reads it; sell()/auto-export call sellableSources() uncached).
+   * Deliberately keyed on `version`, NOT a RevisionMemo: it depends on live *stock*
+   * (via supplyOf), which has no structural revision, and it's read at render cadence
+   * — `version` IS that cadence. Do not "align" this with customsComponents' structural
+   * key; that would go stale after any production/sale with no structural change.
+   */
   sellableStock(r: ResourceId): number {
     if (this.sellableCache.version !== this.version) {
       this.sellableCache = { version: this.version, map: new Map() };
@@ -1131,6 +1362,34 @@ export class GameEngine {
     }
   }
 
+  private resetRoutingDiagnostics(): void {
+    this.routingDay = {
+      dayIndex: this.dayIndex(),
+      demandsConsidered: 0,
+      successfulDispatches: 0,
+      componentRejections: 0,
+      roadSearches: 0,
+      landSearches: 0,
+      waterSearches: 0,
+      supplierCandidatesChecked: 0,
+      settledTiles: 0,
+      pathsMaterialized: 0,
+    };
+  }
+
+  /** Last simulated day's routing work plus cumulative topology rebuilds.
+   * Derived diagnostics are deliberately excluded from saves and RNG state. */
+  getRoutingDiagnostics(): RoutingDiagnostics {
+    return {
+      ...this.routingDay,
+      topologyRebuilds: {
+        road: this.topology.rebuildCount('road'),
+        land: this.topology.rebuildCount('land'),
+        water: this.topology.rebuildCount('water'),
+      },
+    };
+  }
+
   private simulateDay() {
     // advance date
     this.day++;
@@ -1142,6 +1401,7 @@ export class GameEngine {
       if (this.month === 4) this.pushEvent('Spring sowing season begins.', 'info', 'spring');
     }
 
+    this.resetRoutingDiagnostics();
     this.updateWeather();
     this.updateConnectivity();
     this.assignWorkers();
@@ -1273,21 +1533,28 @@ export class GameEngine {
     }
   }
 
-  private updateConnectivity() {
-    // A building participates if ANY drivable path (road or off-road) reaches
-    // the depot network; roadConnected is the stricter road-only state that
-    // drives the "off-road, slow — lay a road" advisory. Snapshot the road
-    // field first: the terrain flood below invalidates any live FloodResult.
-    const depots = [...this.buildings.values()].filter(b => this.def(b).isDepot && b.constructed);
-    const roadField = depots.length ? this.floodFrom(depots.flatMap(d => this.adjacentRoads(d))).snapshot() : null;
-    const terrFlood = depots.length ? this.floodTerrain(depots.flatMap(d => this.accessTiles(d))) : null;
-    for (const b of this.buildings.values()) {
-      const road = this.adjacentRoads(b);
-      const acc = this.accessTiles(b);
-      b.roadConnected = road.length > 0 && (!roadField || road.some(t => roadField.reachable(t.x, t.y)));
-      b.connected = acc.length > 0 && (!terrFlood || acc.some(t => terrFlood.distanceAt(t.x, t.y) >= 0));
-    }
-  }
+  /** Sets b.connected / b.roadConnected on every building. Sim-internal derived
+   * state, recomputed only when the road/land topology or facility set changes. */
+  private readonly connectivityMemo = new RevisionMemo<void>(
+    () => [this.topology.revision('road'), this.topology.revision('land'), this.facilityRevision],
+    () => {
+      // A building participates if ANY component touched by its access perimeter
+      // also touches the depot network. With no depot, preserve the historical
+      // fallback: any local access tile counts as connected.
+      const depots = [...this.buildings.values()].filter(b => this.def(b).isDepot && b.constructed);
+      const roadComponents = unionComponents(...depots.map(d => this.roadAccess(d).components));
+      const landComponents = unionComponents(...depots.map(d => this.landAccess(d).components));
+      for (const b of this.buildings.values()) {
+        const road = this.roadAccess(b);
+        const land = this.landAccess(b);
+        b.roadConnected = road.tiles.length > 0 &&
+          (!depots.length || shareAnyComponent(road.components, roadComponents));
+        b.connected = land.tiles.length > 0 &&
+          (!depots.length || shareAnyComponent(land.components, landComponents));
+      }
+    },
+  );
+  private updateConnectivity() { this.connectivityMemo.get(); }
 
   private assignWorkers() {
     this.workers = Math.floor(this.pop * BALANCE.workerShare);
@@ -1700,26 +1967,197 @@ export class GameEngine {
     return Math.max(0, this.stockOf(b, r) - keep);
   }
 
+  private buildLogisticsRoutingContext(): LogisticsRoutingContext {
+    const facilities = new Map<number, IndexedFacility>();
+    const orderedFacilities: IndexedFacility[] = [];
+    let buildingRank = 0;
+    for (const b of this.buildings.values()) {
+      const facility: IndexedFacility = {
+        b,
+        buildingRank: buildingRank++,
+        isCustoms: !!this.def(b).isCustoms,
+        road: this.roadAccess(b),
+        land: this.landAccess(b),
+      };
+      facilities.set(b.id, facility);
+      orderedFacilities.push(facility);
+    }
+    // Supply candidates are built lazily per resource (ensureSupply), so a pass only
+    // pays for the resources actually demanded — not ALL_RESOURCES × every building.
+    return {
+      facilities,
+      orderedFacilities,
+      supply: new Map(),
+      builtResources: new Set(),
+      roadRevision: this.topology.revision('road'),
+      landRevision: this.topology.revision('land'),
+    };
+  }
+
+  /** Fails loudly if the topology was invalidated after the context was built: its
+   *  cached component IDs would then reference a stale labelling (cf. FloodResult).
+   *  Nothing invalidates mid-pass today (construction runs after logistics) — this
+   *  turns a would-be silent misroute into a throw if that ever changes. */
+  private assertRoutingFresh(ctx: LogisticsRoutingContext): void {
+    if (ctx.roadRevision !== this.topology.revision('road') ||
+        ctx.landRevision !== this.topology.revision('land')) {
+      throw new Error('Stale routing context: topology changed mid-logistics-pass');
+    }
+  }
+
+  /** Apply ±delta to a facility's component ref-counts in a resource's availability
+   *  maps (one traversal shared by the build (+1) and deactivate (−1) paths). */
+  private applyAvailability(state: ResourceSupplyState, facility: IndexedFacility, delta: number): void {
+    const apply = (map: Map<number, number>, component: number) => {
+      const next = (map.get(component) ?? 0) + delta;
+      if (next > 0) map.set(component, next); else map.delete(component);
+    };
+    for (const component of facility.road.components) {
+      apply(state.road.all, component);
+      if (!facility.isCustoms) apply(state.road.nonCustoms, component);
+    }
+    for (const component of facility.land.components) {
+      apply(state.land.all, component);
+      if (!facility.isCustoms) apply(state.land.nonCustoms, component);
+    }
+  }
+
+  /** Build (once, memoized) the supplier candidates + component availability for a
+   *  resource. Returns undefined when no building supplies it — the no-supplier case
+   *  is memoized too, so repeated undelivered demands don't re-scan. Candidate order
+   *  is buildings.values() order, byte-identical to the former eager build. */
+  private ensureSupply(ctx: LogisticsRoutingContext, r: ResourceId): ResourceSupplyState | undefined {
+    if (ctx.builtResources.has(r)) return ctx.supply.get(r);
+    ctx.builtResources.add(r);
+    let state: ResourceSupplyState | undefined;
+    for (const facility of ctx.orderedFacilities) {
+      if (this.supplyOf(facility.b, r) < 1) continue;
+      if (!state) {
+        state = {
+          candidates: [],
+          road: { all: new Map(), nonCustoms: new Map() },
+          land: { all: new Map(), nonCustoms: new Map() },
+        };
+        ctx.supply.set(r, state);
+      }
+      const candidate: SupplierCandidate = { facility, active: true };
+      state.candidates.push(candidate);
+      this.applyAvailability(state, facility, 1);
+    }
+    return state;
+  }
+
+  private deactivateSupplyCandidate(
+    ctx: LogisticsRoutingContext,
+    candidate: SupplierCandidate,
+    r: ResourceId,
+  ): void {
+    if (!candidate.active || this.supplyOf(candidate.facility.b, r) >= 1) return;
+    candidate.active = false;
+    const state = ctx.supply.get(r);
+    if (!state) return;
+    this.applyAvailability(state, candidate.facility, -1);
+  }
+
+  private routeToSupply(
+    ctx: LogisticsRoutingContext,
+    d: LogisticsDemand,
+    domain: 'road' | 'land',
+  ): SupplyPick | null {
+    this.assertRoutingFresh(ctx);
+    const destination = ctx.facilities.get(d.b.id);
+    const destAccess = destination?.[domain];
+    if (!destAccess?.tiles.length) {
+      this.routingDay.componentRejections++;
+      return null;
+    }
+
+    // Non-bonded demand routes through supply candidates (built lazily for d.r);
+    // bonded demand draws from customs directly and never touches `state`.
+    const state = d.bonded ? undefined : this.ensureSupply(ctx, d.r);
+    if (!d.bonded) {
+      if (!state) {
+        this.routingDay.componentRejections++;
+        return null;
+      }
+      const availability = d.noCustomsSrc ? state[domain].nonCustoms : state[domain].all;
+      if (!destAccess.components.some(component => (availability.get(component) ?? 0) > 0)) {
+        this.routingDay.componentRejections++;
+        return null;
+      }
+    }
+
+    type GoalValue = { facility: IndexedFacility; candidate: SupplierCandidate | null };
+    const goals: RankedGoal<GoalValue>[] = [];
+    const addFacility = (facility: IndexedFacility, candidate: SupplierCandidate | null) => {
+      this.routingDay.supplierCandidatesChecked++;
+      if (facility.b.id === d.b.id) return;
+      if (d.from !== undefined && facility.b.id !== d.from) return;
+      if (d.noCustomsSrc && facility.isCustoms) return;
+      if (candidate) {
+        this.deactivateSupplyCandidate(ctx, candidate, d.r);
+        if (!candidate.active) return;
+      } else if (!d.bonded && this.supplyOf(facility.b, d.r) < 1) {
+        return;
+      }
+      const access = facility[domain];
+      if (!shareAnyComponent(access.components, destAccess.components)) return;
+      goals.push(...rankedGoals(access.tiles, facility.buildingRank, { facility, candidate }));
+    };
+
+    if (d.bonded) {
+      if (d.from !== undefined) {
+        const facility = ctx.facilities.get(d.from);
+        if (facility) addFacility(facility, null);
+      } else {
+        for (const facility of ctx.orderedFacilities) addFacility(facility, null);
+      }
+    } else if (state) {
+      if (d.from !== undefined) {
+        const candidate = state.candidates.find(c => c.facility.b.id === d.from);
+        if (candidate) addFacility(candidate.facility, candidate);
+      } else {
+        for (const candidate of state.candidates) addFacility(candidate.facility, candidate);
+      }
+    }
+
+    if (!goals.length) {
+      this.routingDay.componentRejections++;
+      return null;
+    }
+    const result = this.nearestPath(domain, destAccess.tiles, goals);
+    if (!result) return null; // defensive: shared components make this unreachable in a valid topology
+    return {
+      supplier: result.goal.value.facility.b,
+      candidate: result.goal.value.candidate,
+      path: result.path,
+      cost: result.cost,
+    };
+  }
+
+  private roadSupplierReaches(
+    ctx: LogisticsRoutingContext,
+    r: ResourceId,
+    destination: IndexedFacility,
+  ): boolean {
+    this.assertRoutingFresh(ctx);
+    const state = this.ensureSupply(ctx, r);
+    if (!state || !destination.road.components.some(c => state.road.all.has(c))) return false;
+    for (const candidate of state.candidates) {
+      this.routingDay.supplierCandidatesChecked++;
+      this.deactivateSupplyCandidate(ctx, candidate, r);
+      if (!candidate.active || candidate.facility.b.id === destination.b.id) continue;
+      if (shareAnyComponent(candidate.facility.road.components, destination.road.components)) return true;
+    }
+    return false;
+  }
+
   private logistics() {
     const maxT = this.maxTrucks();
     let budget = maxT - this.trucks.filter(t => t.phase === 'go').length;
     if (budget <= 0) return;
 
     const demands: LogisticsDemand[] = [];
-
-    // adjacentRoads/accessTiles are O(perimeter); cache per building for this pass
-    const adjCache = new Map<number, { x: number; y: number }[]>();
-    const adjOf = (b: BuildingInst) => {
-      let a = adjCache.get(b.id);
-      if (!a) { a = this.adjacentRoads(b); adjCache.set(b.id, a); }
-      return a;
-    };
-    const accCache = new Map<number, { x: number; y: number }[]>();
-    const accOf = (b: BuildingInst) => {
-      let a = accCache.get(b.id);
-      if (!a) { a = this.accessTiles(b); accCache.set(b.id, a); }
-      return a;
-    };
 
     for (const b of this.buildings.values()) {
       const def = this.def(b);
@@ -1828,31 +2266,38 @@ export class GameEngine {
       }
     }
 
+    // One ordered supplier index per pass. It snapshots Map insertion order,
+    // while live active flags/counts are decremented after each dispatch.
+    const routing = this.buildLogisticsRoutingContext();
+
     // overflow hauling: pin the overflowing producer as the supplier and
     // target the nearest storage with room, so the producer actually drains
     const storages = [...this.buildings.values()].filter(b =>
       (this.def(b).isDepot || this.def(b).isCustoms || b.defId === 'warehouse') && b.constructed);
     for (const b of this.buildings.values()) {
+      this.assertRoutingFresh(routing);
       const def = this.def(b);
       if (!b.constructed || !def.outputs || def.serviceType) continue;
-      const srcRoads = adjOf(b);
-      if (!srcRoads.length) continue;
-      let flood: FloodResult | null = null;
+      const source = routing.facilities.get(b.id);
+      if (!source?.road.tiles.length) continue;
       for (const [r] of Object.entries(def.outputs) as [ResourceId, number][]) {
         const cap = this.capOf(b, r);
         if (cap <= 0 || this.stockOf(b, r) <= cap * 0.8) continue;
-        flood ??= this.floodFrom(srcRoads);
-        let best: BuildingInst | null = null;
-        let bestD = Infinity;
+        const goals: RankedGoal<BuildingInst>[] = [];
         for (const s of storages) {
           if (s.id === b.id) continue;
           const free = this.capOf(s, r) - this.stockOf(s, r) - this.incomingOf(s, r);
           if (free < 4) continue;
-          for (const t of adjOf(s)) {
-            const d = flood.distanceAt(t.x, t.y);
-            if (d >= 0 && d < bestD) { bestD = d; best = s; }
-          }
+          const facility = routing.facilities.get(s.id)!;
+          if (!shareAnyComponent(source.road.components, facility.road.components)) continue;
+          goals.push(...rankedGoals(facility.road.tiles, facility.buildingRank, s));
         }
+        if (!goals.length) {
+          this.routingDay.componentRejections++;
+          continue;
+        }
+        const nearest = this.nearestPath('road', source.road.tiles, goals);
+        const best = nearest?.goal.value ?? null;
         if (best) {
           const free = this.capOf(best, r) - this.stockOf(best, r) - this.incomingOf(best, r);
           demands.push({ b: best, r, amt: Math.min(free, this.stockOf(b, r) - cap * 0.3), prio: 40, from: b.id });
@@ -1864,6 +2309,7 @@ export class GameEngine {
 
     for (const d of demands) {
       if (budget <= 0) break;
+      this.routingDay.demandsConsidered++;
       const destFree = d.b.constructed
         ? this.capOf(d.b, d.r) - this.stockOf(d.b, d.r) - this.incomingOf(d.b, d.r)
         : (this.def(d.b).materials[d.r] ?? 0) - this.stockOf(d.b, d.r) - this.incomingOf(d.b, d.r);
@@ -1873,32 +2319,41 @@ export class GameEngine {
       const minLoad = d.b.constructed ? 1 : 0.001;
       if (destFree < minLoad) continue;
 
-      // ROAD-FIRST: try the road network exactly as before (byte-identical
-      // dispatch + timing for road-connected demand — roads always preferred).
-      const destRoads = adjOf(d.b);
-      let pick = destRoads.length ? this.bestSupply(d, this.floodFrom(destRoads), adjOf) : null;
+      // A repair import that cannot buy even the minimum load at the current
+      // reserve floor is rejected before any routing work.
+      if (d.repairImport) {
+        const cur = d.repairImport;
+        const price = this.importPriceOf(d.r, cur);
+        const reserve = cur === 'east' ? this.autoTrade.reserveRubles : this.autoTrade.reserveDollars;
+        const funds = cur === 'east' ? this.rubles : this.dollars;
+        if (Math.floor(Math.max(0, funds - reserve) / price) < minLoad) continue;
+      }
+
+      // ROAD-FIRST: a bounded destination-origin search sees only eligible
+      // supplier access goals in a shared component, preserving the old tie
+      // and path rules without filling the rest of the map.
+      let pick = this.routeToSupply(routing, d, 'road');
       let offRoad = false;
 
       if (!pick) {
-        // OFF-ROAD FALLBACK: only when no road path exists. Weighted terrain
-        // flood over access tiles (roads still win on cost); water is impassable
-        // so genuinely water-separated suppliers fall through to the port relay.
-        const destAccess = accOf(d.b);
-        if (!destAccess.length) continue; // walled in by water/foreign — nothing can reach it
-        const terr = this.floodTerrain(destAccess);
-        pick = this.bestSupply(d, terr, accOf);
+        // OFF-ROAD FALLBACK: weighted land, only after the road attempt fails.
+        pick = this.routeToSupply(routing, d, 'land');
         offRoad = true;
         if (!pick) {
-          if (d.from === undefined) this.relayViaPorts(d, terr, accOf, demands);
+          if (d.from === undefined) this.relayViaPorts(d, routing, demands);
           continue;
         }
       }
 
       // bonded goods are a paid virtual import — the customs is an infinite
       // source and its real stock is never touched (bypasses the storage cap)
+      // Revalidate immediately before charging or mutating sequential stock.
       const supplyCap = d.bonded ? Infinity : this.supplyOf(pick.supplier, d.r);
       let amount = Math.min(d.amt, destFree, supplyCap, BALANCE.truckCapacity);
-      if (amount < minLoad) continue;
+      if (amount < minLoad) {
+        if (pick.candidate) this.deactivateSupplyCandidate(routing, pick.candidate, d.r);
+        continue;
+      }
 
       // a repair import is a paid border purchase (unlike a construction auto-buy,
       // paid upfront): cap it to what the treasury can spend above its auto-reserve,
@@ -1916,7 +2371,10 @@ export class GameEngine {
         this.tradeLedger.today.repairImports -= cost;
       }
 
-      if (!d.bonded) this.addStock(pick.supplier, d.r, -amount);
+      if (!d.bonded) {
+        this.addStock(pick.supplier, d.r, -amount);
+        if (pick.candidate) this.deactivateSupplyCandidate(routing, pick.candidate, d.r);
+      }
       d.b.incoming[d.r] = this.incomingOf(d.b, d.r) + amount;
 
       const pts = [this.centerOf(pick.supplier), ...pick.path, this.centerOf(d.b)];
@@ -1928,31 +2386,8 @@ export class GameEngine {
         daysTotal, daysDone: 0, phase: 'go', destId: d.b.id, srcId: pick.supplier.id,
       });
       budget--;
+      this.routingDay.successfulDispatches++;
     }
-  }
-
-  /** Nearest willing supplier for a demand over a given flood + access fn.
-   *  Honours the from-pin, the no-customs-source flag, and supply reserves. */
-  private bestSupply(
-    d: LogisticsDemand,
-    flood: FloodResult,
-    accessOf: (b: BuildingInst) => { x: number; y: number }[],
-  ): { supplier: BuildingInst; path: { x: number; y: number }[]; cost: number } | null {
-    let bestSupplier: BuildingInst | null = null;
-    let bestTile: { x: number; y: number } | null = null;
-    let bestD = Infinity;
-    for (const s of this.buildings.values()) {
-      if (s.id === d.b.id) continue;
-      if (d.from !== undefined && s.id !== d.from) continue;
-      if (d.noCustomsSrc && this.def(s).isCustoms) continue; // staging never drains the border back inland
-      if (!d.bonded && this.supplyOf(s, d.r) < 1) continue;   // bonded: customs is an infinite paid source
-      for (const t of accessOf(s)) {
-        const dd = flood.distanceAt(t.x, t.y);
-        if (dd >= 0 && dd < bestD) { bestD = dd; bestSupplier = s; bestTile = t; }
-      }
-    }
-    if (!bestSupplier || !bestTile) return null;
-    return { supplier: bestSupplier, path: flood.pathFrom(bestTile.x, bestTile.y)!, cost: bestD };
   }
 
   /**
@@ -1960,18 +2395,21 @@ export class GameEngine {
    * across water: register a twin demand at a far-shore port (trucks bring
    * the goods portside) plus a standing barge order to the near-shore port.
    * The original demand is then served from that port on a later day.
-   * Flood-buffer discipline: consume `destFlood` fully before flooding again.
    */
   private relayViaPorts(
     d: LogisticsDemand,
-    destFlood: FloodResult,
-    adjOf: (b: BuildingInst) => { x: number; y: number }[],
+    routing: LogisticsRoutingContext,
     demands: LogisticsDemand[],
   ) {
     if (this.weather.riverFrozen) return; // no new relay chains onto an ice-locked river
     const ports = [...this.buildings.values()].filter(p => this.def(p).isPort && p.constructed);
     if (ports.length < 2) return;
-    const pDest = ports.find(p => p.id !== d.b.id && adjOf(p).some(t => destFlood.distanceAt(t.x, t.y) >= 0));
+    const destination = routing.facilities.get(d.b.id);
+    if (!destination) return;
+    const pDest = ports.find(p => {
+      const port = routing.facilities.get(p.id)!;
+      return p.id !== d.b.id && shareAnyComponent(port.land.components, destination.land.components);
+    });
     if (!pDest) return;
     const pending = this.boatOrders.find(o => o.destId === pDest.id && o.r === d.r);
     if (pending) {
@@ -1986,16 +2424,13 @@ export class GameEngine {
       return;
     }
 
-    const wf = this.waterFlood(this.adjacentWater(pDest));
-    const overWater = ports.filter(p =>
-      p.id !== pDest.id && this.adjacentWater(p).some(t => wf.distanceAt(t.x, t.y) >= 0));
+    const pDestWater = this.waterAccess(pDest);
+    const overWater = ports.filter(p => p.id !== pDest.id &&
+      shareAnyComponent(this.waterAccess(p).components, pDestWater.components));
     for (const pSrc of overWater) {
       // does pSrc's own road network reach any willing supplier?
-      const sf = this.floodFrom(this.adjacentRoads(pSrc));
-      const supplied = [...this.buildings.values()].some(s =>
-        s.id !== pSrc.id && this.supplyOf(s, d.r) >= 1 &&
-        this.adjacentRoads(s).some(t => sf.distanceAt(t.x, t.y) >= 0));
-      if (!supplied) continue;
+      const source = routing.facilities.get(pSrc.id)!;
+      if (!this.roadSupplierReaches(routing, d.r, source)) continue;
       const amt = Math.min(
         d.amt,
         BALANCE.boatCapacity,
@@ -2015,8 +2450,9 @@ export class GameEngine {
     if (!ports.length) { this.boatOrders = []; return; }
     // ice or grounding weather keeps barges in port — orders wait for fair skies
     if (this.weather.riverFrozen || WEATHER[this.weather.condition].boatMult === 0) return;
+    let activeBoats = this.boats.filter(b => b.phase === 'go').length;
     for (let i = this.boatOrders.length - 1; i >= 0; i--) {
-      if (this.boats.filter(b => b.phase === 'go').length >= ports.length) break;
+      if (activeBoats >= ports.length) break;
       const order = this.boatOrders[i];
       const src = this.buildings.get(order.srcId);
       const dest = this.buildings.get(order.destId);
@@ -2024,15 +2460,16 @@ export class GameEngine {
       const avail = this.stockOf(src, order.r);
       if (avail < 1) continue; // trucks are still bringing it portside
 
-      const wf = this.waterFlood(this.adjacentWater(dest));
-      let bestTile: { x: number; y: number } | null = null;
-      let bestD = Infinity;
-      for (const t of this.adjacentWater(src)) {
-        const dd = wf.distanceAt(t.x, t.y);
-        if (dd >= 0 && dd < bestD) { bestD = dd; bestTile = t; }
+      const destAccess = this.waterAccess(dest);
+      const srcAccess = this.waterAccess(src);
+      if (!shareAnyComponent(destAccess.components, srcAccess.components)) {
+        this.routingDay.componentRejections++;
+        this.boatOrders.splice(i, 1);
+        continue;
       }
-      if (!bestTile) { this.boatOrders.splice(i, 1); continue; } // water link gone
-      const path = wf.pathFrom(bestTile.x, bestTile.y)!;
+      const nearest = this.nearestPath('water', destAccess.tiles, rankedGoals(srcAccess.tiles, 0, null));
+      if (!nearest) { this.boatOrders.splice(i, 1); continue; }
+      const path = nearest.path;
 
       const amount = Math.min(order.amt, avail, BALANCE.boatCapacity,
         this.capOf(dest, order.r) - this.stockOf(dest, order.r) - this.incomingOf(dest, order.r));
@@ -2046,6 +2483,7 @@ export class GameEngine {
         daysTotal: Math.max(1, path.length * BALANCE.boatDaysPerTile),
         daysDone: 0, phase: 'go', destId: dest.id, srcId: src.id,
       });
+      activeBoats++;
       order.amt -= amount;
       if (order.amt < 1) this.boatOrders.splice(i, 1);
     }
@@ -2175,13 +2613,12 @@ export class GameEngine {
   private completeSite(b: BuildingInst) {
     const def = this.def(b);
     if (def.becomesRoad) {
-      this.tiles[b.y][b.x].road = true;
-      this.tiles[b.y][b.x].buildingId = undefined;
-      this.buildings.delete(b.id);
+      this.applyInternalTilePatches([{ x: b.x, y: b.y, road: true, buildingId: null }]);
+      this.removeBuilding(b);
       this.stats.roadsBuilt++;
       return;
     }
-    b.constructed = true;
+    this.markConstructed(b);
     b.progress = def.labor;
     for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
       this.addStock(b, r, -amt);
@@ -2371,13 +2808,13 @@ export class GameEngine {
     for (const b of this.buildings.values()) {
       if (b.constructed) continue;
       if (b.connected) continue; // reachable by road or off-road → will be served
+      // Corner-inclusive on purpose: a site touching an adjacent unfinished site
+      // even only diagonally is part of the same construction cluster, not stranded.
       let nearSite = false;
-      for (let dy = -1; dy <= b.h && !nearSite; dy++) for (let dx = -1; dx <= b.w && !nearSite; dx++) {
-        const onEdge = dx === -1 || dx === b.w || dy === -1 || dy === b.h;
-        if (!onEdge) continue;
-        const id = this.tiles[b.y + dy]?.[b.x + dx]?.buildingId;
-        if (id && id !== b.id && !this.buildings.get(id)?.constructed) nearSite = true;
-      }
+      forEachPerimeterTile(b.x, b.y, b.w, b.h, { corners: true }, (px, py) => {
+        const id = this.tiles[py]?.[px]?.buildingId;
+        if (id && id !== b.id && !this.buildings.get(id)?.constructed) { nearSite = true; return true; }
+      });
       if (!nearSite) stranded++;
     }
     if (stranded > 0) a.push({ id: 'sites', icon: 'road', text: `${stranded} construction site${stranded > 1 ? 's' : ''} unreachable — no delivery route (road or off-road)`, level: 'warn' });
@@ -2587,7 +3024,7 @@ export class GameEngine {
       },
       body: {
         borderEdge: this.borderEdge,
-        ...packTiles(this.tiles),
+        ...packTiles(this._tiles),
         buildings: [...this.buildings.values()].map(b => ({ ...b, stock: { ...b.stock }, incoming: { ...b.incoming } })),
         trucks: this.trucks.map(cloneTruck),
         boats: this.boats.map(cloneTruck),
@@ -2702,13 +3139,7 @@ export class GameEngine {
       // predate per-site foreign labor — their in-progress sites kept building
       // under the old global default (on), so migrate a missing flag → true.
       if (!inst.constructed && inst.foreignLabor === undefined) inst.foreignLabor = true;
-      e.buildings.set(inst.id, inst);
-      for (let dy = 0; dy < inst.h; dy++) {
-        for (let dx = 0; dx < inst.w; dx++) {
-          const t = e.tiles[inst.y + dy]?.[inst.x + dx];
-          if (t) t.buildingId = inst.id;
-        }
-      }
+      e.addBuilding(inst);
     }
     const cloneTruck = (t: Truck): Truck => ({ ...t, points: t.points.map(p => ({ ...p })) });
     e.trucks = body.trucks.map(cloneTruck);

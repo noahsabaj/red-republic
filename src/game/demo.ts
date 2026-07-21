@@ -1,5 +1,5 @@
 // Demo town seeder — opens a developed republic via ?demo in the URL
-import type { GameEngine } from './engine';
+import type { GameEngine, TilePatch } from './engine';
 
 export function seedDemoTown(e: GameEngine) {
   const depot = [...e.buildings.values()].find(b => b.defId === 'depot')!;
@@ -15,9 +15,14 @@ export function seedDemoTown(e: GameEngine) {
   const gx = Math.max(14, Math.min(e.mapW - 15, sx + shift[0]));
   const gy = Math.max(4, Math.min(e.mapH - 13, sy + shift[1]));
 
+  const pendingRoads: TilePatch[] = [];
   const road = (x: number, y: number) => {
     const t = e.tiles[y]?.[x];
-    if (t && !t.road && !t.buildingId && t.terrain !== 'water') t.road = true;
+    if (t && !t.road && !t.buildingId && t.terrain !== 'water') pendingRoads.push({ x, y, road: true });
+  };
+  const flushRoads = () => {
+    e.applyTilePatches(pendingRoads);
+    pendingRoads.length = 0;
   };
   // road grid around the town center
   for (let x = gx - 12; x <= gx + 12; x++) { road(x, gy - 1); road(x, gy + 3); road(x, gy + 8); }
@@ -25,6 +30,7 @@ export function seedDemoTown(e: GameEngine) {
   // connector: base road row to the grid (an L along the shift direction)
   for (let x = Math.min(sx, gx); x <= Math.max(sx, gx); x++) road(x, sy - 1);
   for (let y = Math.min(sy - 1, gy - 1); y <= Math.max(sy - 1, gy - 1); y++) road(gx, y);
+  flushRoads();
 
   const put = (defId: string, x: number, y: number) => e.tryPlace(defId, x, y, { instant: true });
 
@@ -61,6 +67,7 @@ export function seedDemoTown(e: GameEngine) {
     const tryRoute = (route: 'col' | 'row') => {
       if (route === 'col') for (let y = Math.min(spot.y, gy + 8); y <= Math.max(spot.y, gy + 8); y++) road(spot.x + 1, y);
       else for (let x = Math.min(spot.x, gx + 12); x <= Math.max(spot.x, gx + 12); x++) road(x, spot.y + 1);
+      flushRoads();
     };
     tryRoute('col');
     if (!e.findPath(e.adjacentRoads(inst), e.adjacentRoads(depot))) tryRoute('row');

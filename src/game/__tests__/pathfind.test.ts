@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { floodCost, floodRoads } from '../pathfind';
+import { floodCost } from '../pathfind';
 import { DEFAULT_MAP_W, DEFAULT_MAP_H } from '../mapgen';
 
 // L-shaped road: (2,2)→(2,6) then (2,6)→(8,6)
@@ -8,10 +8,12 @@ for (let y = 2; y <= 6; y++) roads.add(`2,${y}`);
 for (let x = 2; x <= 8; x++) roads.add(`${x},6`);
 const isRoad = (x: number, y: number) => roads.has(`${x},${y}`);
 
+// A road BFS is just the weighted flood specialized to all-cost-1 (maxStep 1).
+const roadCost = (x: number, y: number) => (isRoad(x, y) ? 1 : 0);
 const flood48 = (sources: { x: number; y: number }[]) =>
-  floodRoads(DEFAULT_MAP_W, DEFAULT_MAP_H, isRoad, sources);
+  floodCost(DEFAULT_MAP_W, DEFAULT_MAP_H, roadCost, sources, 1);
 
-describe('floodRoads', () => {
+describe('floodCost as road BFS (maxStep 1)', () => {
   it('computes multi-source distances along the network only', () => {
     const flood = flood48([{ x: 2, y: 2 }]);
     expect(flood.distanceAt(2, 2)).toBe(0);
@@ -42,18 +44,16 @@ describe('floodRoads', () => {
   it('reuses scratch buffers safely; stale views throw', () => {
     const a = flood48([{ x: 2, y: 2 }]);
     expect(a.distanceAt(8, 6)).toBe(10);
-    const snap = a.snapshot();
     const b = flood48([{ x: 8, y: 6 }]);
     expect(b.distanceAt(2, 2)).toBe(10);
     expect(b.distanceAt(8, 6)).toBe(0);
-    expect(() => a.distanceAt(2, 2)).toThrow(/Stale/);
-    expect(snap.distanceAt(8, 6)).toBe(10); // snapshot survives the second flood
+    expect(() => a.distanceAt(2, 2)).toThrow(/Stale/); // the first view is invalidated
   });
 
   it('floods correctly on non-default map sizes, interleaved', () => {
     // a long road on a 96x96 map, beyond the 48x48 index range
-    const bigRoad = (x: number, y: number) => y === 90 && x >= 50 && x <= 90;
-    const big = floodRoads(96, 96, bigRoad, [{ x: 50, y: 90 }]);
+    const bigRoad = (x: number, y: number) => (y === 90 && x >= 50 && x <= 90 ? 1 : 0);
+    const big = floodCost(96, 96, bigRoad, [{ x: 50, y: 90 }], 1);
     expect(big.distanceAt(90, 90)).toBe(40);
     expect(big.distanceAt(50, 90)).toBe(0);
     expect(big.distanceAt(49, 90)).toBe(-1);
@@ -63,17 +63,15 @@ describe('floodRoads', () => {
     expect(small.distanceAt(8, 6)).toBe(10);
 
     // and up again on a rectangular map
-    const rect = floodRoads(64, 32, (x, y) => y === 10 && x >= 0 && x <= 60, [{ x: 0, y: 10 }]);
+    const rect = floodCost(64, 32, (x, y) => (y === 10 && x >= 0 && x <= 60 ? 1 : 0), [{ x: 0, y: 10 }], 1);
     expect(rect.distanceAt(60, 10)).toBe(60);
   });
 
-  it('a resize invalidates outstanding views but not snapshots', () => {
+  it('a resize invalidates outstanding views', () => {
     const a = flood48([{ x: 2, y: 2 }]);
-    const snap = a.snapshot();
-    floodRoads(96, 96, () => false, []); // resize happens here
+    expect(a.distanceAt(8, 6)).toBe(10);
+    floodCost(96, 96, () => 0, [], 1); // resize happens here → bumps the generation
     expect(() => a.distanceAt(2, 2)).toThrow(/Stale/);
-    expect(snap.distanceAt(8, 6)).toBe(10); // snapshot owns its storage and width
-    expect(snap.distanceAt(2, 2)).toBe(0);
   });
 });
 
@@ -104,10 +102,13 @@ describe('floodCost (weighted, off-road)', () => {
   });
 
   it('is deterministic across repeated floods', () => {
-    const a = floodCost(10, 10, cost, [{ x: 0, y: 0 }], K).snapshot();
-    const b = floodCost(10, 10, cost, [{ x: 0, y: 0 }], K).snapshot();
-    for (let y = 0; y < 10; y++) for (let x = 0; x < 10; x++) {
-      expect(a.distanceAt(x, y)).toBe(b.distanceAt(x, y));
-    }
+    // capture each flood's full field before the next flood invalidates the view
+    const capture = () => {
+      const f = floodCost(10, 10, cost, [{ x: 0, y: 0 }], K);
+      const d: number[] = [];
+      for (let y = 0; y < 10; y++) for (let x = 0; x < 10; x++) d.push(f.distanceAt(x, y));
+      return d;
+    };
+    expect(capture()).toEqual(capture());
   });
 });

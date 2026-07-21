@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { GameEngine } from '../engine';
+import type { GameEngine, TilePatch } from '../engine';
 import { layRoad, makeEngine, placeBuilt, runDays } from './helpers';
 
 /** Paint a vertical water channel. */
 function carveChannel(e: GameEngine, x0: number, x1: number, y0: number, y1: number) {
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) e.tiles[y][x].terrain = 'water';
+  const patches: TilePatch[] = [];
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) patches.push({ x, y, terrain: 'water' });
+  e.applyTilePatches(patches);
 }
 
 describe('bridges', () => {
@@ -37,7 +39,7 @@ describe('bridges', () => {
     depot.stock.food = 60;
     layRoad(e, 4, 10, 19, 10);
     layRoad(e, 21, 10, 29, 10);
-    e.tiles[10][20].road = true; // the bridge tile
+    e.applyTilePatches([{ x: 20, y: 10, road: true }]); // the bridge tile
     runDays(e, 12);
     expect(store.stock.food ?? 0).toBeGreaterThan(0);
   });

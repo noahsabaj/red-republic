@@ -105,7 +105,7 @@ describe('border placement rules', () => {
 
   it('foreign soil cannot be bulldozed (the crossing lane is safe)', () => {
     const e = new GameEngine({ map: flatBorderMap(), skipStartingBase: true, weatherScript: CALM_WEATHER });
-    e.tiles[10][0].road = true; // engine-laid lane
+    e.applyTilePatches([{ x: 0, y: 10, road: true }]); // engine-laid lane
     expect(e.bulldozeAt(0, 10)).toBe(false);
     expect(e.tiles[10][0].road).toBe(true);
   });
