@@ -27,6 +27,7 @@ import { MusicEngine } from './music';
 import type { EngineMood } from './music';
 import { DEFAULT_TRACK_ID, PLAYLIST, trackById } from './tracks';
 import type { Track } from './tracks';
+import { buildSongPlan } from './arrange';
 import { autoAdvance, naturalOrder, orderPos, shuffledOrder, stepPos } from './playlist';
 import type { RepeatMode } from './playlist';
 
@@ -36,7 +37,9 @@ const SFX_MIN_INTERVAL_MS = 50; // same-sound rate limit (event bursts at 4x spe
 const MANUAL_CROSSFADE_S = 0.35;
 const AUTO_CROSSFADE_S = 1.2;
 
-/** Live "now playing" snapshot for the player UI. */
+/** Live "now playing" snapshot for the player UI. Transport-only — it changes
+ *  on discrete events (track/play/shuffle/repeat), never on a timer. The
+ *  fast-changing playhead is read separately via musicProgress(). */
 export interface MusicState {
   trackId: string;
   trackName: string;
@@ -45,6 +48,7 @@ export interface MusicState {
   playing: boolean;
   shuffle: boolean;
   repeat: RepeatMode;
+  durationS: number; // exact length of the current song (changes on track change)
 }
 
 /** Pre-unlock snapshot from persisted prefs, so the panel reads correctly
@@ -56,6 +60,7 @@ function initialMusicState(): MusicState {
     trackId: track.id, trackName: track.name,
     index: PLAYLIST.indexOf(track), total: PLAYLIST.length,
     playing: false, shuffle: s.musicShuffle, repeat: s.musicRepeat,
+    durationS: buildSongPlan(track).durationS,
   });
 }
 
@@ -79,10 +84,6 @@ export class AudioSystem {
   private repeat: RepeatMode = 'all';
   private musicSnap: MusicState = initialMusicState();
   private musicListeners = new Set<() => void>();
-  private advanceTimer: ReturnType<typeof setTimeout> | null = null;
-  private advanceEpoch = 0;           // performance.now() when the timer armed
-  private advanceWindowMs = 0;        // duration the current timer was armed for
-  private advanceRemainingMs: number | null = null; // leftover window across a pause
 
   /**
    * Create (or resume) the AudioContext. Must be reachable from a user
@@ -127,10 +128,10 @@ export class AudioSystem {
     const startIdx = Math.max(0, PLAYLIST.findIndex(t => t.id === startId));
     this.pos = orderPos(this.order, startIdx);
     this.music = new MusicEngine(this.ctx, this.musicGain);
+    this.music.onEnded = () => this.onSongEnded();
     this.music.setIntensity(this.scene === 'menu' ? 0.35 : 0.55);
     this.music.setMood(this.scene === 'game' ? this.probe : null);
     this.music.playTrack(this.currentTrack(), { crossfadeS: 0 });
-    this.armAdvance();
     this.notifyMusic(this.snapshot());
   }
 
@@ -242,7 +243,6 @@ export class AudioSystem {
     this.order = on ? shuffledOrder(PLAYLIST.length, Math.random) : naturalOrder(PLAYLIST.length);
     this.pos = orderPos(this.order, currentIdx);
     updateSettings({ musicShuffle: on });
-    this.armAdvance();
     this.notifyMusic(this.snapshot());
   }
 
@@ -255,8 +255,36 @@ export class AudioSystem {
   /** Play/pause the music without touching master mute or the sim. */
   setMusicPlaying(on: boolean) {
     this.music?.setPlaying(on);
-    if (on) this.armAdvance(); else this.pauseAdvance();
     this.notifyMusic(this.snapshot());
+  }
+
+  /** Scrub the current song to `t` seconds (snapped to a chord block by the
+   *  engine). Only the playhead moves; the transport snapshot is unchanged
+   *  except that seeking resumes playback. */
+  seek(t: number) {
+    this.music?.seek(t);
+    this.notifyMusic(this.snapshot());
+  }
+
+  /** Fast-changing playhead for the scrubber — polled by the panel, kept OUT
+   *  of MusicState so the transport store stays event-only. */
+  musicProgress = (): { elapsedS: number; durationS: number; playing: boolean } => ({
+    elapsedS: this.music?.elapsedS() ?? 0,
+    durationS: this.music?.durationS() ?? this.musicSnap.durationS,
+    playing: this.music?.isPlaying() ?? false,
+  });
+
+  /** Dev-only introspection (bound to window.__audio in dev) for verifying playback. */
+  debug() {
+    const m = this.music;
+    return {
+      track: this.currentTrack().id,
+      elapsed: m?.elapsedS() ?? -1,
+      duration: m?.durationS() ?? -1,
+      playing: m?.isPlaying() ?? false,
+      chord: m ? [...m.currentChord()] : null,
+      root: m?.currentRoot() ?? -1,
+    };
   }
 
   private currentTrack(): Track {
@@ -265,44 +293,22 @@ export class AudioSystem {
 
   private startCurrent(crossfadeS: number) {
     if (!this.music) return;
-    this.advanceRemainingMs = null;
     this.music.playTrack(this.currentTrack(), { crossfadeS });
-    this.armAdvance();
     this.notifyMusic(this.snapshot());
   }
 
-  private armAdvance() {
-    this.clearAdvance();
-    if (!this.music?.isPlaying()) return;
-    const ms = this.advanceRemainingMs ?? this.currentTrack().playMs;
-    this.advanceRemainingMs = null;
-    this.advanceWindowMs = ms;
-    this.advanceEpoch = performance.now();
-    this.advanceTimer = setTimeout(() => this.onAdvance(), ms);
-  }
-
-  private pauseAdvance() {
-    if (this.advanceTimer === null) return;
-    const elapsed = performance.now() - this.advanceEpoch;
-    this.advanceRemainingMs = Math.max(0, this.advanceWindowMs - elapsed);
-    this.clearAdvance();
-  }
-
-  private clearAdvance() {
-    if (this.advanceTimer !== null) { clearTimeout(this.advanceTimer); this.advanceTimer = null; }
-  }
-
-  private onAdvance() {
-    this.advanceTimer = null;
+  /** The current song reached its end (fired by the engine on the audio clock).
+   *  Repeat-one replays it from the top (bit-identical); repeat-all advances;
+   *  repeat-off stops. */
+  private onSongEnded() {
     const r = autoAdvance(this.pos, this.order.length, this.repeat);
     if (r.stop) { this.setMusicPlaying(false); return; }
-    if (r.sameTrack) { this.advanceRemainingMs = null; this.armAdvance(); return; }
-    if (r.reshuffle && this.shuffle) this.order = shuffledOrder(PLAYLIST.length, Math.random);
-    this.pos = r.pos;
-    this.advanceRemainingMs = null;
+    if (!r.sameTrack) {
+      if (r.reshuffle && this.shuffle) this.order = shuffledOrder(PLAYLIST.length, Math.random);
+      this.pos = r.pos;
+      updateSettings({ musicTrackId: this.currentTrack().id });
+    }
     this.music?.playTrack(this.currentTrack(), { crossfadeS: AUTO_CROSSFADE_S });
-    this.armAdvance();
-    updateSettings({ musicTrackId: this.currentTrack().id });
     this.notifyMusic(this.snapshot());
   }
 
@@ -313,6 +319,7 @@ export class AudioSystem {
       index: PLAYLIST.indexOf(track), total: PLAYLIST.length,
       playing: this.music?.isPlaying() ?? false,
       shuffle: this.shuffle, repeat: this.repeat,
+      durationS: this.music?.durationS() ?? buildSongPlan(track).durationS,
     };
   }
 
@@ -352,3 +359,8 @@ export class AudioSystem {
 
 /** The one app-wide instance. Import-safe: nothing happens until unlock(). */
 export const audio = new AudioSystem();
+
+// Dev-only console handle for verifying playback/scrubbing.
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  (window as unknown as { __audio: AudioSystem }).__audio = audio;
+}

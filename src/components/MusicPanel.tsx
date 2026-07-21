@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react';
 import { GameIcon } from '@/ui/GameIcon';
 import { RangeSlider, ToggleButton } from '@/components/menu/controls';
 import { audio, PLAYLIST } from '@/audio';
+import { fmtClock } from '@/audio/format';
 import { useMusicState } from '@/hooks/use-music';
 import { useSettings } from '@/hooks/use-settings';
 import { updateSettings } from '@/app/settings';
@@ -17,6 +19,18 @@ export default function MusicPanel() {
   const cycleRepeat = () => audio.setRepeat(m.repeat === 'off' ? 'all' : m.repeat === 'all' ? 'one' : 'off');
   const repeatLabel = m.repeat === 'one' ? 'Repeat one' : m.repeat === 'all' ? 'Repeat all' : 'Repeat off';
 
+  // The playhead ticks off the audio clock — polled here (not in MusicState, which
+  // stays event-only). 4 Hz while playing for a smooth thumb glide, 1 Hz when paused
+  // or under reducedMotion (the M:SS text only changes per second anyway). A no-op
+  // setState (same value while paused) is cheaply skipped by React.
+  const [elapsed, setElapsed] = useState(() => audio.musicProgress().elapsedS);
+  useEffect(() => {
+    const ms = m.playing && !s.reducedMotion ? 250 : 1000;
+    const id = setInterval(() => setElapsed(audio.musicProgress().elapsedS), ms);
+    return () => clearInterval(id);
+  }, [m.playing, s.reducedMotion]);
+  const fillPct = m.durationS > 0 ? Math.min(100, (elapsed / m.durationS) * 100) : 0;
+
   return (
     <div className="space-y-3">
       <div className="rounded bg-red-900/40 p-2 text-center">
@@ -24,6 +38,23 @@ export default function MusicPanel() {
         <div className="mt-0.5 text-sm font-bold text-yellow-100">{m.trackName}</div>
         <div className="text-[0.625rem] text-yellow-200/50">
           {m.index + 1} / {m.total}{m.playing ? '' : ' · paused'}
+        </div>
+      </div>
+
+      {/* scrubber — elapsed / total, drag to seek (snaps to the nearest chord block) */}
+      <div className="space-y-1">
+        <input
+          type="range"
+          className="soviet-range w-full"
+          aria-label="Seek"
+          min={0} max={Math.max(1, m.durationS)} step={Math.max(1, m.durationS / 200)}
+          value={Math.min(elapsed, m.durationS)}
+          onChange={e => { const v = Number(e.target.value); setElapsed(v); audio.seek(v); }}
+          style={{ background: `linear-gradient(to right, #eab308 0 ${fillPct}%, rgba(10,5,4,0.7) ${fillPct}% 100%)` }}
+        />
+        <div className="flex justify-between text-[0.625rem] font-bold tabular-nums text-yellow-200/60">
+          <span>{fmtClock(elapsed)}</span>
+          <span>{fmtClock(m.durationS)}</span>
         </div>
       </div>
 
@@ -72,7 +103,7 @@ export default function MusicPanel() {
       </div>
 
       <p className="text-[0.625rem] leading-snug text-yellow-200/50">
-        The State Radio Orchestra broadcasts around the clock — every performance synthesized live, no two alike.
+        The People's approved repertoire — six fixed works, synthesized live from a seeded score: the same performance, note for note, every broadcast.
       </p>
     </div>
   );

@@ -886,6 +886,9 @@ function drawBuilding(ctx: CanvasRenderingContext2D, b: BuildingInst, cam: Camer
     ctx.strokeText(`${pct}%`, mid.x - 4 * cam.z, ty);
     ctx.fillText(`${pct}%`, mid.x - 4 * cam.z, ty);
     ctx.textAlign = 'center';
+    // construction-priority marker: High flagged gold, Low chevron muted (Normal: none)
+    const prio = b.buildPriority ?? 0;
+    if (prio !== 0) drawIcon(ctx, prio > 0 ? 'flag' : 'chevronDown', mid.x, ty - 13 * cam.z, 10 * cam.z, prio > 0 ? '#f5c518' : '#8fa1b8');
     return;
   }
 

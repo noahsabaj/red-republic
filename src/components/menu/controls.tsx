@@ -47,7 +47,7 @@ export function ToggleButton({ on, onChange, icon, label, title, disabled, class
       title={title}
       disabled={disabled}
       onClick={() => onChange(!on)}
-      className={`flex items-center gap-1.5 rounded px-2 py-1 text-[0.6875rem] font-bold transition-colors disabled:opacity-40 ${
+      className={`flex items-center justify-center gap-1.5 whitespace-nowrap rounded px-2 py-1 text-[0.6875rem] font-bold transition-colors disabled:opacity-40 ${
         on ? 'bg-yellow-500 text-red-950'
            : 'border border-yellow-600/30 bg-red-950/50 text-yellow-100/70 hover:bg-red-900/70'
       } ${className ?? ''}`}

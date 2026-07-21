@@ -179,6 +179,7 @@ function MultiInfo({ engine, items, payMode, currency, onArmBuild }: { engine: G
   }
   const staffed = buildings.filter(b => b.constructed && BUILDINGS[b.defId].workers > 0);
   const allPriority = staffed.length > 0 && staffed.every(b => b.priorityHigh);
+  const sites = buildings.filter(b => !b.constructed);
 
   return (
     <div className="space-y-3">
@@ -210,6 +211,27 @@ function MultiInfo({ engine, items, payMode, currency, onArmBuild }: { engine: G
             >
               <GameIcon name="star" size={12} /> {allPriority ? 'Priority staffing: ON for all' : `Set priority staffing for ${staffed.length} building${staffed.length > 1 ? 's' : ''}`}
             </button>
+          )}
+          {sites.length > 0 && (
+            <div>
+              <div className="mb-1 text-[0.625rem] font-black uppercase tracking-wider text-yellow-400/80">Construction priority ({sites.length} site{sites.length > 1 ? 's' : ''})</div>
+              <div className="flex gap-1.5" role="group" aria-label="Construction priority">
+                {([[1, 'High'], [0, 'Normal'], [-1, 'Low']] as const).map(([tier, label]) => {
+                  const all = sites.every(b => (b.buildPriority ?? 0) === tier);
+                  return (
+                    <button
+                      key={tier}
+                      aria-pressed={all}
+                      data-sfx="toggle"
+                      onClick={() => engine.setSitePriorityMany(sites.map(b => b.id), tier)}
+                      className={`flex-1 rounded px-2 py-1.5 text-xs font-bold ${all ? 'bg-yellow-500 text-red-950' : 'border border-yellow-600/30 bg-red-900/50 text-yellow-100/80 hover:bg-red-800'}`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -372,6 +394,27 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
                 <GameIcon name="builders" size={12} /> Begin construction
               </button>
             )}
+
+            <div>
+              <div className="mb-1 text-[0.625rem] font-black uppercase tracking-wider text-yellow-400/80">Construction priority</div>
+              <div className="flex gap-1.5" role="group" aria-label="Construction priority">
+                {([[1, 'High'], [0, 'Normal'], [-1, 'Low']] as const).map(([tier, label]) => {
+                  const active = (b.buildPriority ?? 0) === tier;
+                  return (
+                    <button
+                      key={tier}
+                      aria-pressed={active}
+                      data-sfx="toggle"
+                      onClick={() => engine.setSitePriority(b.id, tier)}
+                      className={`flex-1 rounded px-2 py-1.5 text-xs font-bold ${active ? 'bg-yellow-500 text-red-950' : 'border border-yellow-600/30 bg-red-900/50 text-yellow-100/80 hover:bg-red-800'}`}
+                      title={tier === 1 ? 'Build this site before Normal and Low sites — its crews and materials come first' : tier === -1 ? 'Build this site only after higher-priority sites are crewed' : 'Default — shares builders evenly with other Normal sites'}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
 
             <div>
               <div className="mb-1 text-[0.625rem] font-black uppercase tracking-wider text-yellow-400/80">Import remaining materials</div>

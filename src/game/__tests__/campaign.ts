@@ -69,6 +69,17 @@ export const CAMPAIGN_STEPS: CampaignStep[] = [
       place(e, 'gravelQuarry', 18, 24);
       place(e, 'brickworks', 16, 24);
       for (let x = 26; x <= 30; x++) place(e, 'road', x, 23);
+      // A competent planner concentrates the first crews on the supply chain that
+      // feeds the town — planks, bricks, food — so production comes online before
+      // the housing fills in. Under fair-share construction the builder pool is
+      // split across every ready site, so without priority all 13 day-1 sites would
+      // build in lockstep and nothing would finish for weeks. High priority builds
+      // these first (and hauls their materials first); the houses follow.
+      for (const b of e.buildings.values()) {
+        if (['woodcutter', 'sawmill', 'gravelQuarry', 'brickworks', 'farm'].includes(b.defId) && !b.constructed) {
+          e.setSitePriority(b.id, 1);
+        }
+      }
     },
   },
   {

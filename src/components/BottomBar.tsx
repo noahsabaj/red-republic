@@ -4,7 +4,7 @@ import type { Category, ResourceId } from '@/game/config';
 import type { GameEngine } from '@/game/engine';
 import { useEngineSignature } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
-import { ToggleButton } from '@/components/menu/controls';
+import { ToggleButton, TwoStepButton } from '@/components/menu/controls';
 import { buildCostText, canAffordBuild, materialsShort } from '@/ui/build-cost';
 import type { BuildPayMode } from '@/ui/build-cost';
 import type { BuildPolicy, Tool } from './GameCanvas';
@@ -15,6 +15,7 @@ interface Props {
   setTool: (t: Tool) => void;
   policy: BuildPolicy;
   setPolicy: (patch: Partial<BuildPolicy>) => void;
+  push: (text: string, kind?: 'good' | 'bad' | 'info', icon?: string) => void;
 }
 
 /** The mode-aware hover card: cost in the active funding mode, then the specs. */
@@ -56,7 +57,12 @@ function InfoCard({ engine, defId, mode, currency }: { engine: GameEngine; defId
   );
 }
 
-export default function BottomBar({ engine, tool, setTool, policy, setPolicy }: Props) {
+/** One height + no-shrink for every control in the bar. A single source of truth
+ *  keeps the whole row aligned, and shrink-0 makes the bar scroll on narrow
+ *  screens instead of squashing a label (e.g. "Instant $") onto two lines. */
+const BAR_CTL = 'h-10 shrink-0';
+
+export default function BottomBar({ engine, tool, setTool, policy, setPolicy, push }: Props) {
   const [cat, setCat] = useState<Category | null>(null);
   const [sub, setSub] = useState<string | null>(null);
   const [hidden, setHidden] = useState(false);
@@ -64,8 +70,15 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy }: 
 
   const mode: BuildPayMode = policy.instant ? 'instant' : policy.autoBuy ? 'autoBuy' : 'materials';
 
-  // re-render when affordability or the foreign-labor default flips
-  useEngineSignature(engine, (e) => [e.rubles, e.dollars, e.foreignLaborEnabled]);
+  // re-render when affordability, the foreign-labor default, or the planned-site count changes
+  useEngineSignature(engine, (e) => [e.rubles, e.dollars, e.foreignLaborEnabled, e.plannedCount()]);
+
+  const plannedN = engine.plannedCount();
+  const commenceCost = plannedN > 0 ? engine.plannedCommenceCost() : null;
+  const commenceCostText = commenceCost
+    ? [commenceCost.rubles ? `₽${commenceCost.rubles.toLocaleString()}` : null,
+       commenceCost.dollars ? `$${commenceCost.dollars.toLocaleString()}` : null].filter(Boolean).join(' / ') || 'free'
+    : '';
 
   const openCat = (c: Category) => {
     setCat(prev => (prev === c ? null : c));
@@ -87,7 +100,7 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy }: 
     >
       {/* ---- drill-down flyout (tiers 2 & 3), only while pinned ---- */}
       {!hidden && activeCat && (
-        <div className="pointer-events-auto mx-2 mb-1.5 self-start rounded-lg border-2 border-yellow-600/60 bg-red-950/95 p-2 shadow-2xl">
+        <div className="pointer-events-auto mx-2 mb-1.5 self-center rounded-lg border-2 border-yellow-600/60 bg-red-950/95 p-2 shadow-2xl">
           <div className="mb-1.5 flex items-center gap-1.5 px-1 text-[0.6875rem] font-black uppercase tracking-widest" style={{ color: activeCat.accent }}>
             <GameIcon name={activeCat.icon} size={13} /> {activeCat.name}
           </div>
@@ -139,15 +152,58 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy }: 
 
       {/* ---- the bar ---- */}
       <div className="pointer-events-auto flex items-stretch gap-2 overflow-x-auto border-t-2 border-yellow-600/60 bg-gradient-to-b from-red-900 to-red-950 px-2 py-1.5 shadow-[0_-10px_26px_rgba(0,0,0,0.34)]">
-        {/* tier 1: category buttons */}
-        <div className="flex items-stretch gap-1.5">
+        {/* left: build configurations (the BuildPolicy stamped onto each new site) */}
+        <div className="flex flex-1 items-center justify-start gap-1.5">
+          {/* Import + its currency read as one control: tighter internal gap groups
+              them, the segmented border keeps ₽/$ associated, no bulky frame. */}
+          <div className="flex items-center gap-1">
+            <ToggleButton on={policy.autoBuy} onChange={v => setPolicy({ autoBuy: v })} className={BAR_CTL}
+              icon="truck" label="Auto-buy" title="Auto-buy new sites' construction materials at the border (₽ East / $ West) instead of hauling them from your own stockpiles" />
+            <div className={`${BAR_CTL} flex overflow-hidden rounded-md border border-yellow-600/30`} role="group" aria-label="Import currency">
+              {(['east', 'west'] as const).map(cur => (
+                <button
+                  key={cur}
+                  aria-pressed={policy.currency === cur}
+                  onClick={() => setPolicy({ currency: cur })}
+                  className={`flex items-center justify-center px-2 text-[0.6875rem] font-black ${policy.currency === cur ? 'bg-yellow-500 text-red-950' : 'bg-red-950/50 text-yellow-100/60 hover:bg-red-900'}`}
+                >{cur === 'east' ? '₽' : '$'}</button>
+              ))}
+            </div>
+          </div>
+          <ToggleButton on={policy.instant} onChange={v => setPolicy({ instant: v })} className={BAR_CTL}
+            icon="download" label="Instant $" title="Import a finished Western prefab — completes immediately for dollars" />
+          <ToggleButton on={engine.foreignLaborEnabled} onChange={v => engine.setForeignLaborEnabled(v)} className={BAR_CTL}
+            icon="users" label="Foreign" title="New sites may hire paid foreign builders before you have citizens" />
+          <ToggleButton on={policy.plan} onChange={v => setPolicy({ plan: v })} className={BAR_CTL}
+            icon="contract" label="Plan" title="Place sites without commencing — begin construction later" />
+          {plannedN > 0 && (
+            <TwoStepButton
+              title="Commence every planned site the treasury can afford, highest priority first"
+              label={<><GameIcon name="builders" size={14} /> Commence All ({plannedN})</>}
+              confirmLabel={<>Commence {plannedN} — {commenceCostText}?</>}
+              className={`${BAR_CTL} flex items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[0.6875rem] font-bold bg-yellow-500 text-red-950 hover:bg-yellow-400`}
+              armedClassName={`${BAR_CTL} flex items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[0.6875rem] font-bold bg-green-500 text-red-950 hover:bg-green-400`}
+              onConfirm={() => {
+                const started = engine.commenceAllPlanned();
+                push(started < plannedN
+                  ? `Commenced ${started} of ${plannedN} — the rest are unaffordable`
+                  : `Commenced ${started} planned site${started === 1 ? '' : 's'}`,
+                  started < plannedN ? 'bad' : 'good', 'builders');
+              }}
+            />
+          )}
+        </div>
+
+        {/* middle: build options — the category drill-down, centered between the
+            config zone (left) and the tools zone (right) via equal flex-1 sides */}
+        <div className="flex shrink-0 items-center justify-center gap-1.5">
           {CATEGORIES.map(c => (
             <button
               key={c.id}
               aria-pressed={cat === c.id}
               title={c.name}
               onClick={() => openCat(c.id)}
-              className={`flex min-w-[3.25rem] flex-col items-center justify-center gap-0.5 rounded-md border-b-[3px] px-2 py-1 transition-colors ${
+              className={`${BAR_CTL} flex min-w-[3.25rem] flex-col items-center justify-center gap-0.5 rounded-md border-b-[3px] px-2 transition-colors ${
                 cat === c.id ? 'bg-red-800/80 text-yellow-50' : 'bg-red-950/40 text-yellow-100/70 hover:bg-red-900/70'
               }`}
               style={{ borderBottomColor: cat === c.id ? c.accent : `${c.accent}66` }}
@@ -158,40 +214,14 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy }: 
           ))}
         </div>
 
-        <div className="w-px self-stretch bg-yellow-600/25" />
-
-        {/* build-mode defaults (stamped onto each new site) */}
-        <div className="flex items-center gap-1.5">
-          <div className="flex items-center gap-1 rounded-md bg-red-950/40 p-1">
-            <ToggleButton on={policy.autoBuy} onChange={v => setPolicy({ autoBuy: v })}
-              icon="truck" label="Import" title="Auto-buy this building's materials at the border" />
-            <div className="flex overflow-hidden rounded border border-yellow-600/30" role="group" aria-label="Import currency">
-              {(['east', 'west'] as const).map(cur => (
-                <button
-                  key={cur}
-                  aria-pressed={policy.currency === cur}
-                  onClick={() => setPolicy({ currency: cur })}
-                  className={`px-1.5 py-1 text-[0.6875rem] font-black ${policy.currency === cur ? 'bg-yellow-500 text-red-950' : 'bg-red-950/50 text-yellow-100/60 hover:bg-red-900'}`}
-                >{cur === 'east' ? '₽' : '$'}</button>
-              ))}
-            </div>
-          </div>
-          <ToggleButton on={policy.instant} onChange={v => setPolicy({ instant: v })}
-            icon="download" label="Instant $" title="Import a finished Western prefab — completes immediately for dollars" />
-          <ToggleButton on={engine.foreignLaborEnabled} onChange={v => engine.setForeignLaborEnabled(v)}
-            icon="users" label="Foreign" title="New sites may hire paid foreign builders before you have citizens" />
-          <ToggleButton on={policy.plan} onChange={v => setPolicy({ plan: v })}
-            icon="contract" label="Plan" title="Place sites without commencing — begin construction later" />
-        </div>
-
-        {/* right-end tools */}
-        <div className="ml-auto flex items-center gap-1.5">
+        {/* right: destructive + bar visibility tools */}
+        <div className="flex flex-1 items-center justify-end gap-1.5">
           <button
             data-sfx="none" // the setTool funnel voices toolArm/toolCancel
             aria-pressed={tool.kind === 'bulldoze'}
             title="Demolish (X)"
             onClick={() => setTool(tool.kind === 'bulldoze' ? { kind: 'select' } : { kind: 'bulldoze' })}
-            className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[0.6875rem] font-bold ${
+            className={`${BAR_CTL} flex items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[0.6875rem] font-bold ${
               tool.kind === 'bulldoze' ? 'bg-red-500 text-white' : 'border border-red-400/30 bg-red-900/50 text-red-100 hover:bg-red-800'
             }`}
           >
@@ -202,7 +232,7 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy }: 
             aria-pressed={!hidden}
             title={hidden ? 'Pin the build bar open' : 'Hide the build bar'}
             onClick={() => (hidden ? (setHidden(false), setPeeking(false)) : hide())}
-            className="flex items-center justify-center rounded-md border border-yellow-600/30 bg-red-950/40 px-2 py-1 text-yellow-100/80 hover:bg-red-900/70"
+            className={`${BAR_CTL} flex items-center justify-center rounded-md border border-yellow-600/30 bg-red-950/40 px-2 text-yellow-100/80 hover:bg-red-900/70`}
           >
             <GameIcon name={hidden ? 'pin' : 'chevronDown'} size={16} />
           </button>

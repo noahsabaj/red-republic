@@ -322,6 +322,7 @@ export default function App() {
             setTool={setToolSfx}
             policy={policy}
             setPolicy={setPolicy}
+            push={push}
           />
           {panel && (
             <SidePanel

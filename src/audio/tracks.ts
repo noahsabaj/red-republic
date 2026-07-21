@@ -18,6 +18,7 @@ export interface ChordScheme<D extends string = string> {
   tones: Record<D, [number, number, number]>;
   markov: Record<D, [D, number][]>; // rows sum to 1 (asserted in tests)
   start: D;                          // starting degree on (re)play
+  cadence?: D[];                     // chords that resolve the song onto its tonic at the end (default [start])
 }
 
 export interface Envelope { attack: number; release: number } // seconds
@@ -105,7 +106,8 @@ export interface Track {
   bpm: number;              // beat = 60 / bpm
   beatsPerBar: number;      // 4, or 3 for a waltz
   chordBars: [number, number]; // chord length in bars [min, max]
-  playMs: number;           // auto-advance duration (~2.5–4 min)
+  playMs: number;           // target length; the exact duration is derived from the built plan
+  seed?: number;            // pins the deterministic performance (default = hash of id)
   layers: Layer[];
 }
 
@@ -115,7 +117,7 @@ const MAJOR_PENTA = [0, 2, 4, 7, 9] as const;
 
 /** Natural-minor progression, reusing the pinned A-minor tables. Key-agnostic
  *  (offsets from root), so Anthem / Nocturne / Menu share it in different keys. */
-const MINOR_SCHEME: ChordScheme<Degree> = { tones: CHORD_TONES, markov: CHORD_MARKOV, start: 'i' };
+const MINOR_SCHEME: ChordScheme<Degree> = { tones: CHORD_TONES, markov: CHORD_MARKOV, start: 'i', cadence: ['v', 'i'] };
 
 type DorianDeg = 'i' | 'III' | 'IV' | 'v' | 'VII';
 const DORIAN_SCHEME: ChordScheme<DorianDeg> = {
@@ -128,6 +130,7 @@ const DORIAN_SCHEME: ChordScheme<DorianDeg> = {
     III: [['VII', 0.50], ['IV', 0.30], ['i', 0.20]],
   },
   start: 'i',
+  cadence: ['v', 'i'],
 };
 
 type MajorDeg = 'I' | 'ii' | 'IV' | 'V' | 'vi';
@@ -141,6 +144,7 @@ const MAJOR_SCHEME: ChordScheme<MajorDeg> = {
     vi: [['IV', 0.40], ['ii', 0.30], ['V', 0.30]],
   },
   start: 'I',
+  cadence: ['V', 'I'],
 };
 
 // ---------------- the catalog ----------------
@@ -149,7 +153,7 @@ const MAJOR_SCHEME: ChordScheme<MajorDeg> = {
 const ANTHEM: Track = {
   id: 'anthem', name: 'Anthem of the Toiling Masses', root: 45, mode: 'A minor',
   chords: MINOR_SCHEME, melody: PENTATONIC,
-  bpm: 68, beatsPerBar: 4, chordBars: [2, 4], playMs: 190_000,
+  bpm: 68, beatsPerBar: 4, chordBars: [2, 4], playMs: 190_000, seed: 1917,
   layers: [
     { kind: 'pad', osc: 'sawtooth', detune: [-4, 4], env: { attack: 2.5, release: 4 }, level: 0.16, cutoffBase: 320, cutoffSpan: 560, dropThirdWhenCold: true },
     { kind: 'sub', osc: 'sine', env: { attack: 2, release: 3.5 }, level: 0.09, octave: -12 },
@@ -162,7 +166,7 @@ const ANTHEM: Track = {
 const INDUSTRIAL: Track = {
   id: 'industrial', name: 'Tempo of the Five-Year Plan', root: 38, mode: 'D dorian',
   chords: DORIAN_SCHEME, melody: PENTATONIC,
-  bpm: 128, beatsPerBar: 4, chordBars: [2, 2], playMs: 170_000,
+  bpm: 128, beatsPerBar: 4, chordBars: [2, 2], playMs: 170_000, seed: 1928,
   layers: [
     { kind: 'pad', osc: 'sawtooth', detune: [-6, 6], env: { attack: 0.8, release: 1.5 }, level: 0.08, cutoffBase: 400, cutoffSpan: 700 },
     { kind: 'sub', osc: 'sine', env: { attack: 0.2, release: 0.8 }, level: 0.10, octave: -12 },
@@ -179,7 +183,7 @@ const INDUSTRIAL: Track = {
 const WALTZ: Track = {
   id: 'waltz', name: 'Waltz of the Collective Harvest', root: 48, mode: 'C major',
   chords: MAJOR_SCHEME, melody: MAJOR_PENTA,
-  bpm: 150, beatsPerBar: 3, chordBars: [2, 4], playMs: 175_000,
+  bpm: 150, beatsPerBar: 3, chordBars: [2, 4], playMs: 175_000, seed: 1922,
   layers: [
     { kind: 'pad', osc: 'triangle', detune: [-4, 4], env: { attack: 0.6, release: 1.4 }, level: 0.11, cutoffBase: 600, cutoffSpan: 800 },
     { kind: 'bass', osc: 'triangle', env: { attack: 0.01, release: 0.5 }, level: 0.16, octave: -12, pattern: [0], toneIndex: [0] },
@@ -192,7 +196,7 @@ const WALTZ: Track = {
 const NOCTURNE: Track = {
   id: 'nocturne', name: 'Nocturne of the Northern Watch', root: 47, mode: 'B minor',
   chords: MINOR_SCHEME, melody: PENTATONIC,
-  bpm: 52, beatsPerBar: 4, chordBars: [2, 4], playMs: 210_000,
+  bpm: 52, beatsPerBar: 4, chordBars: [2, 4], playMs: 210_000, seed: 1957,
   layers: [
     { kind: 'pad', osc: 'sawtooth', detune: [-4, 4], env: { attack: 3, release: 4 }, level: 0.16, cutoffBase: 260, cutoffSpan: 500, dropThirdWhenCold: true },
     { kind: 'sub', osc: 'sine', env: { attack: 3, release: 4 }, level: 0.09, octave: -12 },
@@ -204,7 +208,7 @@ const NOCTURNE: Track = {
 const MARCH: Track = {
   id: 'march', name: 'March of the Vanguard', root: 43, mode: 'G major',
   chords: MAJOR_SCHEME, melody: MAJOR_PENTA,
-  bpm: 112, beatsPerBar: 4, chordBars: [2, 4], playMs: 175_000,
+  bpm: 112, beatsPerBar: 4, chordBars: [2, 4], playMs: 175_000, seed: 1945,
   layers: [
     { kind: 'pad', osc: 'sawtooth', detune: [-3, 3], env: { attack: 1, release: 2.2 }, level: 0.12, cutoffBase: 520, cutoffSpan: 900 },
     { kind: 'sub', osc: 'sine', env: { attack: 0.5, release: 1.4 }, level: 0.10, octave: -12 },
@@ -222,7 +226,7 @@ const MARCH: Track = {
 const MENU_THEME: Track = {
   id: 'radio', name: 'The State Radio Orchestra', root: 40, mode: 'E minor',
   chords: MINOR_SCHEME, melody: PENTATONIC,
-  bpm: 60, beatsPerBar: 4, chordBars: [3, 5], playMs: 200_000,
+  bpm: 60, beatsPerBar: 4, chordBars: [3, 5], playMs: 200_000, seed: 1961,
   layers: [
     { kind: 'pad', osc: 'sawtooth', detune: [-4, 4], env: { attack: 3.5, release: 4.5 }, level: 0.14, cutoffBase: 280, cutoffSpan: 450, dropThirdWhenCold: true },
     { kind: 'sub', osc: 'sine', env: { attack: 3, release: 4 }, level: 0.08, octave: -12 },
