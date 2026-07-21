@@ -96,6 +96,8 @@ export interface BuildingDef {
   isCustoms?: boolean;
   isDepot?: boolean;
   isPort?: boolean; // dockside freight hub — must touch water; barges link ports
+  isMotorDepot?: boolean; // garage — staffed drivers add trucks to the haulage fleet
+  isGasStation?: boolean; // fuels the fleet — holds the fuel depot-trucks burn
   pollution?: number; // 0..5 intensity
   boxHeight: number; // render height
   color: string;     // roof color
@@ -176,7 +178,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   coalMine: B({
     id: 'coalMine', name: 'Coal Mine', icon: 'coalMine', category: 'industry', size: [1, 1],
     materials: { bricks: 15, steel: 6, planks: 4, machinery: 2 }, labor: 200,
-    workers: 14, power: 2, heat: 0, storage: { coal: 60, machinery: 4 },
+    workers: 14, power: 2, heat: 0, storage: { coal: 60, machinery: 6 },
     wear: { machinery: 0.015 },
     outputs: { coal: 6 }, requiresDeposit: 'coal', pollution: 3,
     boxHeight: 12, color: '#2e2e2e', wallColor: '#4f4f4f',
@@ -185,7 +187,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   ironMine: B({
     id: 'ironMine', name: 'Iron Ore Mine', icon: 'ironMine', category: 'industry', size: [1, 1],
     materials: { bricks: 15, steel: 6, planks: 4, machinery: 2 }, labor: 200,
-    workers: 14, power: 2, heat: 0, storage: { ironOre: 60, machinery: 4 },
+    workers: 14, power: 2, heat: 0, storage: { ironOre: 60, machinery: 6 },
     wear: { machinery: 0.015 },
     outputs: { ironOre: 5 }, requiresDeposit: 'ironOre', pollution: 3,
     boxHeight: 12, color: '#6e3a24', wallColor: '#8a5a40',
@@ -194,7 +196,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   steelMill: B({
     id: 'steelMill', name: 'Steel Mill', icon: 'steelMill', category: 'industry', size: [2, 2],
     materials: { bricks: 30, steel: 15, planks: 8, gravel: 16, machinery: 8 }, labor: 400,
-    workers: 30, power: 6, heat: 0, storage: { ironOre: 40, coal: 40, steel: 40, machinery: 4 },
+    workers: 30, power: 6, heat: 0, storage: { ironOre: 40, coal: 40, steel: 40, machinery: 6 },
     wear: { machinery: 0.03 },
     inputs: { ironOre: 2, coal: 1 }, outputs: { steel: 1.5 }, pollution: 4,
     boxHeight: 24, color: '#5a5f66', wallColor: '#7d838c',
@@ -203,7 +205,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   oilPump: B({
     id: 'oilPump', name: 'Oil Pump', icon: 'oilPump', category: 'industry', size: [1, 1],
     materials: { bricks: 12, steel: 10, machinery: 3 }, labor: 220,
-    workers: 10, power: 2, heat: 0, storage: { oil: 50, machinery: 4 },
+    workers: 10, power: 2, heat: 0, storage: { oil: 50, machinery: 6 },
     wear: { machinery: 0.02 },
     outputs: { oil: 4 }, requiresDeposit: 'oil', pollution: 2,
     boxHeight: 18, color: '#1e2126', wallColor: '#3a3f46',
@@ -212,7 +214,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   refinery: B({
     id: 'refinery', name: 'Oil Refinery', icon: 'refinery', category: 'industry', size: [2, 2],
     materials: { bricks: 30, steel: 18, planks: 6, gravel: 16, machinery: 6 }, labor: 420,
-    workers: 25, power: 5, heat: 0, storage: { oil: 40, fuel: 40, machinery: 4 },
+    workers: 25, power: 5, heat: 0, storage: { oil: 40, fuel: 40, machinery: 6 },
     wear: { machinery: 0.025 },
     inputs: { oil: 3 }, outputs: { fuel: 2 }, pollution: 3,
     boxHeight: 22, color: '#8c7a2a', wallColor: '#a89a4a',
@@ -222,7 +224,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     id: 'powerPlant', name: 'Coal Power Plant', icon: 'powerPlant', category: 'industry', size: [2, 2],
     materials: { bricks: 25, steel: 12, planks: 6, gravel: 12, machinery: 5 }, labor: 350,
     workers: 15, power: 0, powerOutput: 12, heat: 0,
-    storage: { coal: 50, machinery: 4 }, inputs: { coal: 2 }, pollution: 3,
+    storage: { coal: 50, machinery: 6 }, inputs: { coal: 2 }, pollution: 3,
     wear: { machinery: 0.02 },
     boxHeight: 26, color: '#4e5661', wallColor: '#6b7480',
     description: 'Burns 2 coal daily to generate 12 MW. Without power, industry stalls and homes go dark.',
@@ -231,7 +233,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     id: 'heatingPlant', name: 'Heating Plant', icon: 'heatingPlant', category: 'industry', size: [1, 1],
     materials: { bricks: 18, steel: 8, planks: 4, machinery: 1 }, labor: 180,
     workers: 8, power: 1, heatOutput: 8, heat: 0,
-    storage: { coal: 40, machinery: 4 }, inputs: { coal: 1 }, pollution: 2,
+    storage: { coal: 40, machinery: 6 }, inputs: { coal: 1 }, pollution: 2,
     wear: { machinery: 0.01 },
     boxHeight: 16, color: '#7a3b2a', wallColor: '#9c5a44',
     description: 'Burns coal for heat, throttling to demand — the colder the day, the more it burns. Citizens freeze without it.',
@@ -247,7 +249,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   foodFactory: B({
     id: 'foodFactory', name: 'Food Factory', icon: 'foodFactory', category: 'industry', size: [1, 1],
     materials: { bricks: 18, steel: 6, planks: 6, machinery: 1 }, labor: 200,
-    workers: 12, power: 2, heat: 0, storage: { crops: 40, food: 40, machinery: 4 },
+    workers: 12, power: 2, heat: 0, storage: { crops: 40, food: 40, machinery: 6 },
     wear: { machinery: 0.01 },
     inputs: { crops: 2.5 }, outputs: { food: 2.5 }, pollution: 1,
     boxHeight: 16, color: '#b06a2a', wallColor: '#d09a5a',
@@ -256,7 +258,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   textileMill: B({
     id: 'textileMill', name: 'Textile Mill', icon: 'textileMill', category: 'industry', size: [1, 1],
     materials: { bricks: 16, steel: 5, planks: 6, machinery: 1 }, labor: 180,
-    workers: 12, power: 2, heat: 0, storage: { crops: 30, clothes: 30, machinery: 4 },
+    workers: 12, power: 2, heat: 0, storage: { crops: 30, clothes: 30, machinery: 6 },
     wear: { machinery: 0.01 },
     inputs: { crops: 2 }, outputs: { clothes: 1.2 }, pollution: 1,
     boxHeight: 16, color: '#3a5a8a', wallColor: '#6b8ab5',
@@ -331,6 +333,20 @@ export const BUILDINGS: Record<string, BuildingDef> = {
     boxHeight: 14, color: '#3a6b8a', wallColor: '#7a99ad',
     description: 'Dockside freight hub — must be built on the shore. Barges ferry goods between ports across water, far cheaper than long bridges.',
   }),
+  motorDepot: B({
+    id: 'motorDepot', name: 'Motor Depot', icon: 'truck', category: 'trade', size: [2, 2],
+    materials: { bricks: 18, planks: 12, steel: 6, gravel: 8 }, labor: 150,
+    workers: 16, power: 0.5, heat: 0, isMotorDepot: true, storage: {},
+    boxHeight: 14, color: '#54584e', wallColor: '#8a8f80',
+    description: 'Garage for the haulage fleet. Every staffed driver puts another truck on the road, on top of your Construction Offices — but those trucks burn fuel from a Gas Station.',
+  }),
+  gasStation: B({
+    id: 'gasStation', name: 'Gas Station', icon: 'fuel', category: 'trade', size: [1, 1],
+    materials: { bricks: 8, steel: 6, planks: 4 }, labor: 90,
+    workers: 4, power: 0.5, heat: 0, isGasStation: true, storage: { fuel: 60 },
+    boxHeight: 12, color: '#a83a2a', wallColor: '#cf6a4a',
+    description: 'Fuels the truck fleet. Depot trucks burn fuel as they haul — keep it stocked (refinery fuel or imports) or the fleet grinds down. Refills by truck like any store.',
+  }),
   customs: B({
     id: 'customs', name: 'Customs House', icon: 'customs', category: 'trade', size: [2, 2],
     materials: { bricks: 20, steel: 6, planks: 8, gravel: 10 }, labor: 200,
@@ -348,7 +364,7 @@ export const BUILD_LIST: string[] = [
   'coalMine', 'ironMine', 'steelMill', 'oilPump', 'refinery',
   'powerPlant', 'heatingPlant', 'farm', 'foodFactory', 'textileMill', 'machineWorks',
   'store', 'clinic', 'pub',
-  'warehouse', 'depot', 'port', 'customs',
+  'warehouse', 'depot', 'motorDepot', 'gasStation', 'port', 'customs',
 ];
 
 /** One drill-down group inside a category: a labelled cluster of buildings. */
@@ -379,6 +395,7 @@ export const SUBCATEGORIES: Record<Category, SubCategory[]> = {
   ],
   trade: [
     { id: 'storage', name: 'Storage', ids: ['warehouse', 'depot'] },
+    { id: 'fleet', name: 'Fleet', ids: ['motorDepot', 'gasStation'] },
     { id: 'border', name: 'Border', ids: ['port', 'customs'] },
   ],
 };
@@ -413,6 +430,8 @@ export const BALANCE = {
   offRoadStepCost: 8,     // off-road land tile costs 8× a road tile (roads always preferred; off-road is a slow fallback)
   foreignLaborPerDay: 0.5, // ₽/builder-day for imported (non-citizen) construction crews (×importPriceMult)
   maxActiveTrucksPerOffice: 6,
+  trucksPerDriver: 1,      // Motor Depot: trucks added per staffed driver (on top of office trucks)
+  truckFuelPerDay: 0.1,    // fuel a working depot-truck burns per day, drawn from Gas Stations
   boatCapacity: 24,       // one barge hauls four truckloads
   boatDaysPerTile: 0.22,  // barges are slower per tile but shortcut the water
   buildersPerSite: 10,    // max builders on one site per day
@@ -429,6 +448,15 @@ export const BALANCE = {
   autoReserveDollars: 50,
   wornEffMult: 0.5,       // efficiency of a building whose machinery bin ran dry
   wearReserveDays: 30,    // days of wear stock supplyOf protects from being hauled away
+  // Machinery-repair dispatch priorities (lower = served first). A worn or
+  // critically-low bin is urgent — a half-dead building loses more output than a
+  // fed one gains from one more input load — so it outranks factory inputs (20),
+  // staying below the construction band (15-17). A healthy bin tops up lazily.
+  wearRepairPrio: 18,     // worn/critical machinery bin — urgent domestic repair
+  wearImportPrio: 19,     // worn bin, no domestic machinery — paid border import fallback
+  wearTopUpPrio: 24,      // healthy bin — routine top-up when trucks are free
+  wearCriticalFrac: 0.25, // a bin below this fraction of cap is 'critical' (repaired before it runs dry)
+  repairImportTopUpFrac: 0.5, // a repair import buys at most this fraction of the bin — clears 'worn', domestic fills the rest
 };
 
 // ------------------------------------------------------------

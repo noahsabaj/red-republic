@@ -3,13 +3,14 @@ import { BALANCE, WEATHER } from '@/game/config';
 import { useEngineSignature } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
 
-export type PanelMode = 'building' | 'trade' | 'objectives' | 'stockpiles' | 'music';
+export type PanelMode = 'building' | 'trade' | 'objectives' | 'stockpiles' | 'music' | 'logistics';
 
 interface Props {
   engine: GameEngine;
   activePanel: PanelMode | null;
   helpOpen: boolean;
   onOpenStockpiles: () => void;
+  onOpenLogistics: () => void;
   onOpenObjectives: () => void;
   onOpenTrade: () => void;
   onOpenMusic: () => void;
@@ -17,7 +18,7 @@ interface Props {
   onOpenMenu: () => void;
 }
 
-export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, onOpenObjectives, onOpenTrade, onOpenMusic, onOpenHelp, onOpenMenu }: Props) {
+export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, onOpenLogistics, onOpenObjectives, onOpenTrade, onOpenMusic, onOpenHelp, onOpenMenu }: Props) {
   // re-render only when something the HUD actually displays changes
   useEngineSignature(engine, (e) => [
     e.day, e.month, e.year, e.speed,
@@ -29,6 +30,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
     e.weather.condition, Math.round(e.weather.tempC), e.weather.riverFrozen,
     e.forecast().map(d => d.condition + Math.round(d.tempC)).join('|'),
     e.alerts.map(a => a.id + a.text).join('|'),
+    (() => { const f = e.fleetStatus(); return `${f.active}/${f.max}/${f.driverTrucks}/${Math.round(f.gasFuel)}`; })(),
     e.autoTrade.enabled,
     Math.round(e.tradeLedger.yesterday.rubles), Math.round(e.tradeLedger.yesterday.dollars),
     Math.round(e.tradeLedger.yesterday.foreignLabor),
@@ -129,10 +131,16 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
               <GameIcon name="heat" size={12} /> {engine.heatProduced.toFixed(0)}/{engine.heatDemand.toFixed(0)}
             </span>
           )}
+          {(() => { const f = engine.fleetStatus(); return (
+            <span title={`Trucks in use ${f.active}/${f.max} — offices ${f.officeTrucks} + depots ${f.depotTrucks}${f.driverTrucks > f.depotTrucks ? ` (${f.driverTrucks - f.depotTrucks} idle: low fuel)` : ''}`} className={`flex items-center gap-1 ${f.max > 0 && f.active >= f.max ? 'text-red-300' : ''}`}>
+              <GameIcon name="truck" size={12} /> {f.active}/{f.max}
+            </span>
+          ); })()}
         </div>
 
         <div className="ml-auto flex items-center gap-1.5">
           {panelBtn('Stockpiles', 'stockpiles', activePanel === 'stockpiles', onOpenStockpiles)}
+          {panelBtn('Logistics & Fleet', 'truck', activePanel === 'logistics', onOpenLogistics)}
           {panelBtn('Five-Year Plan', 'plan', activePanel === 'objectives', onOpenObjectives)}
           {panelBtn(
             `Foreign Trade${offersPending ? ` — ${offersPending} contract offer${offersPending > 1 ? 's' : ''} pending` : ''}${engine.autoTrade.enabled ? ' — auto-trade ON' : ''}`,

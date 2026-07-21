@@ -36,9 +36,10 @@ export default function SidePanel({ engine, mode, selection, policy, onClose, on
     : mode === 'objectives' ? 'Five-Year Plan'
     : mode === 'stockpiles' ? 'National Stockpiles'
     : mode === 'music' ? 'State Radio'
+    : mode === 'logistics' ? 'Logistics & Fleet'
     : selection.length > 1 ? `${selection.length} selected`
     : single?.kind === 'deposit' ? 'Deposit' : 'Building';
-  const titleIcon = mode === 'trade' ? 'trade' : mode === 'objectives' ? 'plan' : mode === 'stockpiles' ? 'stockpiles' : mode === 'music' ? 'music' : null;
+  const titleIcon = mode === 'trade' ? 'trade' : mode === 'objectives' ? 'plan' : mode === 'stockpiles' ? 'stockpiles' : mode === 'music' ? 'music' : mode === 'logistics' ? 'truck' : null;
   return (
     <div className="absolute right-0 top-24 bottom-16 z-10 flex pointer-events-none">
       <div className="pointer-events-auto flex flex-col w-72 m-2 rounded-lg border-2 border-yellow-600/60 bg-red-950/95 text-yellow-50 shadow-2xl overflow-hidden">
@@ -59,6 +60,7 @@ export default function SidePanel({ engine, mode, selection, policy, onClose, on
           {mode === 'trade' && <TradePanel engine={engine} notify={notify} />}
           {mode === 'objectives' && <ObjectivesPanel engine={engine} />}
           {mode === 'stockpiles' && <StockpilesPanel engine={engine} />}
+          {mode === 'logistics' && <LogisticsPanel engine={engine} />}
           {mode === 'music' && <MusicPanel />}
         </div>
       </div>
@@ -93,6 +95,21 @@ function FlowLine({ ins, outs }: { ins: [ResourceId, number][]; outs: [ResourceI
       {ins.length > 0 && outs.length > 0 && <span className="text-yellow-200/60 px-1">→</span>}
       {outs.map(seg)}
     </span>
+  );
+}
+
+/** One storage bin: icon + name, current/cap, incoming-truck note, and a fill bar. */
+function StorageBar({ r, v, cap, inc }: { r: ResourceId; v: number; cap: number; inc: number }) {
+  return (
+    <div className="text-[0.6875rem]">
+      <div className="flex justify-between">
+        <span className="flex items-center gap-1"><GameIcon name={RESOURCES[r].icon} size={12} /> {RESOURCES[r].name}</span>
+        <span className="font-bold">{v.toFixed(1)}/{cap}{inc > 0.05 ? <span className="text-yellow-200/60"> (+{inc.toFixed(0)} <GameIcon name="truck" size={11} />)</span> : null}</span>
+      </div>
+      <div className="h-1.5 rounded bg-red-900 overflow-hidden">
+        <div className="h-full bg-yellow-500/80" style={{ width: `${cap > 0 ? Math.min(100, (v / cap) * 100) : 0}%` }} />
+      </div>
+    </div>
   );
 }
 
@@ -480,6 +497,8 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
             {def.workers > 0 && <Row label={<><GameIcon name="eff" size={12} /> Efficiency</>} value={`${Math.round(b.eff * 100)}%`} ok={b.eff > 0.6} />}
             {def.isCustoms && <Row label={<><GameIcon name="trade" size={12} /> Clears</>} value={`${Math.floor(BALANCE.customsThroughputPerDay * b.eff)}/day`} ok={b.eff > 0} />}
             {def.wear && <Row label={<><GameIcon name="machinery" size={12} /> Machines</>} value={buildingWorn(b) ? 'Worn — deliver machinery!' : 'Maintained'} ok={!buildingWorn(b)} />}
+            {def.isMotorDepot && <Row label={<><GameIcon name="truck" size={12} /> Fleet</>} value={`${engine.trucksFrom(b)} trucks`} ok={b.connected && b.staff > 0} />}
+            {def.isGasStation && <Row label={<><GameIcon name="fuel" size={12} /> Fuels fleet</>} value={(b.stock.fuel ?? 0) < 1 ? 'empty — refill!' : `${(b.stock.fuel ?? 0).toFixed(0)} on hand`} ok={(b.stock.fuel ?? 0) >= 1} />}
           </div>
 
           {(def.inputs || def.outputs) && (() => {
@@ -496,28 +515,41 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
             );
           })()}
 
-          {Object.keys(def.storage).length > 0 && (
-            <div>
-              <div className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400 mb-1">Storage</div>
-              <div className="space-y-1">
-                {(Object.entries(def.storage) as [ResourceId, number][]).filter(([r]) => (b.stock[r] ?? 0) > 0.05 || (b.incoming[r] ?? 0) > 0.05 || (def.inputs?.[r] ?? 0) > 0 || (def.outputs?.[r] ?? 0) > 0 || def.serviceType === 'shop').map(([r, cap]) => {
-                  const v = b.stock[r] ?? 0;
-                  const inc = b.incoming[r] ?? 0;
-                  return (
-                    <div key={r} className="text-[0.6875rem]">
-                      <div className="flex justify-between">
-                        <span className="flex items-center gap-1"><GameIcon name={RESOURCES[r].icon} size={12} /> {RESOURCES[r].name}</span>
-                        <span className="font-bold">{v.toFixed(1)}/{cap}{inc > 0.05 ? <span className="text-yellow-200/60"> (+{inc.toFixed(0)} <GameIcon name="truck" size={11} />)</span> : null}</span>
-                      </div>
-                      <div className="h-1.5 rounded bg-red-900 overflow-hidden">
-                        <div className="h-full bg-yellow-500/80" style={{ width: `${Math.min(100, (v / cap) * 100)}%` }} />
-                      </div>
+          {(() => {
+            // Group storage so inputs, output and machinery upkeep read apart
+            // instead of as one undifferentiated pile. Classify each bin once by
+            // precedence output > input > upkeep > goods; a machinery (wear) bin
+            // is ALWAYS shown, even at 0, so a worn building visibly reads
+            // 'Machinery 0/6' — the crux of the old confusion.
+            const groups: { key: string; label: string; rs: ResourceId[] }[] = [
+              { key: 'in', label: 'Inputs', rs: [] },
+              { key: 'out', label: 'Output', rs: [] },
+              { key: 'up', label: 'Upkeep', rs: [] },
+              { key: 'goods', label: def.serviceType === 'shop' ? 'Goods' : 'Storage', rs: [] },
+            ];
+            const keys = new Set<ResourceId>(Object.keys(def.storage) as ResourceId[]);
+            for (const r of Object.keys(def.wear ?? {}) as ResourceId[]) keys.add(r);
+            for (const r of keys) {
+              if ((def.outputs?.[r] ?? 0) > 0) groups[1].rs.push(r);
+              else if ((def.inputs?.[r] ?? 0) > 0) groups[0].rs.push(r);
+              else if ((def.wear?.[r] ?? 0) > 0) groups[2].rs.push(r);
+              else if ((b.stock[r] ?? 0) > 0.05 || (b.incoming[r] ?? 0) > 0.05 || def.serviceType === 'shop') groups[3].rs.push(r);
+            }
+            const shown = groups.filter(g => g.rs.length > 0);
+            if (shown.length === 0) return null;
+            return (
+              <div className="space-y-2">
+                {shown.map(g => (
+                  <div key={g.key}>
+                    <div className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400 mb-1">{g.label}</div>
+                    <div className="space-y-1">
+                      {g.rs.map(r => <StorageBar key={r} r={r} v={b.stock[r] ?? 0} cap={def.storage[r] ?? 0} inc={b.incoming[r] ?? 0} />)}
                     </div>
-                  );
-                })}
+                  </div>
+                ))}
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {def.isCustoms && (
             <button onClick={onOpenTrade} className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1.5 hover:bg-yellow-400">
@@ -591,6 +623,68 @@ function ContractCard({ engine, c }: { engine: GameEngine; c: Contract }) {
   );
 }
 
+function LogisticsPanel({ engine }: { engine: GameEngine }) {
+  useEngineVersion(engine);
+  const f = engine.fleetStatus();
+  const bs = [...engine.buildings.values()];
+  const offices = bs.filter(b => b.constructed && BUILDINGS[b.defId].isConstructionOffice);
+  const depots = bs.filter(b => b.constructed && BUILDINGS[b.defId].isMotorDepot);
+  const stations = bs.filter(b => b.constructed && BUILDINGS[b.defId].isGasStation);
+  const util = f.max > 0 ? Math.min(100, (f.active / f.max) * 100) : 0;
+  const fuelLimited = f.driverTrucks > f.depotTrucks;
+  const idle = f.driverTrucks - f.depotTrucks;
+  const line = (key: number, name: string, icon: string, value: string, sub: string, bad = false) => (
+    <div key={key} className="flex items-center justify-between text-[0.6875rem] rounded bg-red-900/30 px-2 py-1">
+      <span className="flex items-center gap-1"><GameIcon name={icon} size={12} /> {name} <span className="text-yellow-200/40">· {sub}</span></span>
+      <span className={`font-bold ${bad ? 'text-red-300' : ''}`}>{value}</span>
+    </div>
+  );
+  return (
+    <div className="space-y-3">
+      <section className="rounded bg-red-900/40 p-2 space-y-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400">Fleet in use</span>
+          <span className="font-bold flex items-center gap-1"><GameIcon name="truck" size={12} /> {f.active}/{f.max}</span>
+        </div>
+        <div className="h-2 rounded bg-red-900 overflow-hidden">
+          <div className={`h-full ${f.max > 0 && f.active >= f.max ? 'bg-red-500/80' : 'bg-yellow-500/80'}`} style={{ width: `${util}%` }} />
+        </div>
+        <div className="text-[0.625rem] text-yellow-200/70 leading-relaxed">
+          Concurrent hauling trucks. Construction Offices give a fuel-free base; Motor Depots add a truck per driver, capped by the fuel your Gas Stations hold. Grow the fleet by building depots and keeping them fuelled.
+        </div>
+        <Row label="Office base (fuel-free)" value={f.officeTrucks} />
+        <Row label="Depot drivers" value={f.driverTrucks} />
+        <Row label="Depot trucks running" value={f.depotTrucks} ok={fuelLimited ? false : undefined} />
+      </section>
+
+      <section className="rounded bg-red-900/40 p-2 space-y-1">
+        <div className="flex items-center justify-between">
+          <span className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400">Fuel</span>
+          <span className="font-bold flex items-center gap-1"><GameIcon name="fuel" size={12} /> {f.gasFuel.toFixed(0)}</span>
+        </div>
+        <div className="text-[0.625rem] text-yellow-200/70 leading-relaxed">
+          {stations.length === 0
+            ? 'No Gas Station — Motor Depot trucks cannot run. Build one and feed it fuel from a refinery or imports.'
+            : fuelLimited
+              ? `Low on fuel — ${idle} depot truck${idle === 1 ? '' : 's'} idle. Route more fuel to your stations.`
+              : Number.isFinite(f.fuelDaysLeft)
+                ? `About ${Math.floor(f.fuelDaysLeft)} day${Math.floor(f.fuelDaysLeft) === 1 ? '' : 's'} of fuel left at the current pace.`
+                : 'Well supplied — the fleet is idle or fuel is plentiful.'}
+        </div>
+      </section>
+
+      {(offices.length + depots.length + stations.length) > 0 && (
+        <section className="space-y-1">
+          <div className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400">Fleet buildings</div>
+          {depots.map(b => line(b.id, 'Motor Depot', 'truck', `${engine.trucksFrom(b)} trucks`, `${b.staff}/${BUILDINGS[b.defId].workers} drivers`, !b.connected))}
+          {stations.map(b => line(b.id, 'Gas Station', 'fuel', `${(b.stock.fuel ?? 0).toFixed(0)}/${BUILDINGS[b.defId].storage.fuel}`, !b.connected ? 'isolated' : (b.stock.fuel ?? 0) < 1 ? 'empty' : 'fuelling', !b.connected || (b.stock.fuel ?? 0) < 1))}
+          {offices.map(b => line(b.id, 'Construction Office', 'constructionOffice', `${engine.trucksFrom(b)} trucks`, `${b.staff}/${BUILDINGS[b.defId].workers} staff`, !b.connected))}
+        </section>
+      )}
+    </div>
+  );
+}
+
 function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string, k: 'good' | 'bad' | 'info') => void }) {
   const [amount, setAmount] = useState(10);
   const doTrade = (fn: () => { ok: boolean; msg: string }) => {
@@ -649,6 +743,41 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
               <div className="text-[0.625rem] text-red-300 font-bold">Stalled: {today.blocked.join('; ')}</div>
             )}
           </>
+        )}
+      </section>
+
+      <section className="rounded bg-red-900/40 p-2 space-y-1.5">
+        <ToggleButton
+          on={engine.repairImportsEnabled}
+          onChange={v => engine.setRepairImports(v)}
+          icon="machinery"
+          label="Repair imports"
+          title="When a worn building can't get machinery from your own industry, buy replacement machines at the border to keep it running"
+          className="uppercase tracking-wider"
+        />
+        <div className="text-[0.625rem] text-yellow-200/60 leading-tight">
+          A worn factory with no domestic machinery in reach buys replacement machines at the border. Needs a Customs House; never spends below the auto-trade reserve floor.
+        </div>
+        {engine.repairImportsEnabled && (
+          <div className="flex items-center gap-2 text-[0.6875rem]">
+            <span className="text-yellow-200/70 shrink-0">Pay with</span>
+            {(['east', 'west'] as const).map(cur => (
+              <button
+                key={cur}
+                onClick={() => engine.setRepairImports(true, cur)}
+                className={`px-2 py-0.5 rounded font-bold ${
+                  engine.repairImportCurrency === cur ? 'bg-yellow-500 text-red-950'
+                  : cur === 'west' ? 'bg-red-950/60 hover:bg-red-800 text-green-300'
+                  : 'bg-red-950/60 hover:bg-red-800'}`}
+                title={cur === 'east' ? 'Buy machinery from the East (₽)' : 'Buy machinery from the West ($)'}
+              >
+                {cur === 'east' ? '₽ East' : '$ West'}
+              </button>
+            ))}
+            {led.repairImports !== 0 && (
+              <span className="ml-auto font-bold" title="Machinery imported for repairs yesterday">{money(led.repairImports, engine.repairImportCurrency === 'east' ? '₽' : '$')}</span>
+            )}
+          </div>
         )}
       </section>
 

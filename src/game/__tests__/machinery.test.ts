@@ -85,7 +85,7 @@ describe('wear', () => {
 });
 
 describe('machinery logistics', () => {
-  it('trucks top up wear bins for factories AND plants (the prio-24 branch)', () => {
+  it('trucks refill worn wear bins for factories AND plants (the urgent-repair branch)', () => {
     const { e, depot, factory } = factoryTown();
     const plant = placeBuilt(e, 'powerPlant', 14, 10);
     plant.stock.coal = 50;
@@ -95,6 +95,28 @@ describe('machinery logistics', () => {
     runDays(e, 12);
     expect(factory.stock.machinery ?? 0).toBeGreaterThan(0);
     expect(plant.stock.machinery ?? 0).toBeGreaterThan(0);
+  });
+
+  it('a worn building is repaired even when lower-priority input hauls saturate the truck budget (the reported bug)', () => {
+    // The prio-24 test above runs in an idle town; the real bug only bites when a
+    // busy town's ~6 trucks are all consumed by higher-priority hauls first. A
+    // crowd of empty factories pulling from a distant depot keeps the budget
+    // saturated for weeks — pre-fix the worn bin (old prio 24) never dispatched.
+    const e = makeEngine();
+    layRoad(e, 2, 9, 46, 9);
+    const depot = placeBuilt(e, 'depot', 40, 10);
+    placeBuilt(e, 'constructionOffice', 43, 10); // ~6 trucks, even unstaffed
+    depot.stock.crops = 2000;
+    depot.stock.machinery = 40;
+    for (let x = 10; x <= 24; x += 2) placeBuilt(e, 'foodFactory', x, 10).stock.crops = 0; // prio-20 input flood
+    const worn = placeBuilt(e, 'foodFactory', 6, 10);
+    worn.stock.crops = 40;    // full → no input demand, only a machinery one
+    worn.stock.machinery = 0;
+    expect(buildingWorn(worn)).toBe(true);
+    runDays(e, 15);
+    // urgent repair now outranks the flood of input hauls, so it wins a truck
+    expect(worn.stock.machinery ?? 0).toBeGreaterThan(0);
+    expect(buildingWorn(worn)).toBe(false);
   });
 
   it('supplyOf keeps a month of spares — a consumer is never fully robbed', () => {
@@ -150,10 +172,9 @@ describe('imports and the Machine Works', () => {
     expect(Number.isFinite(e.stats.produced.machinery)).toBe(true);
   });
 
-  it('construction sites demand machinery like any other material', () => {
-    const { e, depot, factory } = factoryTown();
-    factory.stock.machinery = 0; // no other machinery in town...
-    depot.stock.machinery = 1;   // ...exactly the construction bill
+  it('construction sites demand machinery like any other material, and finish born with a full spare bin', () => {
+    const { e, depot } = factoryTown();
+    depot.stock.machinery = 1;   // the construction bill — the site must pull it to finish
     depot.stock.bricks = 60;
     depot.stock.steel = 30;
     depot.stock.planks = 30;
@@ -161,11 +182,69 @@ describe('imports and the Machine Works', () => {
     const site = e.buildingAt(14, 10)!;
     runDays(e, 30);
     expect(site.constructed).toBe(true);
-    // conservation: the bill's single machine survives as the seeded spare
-    // (min(bin cap 4, bill 1) = 1), minus a few days of wear — nothing conjured
+    // born maintained: a finished building is commissioned with a FULL spare bin
+    // (its bill machinery is consumed by the build; the spare set is installed on
+    // completion) so a new town never starts life half-broken.
+    const cap = BUILDINGS.foodFactory.storage.machinery!;
     const seeded = site.stock.machinery ?? 0;
-    expect(seeded).toBeGreaterThan(0.5);
-    expect(seeded).toBeLessThanOrEqual(BUILDINGS.foodFactory.materials.machinery!);
+    expect(seeded).toBeGreaterThan(cap - 1);
+    expect(seeded).toBeLessThanOrEqual(cap);
+  });
+});
+
+describe('repair imports', () => {
+  it('a worn building with no domestic machinery self-heals by importing through customs (paid, reserve-safe)', () => {
+    const e = makeEngine();
+    layRoad(e, 4, 9, 30, 9);
+    placeBuilt(e, 'customs', 6, 10);
+    placeBuilt(e, 'constructionOffice', 8, 10); // trucks
+    const worn = placeBuilt(e, 'foodFactory', 12, 10);
+    worn.stock.crops = 40;    // full → no input demand, only a machinery one
+    worn.stock.machinery = 0; // worn, and the town holds no machinery anywhere else
+    e.rubles = 5000;
+    e.repairImportsEnabled = true;
+    expect(buildingWorn(worn)).toBe(true);
+    const imported0 = e.stats.imported.machinery ?? 0;
+    const rubles0 = e.rubles;
+    runDays(e, 12);
+    expect(worn.stock.machinery ?? 0).toBeGreaterThan(0);              // healed
+    expect(buildingWorn(worn)).toBe(false);
+    expect(e.stats.imported.machinery ?? 0).toBeGreaterThan(imported0); // from the border
+    expect(e.rubles).toBeLessThan(rubles0);                            // and paid for
+    expect(e.rubles).toBeGreaterThanOrEqual(e.autoTrade.reserveRubles); // never below the reserve floor
+  });
+
+  it('domestic machinery is spent before importing — a reachable depot means no border spend', () => {
+    const e = makeEngine();
+    layRoad(e, 4, 9, 30, 9);
+    placeBuilt(e, 'customs', 6, 10);
+    const depot = placeBuilt(e, 'depot', 8, 10);
+    placeBuilt(e, 'constructionOffice', 11, 10);
+    const worn = placeBuilt(e, 'foodFactory', 14, 10);
+    worn.stock.crops = 40;
+    worn.stock.machinery = 0;
+    depot.stock.machinery = 20; // domestic supply on hand
+    e.rubles = 5000;
+    const imported0 = e.stats.imported.machinery ?? 0;
+    runDays(e, 12);
+    expect(worn.stock.machinery ?? 0).toBeGreaterThan(0);       // healed
+    expect(e.stats.imported.machinery ?? 0).toBe(imported0);    // domestically — nothing imported
+  });
+
+  it('repair imports off → a stranded worn building stays worn and the treasury is untouched', () => {
+    const e = makeEngine();
+    layRoad(e, 4, 9, 30, 9);
+    placeBuilt(e, 'customs', 6, 10);
+    placeBuilt(e, 'constructionOffice', 8, 10);
+    const worn = placeBuilt(e, 'foodFactory', 12, 10);
+    worn.stock.crops = 40;
+    worn.stock.machinery = 0;
+    e.rubles = 5000;
+    e.setRepairImports(false);
+    runDays(e, 12);
+    expect(worn.stock.machinery ?? 0).toBe(0);   // no domestic source + imports off → stuck worn
+    expect(buildingWorn(worn)).toBe(true);
+    expect(e.rubles).toBe(5000);                 // not a ruble spent
   });
 });
 

@@ -310,6 +310,7 @@ export default function App() {
             activePanel={panel}
             helpOpen={showHelp}
             onOpenStockpiles={() => togglePanel('stockpiles')}
+            onOpenLogistics={() => togglePanel('logistics')}
             onOpenObjectives={() => togglePanel('objectives')}
             onOpenTrade={() => togglePanel('trade')}
             onOpenMusic={() => togglePanel('music')}

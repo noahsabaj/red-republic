@@ -102,10 +102,11 @@ export interface TradeDayLedger {
   capacity: number; // customs throughput available (staffing-scaled)
   blocked: string[];
   foreignLabor: number; // ₽ paid to imported construction crews (negative = spent)
+  repairImports: number; // ₽/$ paid to import machinery for facility repairs (negative = spent)
 }
 
 const emptyLedger = (): TradeDayLedger =>
-  ({ imports: {}, exports: {}, rubles: 0, dollars: 0, used: 0, capacity: 0, blocked: [], foreignLabor: 0 });
+  ({ imports: {}, exports: {}, rubles: 0, dollars: 0, used: 0, capacity: 0, blocked: [], foreignLabor: 0, repairImports: 0 });
 
 /** A deadline bulk order from one of the blocs, at a premium price locked when offered. */
 export interface Contract {
@@ -121,11 +122,11 @@ export interface Contract {
   closedIdx?: number;      // when it reached done/failed (for pruning the history)
 }
 
-interface LogisticsDemand { b: BuildingInst; r: ResourceId; amt: number; prio: number; from?: number; noCustomsSrc?: boolean; bonded?: boolean }
+interface LogisticsDemand { b: BuildingInst; r: ResourceId; amt: number; prio: number; from?: number; noCustomsSrc?: boolean; bonded?: boolean; repairImport?: 'east' | 'west' }
 
 const JOB_PRIORITY = [
   'powerPlant', 'heatingPlant', 'store', 'foodFactory',
-  'clinic', 'pub', 'customs', 'farm', 'textileMill', 'sawmill', 'brickworks',
+  'clinic', 'pub', 'customs', 'gasStation', 'motorDepot', 'farm', 'textileMill', 'sawmill', 'brickworks',
   'woodcutter', 'gravelQuarry', 'coalMine', 'ironMine', 'steelMill', 'machineWorks',
   'oilPump', 'refinery', 'port', 'depot', 'warehouse', 'constructionOffice',
 ];
@@ -185,6 +186,11 @@ export class GameEngine {
   /** Hire imported construction crews with ₽ for builders beyond your citizens.
    *  Off = domestic builders only (construction stalls without staffed offices). */
   foreignLaborEnabled = true;
+  /** Import machinery from the border (paid ₽/$) to repair a worn building when no
+   *  domestic machinery can reach it — a town with no Machine Works is then never
+   *  permanently stuck at half output. Off = domestic supply only. */
+  repairImportsEnabled = true;
+  repairImportCurrency: 'east' | 'west' = 'east';
   /** Offers, active deals and recent history — mutate only via accept/declineContract. */
   contracts: Contract[] = [];
   /** 0..cap price malus per bloc from failed contracts; decays daily. */
@@ -323,15 +329,18 @@ export class GameEngine {
   }
 
   /**
-   * Part of a new building's construction bill survives as installed spares:
-   * min(bin cap, bill) of each wear resource lands in stock so nothing is
-   * born worn. Conserves machinery — none is conjured beyond the bill.
+   * A finished building is commissioned with a FULL spare bin, so nothing is
+   * born worn and a new town never starts life half-broken. Callers subtract the
+   * construction bill first (completeSite / instant-build) or place on empty
+   * stock (placeFree), so this sets the bin outright. The spare set is treated as
+   * part of the building — a modest amount beyond the bill's machinery is granted
+   * here as the installed spares (see machinery.test.ts for the born-full invariant).
    */
   private seedWearBins(b: BuildingInst) {
     const def = BUILDINGS[b.defId];
     for (const r of Object.keys(def.wear ?? {}) as ResourceId[]) {
-      const seed = Math.min(def.storage[r] ?? 0, def.materials[r] ?? 0);
-      if (seed > 0) b.stock[r] = (b.stock[r] ?? 0) + seed;
+      const cap = def.storage[r] ?? 0;
+      if (cap > 0) b.stock[r] = cap; // born with a full spare set
     }
   }
 
@@ -1141,6 +1150,7 @@ export class GameEngine {
     this.foreignTrade();
     this.updateContracts();
     this.logistics();
+    this.burnFleetFuel();
     this.dispatchBoats();
     this.construction();
     this.citizens();
@@ -1607,14 +1617,76 @@ export class GameEngine {
     return n;
   }
 
-  private maxTrucks(): number {
+  /** Trucks a single building adds to the fleet (0 if it isn't a source or is
+   *  unbuilt/off-grid). Offices give a fuel-free base; Motor Depots one per driver.
+   *  The single source of the per-building formula (UI reads it, never recomputes). */
+  trucksFrom(b: BuildingInst): number {
+    const def = this.def(b);
+    if (!b.constructed || !b.connected) return 0;
+    if (def.isConstructionOffice) return 6 + Math.floor(BALANCE.maxActiveTrucksPerOffice * (b.staff / def.workers));
+    if (def.isMotorDepot) return Math.floor(BALANCE.trucksPerDriver * b.staff);
+    return 0;
+  }
+
+  /** Fuel-free bootstrap fleet from Construction Offices — unchanged base game. */
+  private officeTrucks(): number {
     let n = 0;
-    for (const b of this.buildings.values()) {
-      if (this.def(b).isConstructionOffice && b.constructed && b.connected) {
-        n += 6 + Math.floor(BALANCE.maxActiveTrucksPerOffice * (b.staff / this.def(b).workers));
-      }
-    }
+    for (const b of this.buildings.values()) if (this.def(b).isConstructionOffice) n += this.trucksFrom(b);
     return n;
+  }
+
+  /** Trucks the Motor Depots could crew — one per staffed driver (before fuel). */
+  private driverTrucks(): number {
+    let n = 0;
+    for (const b of this.buildings.values()) if (this.def(b).isMotorDepot) n += this.trucksFrom(b);
+    return n;
+  }
+
+  /** Fuel on hand across connected Gas Stations — the depot fleet's shared tank. */
+  private gasFuel(): number {
+    let f = 0;
+    for (const b of this.buildings.values()) {
+      if (this.def(b).isGasStation && b.constructed && b.connected) f += this.stockOf(b, 'fuel');
+    }
+    return f;
+  }
+
+  /** Concurrent-outbound truck cap: the fuel-free office fleet plus the Motor
+   *  Depot fleet, itself capped by the fuel the Gas Stations can supply. */
+  private maxTrucks(): number {
+    const fuelCap = Math.floor(this.gasFuel() / BALANCE.truckFuelPerDay);
+    return this.officeTrucks() + Math.min(this.driverTrucks(), fuelCap);
+  }
+
+  /** Public fleet snapshot for the HUD gauge, Logistics panel and advisories. */
+  fleetStatus(): { active: number; max: number; officeTrucks: number; driverTrucks: number; depotTrucks: number; fuelCap: number; gasFuel: number; fuelDaysLeft: number } {
+    const office = this.officeTrucks();
+    const drivers = this.driverTrucks();
+    const fuel = this.gasFuel();
+    const fuelCap = Math.floor(fuel / BALANCE.truckFuelPerDay);
+    const depotTrucks = Math.min(drivers, fuelCap);
+    const active = this.trucks.filter(t => t.phase === 'go').length;
+    const burnPerDay = Math.max(0, active - office) * BALANCE.truckFuelPerDay;
+    const fuelDaysLeft = burnPerDay > 1e-9 ? fuel / burnPerDay : Infinity;
+    return { active, max: office + depotTrucks, officeTrucks: office, driverTrucks: drivers, depotTrucks, fuelCap, gasFuel: fuel, fuelDaysLeft };
+  }
+
+  /** The depot fleet (trucks beyond the fuel-free office base) burns fuel from
+   *  Gas Stations each day, drained fullest-first. An idle fleet burns nothing. */
+  private burnFleetFuel() {
+    const office = this.officeTrucks();
+    const active = this.trucks.filter(t => t.phase === 'go').length;
+    let burn = Math.max(0, active - office) * BALANCE.truckFuelPerDay;
+    if (burn <= 1e-9) return;
+    const stations = [...this.buildings.values()]
+      .filter(b => this.def(b).isGasStation && b.constructed && b.connected && this.stockOf(b, 'fuel') > 0)
+      .sort((a, b) => this.stockOf(b, 'fuel') - this.stockOf(a, 'fuel'));
+    for (const s of stations) {
+      if (burn <= 1e-9) break;
+      const take = Math.min(burn, this.stockOf(s, 'fuel'));
+      this.addStock(s, 'fuel', -take);
+      burn -= take;
+    }
   }
 
   /** stock a building is willing to give away */
@@ -1694,12 +1766,37 @@ export class GameEngine {
           if (missing >= 6) demands.push({ b, r, amt: missing, prio: 20 });
         }
       }
-      // wear spares (machinery) — small bins topped up for EVERY consumer,
-      // plants included (the coal branch above never hauls machinery)
+      // gas station: keep its fuel bin stocked so the depot fleet keeps rolling
+      if (def.isGasStation) {
+        const free = this.capOf(b, 'fuel') - this.stockOf(b, 'fuel') - this.incomingOf(b, 'fuel');
+        if (free >= 6) demands.push({ b, r: 'fuel', amt: free, prio: 20 });
+      }
+      // wear spares (machinery). A worn or critically-low bin is URGENT — a
+      // half-dead building bleeds output every day it waits — so it outranks
+      // factory inputs; a healthy bin tops up lazily when trucks are free. Both
+      // plants and factories qualify (the coal branch above never hauls machinery).
       if (def.wear) {
         for (const r of Object.keys(def.wear) as ResourceId[]) {
-          const free = this.capOf(b, r) - this.stockOf(b, r) - this.incomingOf(b, r);
-          if (free >= 1) demands.push({ b, r, amt: free, prio: 24 });
+          const cap = this.capOf(b, r);
+          const have = this.stockOf(b, r) + this.incomingOf(b, r);
+          const free = cap - have;
+          if (free < 1) continue;
+          const worn = buildingWorn(b);
+          const critical = worn || have < cap * BALANCE.wearCriticalFrac;
+          demands.push({ b, r, amt: free, prio: critical ? BALANCE.wearRepairPrio : BALANCE.wearTopUpPrio });
+          // Paid border-import fallback: only for an actually-worn bin, only if a
+          // customs house can clear it. Queued just below the domestic urgent
+          // demand, so the sort tries domestic first and this fires only for the
+          // shortfall — in full only when no domestic machinery exists anywhere.
+          // Bonded (an infinite paid customs source, like a construction auto-buy),
+          // charged at dispatch, capped to a modest top-up that clears 'worn'.
+          if (worn && this.repairImportsEnabled) {
+            const customs = this.nearestConstructedCustoms(b.x, b.y);
+            if (customs?.constructed && this.def(customs).isCustoms) {
+              const topUp = Math.min(free, cap * BALANCE.repairImportTopUpFrac);
+              if (topUp >= 1) demands.push({ b, r, amt: topUp, prio: BALANCE.wearImportPrio, from: customs.id, bonded: true, repairImport: this.repairImportCurrency });
+            }
+          }
         }
       }
     }
@@ -1800,8 +1897,24 @@ export class GameEngine {
       // bonded goods are a paid virtual import — the customs is an infinite
       // source and its real stock is never touched (bypasses the storage cap)
       const supplyCap = d.bonded ? Infinity : this.supplyOf(pick.supplier, d.r);
-      const amount = Math.min(d.amt, destFree, supplyCap, BALANCE.truckCapacity);
+      let amount = Math.min(d.amt, destFree, supplyCap, BALANCE.truckCapacity);
       if (amount < minLoad) continue;
+
+      // a repair import is a paid border purchase (unlike a construction auto-buy,
+      // paid upfront): cap it to what the treasury can spend above its auto-reserve,
+      // then charge on dispatch and book it on the ledger + import stats.
+      if (d.repairImport) {
+        const cur = d.repairImport;
+        const price = this.importPriceOf(d.r, cur);
+        const reserve = cur === 'east' ? this.autoTrade.reserveRubles : this.autoTrade.reserveDollars;
+        const funds = cur === 'east' ? this.rubles : this.dollars;
+        amount = Math.min(amount, Math.floor(Math.max(0, funds - reserve) / price));
+        if (amount < minLoad) continue; // treasury at the reserve floor — retry another day
+        const cost = amount * price;
+        if (cur === 'east') this.rubles -= cost; else this.dollars -= cost;
+        this.stats.imported[d.r] = (this.stats.imported[d.r] ?? 0) + amount;
+        this.tradeLedger.today.repairImports -= cost;
+      }
 
       if (!d.bonded) this.addStock(pick.supplier, d.r, -amount);
       d.b.incoming[d.r] = this.incomingOf(d.b, d.r) + amount;
@@ -2286,7 +2399,10 @@ export class GameEngine {
     const sites = [...this.buildings.values()].filter(b => !b.constructed);
     if (sites.length > 0 && this.builderPool() === 0) a.push({ id: 'builders', icon: 'builders', text: 'No builders available — construction halted', level: 'warn' });
     else if (this.constructionThrottled()) a.push({ id: 'buildersSlow', icon: 'builders', text: 'Builders spread thin — sites building slowly; add a Construction Office', level: 'warn' });
-    if (this.maxTrucks() === 0) a.push({ id: 'trucks', icon: 'truck', text: 'No trucks — staff a Construction Office to haul goods', level: 'warn' });
+    const fleet = this.fleetStatus();
+    if (fleet.max === 0) a.push({ id: 'trucks', icon: 'truck', text: 'No trucks — staff a Construction Office or Motor Depot to haul goods', level: 'warn' });
+    else if (fleet.driverTrucks > 0 && fleet.fuelCap < fleet.driverTrucks) a.push({ id: 'fleetFuel', icon: 'fuel', text: 'Fleet short of fuel — supply a Gas Station (refinery fuel or imports)', level: 'warn' });
+    else if (fleet.active >= fleet.max) a.push({ id: 'fleetFull', icon: 'truck', text: 'Logistics at capacity — build a Motor Depot to grow the fleet', level: 'warn' });
     if (this.jobs > this.workers && this.workers > 0) a.push({ id: 'labor', icon: 'users', text: 'Labor shortage — not enough workers for all jobs', level: 'warn' });
     const customs = [...this.buildings.values()].some(b => this.def(b).isCustoms && b.constructed);
     if (!customs) a.push({ id: 'customs', icon: 'trade', text: 'No Customs House — foreign trade impossible', level: 'warn' });
@@ -2408,6 +2524,13 @@ export class GameEngine {
     this.bump();
   }
 
+  /** Toggle paid machinery imports for facility repairs, and which bloc pays. */
+  setRepairImports(on: boolean, currency?: 'east' | 'west') {
+    this.repairImportsEnabled = on;
+    if (currency) this.repairImportCurrency = currency;
+    this.bump();
+  }
+
   /** One rule per resource: import OR export — setting one replaces the other (no buy-high/sell-low churn). */
   setAutoTradeRule(r: ResourceId, rule: AutoTradeRule | null) {
     if (rule) this.autoTrade.rules[r] = { ...rule, level: Math.max(0, Math.round(rule.level)) };
@@ -2446,7 +2569,7 @@ export class GameEngine {
   serialize(): SaveGameV1 {
     const cloneTruck = (t: Truck): Truck => ({ ...t, points: t.points.map(p => ({ ...p })) });
     const cloneLedger = (l: TradeDayLedger): TradeDayLedger =>
-      ({ imports: { ...l.imports }, exports: { ...l.exports }, rubles: l.rubles, dollars: l.dollars, used: l.used, capacity: l.capacity, blocked: [...l.blocked], foreignLabor: l.foreignLabor ?? 0 });
+      ({ imports: { ...l.imports }, exports: { ...l.exports }, rubles: l.rubles, dollars: l.dollars, used: l.used, capacity: l.capacity, blocked: [...l.blocked], foreignLabor: l.foreignLabor ?? 0, repairImports: l.repairImports ?? 0 });
     const rules: Partial<Record<ResourceId, AutoTradeRule>> = {};
     for (const [r, rule] of Object.entries(this.autoTrade.rules) as [ResourceId, AutoTradeRule][]) rules[r] = { ...rule };
     return {
@@ -2477,6 +2600,8 @@ export class GameEngine {
         priceFactorWest: this.priceFactorWest,
         autoTrade: { enabled: this.autoTrade.enabled, reserveRubles: this.autoTrade.reserveRubles, reserveDollars: this.autoTrade.reserveDollars, rules },
         foreignLaborEnabled: this.foreignLaborEnabled,
+        repairImportsEnabled: this.repairImportsEnabled,
+        repairImportCurrency: this.repairImportCurrency,
         tradeLedger: { today: cloneLedger(this.tradeLedger.today), yesterday: cloneLedger(this.tradeLedger.yesterday) },
         contracts: this.contracts.map(c => ({ ...c })),
         relationsPenalty: { ...this.relationsPenalty },
@@ -2539,8 +2664,10 @@ export class GameEngine {
       rules: Object.fromEntries((Object.entries(body.autoTrade.rules) as [ResourceId, AutoTradeRule][]).map(([r, rule]) => [r, { ...rule }])),
     };
     e.foreignLaborEnabled = body.foreignLaborEnabled ?? true;
+    e.repairImportsEnabled = body.repairImportsEnabled ?? true;
+    e.repairImportCurrency = body.repairImportCurrency ?? 'east';
     const cloneLedger = (l: TradeDayLedger): TradeDayLedger =>
-      ({ imports: { ...l.imports }, exports: { ...l.exports }, rubles: l.rubles, dollars: l.dollars, used: l.used, capacity: l.capacity, blocked: [...l.blocked], foreignLabor: l.foreignLabor ?? 0 });
+      ({ imports: { ...l.imports }, exports: { ...l.exports }, rubles: l.rubles, dollars: l.dollars, used: l.used, capacity: l.capacity, blocked: [...l.blocked], foreignLabor: l.foreignLabor ?? 0, repairImports: l.repairImports ?? 0 });
     e.tradeLedger = { today: cloneLedger(body.tradeLedger.today), yesterday: cloneLedger(body.tradeLedger.yesterday) };
     e.contracts = body.contracts.map(c => ({ ...c }));
     e.dryStreak = body.streaks.dry;
