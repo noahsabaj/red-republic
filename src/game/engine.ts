@@ -45,6 +45,25 @@ export interface BuildingInst {
   paused?: boolean;         // planning mode: placed but not commenced — draws no materials/builders
 }
 
+export interface HappinessFactor {
+  id: string;
+  label: string;
+  icon: string;
+  satPct: number;       // 0..100%
+  weightPct: number;    // e.g. 30 for food
+  effectivePct: number; // satPct * (weightPct / 100)
+}
+
+export interface HappinessBreakdown {
+  overall: number;             // Current smoothed happiness (0..100)
+  target: number;              // Raw un-lerped target happiness
+  factors: HappinessFactor[];
+  modifiers: {
+    pollutionPenaltyPct: number; // e.g. 5 if pollution penalty applies
+    weatherMoralePct: number;    // e.g. +2 or -6
+  };
+}
+
 /** Placement policy stamped onto a new site — defaults come from the build-menu toggles. */
 export interface PlacePolicy {
   instant?: boolean;          // $ Western prefab, completes immediately (no site)
@@ -2836,6 +2855,35 @@ export class GameEngine {
   }
 
   private lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
+
+  happinessBreakdown(): HappinessBreakdown {
+    const w = this.sat;
+    const factors: HappinessFactor[] = [
+      { id: 'food', label: 'Food Supply', icon: 'food', satPct: Math.round(w.food * 100), weightPct: 30, effectivePct: Math.round(w.food * 30) },
+      { id: 'clothes', label: 'Clothing', icon: 'clothes', satPct: Math.round(w.clothes * 100), weightPct: 14, effectivePct: Math.round(w.clothes * 14) },
+      { id: 'power', label: 'Electricity', icon: 'power', satPct: Math.round(w.power * 100), weightPct: 12, effectivePct: Math.round(w.power * 12) },
+      { id: 'heat', label: 'Winter Heating', icon: 'heat', satPct: Math.round(w.heat * 100), weightPct: 12, effectivePct: Math.round(w.heat * 12) },
+      { id: 'employment', label: 'Employment', icon: 'staff', satPct: Math.round(w.employment * 100), weightPct: 12, effectivePct: Math.round(w.employment * 12) },
+      { id: 'culture', label: 'Culture & Leisure', icon: 'pub', satPct: Math.round(w.culture * 100), weightPct: 10, effectivePct: Math.round(w.culture * 10) },
+      { id: 'health', label: 'Healthcare', icon: 'clinic', satPct: Math.round(w.health * 100), weightPct: 10, effectivePct: Math.round(w.health * 10) },
+    ];
+
+    const rawSum = (0.30 * w.food + 0.14 * w.clothes + 0.12 * w.power + 0.12 * w.heat +
+      0.10 * w.culture + 0.10 * w.health + 0.12 * w.employment) * 100;
+    const pollutionFactor = w.pollution;
+    const weatherMod = -Math.min(0.06, this.gloomStreak * 0.01) + Math.min(0.02, this.sunStreak * 0.005);
+    const target = Math.max(0, Math.min(100, rawSum * pollutionFactor * (1 + weatherMod)));
+
+    return {
+      overall: Math.round(this.happiness),
+      target: Math.round(target),
+      factors,
+      modifiers: {
+        pollutionPenaltyPct: Math.round((1 - pollutionFactor) * 100),
+        weatherMoralePct: Math.round(weatherMod * 100),
+      },
+    };
+  }
 
   // ---------------- totals, objectives, alerts ----------------
 
