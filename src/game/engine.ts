@@ -1100,6 +1100,48 @@ export class GameEngine {
     return { ok: true };
   }
 
+  /** Turn material import (auto-buy) on/off for multiple sites, highest construction
+   *  priority first (then id order). Auto-buys as many sites as treasury funds allow.
+   *  Returns total cost charged, number of sites succeeded, and number failed. */
+  setSiteImportMany(ids: number[], currency: 'east' | 'west' | null): { totalCost: number; succeeded: number; failed: number; reason?: string } {
+    let succeeded = 0, failed = 0, totalCost = 0;
+    let lastReason: string | undefined;
+
+    const targets = ids
+      .map(id => this.buildings.get(id))
+      .filter((b): b is BuildingInst => !!b && !b.constructed)
+      .sort((a, b) => (b.buildPriority ?? 0) - (a.buildPriority ?? 0) || a.id - b.id);
+
+    if (targets.length === 0) return { totalCost: 0, succeeded: 0, failed: 0, reason: 'No unconstructed sites selected' };
+
+    for (const b of targets) {
+      if (currency !== null && !b.paused) {
+        const cost = this.autoBuyRemainingCost(b.id, currency);
+        const funds = currency === 'east' ? this.rubles : this.dollars;
+        if (funds < cost) {
+          failed++;
+          lastReason = currency === 'east'
+            ? `Not enough rubles (₽${cost.toLocaleString()})`
+            : `Not enough dollars ($${cost.toLocaleString()})`;
+          continue;
+        }
+      }
+      const initialFunds = currency === 'east' ? this.rubles : currency === 'west' ? this.dollars : 0;
+      const res = this.setSiteImport(b.id, currency);
+      if (res.ok) {
+        succeeded++;
+        if (currency === 'east') totalCost += (initialFunds - this.rubles);
+        else if (currency === 'west') totalCost += (initialFunds - this.dollars);
+      } else {
+        failed++;
+        lastReason = res.reason;
+      }
+    }
+
+    this.bump();
+    return { totalCost, succeeded, failed, reason: lastReason };
+  }
+
   /** Pay $ to finish a site immediately — a Western prefab completes the rest.
    *  Consumes whatever materials are already on site; the prefab covers the
    *  shortfall. A road/bridge site dissolves into its finished tile. */

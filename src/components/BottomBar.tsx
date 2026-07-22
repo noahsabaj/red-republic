@@ -267,6 +267,27 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
               <GameIcon name="builders" size={14} /> Commence All ({plannedN})
             </button>
           )}
+          {(() => {
+            const unautoboughtSites = [...engine.buildings.values()].filter(b => !b.constructed && !b.autoBought);
+            if (unautoboughtSites.length === 0) return null;
+            return (
+              <button
+                title={`Auto-buy remaining materials for all ${unautoboughtSites.length} unconstructed sites using ${policy.currency === 'east' ? 'Rubles (₽)' : 'Dollars ($)'}`}
+                data-sfx="confirm"
+                className={`${BAR_CTL} flex items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[0.6875rem] font-bold border border-yellow-600/40 bg-red-900/60 text-yellow-100 hover:bg-red-800`}
+                onClick={() => {
+                  const res = engine.setSiteImportMany(unautoboughtSites.map(b => b.id), policy.currency);
+                  if (res.succeeded > 0) {
+                    push(`Auto-buying materials for ${res.succeeded} site${res.succeeded > 1 ? 's' : ''} (${policy.currency === 'east' ? `₽${fmtMoney(res.totalCost)}` : `$${fmtMoney(res.totalCost)}`})`, 'good', 'truck');
+                  } else if (res.reason) {
+                    push(res.reason, 'bad', 'truck');
+                  }
+                }}
+              >
+                <GameIcon name="truck" size={14} /> Auto-buy All ({unautoboughtSites.length})
+              </button>
+            );
+          })()}
         </div>
 
         {/* middle: build options — the category drill-down, centered between the
