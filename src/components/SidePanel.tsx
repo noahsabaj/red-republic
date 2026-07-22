@@ -4,7 +4,7 @@ import type { GameEngine, BuildingInst } from '@/game/engine';
 import { BALANCE, BUILDINGS, RESOURCES, ALL_RESOURCES, OBJECTIVES, FARM_SEASON } from '@/game/config';
 import type { DepositType, ResourceId } from '@/game/config';
 import type { Contract } from '@/game/engine';
-import { fmtQty, fmtLevel, fmtRate, fmtPct } from '@/game/format';
+import { fmtQty, fmtLevel, fmtRate, fmtPct, fmtMoney } from '@/game/format';
 import type { SelectionItem } from '@/game/selection';
 import type { PanelMode } from './HUD';
 import { useEngineVersion } from '@/hooks/use-engine';
@@ -53,7 +53,7 @@ export default function SidePanel({ engine, mode, selection, policy, onClose, on
         <div className="flex-1 overflow-y-auto soviet-scroll p-3">
           {mode === 'building' && (
             selection.length > 1
-              ? <MultiInfo engine={engine} items={selection} payMode={payMode} currency={currency} onArmBuild={onArmBuild} />
+              ? <MultiInfo engine={engine} items={selection} payMode={payMode} currency={currency} onArmBuild={onArmBuild} notify={notify} />
               : single?.kind === 'deposit'
                 ? <DepositInfo engine={engine} x={single.x} y={single.y} payMode={payMode} currency={currency} onArmBuild={onArmBuild} />
                 : <BuildingInfo engine={engine} id={single?.kind === 'building' ? single.id : null} onOpenTrade={onOpenTrade} notify={notify} />
@@ -158,7 +158,7 @@ function StockpilesPanel({ engine }: { engine: GameEngine }) {
 
 // ------------------------------------------------------------
 
-function MultiInfo({ engine, items, payMode, currency, onArmBuild }: { engine: GameEngine; items: SelectionItem[]; payMode: BuildPayMode; currency: 'east' | 'west'; onArmBuild: (defId: string) => void }) {
+function MultiInfo({ engine, items, payMode, currency, onArmBuild, notify }: { engine: GameEngine; items: SelectionItem[]; payMode: BuildPayMode; currency: 'east' | 'west'; onArmBuild: (defId: string) => void; notify: (msg: string, kind: 'good' | 'bad' | 'info') => void }) {
   const buildings = items
     .filter((i): i is Extract<SelectionItem, { kind: 'building' }> => i.kind === 'building')
     .map(i => engine.buildings.get(i.id))
@@ -249,6 +249,51 @@ function MultiInfo({ engine, items, payMode, currency, onArmBuild }: { engine: G
               </div>
             </div>
           )}
+          {sites.length > 0 && (() => {
+            const rubleCost = sites.reduce((sum, b) => sum + engine.autoBuyRemainingCost(b.id, 'east'), 0);
+            const dollarCost = sites.reduce((sum, b) => sum + engine.autoBuyRemainingCost(b.id, 'west'), 0);
+            const allEast = sites.every(b => !!b.autoBought && (b.importCurrency ?? 'east') === 'east');
+            const allWest = sites.every(b => !!b.autoBought && b.importCurrency === 'west');
+            const handleBulkImport = (cur: 'east' | 'west' | null) => {
+              const res = engine.setSiteImportMany(sites.map(b => b.id), cur);
+              if (res.succeeded > 0) {
+                if (cur === 'east') notify(`Auto-buying materials for ${res.succeeded} site${res.succeeded > 1 ? 's' : ''} (₽${fmtMoney(res.totalCost)})`, 'good');
+                else if (cur === 'west') notify(`Auto-buying materials for ${res.succeeded} site${res.succeeded > 1 ? 's' : ''} ($${fmtMoney(res.totalCost)})`, 'good');
+                else notify(`Disabled material auto-buy for ${res.succeeded} site${res.succeeded > 1 ? 's' : ''}`, 'info');
+              } else if (res.reason) {
+                notify(res.reason, 'bad');
+              }
+            };
+            return (
+              <div className="space-y-2 border-t border-yellow-600/20 pt-2">
+                <div>
+                  <div className="mb-1 text-[0.625rem] font-black uppercase tracking-wider text-yellow-400/80">
+                    Import remaining materials ({sites.length} site{sites.length > 1 ? 's' : ''})
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button
+                      aria-pressed={allEast}
+                      data-sfx="toggle"
+                      onClick={() => handleBulkImport(allEast ? null : 'east')}
+                      className={`flex-1 rounded px-2 py-1.5 text-xs font-bold tabular-nums ${allEast ? 'bg-yellow-500 text-red-950' : 'border border-yellow-600/30 bg-red-900/50 text-yellow-100/80 hover:bg-red-800'}`}
+                      title="Enable auto-buy for all selected sites using Rubles (₽)"
+                    >
+                      {allEast ? 'Auto-buying (₽)' : `₽ Auto-buy (₽${fmtMoney(rubleCost)})`}
+                    </button>
+                    <button
+                      aria-pressed={allWest}
+                      data-sfx="toggle"
+                      onClick={() => handleBulkImport(allWest ? null : 'west')}
+                      className={`flex-1 rounded px-2 py-1.5 text-xs font-bold tabular-nums ${allWest ? 'bg-yellow-500 text-red-950' : 'border border-yellow-600/30 bg-red-900/50 text-yellow-100/80 hover:bg-red-800'}`}
+                      title="Enable auto-buy for all selected sites using Dollars ($)"
+                    >
+                      {allWest ? 'Auto-buying ($)' : `$ Auto-buy ($${fmtMoney(dollarCost)})`}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
