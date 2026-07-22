@@ -13,14 +13,24 @@ import { getSettings } from '@/app/settings';
  */
 export function MenuBackdrop() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [engine] = useState(() => {
-    const e = new GameEngine({ seed: 1961 });
-    seedDemoTown(e);
-    e.setSpeed(0);
-    return e;
-  });
+  const [engine, setEngine] = useState<GameEngine | null>(null);
+
+  // Defer engine creation and seeding so main menu initial mount is instant
+  useEffect(() => {
+    let active = true;
+    const init = () => {
+      const e = new GameEngine({ seed: 1961 });
+      seedDemoTown(e);
+      e.setSpeed(0);
+      if (active) setEngine(e);
+    };
+    // Yield to browser main thread paint before running 100-day seeding
+    const timer = setTimeout(init, 0);
+    return () => { active = false; clearTimeout(timer); };
+  }, []);
 
   useEffect(() => {
+    if (!engine) return;
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext('2d')!;
     let raf = 0;
@@ -41,9 +51,11 @@ export function MenuBackdrop() {
     ro.observe(canvas);
 
     const ui: UIState = { hoverTile: null, tool: { kind: 'select' }, selection: [], time: 0 };
+    let lastRenderTime = 0;
+    let renderedOnce = false;
+
     const frame = (now: number) => {
       const reduced = getSettings().reducedMotion;
-      // slow Lissajous drift over the town; a fixed frame when reduced
       const t = reduced ? 0 : now / 1000;
       cam.x = baseX + Math.sin(t * 0.05) * 90;
       cam.y = baseY + Math.cos(t * 0.037) * 55;
@@ -51,8 +63,28 @@ export function MenuBackdrop() {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       render(ctx, engine, cam, ui, vw, vh);
     };
+
     const loop = (now: number) => {
-      frame(now);
+      if (document.hidden) {
+        raf = requestAnimationFrame(loop);
+        return;
+      }
+
+      const reduced = getSettings().reducedMotion;
+      if (reduced) {
+        if (!renderedOnce) {
+          frame(now);
+          renderedOnce = true;
+        }
+        raf = requestAnimationFrame(loop);
+        return;
+      }
+
+      // Cap backdrop attract animation to ~30 FPS (33ms interval)
+      if (now - lastRenderTime >= 32) {
+        lastRenderTime = now;
+        frame(now);
+      }
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);

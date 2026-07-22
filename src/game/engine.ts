@@ -733,6 +733,10 @@ export class GameEngine {
 
   centerOf(b: BuildingInst) { return { x: b.x + b.w / 2, y: b.y + b.h / 2 }; }
 
+  topologyRevision(domain: TopologyDomain): number {
+    return this.topology.revision(domain);
+  }
+
   /** Open grass tiles within the farm's work radius, excluding the (would-be) footprint. */
   countFarmFields(x: number, y: number, w: number, h: number): number {
     let fields = 0;

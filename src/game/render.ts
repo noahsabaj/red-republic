@@ -197,11 +197,15 @@ interface DepthItem {
 }
 
 // farm-field membership only changes when the world changes — cache per engine
-// version AND identity (a freshly loaded engine restarts its version counter)
-let fieldCache: { engine: GameEngine; version: number; tiles: Set<number> } | null = null;
+import { TilemapCache } from './tilemap-cache';
+const globalTilemapCache = new TilemapCache();
+
+// farm-field membership only changes when the world changes — cache per land topology revision
+let fieldCache: { engine: GameEngine; rev: number; tiles: Set<number> } | null = null;
 
 function fieldTilesOf(engine: GameEngine): Set<number> {
-  if (fieldCache && fieldCache.engine === engine && fieldCache.version === engine.getVersion()) return fieldCache.tiles;
+  const rev = engine.topologyRevision('land');
+  if (fieldCache && fieldCache.engine === engine && fieldCache.rev === rev) return fieldCache.tiles;
   const tiles = new Set<number>();
   for (const b of engine.buildings.values()) {
     const def = BUILDINGS[b.defId];
@@ -212,22 +216,110 @@ function fieldTilesOf(engine: GameEngine): Set<number> {
       if (t && t.terrain === 'grass' && !t.buildingId && !t.road && !t.deposit) tiles.add(ty * engine.mapW + tx);
     }
   }
-  fieldCache = { engine, version: engine.getVersion(), tiles };
+  fieldCache = { engine, rev, tiles };
   return tiles;
 }
 
 export function truckWorldPos(tr: Truck): { wx: number; wy: number } {
-  const pts = tr.phase === 'go' ? tr.points : [...tr.points].reverse();
-  const frac = Math.min(1, tr.daysDone / tr.daysTotal);
+  const pts = tr.points;
   const segs = pts.length - 1;
   if (segs <= 0) return { wx: pts[0]?.x ?? 0, wy: pts[0]?.y ?? 0 };
+  const frac = Math.min(1, tr.daysDone / tr.daysTotal);
   const f = frac * segs;
-  const i = Math.min(segs - 1, Math.floor(f));
-  const t = f - i;
-  return {
-    wx: pts[i].x + (pts[i + 1].x - pts[i].x) * t,
-    wy: pts[i].y + (pts[i + 1].y - pts[i].y) * t,
-  };
+  if (tr.phase === 'go') {
+    const i = Math.min(segs - 1, Math.floor(f));
+    const t = f - i;
+    const p1 = pts[i], p2 = pts[i + 1];
+    return { wx: p1.x + (p2.x - p1.x) * t, wy: p1.y + (p2.y - p1.y) * t };
+  } else {
+    const revI = Math.min(segs - 1, Math.floor(f));
+    const t = f - revI;
+    const i = segs - revI;
+    const p1 = pts[i], p2 = pts[i - 1];
+    return { wx: p1.x + (p2.x - p1.x) * t, wy: p1.y + (p2.y - p1.y) * t };
+  }
+}
+
+export function renderGroundTile(
+  ctx: CanvasRenderingContext2D,
+  engine: GameEngine,
+  x: number,
+  y: number,
+  cam: Camera,
+  frame: FrameStyle,
+  showGrid: boolean,
+  fieldTiles: Set<number>,
+) {
+  const t = engine.tiles[y][x];
+  const c0 = toScreen(x, y, cam), c1 = toScreen(x + 1, y, cam);
+  const c2 = toScreen(x + 1, y + 1, cam), c3 = toScreen(x, y + 1, cam);
+
+  if (t.terrain === 'water') {
+    drawWater(ctx, engine, x, y, c0, c1, c2, c3, cam, frame);
+  } else {
+    const even = (x + y) % 2 === 0;
+    let fill: string;
+    if (t.foreign) {
+      const fs = frame.foreign;
+      fill = t.terrain === 'rock' ? (even ? fs.r1 : fs.r2)
+        : t.terrain === 'forest' ? (even ? fs.f1 : fs.f2)
+        : (even ? fs.g1 : fs.g2);
+    } else {
+      fill = even ? (frame.g1 ?? '') : (frame.g2 ?? '');
+      if (t.terrain === 'rock') fill = even ? (frame.rock1 ?? '') : (frame.rock2 ?? '');
+      else if (t.terrain === 'forest') fill = even ? (frame.forest1 ?? '') : (frame.forest2 ?? '');
+    }
+    poly(ctx, [c0, c1, c2, c3], fill);
+    if (showGrid) {
+      ctx.strokeStyle = 'rgba(20,24,20,0.20)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(c3.x, c3.y); ctx.lineTo(c0.x, c0.y); ctx.lineTo(c1.x, c1.y);
+      ctx.stroke();
+    }
+  }
+
+  if (fieldTiles.has(y * engine.mapW + x)) {
+    ctx.globalAlpha = 0.85;
+    poly(ctx, [lerpP(c0, c2, 0.12), lerpP(c1, c3, 0.12), lerpP(c2, c0, 0.12), lerpP(c3, c1, 0.12)], frame.fieldCol);
+    ctx.globalAlpha = 1;
+    if ((frame.season === 'summer' || frame.season === 'autumn') && frame.snowT < 0.3) {
+      ctx.strokeStyle = 'rgba(90,60,10,0.35)';
+      ctx.lineWidth = 1;
+      for (let i = 0.25; i < 1; i += 0.25) {
+        ctx.beginPath();
+        ctx.moveTo(lerpP(c0, c2, 0.12 * i + 0.1).x, lerpP(c0, c2, 0.12 * i + 0.1).y);
+        ctx.lineTo(lerpP(c1, c3, 0.12 * i + 0.1).x, lerpP(c1, c3, 0.12 * i + 0.1).y);
+        ctx.stroke();
+      }
+    }
+  }
+
+  if (t.deposit && t.terrain !== 'water') drawDeposit(ctx, t.deposit, c0, c1, c2, c3, t.variant, frame);
+
+  if (t.road) drawRoad(ctx, engine, x, y, c0, c1, c2, c3, cam);
+
+  if (!t.foreign) {
+    const segs: [Pt, Pt][] = [];
+    if (engine.tiles[y]?.[x - 1]?.foreign) segs.push([c0, c3]);
+    if (engine.tiles[y]?.[x + 1]?.foreign) segs.push([c1, c2]);
+    if (engine.tiles[y - 1]?.[x]?.foreign) segs.push([c0, c1]);
+    if (engine.tiles[y + 1]?.[x]?.foreign) segs.push([c3, c2]);
+    if (segs.length) {
+      ctx.lineWidth = Math.max(1.5, 2.2 * cam.z);
+      ctx.strokeStyle = 'rgba(140,34,26,0.85)';
+      ctx.beginPath();
+      for (const [a, b] of segs) { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
+      ctx.stroke();
+      ctx.lineWidth = Math.max(1, 1.1 * cam.z);
+      ctx.strokeStyle = 'rgba(232,226,212,0.7)';
+      ctx.setLineDash([3 * cam.z, 5 * cam.z]);
+      ctx.beginPath();
+      for (const [a, b] of segs) { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
 }
 
 export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: Camera, ui: UIState, vw: number, vh: number) {
@@ -237,9 +329,6 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
 
   const fieldTiles = fieldTilesOf(engine);
 
-  // per-frame caches: shaded colors and font strings are invariant per frame.
-  // Snow cover and river ice come from the SIMULATION (engine.weather), so
-  // what you see is literally the state the farms and barges obey.
   const snowT = Math.min(1, engine.weather.snowDepth / 6) * 0.85;
   const frozen = engine.weather.riverFrozen;
   const [g1, g2] = GRASS[season].map(c => tint(c, snowT));
@@ -262,6 +351,7 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
     waterDeepA: shade(wBase, frozen ? 0.96 : 0.86),
     waterDeepB: shade(wBase, frozen ? 0.93 : 0.81),
     waterEdge: tint(wBase, 0.5),
+    g1, g2, forest1, forest2, rock1, rock2,
   };
   const treeCol = tint(TREE[season], snowT * 0.9);
   frame.treeShade0 = shade(treeCol, 0.85);
@@ -273,137 +363,84 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
     tree0: dull(frame.treeShade0, 0.5), tree1: dull(frame.treeShade1, 0.5),
   };
 
-  // Everything raised above the ground plane draws in one depth-sorted pass
-  // ordered by isoCompare — scan-row order is NOT the occlusion relation
-  // (a 1x1 building east of a 2x2 sits in front of it despite an earlier row).
+  // Render cached offscreen static tilemap background
+  globalTilemapCache.drawStaticLayer(ctx, engine, cam, ui, frame, renderGroundTile, fieldTiles);
+
+  // Viewport bounds for culling dynamic items before depth sorting
+  const margin = 80;
+  const isPointVisible = (wx: number, wy: number) => {
+    const p = toScreen(wx, wy, cam);
+    return p.x >= -margin && p.x <= vw + margin && p.y >= -margin && p.y <= vh + margin;
+  };
+
   const items: DepthItem[] = [];
+
+  // Dynamic entities: trucks, foreign trucks, boats
   for (const tr of engine.trucks) {
     const p = truckWorldPos(tr);
-    items.push({ x: p.wx, y: p.wy, w: 0, h: 0, kind: 'truck', tr, wx: p.wx, wy: p.wy });
+    if (isPointVisible(p.wx, p.wy)) {
+      items.push({ x: p.wx, y: p.wy, w: 0, h: 0, kind: 'truck', tr, wx: p.wx, wy: p.wy });
+    }
   }
   for (const tr of engine.foreignTrucks) {
     const p = truckWorldPos(tr);
-    items.push({ x: p.wx, y: p.wy, w: 0, h: 0, kind: 'truck', tr, wx: p.wx, wy: p.wy, foreign: true });
+    if (isPointVisible(p.wx, p.wy)) {
+      items.push({ x: p.wx, y: p.wy, w: 0, h: 0, kind: 'truck', tr, wx: p.wx, wy: p.wy, foreign: true });
+    }
   }
   for (const bt of engine.boats) {
     const p = truckWorldPos(bt);
-    items.push({ x: p.wx, y: p.wy, w: 0, h: 0, kind: 'boat', tr: bt, wx: p.wx, wy: p.wy });
+    if (isPointVisible(p.wx, p.wy)) {
+      items.push({ x: p.wx, y: p.wy, w: 0, h: 0, kind: 'boat', tr: bt, wx: p.wx, wy: p.wy });
+    }
   }
+
+  // Citizens
   if (engine.pop > 0 && cam.z >= 0.5) {
     for (const b of engine.buildings.values()) {
       const def = BUILDINGS[b.defId];
       if (!def.housingCapacity || !b.constructed) continue;
       const n = Math.min(3, Math.ceil(def.housingCapacity / 12));
       for (let i = 0; i < n; i++) {
-        // reduced motion: citizens stand at fixed deterministic spots
         const ph = (frame.reduced ? 0 : ui.time / 1400) + b.id * 1.7 + i * 2.1;
         const wx = b.x + b.w / 2 + Math.sin(ph) * (b.w / 2 + 0.6);
         const wy = b.y + b.h / 2 + Math.cos(ph * 0.8) * (b.h / 2 + 0.6);
-        items.push({ x: wx, y: wy, w: 0, h: 0, kind: 'citizen', wx, wy });
+        if (isPointVisible(wx, wy)) {
+          items.push({ x: wx, y: wy, w: 0, h: 0, kind: 'citizen', wx, wy });
+        }
       }
     }
   }
+
+  // Placement ghost
   if (ui.hoverTile && (ui.tool.kind === 'build' || ui.tool.kind === 'bulldoze')) {
     const [gw, gh] = ui.tool.kind === 'build' ? BUILDINGS[ui.tool.defId].size : [1, 1];
     items.push({ x: ui.hoverTile.x, y: ui.hoverTile.y, w: gw, h: gh, kind: 'ghost' });
   }
+
+  // Border posts
   for (const bp of borderPosts(engine)) {
-    items.push({ x: bp.x, y: bp.y, w: 0, h: 0, kind: 'borderpost', wx: bp.x, wy: bp.y });
+    if (isPointVisible(bp.x, bp.y)) {
+      items.push({ x: bp.x, y: bp.y, w: 0, h: 0, kind: 'borderpost', wx: bp.x, wy: bp.y });
+    }
   }
 
+  // Grid scan for visible raised items (trees & building roofs)
   const hwz = (TILE_W / 2) * cam.z;
   const hhz = (TILE_H / 2) * cam.z;
   for (let y = 0; y < engine.mapH; y++) {
     for (let x = 0; x < engine.mapW; x++) {
-      // allocation-free viewport cull (corner extremes in closed form)
       const minX = (x - y - 1) * hwz + cam.x;
       if (minX > vw + 80 || minX + 2 * hwz < -80) continue;
       const minY = (x + y) * hhz + cam.y;
       if (minY > vh + 80 || minY + 2 * hhz < -120) continue;
 
       const t = engine.tiles[y][x];
-      const c0 = toScreen(x, y, cam), c1 = toScreen(x + 1, y, cam);
-      const c2 = toScreen(x + 1, y + 1, cam), c3 = toScreen(x, y + 1, cam);
-
-      if (t.terrain === 'water') {
-        drawWater(ctx, engine, x, y, c0, c1, c2, c3, cam, frame);
-      } else {
-        const even = (x + y) % 2 === 0;
-        let fill: string;
-        if (t.foreign) {
-          const fs = frame.foreign;
-          fill = t.terrain === 'rock' ? (even ? fs.r1 : fs.r2)
-            : t.terrain === 'forest' ? (even ? fs.f1 : fs.f2)
-            : (even ? fs.g1 : fs.g2);
-        } else {
-          fill = even ? g1 : g2;
-          if (t.terrain === 'rock') fill = even ? rock1 : rock2;
-          else if (t.terrain === 'forest') fill = even ? forest1 : forest2;
-        }
-        poly(ctx, [c0, c1, c2, c3], fill);
-        // tile grid: two edges per tile stroke the whole lattice exactly once
-        if (ui.showGrid) {
-          ctx.strokeStyle = 'rgba(20,24,20,0.20)';
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(c3.x, c3.y); ctx.lineTo(c0.x, c0.y); ctx.lineTo(c1.x, c1.y);
-          ctx.stroke();
-        }
-      }
-
-      // farm fields
-      if (fieldTiles.has(y * engine.mapW + x)) {
-        ctx.globalAlpha = 0.85;
-        poly(ctx, [lerpP(c0, c2, 0.12), lerpP(c1, c3, 0.12), lerpP(c2, c0, 0.12), lerpP(c3, c1, 0.12)], frame.fieldCol);
-        ctx.globalAlpha = 1;
-        if ((season === 'summer' || season === 'autumn') && frame.snowT < 0.3) {
-          ctx.strokeStyle = 'rgba(90,60,10,0.35)';
-          ctx.lineWidth = 1;
-          for (let i = 0.25; i < 1; i += 0.25) {
-            ctx.beginPath();
-            ctx.moveTo(lerpP(c0, c2, 0.12 * i + 0.1).x, lerpP(c0, c2, 0.12 * i + 0.1).y);
-            ctx.lineTo(lerpP(c1, c3, 0.12 * i + 0.1).x, lerpP(c1, c3, 0.12 * i + 0.1).y);
-            ctx.stroke();
-          }
-        }
-      }
-
-      // deposits
-      if (t.deposit && t.terrain !== 'water') drawDeposit(ctx, t.deposit, c0, c1, c2, c3, t.variant, frame);
-
-      // raised things at this tile join the depth pass (visible tiles only)
       if (t.terrain === 'forest') items.push({ x, y, w: 1, h: 1, kind: 'trees', variant: t.variant, foreign: t.foreign });
       if (t.buildingId) {
         const b = engine.buildings.get(t.buildingId);
         if (b && x === b.x + b.w - 1 && y === b.y + b.h - 1) {
           items.push({ x: b.x, y: b.y, w: b.w, h: b.h, kind: 'building', b });
-        }
-      }
-
-      // road
-      if (t.road) drawRoad(ctx, engine, x, y, c0, c1, c2, c3, cam);
-
-      // the national border: a striped line along the homeland side of the strip
-      // (drawn over roads too — at the crossing it reads as the checkpoint bar)
-      if (!t.foreign) {
-        const segs: [Pt, Pt][] = [];
-        if (engine.tiles[y]?.[x - 1]?.foreign) segs.push([c0, c3]);
-        if (engine.tiles[y]?.[x + 1]?.foreign) segs.push([c1, c2]);
-        if (engine.tiles[y - 1]?.[x]?.foreign) segs.push([c0, c1]);
-        if (engine.tiles[y + 1]?.[x]?.foreign) segs.push([c3, c2]);
-        if (segs.length) {
-          ctx.lineWidth = Math.max(1.5, 2.2 * cam.z);
-          ctx.strokeStyle = 'rgba(140,34,26,0.85)';
-          ctx.beginPath();
-          for (const [a, b] of segs) { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
-          ctx.stroke();
-          ctx.lineWidth = Math.max(1, 1.1 * cam.z);
-          ctx.strokeStyle = 'rgba(232,226,212,0.7)';
-          ctx.setLineDash([3 * cam.z, 5 * cam.z]);
-          ctx.beginPath();
-          for (const [a, b] of segs) { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
-          ctx.stroke();
-          ctx.setLineDash([]);
         }
       }
     }
@@ -660,7 +697,7 @@ function drawWeather(ctx: CanvasRenderingContext2D, cond: WeatherCondition, time
 }
 
 // per-frame invariants (fonts scale with zoom; shades depend on season & weather)
-interface FrameStyle {
+export interface FrameStyle {
   time: number;
   season: Season;
   snowT: number; // 0..0.85 whitening from simulated snow depth
@@ -677,6 +714,9 @@ interface FrameStyle {
   waterDeepB: string;
   waterEdge: string;
   foreign: { g1: string; g2: string; f1: string; f2: string; r1: string; r2: string; tree0: string; tree1: string };
+  g1?: string; g2?: string;
+  rock1?: string; rock2?: string;
+  forest1?: string; forest2?: string;
 }
 
 /**
