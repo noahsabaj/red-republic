@@ -104,12 +104,14 @@ export interface TradeDayLedger {
   used: number;     // customs throughput consumed
   capacity: number; // customs throughput available (staffing-scaled)
   blocked: string[];
-  foreignLabor: number; // ₽ paid to imported construction crews (negative = spent)
+  foreignLabor: number; // ₽ paid to imported construction crews (backward-compatible alias = foreignLaborRubles)
+  foreignLaborRubles: number; // ₽ paid to imported construction crews (negative = spent)
+  foreignLaborDollars: number; // $ paid to imported construction crews (negative = spent)
   repairImports: number; // ₽/$ paid to import machinery for facility repairs (negative = spent)
 }
 
 const emptyLedger = (): TradeDayLedger =>
-  ({ imports: {}, exports: {}, rubles: 0, dollars: 0, used: 0, capacity: 0, blocked: [], foreignLabor: 0, repairImports: 0 });
+  ({ imports: {}, exports: {}, rubles: 0, dollars: 0, used: 0, capacity: 0, blocked: [], foreignLabor: 0, foreignLaborRubles: 0, foreignLaborDollars: 0, repairImports: 0 });
 
 /** A deadline bulk order from one of the blocs, at a premium price locked when offered. */
 export interface Contract {
@@ -311,6 +313,7 @@ export class GameEngine {
   /** Hire imported construction crews with ₽ for builders beyond your citizens.
    *  Off = domestic builders only (construction stalls without staffed offices). */
   foreignLaborEnabled = true;
+  foreignLaborCurrency: 'east' | 'west' = 'east';
   /** Import machinery from the border (paid ₽/$) to repair a worn building when no
    *  domestic machinery can reach it — a town with no Machine Works is then never
    *  permanently stuck at half output. Off = domestic supply only. */
@@ -2585,8 +2588,11 @@ export class GameEngine {
     // collapses to min(cap, pool) — bit-identical to the old code.
     const domesticPool = this.domesticBuilderPool();
     const foreignPool = Math.max(0, this.builderPool() - domesticPool);
-    const perDay = BALANCE.foreignLaborPerDay * DIFFICULTIES[this.difficulty].importPriceMult;
-    const affordableForeign = perDay > 0 ? Math.floor(this.rubles / perDay) : foreignPool;
+    const isEast = (this.foreignLaborCurrency ?? 'east') === 'east';
+    const rateBase = isEast ? BALANCE.foreignLaborPerDayEast : BALANCE.foreignLaborPerDayWest;
+    const perDay = rateBase * DIFFICULTIES[this.difficulty].importPriceMult;
+    const treasury = isEast ? this.rubles : this.dollars;
+    const affordableForeign = perDay > 0 ? Math.floor(treasury / perDay) : foreignPool;
     const domestic = domesticPool;
     const foreign = this.foreignLaborEnabled ? Math.min(foreignPool, affordableForeign) : 0;
     if (domestic + foreign <= 0) return;
@@ -2635,14 +2641,20 @@ export class GameEngine {
       if (ready[i].progress >= this.def(ready[i]).labor) this.completeSite(ready[i]);
     }
 
-    // foreignUsed ≤ foreign ≤ affordableForeign (= floor(rubles/perDay)), so
-    // cost ≤ rubles — the treasury never goes negative. The min() clamp defends
+    // foreignUsed ≤ foreign ≤ affordableForeign (= floor(treasury/perDay)), so
+    // cost ≤ treasury — the treasury never goes negative. The min() clamp defends
     // against a summed-fractional overshoot of at most one ULP.
     if (foreignUsed > 0) {
       foreignUsed = Math.min(foreignUsed, affordableForeign);
       const cost = foreignUsed * perDay;
-      this.rubles -= cost;
-      this.tradeLedger.today.foreignLabor -= cost;
+      if (isEast) {
+        this.rubles -= cost;
+        this.tradeLedger.today.foreignLaborRubles -= cost;
+        this.tradeLedger.today.foreignLabor = this.tradeLedger.today.foreignLaborRubles;
+      } else {
+        this.dollars -= cost;
+        this.tradeLedger.today.foreignLaborDollars -= cost;
+      }
     }
   }
 
@@ -3043,6 +3055,11 @@ export class GameEngine {
     this.bump();
   }
 
+  setForeignLaborCurrency(c: 'east' | 'west') {
+    this.foreignLaborCurrency = c;
+    this.bump();
+  }
+
   /** Toggle paid machinery imports for facility repairs, and which bloc pays. */
   setRepairImports(on: boolean, currency?: 'east' | 'west') {
     this.repairImportsEnabled = on;
@@ -3088,7 +3105,19 @@ export class GameEngine {
   serialize(): SaveGameV1 {
     const cloneTruck = (t: Truck): Truck => ({ ...t, points: t.points.map(p => ({ ...p })) });
     const cloneLedger = (l: TradeDayLedger): TradeDayLedger =>
-      ({ imports: { ...l.imports }, exports: { ...l.exports }, rubles: l.rubles, dollars: l.dollars, used: l.used, capacity: l.capacity, blocked: [...l.blocked], foreignLabor: l.foreignLabor ?? 0, repairImports: l.repairImports ?? 0 });
+      ({
+        imports: { ...l.imports },
+        exports: { ...l.exports },
+        rubles: l.rubles,
+        dollars: l.dollars,
+        used: l.used,
+        capacity: l.capacity,
+        blocked: [...l.blocked],
+        foreignLabor: l.foreignLabor ?? l.foreignLaborRubles ?? 0,
+        foreignLaborRubles: l.foreignLaborRubles ?? l.foreignLabor ?? 0,
+        foreignLaborDollars: l.foreignLaborDollars ?? 0,
+        repairImports: l.repairImports ?? 0,
+      });
     const rules: Partial<Record<ResourceId, AutoTradeRule>> = {};
     for (const [r, rule] of Object.entries(this.autoTrade.rules) as [ResourceId, AutoTradeRule][]) rules[r] = { ...rule };
     return {
@@ -3119,6 +3148,7 @@ export class GameEngine {
         priceFactorWest: this.priceFactorWest,
         autoTrade: { enabled: this.autoTrade.enabled, reserveRubles: this.autoTrade.reserveRubles, reserveDollars: this.autoTrade.reserveDollars, rules },
         foreignLaborEnabled: this.foreignLaborEnabled,
+        foreignLaborCurrency: this.foreignLaborCurrency,
         repairImportsEnabled: this.repairImportsEnabled,
         repairImportCurrency: this.repairImportCurrency,
         tradeLedger: { today: cloneLedger(this.tradeLedger.today), yesterday: cloneLedger(this.tradeLedger.yesterday) },
@@ -3183,10 +3213,23 @@ export class GameEngine {
       rules: Object.fromEntries((Object.entries(body.autoTrade.rules) as [ResourceId, AutoTradeRule][]).map(([r, rule]) => [r, { ...rule }])),
     };
     e.foreignLaborEnabled = body.foreignLaborEnabled ?? true;
+    e.foreignLaborCurrency = body.foreignLaborCurrency ?? 'east';
     e.repairImportsEnabled = body.repairImportsEnabled ?? true;
     e.repairImportCurrency = body.repairImportCurrency ?? 'east';
     const cloneLedger = (l: TradeDayLedger): TradeDayLedger =>
-      ({ imports: { ...l.imports }, exports: { ...l.exports }, rubles: l.rubles, dollars: l.dollars, used: l.used, capacity: l.capacity, blocked: [...l.blocked], foreignLabor: l.foreignLabor ?? 0, repairImports: l.repairImports ?? 0 });
+      ({
+        imports: { ...l.imports },
+        exports: { ...l.exports },
+        rubles: l.rubles,
+        dollars: l.dollars,
+        used: l.used,
+        capacity: l.capacity,
+        blocked: [...l.blocked],
+        foreignLabor: l.foreignLabor ?? l.foreignLaborRubles ?? 0,
+        foreignLaborRubles: l.foreignLaborRubles ?? l.foreignLabor ?? 0,
+        foreignLaborDollars: l.foreignLaborDollars ?? 0,
+        repairImports: l.repairImports ?? 0,
+      });
     e.tradeLedger = { today: cloneLedger(body.tradeLedger.today), yesterday: cloneLedger(body.tradeLedger.yesterday) };
     e.contracts = body.contracts.map(c => ({ ...c }));
     e.dryStreak = body.streaks.dry;

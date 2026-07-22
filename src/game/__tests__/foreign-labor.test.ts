@@ -78,4 +78,32 @@ describe('foreign labor', () => {
     expect(e.buildingAt(10, 10)!.progress).toBeGreaterThan(0);
     expect(e.tradeLedger.today.foreignLabor).toBeLessThan(0);
   });
+
+  it('charges $ for foreign builders when foreignLaborCurrency is west', () => {
+    const e = laborTown();
+    e.rubles = 10_000;
+    e.dollars = 500;
+    e.setForeignLaborCurrency('west');
+    readyHouse(e);
+    const rublesBefore = e.rubles;
+    const dollarsBefore = e.dollars;
+    runDays(e, 1);
+    expect(e.dollars).toBeLessThan(dollarsBefore);
+    expect(e.tradeLedger.today.foreignLaborDollars).toBeLessThan(0);
+    expect(e.rubles).toBe(rublesBefore);
+    expect(e.buildingAt(10, 10)!.progress).toBeGreaterThan(0);
+  });
+
+  it('dollar affordability cap halts construction when dollars reach zero without touching rubles', () => {
+    const e = laborTown();
+    e.rubles = 10_000;
+    e.dollars = 0.2; // enough for ~2 builder-days
+    e.setForeignLaborCurrency('west');
+    readyHouse(e);
+    runDays(e, 3);
+    expect(e.dollars).toBeGreaterThanOrEqual(0);
+    expect(e.dollars).toBeLessThan(0.1);
+    expect(e.rubles).toBe(10_000); // rubles were not spent
+    expect(e.buildingAt(10, 10)!.constructed).toBe(false);
+  });
 });

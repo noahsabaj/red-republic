@@ -72,7 +72,7 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
   const mode: BuildPayMode = policy.instant ? 'instant' : policy.autoBuy ? 'autoBuy' : 'materials';
 
   // re-render when affordability, the foreign-labor default, or the planned-site count changes
-  useEngineSignature(engine, (e) => [e.rubles, e.dollars, e.foreignLaborEnabled, e.plannedCount()]);
+  useEngineSignature(engine, (e) => [e.rubles, e.dollars, e.foreignLaborEnabled, e.foreignLaborCurrency, e.plannedCount()]);
 
   const plannedN = engine.plannedCount();
   const commenceCost = plannedN > 0 ? engine.plannedCommenceCost() : null;
@@ -165,7 +165,10 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
                 <button
                   key={cur}
                   aria-pressed={policy.currency === cur}
-                  onClick={() => setPolicy({ currency: cur })}
+                  onClick={() => {
+                    setPolicy({ currency: cur });
+                    engine.setForeignLaborCurrency(cur);
+                  }}
                   className={`flex items-center justify-center px-2 text-[0.6875rem] font-black ${policy.currency === cur ? 'bg-yellow-500 text-red-950' : 'bg-red-950/50 text-yellow-100/60 hover:bg-red-900'}`}
                 >{cur === 'east' ? '₽' : '$'}</button>
               ))}
@@ -174,7 +177,7 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
           <ToggleButton on={policy.instant} onChange={v => setPolicy({ instant: v })} className={BAR_CTL}
             icon="download" label="Instant $" title="Import a finished Western prefab — completes immediately for dollars" />
           <ToggleButton on={engine.foreignLaborEnabled} onChange={v => engine.setForeignLaborEnabled(v)} className={BAR_CTL}
-            icon="users" label="Foreign" title="New sites may hire paid foreign builders before you have citizens" />
+            icon="users" label="Foreign" title={`New sites may hire paid foreign builders before you have citizens (${engine.foreignLaborCurrency === 'west' ? '$ West' : '₽ East'})`} />
           <ToggleButton on={policy.plan} onChange={v => setPolicy({ plan: v })} className={BAR_CTL}
             icon="contract" label="Plan" title="Place sites without commencing — begin construction later" />
           {plannedN > 0 && (

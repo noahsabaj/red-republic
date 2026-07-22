@@ -429,6 +429,8 @@ export const BALANCE = {
   truckDaysPerTile: 0.18, // travel days per road tile
   offRoadStepCost: 8,     // off-road land tile costs 8× a road tile (roads always preferred; off-road is a slow fallback)
   foreignLaborPerDay: 0.5, // ₽/builder-day for imported (non-citizen) construction crews (×importPriceMult)
+  foreignLaborPerDayEast: 0.5, // ₽/builder-day (East)
+  foreignLaborPerDayWest: 0.1, // $/builder-day (West)
   maxActiveTrucksPerOffice: 6,
   trucksPerDriver: 1,      // Motor Depot: trucks added per staffed driver (on top of office trucks)
   truckFuelPerDay: 0.1,    // fuel a working depot-truck burns per day, drawn from Gas Stations
