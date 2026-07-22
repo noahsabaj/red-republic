@@ -20,7 +20,7 @@ interface Props {
 }
 
 /** The mode-aware hover card: cost in the active funding mode, then the specs. */
-function InfoCard({ engine, defId, mode, currency }: { engine: GameEngine; defId: string; mode: BuildPayMode; currency: 'east' | 'west' }) {
+function InfoCard({ engine, defId, mode, currency, shiftX }: { engine: GameEngine; defId: string; mode: BuildPayMode; currency: 'east' | 'west'; shiftX?: number }) {
   const def = BUILDINGS[defId];
   const mats = Object.entries(def.materials) as [ResourceId, number][];
   const io = (rec?: Partial<Record<ResourceId, number>>) =>
@@ -28,7 +28,10 @@ function InfoCard({ engine, defId, mode, currency }: { engine: GameEngine; defId
   const inputs = io(def.inputs), outputs = io(def.outputs);
   const powerLine = def.powerOutput ? `+${def.powerOutput} MW` : def.power ? `−${def.power} MW` : null;
   return (
-    <div className="pointer-events-none absolute bottom-full left-1/2 z-40 mb-2 w-56 -translate-x-1/2 rounded-lg border border-yellow-600/60 bg-red-950/95 p-2.5 text-yellow-50 shadow-2xl animate-in fade-in duration-150">
+    <div
+      className="pointer-events-none absolute bottom-full left-1/2 z-40 mb-2 w-56 rounded-lg border border-yellow-600/60 bg-red-950/95 p-2.5 text-yellow-50 shadow-2xl"
+      style={{ transform: shiftX ? `translateX(calc(-50% + ${shiftX}px))` : 'translateX(-50%)' }}
+    >
       <div className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-yellow-300">
         <GameIcon name={def.icon} size={14} /> {def.name}
       </div>
@@ -116,9 +119,39 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
   const subs = cat ? SUBCATEGORIES[cat] : [];
   const activeSub = sub ? subs.find(s => s.id === sub) : null;
 
+  const selectedDefId = tool.kind === 'build' ? tool.defId : null;
+
+  // Active tooltip IDs in current subcategory
+  const activeTooltipIds = new Set<string>();
+  if (selectedDefId && activeSub?.ids.includes(selectedDefId)) activeTooltipIds.add(selectedDefId);
+  if (hoveredDefId && activeSub?.ids.includes(hoveredDefId)) activeTooltipIds.add(hoveredDefId);
+
+  // Compute horizontal push-apart shifts if two tooltips (Selected & Hovered) are active simultaneously
+  const tooltipShifts: Record<string, number> = {};
+  if (activeTooltipIds.size === 2 && activeSub) {
+    const ids = Array.from(activeTooltipIds);
+    const idx0 = activeSub.ids.indexOf(ids[0]);
+    const idx1 = activeSub.ids.indexOf(ids[1]);
+    if (idx0 !== -1 && idx1 !== -1) {
+      const [leftId, rightId, leftIdx, rightIdx] = idx0 <= idx1
+        ? [ids[0], ids[1], idx0, idx1]
+        : [ids[1], ids[0], idx1, idx0];
+      const idxDistance = rightIdx - leftIdx;
+      const cardPitch = 82; // approximate grid card pitch (76px width + 6px gap)
+      const distance = idxDistance * cardPitch;
+      const requiredDistance = 224 + 6; // 224px tooltip width + 6px gap
+      if (distance < requiredDistance) {
+        const overlap = requiredDistance - distance;
+        const shift = Math.round(overlap / 2);
+        tooltipShifts[leftId] = -shift;
+        tooltipShifts[rightId] = shift;
+      }
+    }
+  }
+
   return (
     <div
-      className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex flex-col justify-end transition-transform duration-200"
+      className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex flex-col justify-end"
       style={{ transform: retracted ? 'translateY(calc(100% - 0.95rem))' : undefined }}
       onMouseEnter={() => hidden && setPeeking(true)}
       onMouseLeave={() => setPeeking(false)}
@@ -176,7 +209,9 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
                     <span className={`text-[0.5625rem] tabular-nums ${short.length ? 'text-amber-400' : 'text-yellow-200/55'}`}>
                       {buildCostText(engine, id, mode, policy.currency)}
                     </span>
-                    {hoveredDefId === id && <InfoCard engine={engine} defId={id} mode={mode} currency={policy.currency} />}
+                    {activeTooltipIds.has(id) && (
+                      <InfoCard engine={engine} defId={id} mode={mode} currency={policy.currency} shiftX={tooltipShifts[id]} />
+                    )}
                   </button>
                 );
               })}
