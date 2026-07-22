@@ -74,7 +74,6 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
 
   const [hoveredDefId, setHoveredDefId] = useState<string | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const cardRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const clearHoverTimer = () => {
     if (hoverTimerRef.current) {
@@ -127,25 +126,23 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
   if (selectedDefId && activeSub?.ids.includes(selectedDefId)) activeTooltipIds.add(selectedDefId);
   if (hoveredDefId && activeSub?.ids.includes(hoveredDefId)) activeTooltipIds.add(hoveredDefId);
 
-  // Compute horizontal push-apart shifts if two tooltips are close to each other
+  // Compute horizontal push-apart shifts if two tooltips (Selected & Hovered) are active simultaneously
   const tooltipShifts: Record<string, number> = {};
   if (activeTooltipIds.size === 2 && activeSub) {
     const ids = Array.from(activeTooltipIds);
-    const el0 = cardRefs.current[ids[0]];
-    const el1 = cardRefs.current[ids[1]];
-    if (el0 && el1) {
-      const rect0 = el0.getBoundingClientRect();
-      const rect1 = el1.getBoundingClientRect();
-      const c0 = rect0.left + rect0.width / 2;
-      const c1 = rect1.left + rect1.width / 2;
-      const [leftId, rightId, leftCenter, rightCenter] = c0 <= c1
-        ? [ids[0], ids[1], c0, c1]
-        : [ids[1], ids[0], c1, c0];
-      const distance = rightCenter - leftCenter;
-      const requiredDistance = 224 + 6; // 224px tooltip width + 6px gap (gap-1.5)
+    const idx0 = activeSub.ids.indexOf(ids[0]);
+    const idx1 = activeSub.ids.indexOf(ids[1]);
+    if (idx0 !== -1 && idx1 !== -1) {
+      const [leftId, rightId, leftIdx, rightIdx] = idx0 <= idx1
+        ? [ids[0], ids[1], idx0, idx1]
+        : [ids[1], ids[0], idx1, idx0];
+      const idxDistance = rightIdx - leftIdx;
+      const cardPitch = 82; // approximate grid card pitch (76px width + 6px gap)
+      const distance = idxDistance * cardPitch;
+      const requiredDistance = 224 + 6; // 224px tooltip width + 6px gap
       if (distance < requiredDistance) {
         const overlap = requiredDistance - distance;
-        const shift = overlap / 2;
+        const shift = Math.round(overlap / 2);
         tooltipShifts[leftId] = -shift;
         tooltipShifts[rightId] = shift;
       }
@@ -193,7 +190,6 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
                 return (
                   <button
                     key={id}
-                    ref={el => { cardRefs.current[id] = el; }}
                     data-sfx="none" // the setTool funnel voices toolArm/toolCancel
                     disabled={!afford && !active}
                     onMouseEnter={() => handleMouseEnterCard(id)}
