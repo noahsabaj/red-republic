@@ -19,6 +19,67 @@ interface Props {
   onOpenMenu: () => void;
 }
 
+function HappinessCard({ engine }: { engine: GameEngine }) {
+  const breakdown = engine.happinessBreakdown();
+  return (
+    <div className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 w-72 -translate-x-1/2 rounded-lg border border-yellow-600/60 bg-red-950/95 p-3 text-yellow-50 shadow-2xl backdrop-blur-md">
+      <div className="flex items-center justify-between border-b border-yellow-600/30 pb-1.5">
+        <div className="flex items-center gap-1.5 font-black uppercase text-xs tracking-wider text-yellow-300">
+          <GameIcon name="happy" size={14} /> Happiness Breakdown
+        </div>
+        <div className={`font-black text-sm tabular-nums ${breakdown.overall < 40 ? 'text-red-400' : breakdown.overall > 65 ? 'text-green-400' : 'text-yellow-300'}`}>
+          {breakdown.overall}%
+        </div>
+      </div>
+
+      <div className="mt-2 space-y-1.5 text-[0.6875rem]">
+        {breakdown.factors.map(f => (
+          <div key={f.id} className="flex flex-col gap-0.5">
+            <div className="flex items-center justify-between text-yellow-100/90 font-medium">
+              <span className="inline-flex items-center gap-1">
+                <GameIcon name={f.icon} size={11} className="text-yellow-300/80" />
+                {f.label}
+                <span className="text-[0.5625rem] text-yellow-200/40">({f.weightPct}% weight)</span>
+              </span>
+              <span className={`font-bold tabular-nums ${f.satPct < 40 ? 'text-red-300' : f.satPct > 70 ? 'text-green-300' : 'text-yellow-200'}`}>
+                {f.satPct}%
+              </span>
+            </div>
+            <div className="h-1.5 w-full rounded-full bg-red-900/60 overflow-hidden border border-yellow-600/20">
+              <div
+                className={`h-full transition-all duration-300 ${
+                  f.satPct < 40 ? 'bg-red-500' : f.satPct > 70 ? 'bg-emerald-400' : 'bg-amber-400'
+                }`}
+                style={{ width: `${Math.min(100, Math.max(0, f.satPct))}%` }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {(breakdown.modifiers.pollutionPenaltyPct > 0 || breakdown.modifiers.weatherMoralePct !== 0) && (
+        <div className="mt-2.5 border-t border-yellow-600/20 pt-2 space-y-1 text-[0.625rem] text-yellow-200/80">
+          <div className="font-bold uppercase tracking-wider text-[0.5625rem] text-yellow-400/80">Active Modifiers</div>
+          {breakdown.modifiers.pollutionPenaltyPct > 0 && (
+            <div className="flex items-center justify-between text-red-300">
+              <span className="inline-flex items-center gap-1"><GameIcon name="smoke" size={10} /> Industrial Pollution</span>
+              <span className="font-bold tabular-nums">−{breakdown.modifiers.pollutionPenaltyPct}%</span>
+            </div>
+          )}
+          {breakdown.modifiers.weatherMoralePct !== 0 && (
+            <div className={`flex items-center justify-between ${breakdown.modifiers.weatherMoralePct > 0 ? 'text-green-300' : 'text-amber-300'}`}>
+              <span className="inline-flex items-center gap-1">
+                <GameIcon name={breakdown.modifiers.weatherMoralePct > 0 ? 'sun' : 'cloud'} size={10} /> Weather Morale
+              </span>
+              <span className="font-bold tabular-nums">{breakdown.modifiers.weatherMoralePct > 0 ? `+${breakdown.modifiers.weatherMoralePct}%` : `${breakdown.modifiers.weatherMoralePct}%`}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, onOpenLogistics, onOpenObjectives, onOpenTrade, onOpenMusic, onOpenHelp, onOpenMenu }: Props) {
   // re-render only when something the HUD actually displays changes
   useEngineSignature(engine, (e) => [
@@ -26,6 +87,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
     Math.floor(e.rubles), Math.floor(e.dollars),
     e.pop, e.capacity, e.workers, e.employed,
     Math.round(e.happiness),
+    e.sat.food, e.sat.clothes, e.sat.power, e.sat.heat, e.sat.employment, e.sat.culture, e.sat.health, e.sat.pollution, e.happinessBreakdown().modifiers.weatherMoralePct,
     e.powerProduced.toFixed(1), e.powerDemand.toFixed(1),
     e.heatingRequired(), e.heatProduced.toFixed(1), e.heatDemand.toFixed(1),
     e.weather.condition, Math.round(e.weather.tempC), e.weather.riverFrozen,
@@ -123,9 +185,14 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
           <span title={`Citizens: ${engine.pop} / housing ${engine.capacity} · workers ${engine.workers} · employed ${engine.employed}`} className="flex items-center gap-1">
             <GameIcon name="users" size={12} /> {engine.pop}<span className="text-yellow-200/50">/{engine.capacity}</span>
           </span>
-          <span title="Happiness" className={`flex items-center gap-1 ${engine.happiness < 40 ? 'text-red-300' : engine.happiness > 65 ? 'text-green-300' : ''}`}>
-            <GameIcon name="happy" size={12} /> {Math.round(engine.happiness)}%
-          </span>
+          <div className="group relative flex items-center">
+            <span className={`flex items-center gap-1 cursor-help ${engine.happiness < 40 ? 'text-red-300' : engine.happiness > 65 ? 'text-green-300' : ''}`}>
+              <GameIcon name="happy" size={12} /> {Math.round(engine.happiness)}%
+            </span>
+            <div className="hidden group-hover:block">
+              <HappinessCard engine={engine} />
+            </div>
+          </div>
           <span title={`Power: ${engine.powerProduced.toFixed(1)} / ${engine.powerDemand.toFixed(1)} MW`} className={`flex items-center gap-1 ${engine.powerDemand > engine.powerProduced + 0.01 ? 'text-red-300' : ''}`}>
             <GameIcon name="power" size={12} /> {engine.powerProduced.toFixed(0)}/{engine.powerDemand.toFixed(0)}
           </span>
