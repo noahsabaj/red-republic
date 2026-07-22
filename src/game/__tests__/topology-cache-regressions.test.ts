@@ -136,7 +136,7 @@ describe('routing topology cache invalidation', () => {
     expect(e.getRoutingDiagnostics().topologyRebuilds.land).toBe(before.land + 1);
   });
 
-  it('a bridge (road on water) rebuilds only the road domain — cost-derived invalidation', () => {
+  it('a bridge (road on water) rebuilds the road AND land domains — cost-derived invalidation', () => {
     const e = makeEngine();
     layRoad(e, 4, 9, 14, 9);
     placeBuilt(e, 'depot', 5, 10);
@@ -144,14 +144,15 @@ describe('routing topology cache invalidation', () => {
     runDays(e, 1); // warm road + land caches (the carve already rebuilt land once)
     const before = e.getRoutingDiagnostics().topologyRebuilds;
 
-    // Lay a bridge (road) on the water tile. Land stays impassable there (still water),
-    // so the land network is unchanged — the hand-coded map used to dirty land on ANY
-    // road change; the cost functions now skip it.
+    // Lay a bridge (road) on the water tile. A road over water IS land-drivable, so the
+    // tile's land cost flips 0 → 1 and the land network rebuilds too. Cost-derived
+    // invalidation dirties exactly the domains whose cost changed — road and land, not
+    // water (the water beneath the bridge is unchanged).
     e.applyTilePatches([{ x: 20, y: 9, road: true }]);
     runDays(e, 1);
     expect(e.getRoutingDiagnostics().topologyRebuilds).toEqual({
       road: before.road + 1,
-      land: before.land, // NOT before.land + 1 — the bridge never touches land routing
+      land: before.land + 1, // the bridge joins the land network (road-over-water is drivable)
       water: before.water,
     });
   });

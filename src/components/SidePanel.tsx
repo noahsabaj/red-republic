@@ -498,6 +498,10 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
             {def.wear && <Row label={<><GameIcon name="machinery" size={12} /> Machines</>} value={buildingWorn(b) ? 'Worn — deliver machinery!' : 'Maintained'} ok={!buildingWorn(b)} />}
             {def.isMotorDepot && <Row label={<><GameIcon name="truck" size={12} /> Fleet</>} value={`${engine.trucksFrom(b)} trucks`} ok={b.connected && b.staff > 0} />}
             {def.isGasStation && <Row label={<><GameIcon name="fuel" size={12} /> Fuels fleet</>} value={(b.stock.fuel ?? 0) < 1 ? 'empty — refill!' : `${fmtQty(b.stock.fuel ?? 0)} on hand`} ok={(b.stock.fuel ?? 0) >= 1} />}
+            {def.isPort && (() => {
+              const s = engine.portStatus(b);
+              return <Row label={<><GameIcon name="port" size={12} /> Barges</>} value={s.label} ok={s.state === 'relaying' || s.state === 'ready'} />;
+            })()}
           </div>
 
           {(def.inputs || def.outputs) && (() => {

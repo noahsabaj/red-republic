@@ -21,13 +21,14 @@ describe('TopologyIndex masks and components', () => {
     const topology = makeIndex(() => tiles, 5, 2);
 
     expect(Array.from(topology.mask('road').slice(0, 5))).toEqual([1, 1, 0, 0, 0]);
-    expect(Array.from(topology.mask('land').slice(0, 5))).toEqual([0, 0, 0, 8, 0]);
+    expect(Array.from(topology.mask('land').slice(0, 5))).toEqual([0, 1, 0, 8, 0]);
     expect(Array.from(topology.mask('water').slice(0, 5))).toEqual([0, 1, 0, 0, 1]);
 
-    // A bridge remains in both the road and water networks, but never land routing.
+    // A bridge is a road: passable in road routing, in the water beneath it, AND in
+    // land routing — a truck drives over it just like any other road tile.
     expect(topology.componentAt('road', 1, 0)).toBeGreaterThan(0);
     expect(topology.componentAt('water', 1, 0)).toBeGreaterThan(0);
-    expect(topology.componentAt('land', 1, 0)).toBe(0);
+    expect(topology.componentAt('land', 1, 0)).toBeGreaterThan(0);
     expect(topology.componentCount('water')).toBe(2);
   });
 

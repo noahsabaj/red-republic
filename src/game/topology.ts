@@ -169,10 +169,11 @@ export class TopologyIndex {
     this.costs = {
       // Roads deliberately ignore terrain, foreign soil, and footprints.
       road: options.costs?.road ?? ((tile) => tile.road ? 1 : 0),
-      // Roads on water/foreign soil are not land-drivable; an ordinary road
-      // remains drivable even if a footprint happens to reference its tile.
+      // A road is land-drivable wherever it runs — including a bridge over water;
+      // only foreign soil bars a road from the land network. Off-road, bare water
+      // and non-road footprints are impassable; open ground costs offRoadCost.
       land: options.costs?.land ?? ((tile) =>
-        tile.foreign || tile.terrain === 'water' || (!tile.road && tile.buildingId)
+        tile.foreign || (!tile.road && (tile.terrain === 'water' || tile.buildingId))
           ? 0
           : tile.road ? 1 : options.offRoadCost),
       // Bridges do not remove the water beneath them from the water network.

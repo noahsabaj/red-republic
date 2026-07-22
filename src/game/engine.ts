@@ -1904,6 +1904,25 @@ export class GameEngine {
     return 0;
   }
 
+  /** Relay status for a River Port — drives its SidePanel row so an idle port
+   *  explains itself instead of looking broken. 'relaying' = a barge or queued
+   *  order touches it; 'ready' = paired across water, waiting for cargo;
+   *  'unpaired' = no other port shares its water yet; 'frozen' = river ice-locked. */
+  portStatus(b: BuildingInst): { state: 'relaying' | 'ready' | 'unpaired' | 'frozen'; label: string } {
+    if (this.weather.riverFrozen) return { state: 'frozen', label: 'Barges ice-locked until the thaw' };
+    const boat = this.boats.find(t => t.destId === b.id || t.srcId === b.id);
+    if (boat) return { state: 'relaying', label: `Relaying ${RESOURCES[boat.cargo].name}` };
+    const order = this.boatOrders.find(o => o.destId === b.id || o.srcId === b.id);
+    if (order) return { state: 'relaying', label: `Relaying ${RESOURCES[order.r].name}` };
+    const water = this.waterAccess(b);
+    const paired = [...this.buildings.values()].some(p =>
+      p.id !== b.id && this.def(p).isPort && p.constructed &&
+      shareAnyComponent(this.waterAccess(p).components, water.components));
+    return paired
+      ? { state: 'ready', label: 'Ready — no cargo waiting' }
+      : { state: 'unpaired', label: 'Idle — needs a paired port across the water' };
+  }
+
   /** Fuel-free bootstrap fleet from Construction Offices — unchanged base game. */
   private officeTrucks(): number {
     let n = 0;
@@ -1973,7 +1992,13 @@ export class GameEngine {
     // keep 3 days of production inputs plus a month of wear spares — trucks
     // must never rob one factory's machinery bin to feed another's
     const keep = (def.inputs?.[r] ?? 0) * 3 + (def.wear?.[r] ?? 0) * BALANCE.wearReserveDays;
-    return Math.max(0, this.stockOf(b, r) - keep);
+    // a port's stock already promised to an outstanding barge is earmarked for that
+    // leg — trucks can't poach a relayed import mid-hop (dispatchBoats loads via
+    // stockOf, so the barge still gets its reservation).
+    const reserved = def.isPort
+      ? this.boatOrders.reduce((s, o) => (o.srcId === b.id && o.r === r ? s + o.amt : s), 0)
+      : 0;
+    return Math.max(0, this.stockOf(b, r) - keep - reserved);
   }
 
   private buildLogisticsRoutingContext(): LogisticsRoutingContext {
@@ -2349,7 +2374,9 @@ export class GameEngine {
         pick = this.routeToSupply(routing, d, 'land');
         offRoad = true;
         if (!pick) {
-          if (d.from === undefined) this.relayViaPorts(d, routing, demands);
+          // Domestic demands relay any goods across water; an auto-buy construction
+          // site (bonded, pinned to its customs) relays its paid IMPORTS across too.
+          if (d.from === undefined || (d.bonded && !d.b.constructed)) this.relayViaPorts(d, routing, demands);
           continue;
         }
       }
@@ -2400,17 +2427,23 @@ export class GameEngine {
   }
 
   /**
-   * A demand no road-connected supplier can serve may still be servable
-   * across water: register a twin demand at a far-shore port (trucks bring
-   * the goods portside) plus a standing barge order to the near-shore port.
-   * The original demand is then served from that port on a later day.
+   * A demand no road-connected supplier can serve may still be servable across
+   * water. Register a twin demand at a far-shore port (trucks bring the goods
+   * portside) plus a standing barge order to the near-shore port; the original
+   * demand is served from that port on a later day. Two kinds of source:
+   *   • domestic goods  (d.from === undefined) — the far-shore port is fed by a
+   *     road-connected supplier, and the site pulls the ferried stock itself.
+   *   • auto-buy IMPORTS (d.bonded, pinned to a customs) — the far-shore leg is a
+   *     bonded customs import; because the site's own demand is pinned to the customs
+   *     (and can't draw a port), a non-bonded FINAL leg drains the island port into
+   *     the site. Only the finite far-shore leg is bonded, so the infinite customs
+   *     source can never leak past what is still owed.
    */
   private relayViaPorts(
     d: LogisticsDemand,
     routing: LogisticsRoutingContext,
     demands: LogisticsDemand[],
   ) {
-    if (this.weather.riverFrozen) return; // no new relay chains onto an ice-locked river
     const ports = [...this.buildings.values()].filter(p => this.def(p).isPort && p.constructed);
     if (ports.length < 2) return;
     const destination = routing.facilities.get(d.b.id);
@@ -2420,37 +2453,73 @@ export class GameEngine {
       return p.id !== d.b.id && shareAnyComponent(port.land.components, destination.land.components);
     });
     if (!pDest) return;
+
+    // Bonded FINAL leg: a bonded site can't pull a port itself, so drain whatever
+    // imports have already landed on the island into the site by NON-bonded truck
+    // (which actually decrements the port). A land haul on the island — it runs even
+    // while the river is frozen.
+    if (d.bonded) {
+      const landed = this.supplyOf(pDest, d.r);
+      if (landed >= 1) demands.push({ b: d.b, r: d.r, amt: Math.min(d.amt, landed), prio: d.prio, from: pDest.id });
+    }
+
+    if (this.weather.riverFrozen) return; // no new water chains onto an ice-locked river
+
     const pending = this.boatOrders.find(o => o.destId === pDest.id && o.r === d.r);
     if (pending) {
-      // order already exists — keep the far-shore truck leg alive until the
-      // source port actually holds the goods (its truck may have lost the
-      // dispatch budget on earlier days)
+      // order already exists — keep the far-shore leg alive until the source port
+      // actually holds the goods (its truck may have lost the dispatch budget earlier)
       const src = this.buildings.get(pending.srcId);
       if (src) {
         const short = pending.amt - this.stockOf(src, d.r) - this.incomingOf(src, d.r);
-        if (short >= 1) demands.push({ b: src, r: d.r, amt: short, prio: d.prio });
+        if (short >= 1) demands.push(d.bonded
+          ? { b: src, r: d.r, amt: short, prio: d.prio, from: d.from, bonded: true }
+          : { b: src, r: d.r, amt: short, prio: d.prio });
       }
       return;
     }
+
+    // Size a new chain to the shortfall not already staged/in-transit at the island
+    // port. Without this, a bonded demand would re-materialize from the infinite
+    // customs on every pass while a barge is still en route (incomingOf(pDest)).
+    const need = d.bonded ? d.amt - (this.stockOf(pDest, d.r) + this.incomingOf(pDest, d.r)) : d.amt;
+    if (need < 1) return;
 
     const pDestWater = this.waterAccess(pDest);
     const overWater = ports.filter(p => p.id !== pDest.id &&
       shareAnyComponent(this.waterAccess(p).components, pDestWater.components));
     for (const pSrc of overWater) {
-      // does pSrc's own road network reach any willing supplier?
+      // domestic: pSrc's road reaches a willing supplier; bonded: it reaches the customs
       const source = routing.facilities.get(pSrc.id)!;
-      if (!this.roadSupplierReaches(routing, d.r, source)) continue;
+      const qualifies = d.bonded
+        ? this.portRoadReachesCustoms(routing, d.from!, source)
+        : this.roadSupplierReaches(routing, d.r, source);
+      if (!qualifies) continue;
       const amt = Math.min(
-        d.amt,
+        need,
         BALANCE.boatCapacity,
         this.capOf(pSrc, d.r) - this.stockOf(pSrc, d.r) - this.incomingOf(pSrc, d.r),
         this.capOf(pDest, d.r) - this.stockOf(pDest, d.r) - this.incomingOf(pDest, d.r),
       );
       if (amt < 1) return;
-      demands.push({ b: pSrc, r: d.r, amt, prio: d.prio }); // truck leg on the far shore
+      demands.push(d.bonded
+        ? { b: pSrc, r: d.r, amt, prio: d.prio, from: d.from, bonded: true } // bonded import leg
+        : { b: pSrc, r: d.r, amt, prio: d.prio });                            // domestic leg
       this.boatOrders.push({ srcId: pSrc.id, destId: pDest.id, r: d.r, amt });
       return;
     }
+  }
+
+  /** Does this port's road network reach the given customs house? The bonded-import
+   *  mirror of roadSupplierReaches — a customs is the paid import's road-side source. */
+  private portRoadReachesCustoms(
+    ctx: LogisticsRoutingContext,
+    customsId: number,
+    port: IndexedFacility,
+  ): boolean {
+    this.assertRoutingFresh(ctx);
+    const customs = ctx.facilities.get(customsId);
+    return !!customs && shareAnyComponent(port.road.components, customs.road.components);
   }
 
   /** Sail pending freight orders whose goods have reached the source port. */
