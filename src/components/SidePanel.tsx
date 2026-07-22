@@ -519,6 +519,42 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
           })()}
 
           {(() => {
+            const isStorageFacility = def.id === 'warehouse' || def.id === 'depot' || (def.category === 'trade' && !def.isCustoms);
+
+            if (isStorageFacility) {
+              const allResources = Object.keys(def.storage) as ResourceId[];
+              if (allResources.length === 0) return null;
+
+              let totalStock = 0;
+              let totalCap = 0;
+              for (const r of allResources) {
+                totalStock += b.stock[r] ?? 0;
+                totalCap += def.storage[r] ?? 0;
+              }
+
+              // Sort active stock / incoming to the top, then by original definition order
+              const sorted = [...allResources].sort((a, bRes) => {
+                const aActive = (b.stock[a] ?? 0) > 0.05 || (b.incoming[a] ?? 0) > 0.05 ? 1 : 0;
+                const bActive = (b.stock[bRes] ?? 0) > 0.05 || (b.incoming[bRes] ?? 0) > 0.05 ? 1 : 0;
+                return bActive - aActive;
+              });
+
+              return (
+                <div className="space-y-2">
+                  <div>
+                    <div className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400 mb-1">
+                      Storage ({fmtLevel(totalStock)} / {fmtLevel(totalCap)} units stored)
+                    </div>
+                    <div className="space-y-1">
+                      {sorted.map(r => (
+                        <StorageBar key={r} r={r} v={b.stock[r] ?? 0} cap={def.storage[r] ?? 0} inc={b.incoming[r] ?? 0} />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+
             // Group storage so inputs, output and machinery upkeep read apart
             // instead of as one undifferentiated pile. Classify each bin once by
             // precedence output > input > upkeep > goods; a machinery (wear) bin
