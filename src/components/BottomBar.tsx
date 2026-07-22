@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { BUILDINGS, CATEGORIES, RESOURCES, SUBCATEGORIES } from '@/game/config';
 import type { Category, ResourceId } from '@/game/config';
 import type { GameEngine } from '@/game/engine';
@@ -28,7 +28,7 @@ function InfoCard({ engine, defId, mode, currency }: { engine: GameEngine; defId
   const inputs = io(def.inputs), outputs = io(def.outputs);
   const powerLine = def.powerOutput ? `+${def.powerOutput} MW` : def.power ? `−${def.power} MW` : null;
   return (
-    <div className="pointer-events-none absolute bottom-full left-1/2 z-40 mb-2 w-56 -translate-x-1/2 rounded-lg border border-yellow-600/60 bg-red-950/95 p-2.5 text-yellow-50 shadow-2xl">
+    <div className="pointer-events-none absolute bottom-full left-1/2 z-40 mb-2 w-56 -translate-x-1/2 rounded-lg border border-yellow-600/60 bg-red-950/95 p-2.5 text-yellow-50 shadow-2xl animate-in fade-in duration-150">
       <div className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-yellow-300">
         <GameIcon name={def.icon} size={14} /> {def.name}
       </div>
@@ -69,6 +69,28 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
   const [hidden, setHidden] = useState(false);
   const [peeking, setPeeking] = useState(false);
 
+  const [hoveredDefId, setHoveredDefId] = useState<string | null>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearHoverTimer = () => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  };
+
+  const handleMouseEnterCard = (id: string) => {
+    clearHoverTimer();
+    hoverTimerRef.current = setTimeout(() => {
+      setHoveredDefId(id);
+    }, 500);
+  };
+
+  const handleMouseLeaveCard = () => {
+    clearHoverTimer();
+    setHoveredDefId(null);
+  };
+
   const mode: BuildPayMode = policy.instant ? 'instant' : policy.autoBuy ? 'autoBuy' : 'materials';
 
   // re-render when affordability, the foreign-labor default, or the planned-site count changes
@@ -82,10 +104,12 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
     : '';
 
   const openCat = (c: Category) => {
+    clearHoverTimer();
+    setHoveredDefId(null);
     setCat(prev => (prev === c ? null : c));
     setSub(null);
   };
-  const hide = () => { setHidden(true); setPeeking(false); setCat(null); };
+  const hide = () => { clearHoverTimer(); setHoveredDefId(null); setHidden(true); setPeeking(false); setCat(null); };
   const retracted = hidden && !peeking;
 
   const activeCat = cat ? CATEGORIES.find(c => c.id === cat)! : null;
@@ -111,7 +135,11 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
               <button
                 key={s.id}
                 aria-pressed={sub === s.id}
-                onClick={() => setSub(prev => (prev === s.id ? null : s.id))}
+                onClick={() => {
+                  clearHoverTimer();
+                  setHoveredDefId(null);
+                  setSub(prev => (prev === s.id ? null : s.id));
+                }}
                 className={`rounded px-2.5 py-1 text-[0.6875rem] font-bold ${sub === s.id ? 'bg-yellow-500 text-red-950' : 'bg-red-900/60 text-yellow-100/80 hover:bg-red-800'}`}
               >
                 {s.name} <span className="opacity-60 tabular-nums">{s.ids.length}</span>
@@ -131,7 +159,13 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
                     key={id}
                     data-sfx="none" // the setTool funnel voices toolArm/toolCancel
                     disabled={!afford && !active}
-                    onClick={() => setTool(active ? { kind: 'select' } : { kind: 'build', defId: id })}
+                    onMouseEnter={() => handleMouseEnterCard(id)}
+                    onMouseLeave={handleMouseLeaveCard}
+                    onClick={() => {
+                      clearHoverTimer();
+                      setHoveredDefId(null);
+                      setTool(active ? { kind: 'select' } : { kind: 'build', defId: id });
+                    }}
                     className={`group relative flex flex-col items-center gap-1 rounded-md border p-1.5 text-center transition-colors disabled:opacity-40 ${
                       active ? 'border-yellow-400 bg-yellow-500/20' : 'border-yellow-600/25 bg-red-900/40 hover:bg-red-800/70'
                     }`}
@@ -142,7 +176,7 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
                     <span className={`text-[0.5625rem] tabular-nums ${short.length ? 'text-amber-400' : 'text-yellow-200/55'}`}>
                       {buildCostText(engine, id, mode, policy.currency)}
                     </span>
-                    <InfoCard engine={engine} defId={id} mode={mode} currency={policy.currency} />
+                    {hoveredDefId === id && <InfoCard engine={engine} defId={id} mode={mode} currency={policy.currency} />}
                   </button>
                 );
               })}
