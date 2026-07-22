@@ -370,8 +370,12 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
       {!b.constructed ? (
         <div className="space-y-1.5">
           <div className="text-xs font-bold text-yellow-400 flex items-center gap-1">
-            <GameIcon name={b.paused ? 'contract' : 'builders'} size={12} />
-            {b.paused ? ' Planned — not started' : ` Under construction — ${fmtPct(b.progress / def.labor)}%`}
+            <GameIcon name={!engine.globalConstructionEnabled || b.paused ? 'contract' : 'builders'} size={12} />
+            {!engine.globalConstructionEnabled
+              ? ' Construction PAUSED (Globally)'
+              : b.paused
+              ? ' Planned — Construction Paused'
+              : ` Under construction — ${fmtPct(b.progress / def.labor)}%`}
           </div>
           {!b.paused && (
             <div className="h-2 rounded bg-red-900 overflow-hidden">
@@ -401,15 +405,21 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
 
           {/* ---- this site's construction policy ---- */}
           <div className="space-y-1.5 border-t border-yellow-600/20 pt-2">
-            {b.paused && (
-              <button
-                onClick={() => { const r = engine.commenceSite(b.id); if (!r.ok && r.reason) notify(r.reason, 'bad'); }}
-                data-sfx="confirm"
-                className="w-full rounded bg-yellow-500 text-red-950 font-bold text-xs py-1.5 hover:bg-yellow-400"
-              >
-                <GameIcon name="builders" size={12} /> Begin construction
-              </button>
-            )}
+            <button
+              onClick={() => {
+                const r = engine.setSitePaused(b.id, !b.paused);
+                if (!r.ok && r.reason) notify(r.reason, 'bad');
+              }}
+              data-sfx={b.paused ? 'confirm' : 'toggle'}
+              className={`w-full rounded font-bold text-xs py-1.5 flex items-center justify-center gap-1 ${
+                b.paused
+                  ? 'bg-yellow-500 text-red-950 hover:bg-yellow-400'
+                  : 'border border-yellow-600/40 bg-red-900/40 text-yellow-100 hover:bg-red-800'
+              }`}
+            >
+              <GameIcon name={b.paused ? 'builders' : 'pause'} size={12} />
+              {b.paused ? 'Resume construction' : 'Pause construction'}
+            </button>
 
             <div>
               <div className="mb-1 text-[0.625rem] font-black uppercase tracking-wider text-yellow-400/80">Construction priority</div>

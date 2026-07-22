@@ -72,7 +72,7 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
   const mode: BuildPayMode = policy.instant ? 'instant' : policy.autoBuy ? 'autoBuy' : 'materials';
 
   // re-render when affordability, the foreign-labor default, or the planned-site count changes
-  useEngineSignature(engine, (e) => [e.rubles, e.dollars, e.foreignLaborEnabled, e.foreignLaborCurrency, e.plannedCount()]);
+  useEngineSignature(engine, (e) => [e.rubles, e.dollars, e.globalConstructionEnabled, e.foreignLaborEnabled, e.foreignLaborCurrency, e.plannedCount()]);
 
   const plannedN = engine.plannedCount();
   const commenceCost = plannedN > 0 ? engine.plannedCommenceCost() : null;
@@ -176,6 +176,8 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
           </div>
           <ToggleButton on={policy.instant} onChange={v => setPolicy({ instant: v })} className={BAR_CTL}
             icon="download" label="Instant $" title="Import a finished Western prefab — completes immediately for dollars" />
+          <ToggleButton on={engine.globalConstructionEnabled} onChange={v => engine.setGlobalConstructionEnabled(v)} className={BAR_CTL}
+            icon="builders" label="Construction" title="Global construction master switch — pause or resume all construction activity and material dispatches across the republic" />
           <ToggleButton on={engine.foreignLaborEnabled} onChange={v => engine.setForeignLaborEnabled(v)} className={BAR_CTL}
             icon="users" label="Foreign" title={`New sites may hire paid foreign builders before you have citizens (${engine.foreignLaborCurrency === 'west' ? '$ West' : '₽ East'})`} />
           <ToggleButton on={policy.plan} onChange={v => setPolicy({ plan: v })} className={BAR_CTL}

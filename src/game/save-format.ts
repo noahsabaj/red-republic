@@ -51,6 +51,7 @@ export interface SaveBodyV1 {
   priceFactorEast: number;
   priceFactorWest: number;
   autoTrade: { enabled: boolean; reserveRubles: number; reserveDollars: number; rules: Partial<Record<ResourceId, AutoTradeRule>> };
+  globalConstructionEnabled?: boolean; // optional: old saves default to true
   foreignLaborEnabled?: boolean; // optional: old saves default to true
   foreignLaborCurrency?: 'east' | 'west'; // optional: old saves default to east
   repairImportsEnabled?: boolean; // optional: old saves default to true

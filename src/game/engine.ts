@@ -310,6 +310,8 @@ export class GameEngine {
     rules: {} as Partial<Record<ResourceId, AutoTradeRule>>,
   };
   tradeLedger = { today: emptyLedger(), yesterday: emptyLedger() };
+  /** Global construction master switch. Off = all construction and material dispatches paused. */
+  globalConstructionEnabled = true;
   /** Hire imported construction crews with ₽ for builders beyond your citizens.
    *  Off = domestic builders only (construction stalls without staffed offices). */
   foreignLaborEnabled = true;
@@ -957,13 +959,13 @@ export class GameEngine {
       (mats * IMPORT_MARKUP + laborLeft * INSTANT_BUILD.laborDollars) * INSTANT_BUILD.premium));
   }
 
-  /** Begin construction on a planned (paused) site: charge any auto-buy bill NOW
-   *  (planning defers it to commence, not placement), then unpause so materials
-   *  and builders flow. Fails if the site isn't planned or the bill can't be paid. */
-  commenceSite(id: number): { ok: boolean; reason?: string } {
+  /** Pause or unpause construction on a single site. Unpausing an auto-bought site
+   *  that has not yet been paid charges the auto-buy bill (planning defers auto-buy). */
+  setSitePaused(id: number, paused: boolean): { ok: boolean; reason?: string } {
     const b = this.buildings.get(id);
-    if (!b || b.constructed || !b.paused) return { ok: false, reason: 'Not a planned site' };
-    if (b.autoBought) {
+    if (!b || b.constructed) return { ok: false, reason: 'Not an active site' };
+    if (b.paused === paused) return { ok: true };
+    if (!paused && b.autoBought && !b.bondedCustomsId) {
       const currency = b.importCurrency ?? 'east';
       const customs = this.nearestConstructedCustoms(b.x, b.y);
       if (!customs) return { ok: false, reason: 'Build a Customs House first' };
@@ -980,9 +982,18 @@ export class GameEngine {
       }
       b.bondedCustomsId = customs.id;
     }
-    b.paused = false;
+    b.paused = paused;
     this.bump();
     return { ok: true };
+  }
+
+  /** Begin construction on a planned (paused) site: charge any auto-buy bill NOW
+   *  (planning defers it to commence, not placement), then unpause so materials
+   *  and builders flow. Fails if the site isn't planned or the bill can't be paid. */
+  commenceSite(id: number): { ok: boolean; reason?: string } {
+    const b = this.buildings.get(id);
+    if (!b || b.constructed || !b.paused) return { ok: false, reason: 'Not a planned site' };
+    return this.setSitePaused(id, false);
   }
 
   /** Commence every planned site the treasury can afford, highest construction
@@ -2202,7 +2213,7 @@ export class GameEngine {
 
     for (const b of this.buildings.values()) {
       const def = this.def(b);
-      if (b.paused) continue; // planning mode: a paused site orders no materials
+      if (b.paused || (!b.constructed && !this.globalConstructionEnabled)) continue; // paused site or global construction pause: order no construction materials
       if (!b.constructed) {
         // construction site materials. Threshold is ~0, not 1: a supply-starved
         // truck can deliver a fraction (e.g. 1.4/2 gravel), and the remainder
@@ -2577,6 +2588,7 @@ export class GameEngine {
   // ---------------- construction ----------------
 
   private construction() {
+    if (!this.globalConstructionEnabled) return;
     // Two-phase, domestic-first labor spread by MAX-MIN FAIR-SHARE across every
     // ready site, segmented by construction priority: builders fill the highest
     // priority tier first (sharing evenly within a tier), spilling to the next
@@ -3050,6 +3062,11 @@ export class GameEngine {
     this.bump();
   }
 
+  setGlobalConstructionEnabled(on: boolean) {
+    this.globalConstructionEnabled = on;
+    this.bump();
+  }
+
   setForeignLaborEnabled(on: boolean) {
     this.foreignLaborEnabled = on;
     this.bump();
@@ -3147,6 +3164,7 @@ export class GameEngine {
         priceFactorEast: this.priceFactorEast,
         priceFactorWest: this.priceFactorWest,
         autoTrade: { enabled: this.autoTrade.enabled, reserveRubles: this.autoTrade.reserveRubles, reserveDollars: this.autoTrade.reserveDollars, rules },
+        globalConstructionEnabled: this.globalConstructionEnabled,
         foreignLaborEnabled: this.foreignLaborEnabled,
         foreignLaborCurrency: this.foreignLaborCurrency,
         repairImportsEnabled: this.repairImportsEnabled,
@@ -3212,6 +3230,7 @@ export class GameEngine {
       reserveDollars: body.autoTrade.reserveDollars,
       rules: Object.fromEntries((Object.entries(body.autoTrade.rules) as [ResourceId, AutoTradeRule][]).map(([r, rule]) => [r, { ...rule }])),
     };
+    e.globalConstructionEnabled = body.globalConstructionEnabled ?? true;
     e.foreignLaborEnabled = body.foreignLaborEnabled ?? true;
     e.foreignLaborCurrency = body.foreignLaborCurrency ?? 'east';
     e.repairImportsEnabled = body.repairImportsEnabled ?? true;
