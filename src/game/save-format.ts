@@ -52,6 +52,7 @@ export interface SaveBodyV1 {
   priceFactorWest: number;
   autoTrade: { enabled: boolean; reserveRubles: number; reserveDollars: number; rules: Partial<Record<ResourceId, AutoTradeRule>> };
   foreignLaborEnabled?: boolean; // optional: old saves default to true
+  foreignLaborCurrency?: 'east' | 'west'; // optional: old saves default to east
   repairImportsEnabled?: boolean; // optional: old saves default to true
   repairImportCurrency?: 'east' | 'west'; // optional: old saves default to east
   tradeLedger: { today: TradeDayLedger; yesterday: TradeDayLedger };
