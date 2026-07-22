@@ -57,10 +57,21 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
 
     const resize = () => {
       // re-read every time: monitor moves / zoom / the sharpness setting change it
-      dpr = Math.min(getSettings().dprCap, window.devicePixelRatio || 1);
-      vw = canvas.clientWidth; vh = canvas.clientHeight;
-      canvas.width = Math.round(vw * dpr);
-      canvas.height = Math.round(vh * dpr);
+      const nextDpr = Math.min(getSettings().dprCap, window.devicePixelRatio || 1);
+      const nextVw = canvas.clientWidth;
+      const nextVh = canvas.clientHeight;
+      const nextW = Math.round(nextVw * nextDpr);
+      const nextH = Math.round(nextVh * nextDpr);
+
+      // Only reassign canvas backing size when actual dimensions or DPR change:
+      // prevents clearing the canvas buffer on unrelated settings (audio sliders)
+      if (canvas.width !== nextW || canvas.height !== nextH || dpr !== nextDpr) {
+        dpr = nextDpr;
+        vw = nextVw;
+        vh = nextVh;
+        canvas.width = nextW;
+        canvas.height = nextH;
+      }
       if (!initialized && vw > 0) {
         initialized = true;
         const eng = engineRef.current;
@@ -85,20 +96,42 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
     }
     watchDpr();
 
+    let lastCamX = -1, lastCamY = -1, lastCamZ = -1;
+    let lastHover: { x: number; y: number } | null = null;
+    let lastRenderedFrame = -1;
+
     const loop = (now: number) => {
+      raf = requestAnimationFrame(loop);
+      if (document.hidden) return; // Freeze world beneath background tabs
+
       const dt = Math.min(120, now - last);
       last = now;
       ctrl.tick(dt); // held-key (WASD) and edge panning
-      engineRef.current.advance(dt);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const eng = engineRef.current;
+      eng.advance(dt);
+
       const ui = uiRef.current;
       const s = getSettings();
       ui.time = now;
       ui.showGrid = s.showGrid;
       ui.reducedMotion = s.reducedMotion;
       ui.palette = s.colorblind ? STATUS_PALETTES.colorblind : STATUS_PALETTES.default;
-      render(ctx, engineRef.current, camRef.current, ui, vw, vh);
-      raf = requestAnimationFrame(loop);
+
+      const cam = camRef.current;
+      const camMoved = cam.x !== lastCamX || cam.y !== lastCamY || cam.z !== lastCamZ;
+      const hoverChanged = ui.hoverTile !== lastHover;
+
+      // When game is paused and reducedMotion removes animations, only render on user interaction/camera move
+      if (eng.speed === 0 && ui.reducedMotion && !camMoved && !hoverChanged && lastRenderedFrame > 0) {
+        return;
+      }
+
+      lastCamX = cam.x; lastCamY = cam.y; lastCamZ = cam.z;
+      lastHover = ui.hoverTile;
+      lastRenderedFrame = now;
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      render(ctx, eng, cam, ui, vw, vh);
     };
     raf = requestAnimationFrame(loop);
 
