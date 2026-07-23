@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { GameEngine } from '@/game/engine';
-import { render, screenToTile, pickBuilding, STATUS_PALETTES, type Camera, type UIState } from '@/game/render';
+import { render, screenToTile, pickBuilding, shouldRenderFrame, STATUS_PALETTES, type Camera, type UIState } from '@/game/render';
 import { InputController, type NormPointerEvent, type Tool } from '@/game/input';
 import type { SelectionItem } from '@/game/selection';
 import { getSettings, subscribeSettings } from '@/app/settings';
@@ -34,6 +34,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
   const cbRef = useRef({ setTool, onSelect, onError, onOpenMenu });
   const policyRef = useRef(policy);
   const hotkeysRef = useRef(hotkeysEnabled);
+  const renderRevisionRef = useRef(0);
 
   // mirror props into refs after render (writing refs during render is
   // illegal under React 19 concurrent rendering)
@@ -44,6 +45,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
     cbRef.current = { setTool, onSelect, onError, onOpenMenu };
     policyRef.current = policy;
     hotkeysRef.current = hotkeysEnabled;
+    renderRevisionRef.current++;
   });
 
   useEffect(() => {
@@ -62,16 +64,22 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
       const nextVh = canvas.clientHeight;
       const nextW = Math.round(nextVw * nextDpr);
       const nextH = Math.round(nextVh * nextDpr);
+      const backingChanged = canvas.width !== nextW || canvas.height !== nextH || dpr !== nextDpr;
+      const viewportChanged = vw !== nextVw || vh !== nextVh;
+
+      dpr = nextDpr;
+      vw = nextVw;
+      vh = nextVh;
 
       // Only reassign canvas backing size when actual dimensions or DPR change:
       // prevents clearing the canvas buffer on unrelated settings (audio sliders)
-      if (canvas.width !== nextW || canvas.height !== nextH || dpr !== nextDpr) {
-        dpr = nextDpr;
-        vw = nextVw;
-        vh = nextVh;
+      if (backingChanged) {
         canvas.width = nextW;
         canvas.height = nextH;
       }
+      // ResizeObserver and settings updates are visible inputs even when the
+      // paused reduced-motion scheduler would otherwise sleep.
+      if (backingChanged || viewportChanged) renderRevisionRef.current++;
       if (!initialized && vw > 0) {
         initialized = true;
         const eng = engineRef.current;
@@ -83,7 +91,10 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(canvas);
-    const unsubSettings = subscribeSettings(resize); // dprCap changes re-rasterize
+    const unsubSettings = subscribeSettings(() => {
+      renderRevisionRef.current++;
+      resize(); // dprCap changes re-rasterize; other visible settings repaint once
+    });
 
     // browser zoom changes clientWidth (ResizeObserver fires), but moving the
     // window to another monitor only changes devicePixelRatio — watch it too
@@ -99,6 +110,9 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
     let lastCamX = -1, lastCamY = -1, lastCamZ = -1;
     let lastHover: { x: number; y: number } | null = null;
     let lastRenderedFrame = -1;
+    let lastEngine: GameEngine | null = null;
+    let lastEngineVersion = -1;
+    let lastRenderRevision = -1;
 
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
@@ -120,15 +134,27 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
       const cam = camRef.current;
       const camMoved = cam.x !== lastCamX || cam.y !== lastCamY || cam.z !== lastCamZ;
       const hoverChanged = ui.hoverTile !== lastHover;
+      const engineVersion = eng.getVersion();
+      const renderRevision = renderRevisionRef.current;
 
-      // When game is paused and reducedMotion removes animations, only render on user interaction/camera move
-      if (eng.speed === 0 && ui.reducedMotion && !camMoved && !hoverChanged && lastRenderedFrame > 0) {
+      // Paused reduced-motion frames sleep only while every visible input is
+      // stable. Engine/UI/settings/resize changes must still paint once.
+      if (!shouldRenderFrame(eng.speed, !!ui.reducedMotion, {
+        hasRendered: lastRenderedFrame >= 0,
+        cameraChanged: camMoved,
+        hoverChanged,
+        engineChanged: eng !== lastEngine || engineVersion !== lastEngineVersion,
+        externalChanged: renderRevision !== lastRenderRevision,
+      })) {
         return;
       }
 
       lastCamX = cam.x; lastCamY = cam.y; lastCamZ = cam.z;
       lastHover = ui.hoverTile;
       lastRenderedFrame = now;
+      lastEngine = eng;
+      lastEngineVersion = engineVersion;
+      lastRenderRevision = renderRevision;
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       render(ctx, eng, cam, ui, vw, vh);

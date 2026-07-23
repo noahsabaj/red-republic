@@ -109,4 +109,23 @@ describe('border placement rules', () => {
     expect(e.bulldozeAt(0, 10)).toBe(false);
     expect(e.tiles[10][0].road).toBe(true);
   });
+
+  it('farmland and forest fields do not extend into foreign soil beyond the state border', () => {
+    const e = new GameEngine({ map: flatBorderMap(), skipStartingBase: true, weatherScript: CALM_WEATHER });
+    // Border is 'W' (depth D = 2). Tiles at x=0 and x=1 are foreign.
+    // Placing a farm at x=D (x=2) hugs the border.
+    const farmFieldsNearBorder = e.countFarmFields(2, 10, 2, 2);
+    const farmFieldsInland = e.countFarmFields(10, 10, 2, 2);
+    expect(farmFieldsNearBorder).toBeLessThan(farmFieldsInland);
+
+    // Verify foreign tiles (x < D) are never counted in countFarmFields or countForestTiles
+    for (let y = 7; y <= 13; y++) {
+      for (let x = 0; x < D; x++) {
+        expect(e.tiles[y][x].foreign).toBe(true);
+      }
+    }
+    // Forest check: set a foreign tile to forest and ensure countForestTiles excludes it
+    e.applyTilePatches([{ x: 1, y: 10, terrain: 'forest' }]);
+    expect(e.countForestTiles(2, 10, 2, 2)).toBe(0);
+  });
 });

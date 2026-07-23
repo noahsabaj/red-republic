@@ -84,4 +84,65 @@ describe('bulk construction site auto-buy (setSiteImportMany)', () => {
     expect(b1.autoBought).toBe(false);
     expect(b2.autoBought).toBe(false);
   });
+
+  it('does not recharge sites already auto-buying in the requested currency', () => {
+    const engine = makeEngine();
+    placeBuilt(engine, 'customs', 0, 0).eff = 1;
+    engine.rubles = 50_000;
+
+    engine.tryPlace('house', 10, 10);
+    engine.tryPlace('apartment', 15, 15);
+    const alreadyEnabled = engine.buildingAt(10, 10)!;
+    const newlyEnabled = engine.buildingAt(15, 15)!;
+
+    expect(engine.setSiteImport(alreadyEnabled.id, 'east').ok).toBe(true);
+    const newlyEnabledCost = engine.autoBuyRemainingCost(newlyEnabled.id, 'east');
+    const beforeBulk = engine.rubles;
+
+    const res = engine.setSiteImportMany(
+      [alreadyEnabled.id, newlyEnabled.id, alreadyEnabled.id],
+      'east',
+    );
+
+    expect(res).toMatchObject({ succeeded: 2, failed: 0, totalCost: newlyEnabledCost });
+    expect(engine.rubles).toBe(beforeBulk - newlyEnabledCost);
+    expect(alreadyEnabled.importCurrency).toBe('east');
+    expect(newlyEnabled.autoBought).toBe(true);
+  });
+
+  it('may retarget an unpaid planned site but rejects changing a paid active site currency', () => {
+    const engine = makeEngine();
+    placeBuilt(engine, 'customs', 0, 0).eff = 1;
+    engine.rubles = 50_000;
+    engine.dollars = 50_000;
+
+    engine.tryPlace('house', 10, 10, { plan: true, autoBuy: true, currency: 'east' });
+    const planned = engine.buildingAt(10, 10)!;
+    const dollarsBeforePlanChange = engine.dollars;
+
+    const plannedResult = engine.setSiteImportMany([planned.id], 'west');
+
+    expect(plannedResult).toMatchObject({ succeeded: 1, failed: 0, totalCost: 0 });
+    expect(planned.importCurrency).toBe('west');
+    expect(planned.bondedCustomsId).toBeUndefined();
+    expect(engine.dollars).toBe(dollarsBeforePlanChange);
+
+    engine.tryPlace('apartment', 15, 15);
+    const active = engine.buildingAt(15, 15)!;
+    expect(engine.setSiteImport(active.id, 'east').ok).toBe(true);
+    const rublesBeforeRejectedChange = engine.rubles;
+    const dollarsBeforeRejectedChange = engine.dollars;
+
+    const activeResult = engine.setSiteImportMany([active.id], 'west');
+
+    expect(activeResult).toMatchObject({
+      succeeded: 0,
+      failed: 1,
+      totalCost: 0,
+      reason: 'Disable auto-buy before changing import currency',
+    });
+    expect(active.importCurrency).toBe('east');
+    expect(engine.rubles).toBe(rublesBeforeRejectedChange);
+    expect(engine.dollars).toBe(dollarsBeforeRejectedChange);
+  });
 });

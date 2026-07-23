@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { GameEngine } from '@/game/engine';
 import { seedDemoTown } from '@/game/demo';
-import { render } from '@/game/render';
+import { render, shouldRenderBackdropFrame } from '@/game/render';
 import type { Camera, UIState } from '@/game/render';
 import { getSettings } from '@/app/settings';
 
@@ -37,22 +37,35 @@ export function MenuBackdrop() {
     let vw = 0, vh = 0, dpr = 1;
     const cam: Camera = { x: 0, y: 0, z: 0.9 };
     let baseX = 0, baseY = 0;
+    let lastRenderTime = 0;
+    let needsRender = true;
+    let wasReduced = false;
 
     const resize = () => {
-      dpr = Math.min(2, window.devicePixelRatio || 1);
-      vw = canvas.clientWidth; vh = canvas.clientHeight;
-      canvas.width = Math.round(vw * dpr);
-      canvas.height = Math.round(vh * dpr);
+      const nextDpr = Math.min(2, window.devicePixelRatio || 1);
+      const nextVw = canvas.clientWidth;
+      const nextVh = canvas.clientHeight;
+      const nextW = Math.round(nextVw * nextDpr);
+      const nextH = Math.round(nextVh * nextDpr);
+      const backingChanged = canvas.width !== nextW || canvas.height !== nextH || dpr !== nextDpr;
+      const viewportChanged = vw !== nextVw || vh !== nextVh;
+
+      dpr = nextDpr;
+      vw = nextVw;
+      vh = nextVh;
+      if (backingChanged) {
+        canvas.width = nextW;
+        canvas.height = nextH;
+      }
       baseX = vw / 2;
       baseY = vh / 2 - ((engine.mapW + engine.mapH) / 2) * 16 * cam.z;
+      if (backingChanged || viewportChanged) needsRender = true;
     };
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(canvas);
 
     const ui: UIState = { hoverTile: null, tool: { kind: 'select' }, selection: [], time: 0 };
-    let lastRenderTime = 0;
-    let renderedOnce = false;
 
     const frame = (now: number) => {
       const reduced = getSettings().reducedMotion;
@@ -60,6 +73,7 @@ export function MenuBackdrop() {
       cam.x = baseX + Math.sin(t * 0.05) * 90;
       cam.y = baseY + Math.cos(t * 0.037) * 55;
       ui.time = reduced ? 0 : now;
+      ui.reducedMotion = reduced;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       render(ctx, engine, cam, ui, vw, vh);
     };
@@ -72,18 +86,21 @@ export function MenuBackdrop() {
 
       const reduced = getSettings().reducedMotion;
       if (reduced) {
-        if (!renderedOnce) {
+        if (shouldRenderBackdropFrame(true, needsRender, wasReduced, now - lastRenderTime)) {
           frame(now);
-          renderedOnce = true;
+          needsRender = false;
         }
+        wasReduced = true;
         raf = requestAnimationFrame(loop);
         return;
       }
+      wasReduced = false;
 
       // Cap backdrop attract animation to ~30 FPS (33ms interval)
-      if (now - lastRenderTime >= 32) {
+      if (shouldRenderBackdropFrame(false, needsRender, wasReduced, now - lastRenderTime)) {
         lastRenderTime = now;
         frame(now);
+        needsRender = false;
       }
       raf = requestAnimationFrame(loop);
     };

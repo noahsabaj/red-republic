@@ -1,5 +1,9 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import { HappinessCard } from '../../components/HUD';
 import { GameEngine } from '../engine';
+import { makeEngine, runDays } from './helpers';
 
 describe('happiness breakdown engine calculations', () => {
   it('returns initial happiness breakdown with 7 factors and correct weights', () => {
@@ -42,5 +46,19 @@ describe('happiness breakdown engine calculations', () => {
 
     const breakdown = engine.happinessBreakdown();
     expect(breakdown.modifiers.pollutionPenaltyPct).toBe(20);
+  });
+
+  it('preserves and displays sunny morale in half-percent steps', () => {
+    const engine = makeEngine({ weather: () => ({ condition: 'clear' }) });
+
+    runDays(engine, 1);
+    const firstSunnyDay = engine.happinessBreakdown().modifiers.weatherMoralePct;
+    expect(firstSunnyDay).toBe(0.5);
+    expect(renderToStaticMarkup(createElement(HappinessCard, { engine }))).toContain('+0.5%');
+
+    runDays(engine, 1);
+    const secondSunnyDay = engine.happinessBreakdown().modifiers.weatherMoralePct;
+    expect(secondSunnyDay).toBe(1);
+    expect(renderToStaticMarkup(createElement(HappinessCard, { engine }))).toContain('+1%');
   });
 });

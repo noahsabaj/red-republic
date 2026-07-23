@@ -24,6 +24,35 @@ export interface UIState {
   palette?: StatusPalette; // status colors; defaults to STATUS_PALETTES.default
 }
 
+export interface FrameInvalidation {
+  hasRendered: boolean;
+  cameraChanged: boolean;
+  hoverChanged: boolean;
+  engineChanged: boolean;
+  externalChanged: boolean;
+}
+
+/** Paused + reduced-motion frames may sleep only while every visible input is stable. */
+export function shouldRenderFrame(
+  speed: number,
+  reducedMotion: boolean,
+  invalidation: FrameInvalidation,
+): boolean {
+  return speed !== 0 || !reducedMotion || !invalidation.hasRendered
+    || invalidation.cameraChanged || invalidation.hoverChanged
+    || invalidation.engineChanged || invalidation.externalChanged;
+}
+
+/** Main-menu backdrop: repaint dirty buffers and reduced-motion transitions; otherwise cap at 30 FPS. */
+export function shouldRenderBackdropFrame(
+  reducedMotion: boolean,
+  needsRender: boolean,
+  wasReduced: boolean,
+  elapsedMs: number,
+): boolean {
+  return needsRender || (reducedMotion ? !wasReduced : elapsedMs >= 32);
+}
+
 /** Placement/status colors, swappable for the colorblind-safe variant. */
 export interface StatusPalette {
   okFill: string; okStroke: string;
@@ -200,12 +229,13 @@ interface DepthItem {
 import { TilemapCache } from './tilemap-cache';
 const globalTilemapCache = new TilemapCache();
 
-// farm-field membership only changes when the world changes — cache per land topology revision
-let fieldCache: { engine: GameEngine; rev: number; tiles: Set<number> } | null = null;
+// Field membership also depends on render-only tile data such as deposits, so a
+// routing-topology revision is not a sufficient invalidation signal.
+let fieldCache: { engine: GameEngine; version: number; tiles: Set<number> } | null = null;
 
 function fieldTilesOf(engine: GameEngine): Set<number> {
-  const rev = engine.topologyRevision('land');
-  if (fieldCache && fieldCache.engine === engine && fieldCache.rev === rev) return fieldCache.tiles;
+  const version = engine.getVersion();
+  if (fieldCache && fieldCache.engine === engine && fieldCache.version === version) return fieldCache.tiles;
   const tiles = new Set<number>();
   for (const b of engine.buildings.values()) {
     const def = BUILDINGS[b.defId];
@@ -213,10 +243,10 @@ function fieldTilesOf(engine: GameEngine): Set<number> {
     for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
       const tx = b.x + dx, ty = b.y + dy;
       const t = engine.tiles[ty]?.[tx];
-      if (t && t.terrain === 'grass' && !t.buildingId && !t.road && !t.deposit) tiles.add(ty * engine.mapW + tx);
+      if (t && t.terrain === 'grass' && !t.buildingId && !t.road && !t.deposit && !t.foreign) tiles.add(ty * engine.mapW + tx);
     }
   }
-  fieldCache = { engine, rev, tiles };
+  fieldCache = { engine, version, tiles };
   return tiles;
 }
 
@@ -255,7 +285,7 @@ export function renderGroundTile(
   const c2 = toScreen(x + 1, y + 1, cam), c3 = toScreen(x, y + 1, cam);
 
   if (t.terrain === 'water') {
-    drawWater(ctx, engine, x, y, c0, c1, c2, c3, cam, frame);
+    drawWaterBase(ctx, engine, x, y, c0, c1, c2, c3, cam, frame);
   } else {
     const even = (x + y) % 2 === 0;
     let fill: string;
@@ -364,7 +394,7 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
   };
 
   // Render cached offscreen static tilemap background
-  globalTilemapCache.drawStaticLayer(ctx, engine, cam, ui, frame, renderGroundTile, fieldTiles);
+  globalTilemapCache.drawStaticLayer(ctx, engine, cam, ui, frame, renderGroundTile, fieldTiles, vw, vh);
 
   // Viewport bounds for culling dynamic items before depth sorting
   const margin = 80;
@@ -436,6 +466,18 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
       if (minY > vh + 80 || minY + 2 * hhz < -120) continue;
 
       const t = engine.tiles[y][x];
+      // Water highlights remain dynamic while the opaque terrain/road/border
+      // raster stays cached. Skip bridge and border-overlay tiles so highlights
+      // retain their original below-overlay draw order.
+      const hasBorderOverlay = !t.foreign && (
+        !!engine.tiles[y]?.[x - 1]?.foreign || !!engine.tiles[y]?.[x + 1]?.foreign
+        || !!engine.tiles[y - 1]?.[x]?.foreign || !!engine.tiles[y + 1]?.[x]?.foreign
+      );
+      if (t.terrain === 'water' && !t.road && !hasBorderOverlay) {
+        const c0 = toScreen(x, y, cam), c1 = toScreen(x + 1, y, cam);
+        const c2 = toScreen(x + 1, y + 1, cam), c3 = toScreen(x, y + 1, cam);
+        drawWaterGlints(ctx, engine, x, y, c0, c1, c2, c3, cam, frame);
+      }
       if (t.terrain === 'forest') items.push({ x, y, w: 1, h: 1, kind: 'trees', variant: t.variant, foreign: t.foreign });
       if (t.buildingId) {
         const b = engine.buildings.get(t.buildingId);
@@ -551,7 +593,7 @@ function lerpP(a: { x: number; y: number }, b: { x: number; y: number }, t: numb
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }
 
-function drawWater(ctx: CanvasRenderingContext2D, engine: GameEngine, x: number, y: number, c0: Pt, c1: Pt, c2: Pt, c3: Pt, cam: Camera, frame: FrameStyle) {
+function drawWaterBase(ctx: CanvasRenderingContext2D, engine: GameEngine, x: number, y: number, c0: Pt, c1: Pt, c2: Pt, c3: Pt, cam: Camera, frame: FrameStyle) {
   const isWater = (tx: number, ty: number) => engine.tiles[ty]?.[tx]?.terrain === 'water';
   const nN = isWater(x, y - 1), nE = isWater(x + 1, y), nS = isWater(x, y + 1), nW = isWater(x - 1, y);
   const even = (x + y) % 2 === 0;
@@ -573,7 +615,9 @@ function drawWater(ctx: CanvasRenderingContext2D, engine: GameEngine, x: number,
   if (!nE) bank(c1, c2, c0, c3);
   if (!nS) bank(c3, c2, c0, c1);
   if (!nW) bank(c0, c3, c1, c2);
+}
 
+function drawWaterGlints(ctx: CanvasRenderingContext2D, engine: GameEngine, x: number, y: number, c0: Pt, c1: Pt, c2: Pt, c3: Pt, cam: Camera, frame: FrameStyle) {
   // calm glints that breathe in and out (a frozen river lies still)
   if (!engine.weather.riverFrozen && !frame.reduced) {
     const v = engine.tiles[y][x].variant;

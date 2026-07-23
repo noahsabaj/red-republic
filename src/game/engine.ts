@@ -761,26 +761,26 @@ export class GameEngine {
     return this.topology.revision(domain);
   }
 
-  /** Open grass tiles within the farm's work radius, excluding the (would-be) footprint. */
+  /** Open grass tiles within the farm's work radius, excluding the (would-be) footprint and foreign soil. */
   countFarmFields(x: number, y: number, w: number, h: number): number {
     let fields = 0;
     for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
       const tx = x + dx, ty = y + dy;
       if (tx >= x && tx < x + w && ty >= y && ty < y + h) continue;
       const t = this.tiles[ty]?.[tx];
-      if (t && t.terrain === 'grass' && !t.buildingId && !t.road && !t.deposit) fields++;
+      if (t && t.terrain === 'grass' && !t.buildingId && !t.road && !t.deposit && !t.foreign) fields++;
     }
     return fields;
   }
 
-  /** Unoccupied forest tiles within reach, excluding the (would-be) footprint. */
+  /** Unoccupied forest tiles within reach, excluding the (would-be) footprint and foreign soil. */
   countForestTiles(x: number, y: number, w: number, h: number): number {
     let forests = 0;
     for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
       const tx = x + dx, ty = y + dy;
       if (tx >= x && tx < x + w && ty >= y && ty < y + h) continue;
       const t = this.tiles[ty]?.[tx];
-      if (t && t.terrain === 'forest' && !t.buildingId && !t.road) forests++;
+      if (t && t.terrain === 'forest' && !t.buildingId && !t.road && !t.foreign) forests++;
     }
     return forests;
   }
@@ -1063,15 +1063,22 @@ export class GameEngine {
   /** Turn a site's material import (auto-buy) on — paying the REMAINING bill now
    *  in the chosen bloc's currency — or off. Enabling requires a constructed
    *  customs and the funds; a paused site only records the intent (charged at
-   *  commence); disabling stops future bonded top-ups (paid cargo is not refunded). */
+   *  commence); disabling stops future bonded top-ups (paid cargo is not refunded).
+   *  Reapplying the current state is a no-op. An unpaid paused intent may change
+   *  currency directly; a paid active site must be disabled before changing it. */
   setSiteImport(id: number, currency: 'east' | 'west' | null): { ok: boolean; reason?: string } {
     const b = this.buildings.get(id);
     if (!b || b.constructed) return { ok: false, reason: 'Not a construction site' };
     if (currency === null) {
+      if (!b.autoBought) return { ok: true };
       b.autoBought = false;
       b.bondedCustomsId = undefined;
       this.bump();
       return { ok: true };
+    }
+    if (b.autoBought && (b.importCurrency ?? 'east') === currency) return { ok: true };
+    if (b.autoBought && !b.paused) {
+      return { ok: false, reason: 'Disable auto-buy before changing import currency' };
     }
     if (b.paused) {
       // planning mode: record the intent; commenceSite() pays the bill.
@@ -1107,7 +1114,7 @@ export class GameEngine {
     let succeeded = 0, failed = 0, totalCost = 0;
     let lastReason: string | undefined;
 
-    const targets = ids
+    const targets = [...new Set(ids)]
       .map(id => this.buildings.get(id))
       .filter((b): b is BuildingInst => !!b && !b.constructed)
       .sort((a, b) => (b.buildPriority ?? 0) - (a.buildPriority ?? 0) || a.id - b.id);
@@ -1115,17 +1122,6 @@ export class GameEngine {
     if (targets.length === 0) return { totalCost: 0, succeeded: 0, failed: 0, reason: 'No unconstructed sites selected' };
 
     for (const b of targets) {
-      if (currency !== null && !b.paused) {
-        const cost = this.autoBuyRemainingCost(b.id, currency);
-        const funds = currency === 'east' ? this.rubles : this.dollars;
-        if (funds < cost) {
-          failed++;
-          lastReason = currency === 'east'
-            ? `Not enough rubles (₽${cost.toLocaleString()})`
-            : `Not enough dollars ($${cost.toLocaleString()})`;
-          continue;
-        }
-      }
       const initialFunds = currency === 'east' ? this.rubles : currency === 'west' ? this.dollars : 0;
       const res = this.setSiteImport(b.id, currency);
       if (res.ok) {
@@ -2755,6 +2751,7 @@ export class GameEngine {
    *  player should add a Construction Office. Reuses the exact demand/cap math of
    *  construction() so the advisory can never diverge from the simulation. */
   constructionThrottled(): boolean {
+    if (!this.globalConstructionEnabled) return false;
     const pool = this.builderPool();
     if (pool <= 0) return false; // the pool===0 case is the "halted" advisory
     const buildMult = WEATHER[this.weather.condition].buildMult;
@@ -2950,7 +2947,7 @@ export class GameEngine {
       factors,
       modifiers: {
         pollutionPenaltyPct: Math.round((1 - pollutionFactor) * 100),
-        weatherMoralePct: Math.round(weatherMod * 100),
+        weatherMoralePct: Math.round(weatherMod * 1000) / 10,
       },
     };
   }
@@ -3029,9 +3026,11 @@ export class GameEngine {
     if (isolated > 0) a.push({ id: 'roads', icon: 'road', text: `${isolated} building${isolated > 1 ? 's' : ''} isolated — no delivery route`, level: 'warn' });
     const offroadOnly = [...this.buildings.values()].filter(b => b.constructed && b.connected && !b.roadConnected).length;
     if (offroadOnly > 0) a.push({ id: 'offroad', icon: 'road', text: `${offroadOnly} building${offroadOnly > 1 ? 's' : ''} reachable only off-road — slow deliveries; lay a road`, level: 'warn' });
-    const sites = [...this.buildings.values()].filter(b => !b.constructed);
-    if (sites.length > 0 && this.builderPool() === 0) a.push({ id: 'builders', icon: 'builders', text: 'No builders available — construction halted', level: 'warn' });
-    else if (this.constructionThrottled()) a.push({ id: 'buildersSlow', icon: 'builders', text: 'Builders spread thin — sites building slowly; add a Construction Office', level: 'warn' });
+    if (this.globalConstructionEnabled) {
+      const sites = [...this.buildings.values()].filter(b => !b.constructed);
+      if (sites.length > 0 && this.builderPool() === 0) a.push({ id: 'builders', icon: 'builders', text: 'No builders available — construction halted', level: 'warn' });
+      else if (this.constructionThrottled()) a.push({ id: 'buildersSlow', icon: 'builders', text: 'Builders spread thin — sites building slowly; add a Construction Office', level: 'warn' });
+    }
     const fleet = this.fleetStatus();
     if (fleet.max === 0) a.push({ id: 'trucks', icon: 'truck', text: 'No trucks — staff a Construction Office or Motor Depot to haul goods', level: 'warn' });
     else if (fleet.driverTrucks > 0 && fleet.fuelCap < fleet.driverTrucks) a.push({ id: 'fleetFuel', icon: 'fuel', text: 'Fleet short of fuel — supply a Gas Station (refinery fuel or imports)', level: 'warn' });

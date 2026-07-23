@@ -250,16 +250,30 @@ function MultiInfo({ engine, items, payMode, currency, onArmBuild, notify }: { e
             </div>
           )}
           {sites.length > 0 && (() => {
-            const rubleCost = sites.reduce((sum, b) => sum + engine.autoBuyRemainingCost(b.id, 'east'), 0);
-            const dollarCost = sites.reduce((sum, b) => sum + engine.autoBuyRemainingCost(b.id, 'west'), 0);
+            const bulkCost = (cur: 'east' | 'west') => sites.reduce((sum, b) => {
+              if (b.autoBought && (b.importCurrency ?? 'east') === cur) return sum;
+              if (b.autoBought && !b.paused) return sum;
+              return sum + engine.autoBuyRemainingCost(b.id, cur);
+            }, 0);
+            const rubleCost = bulkCost('east');
+            const dollarCost = bulkCost('west');
             const allEast = sites.every(b => !!b.autoBought && (b.importCurrency ?? 'east') === 'east');
             const allWest = sites.every(b => !!b.autoBought && b.importCurrency === 'west');
             const handleBulkImport = (cur: 'east' | 'west' | null) => {
-              const res = engine.setSiteImportMany(sites.map(b => b.id), cur);
+              const targets = cur === null
+                ? sites.filter(b => b.autoBought)
+                : sites.filter(b => !b.autoBought || (b.importCurrency ?? 'east') !== cur);
+              const res = engine.setSiteImportMany(targets.map(b => b.id), cur);
               if (res.succeeded > 0) {
-                if (cur === 'east') notify(`Auto-buying materials for ${res.succeeded} site${res.succeeded > 1 ? 's' : ''} (₽${fmtMoney(res.totalCost)})`, 'good');
-                else if (cur === 'west') notify(`Auto-buying materials for ${res.succeeded} site${res.succeeded > 1 ? 's' : ''} ($${fmtMoney(res.totalCost)})`, 'good');
-                else notify(`Disabled material auto-buy for ${res.succeeded} site${res.succeeded > 1 ? 's' : ''}`, 'info');
+                const changed = cur === 'east'
+                  ? `Auto-buying materials for ${res.succeeded} site${res.succeeded > 1 ? 's' : ''} (₽${fmtMoney(res.totalCost)})`
+                  : cur === 'west'
+                    ? `Auto-buying materials for ${res.succeeded} site${res.succeeded > 1 ? 's' : ''} ($${fmtMoney(res.totalCost)})`
+                    : `Disabled material auto-buy for ${res.succeeded} site${res.succeeded > 1 ? 's' : ''}`;
+                notify(res.failed > 0
+                  ? `${changed}; ${res.failed} skipped${res.reason ? ` — ${res.reason}` : ''}`
+                  : changed,
+                res.failed > 0 ? 'bad' : cur === null ? 'info' : 'good');
               } else if (res.reason) {
                 notify(res.reason, 'bad');
               }

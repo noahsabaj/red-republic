@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { BUILDINGS, CATEGORIES, RESOURCES, SUBCATEGORIES } from '@/game/config';
 import type { Category, ResourceId } from '@/game/config';
 import type { GameEngine } from '@/game/engine';
@@ -19,6 +19,101 @@ interface Props {
   push: (text: string, kind?: 'good' | 'bad' | 'info', icon?: string) => void;
 }
 
+export interface TooltipGeometry {
+  id: string;
+  anchorCenterX: number;
+  width: number;
+  top: number;
+  bottom: number;
+}
+
+export interface TooltipBounds {
+  left: number;
+  right: number;
+}
+
+/** Return horizontal translations that keep visible tooltips inside `bounds`
+ * and, when two share a row, leave `gap` pixels between their borders. Geometry
+ * comes from the rendered cards/tooltips, so responsive column widths and cards
+ * that wrap onto another row are handled by their actual positions. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function computeTooltipShifts(
+  geometries: readonly TooltipGeometry[],
+  gap = 6,
+  bounds?: TooltipBounds,
+): Record<string, number> {
+  if (geometries.length < 1 || geometries.length > 2 || !Number.isFinite(gap)) return {};
+  if (geometries.some(({ anchorCenterX, width, top, bottom }) =>
+    ![anchorCenterX, width, top, bottom].every(Number.isFinite)
+    || width <= 0 || bottom < top)) return {};
+
+  const validBounds = bounds && Number.isFinite(bounds.left) && Number.isFinite(bounds.right)
+    && bounds.right > bounds.left ? bounds : undefined;
+  const clampToBounds = ({ anchorCenterX, width }: TooltipGeometry): number => {
+    if (!validBounds) return 0;
+    const boundsWidth = validBounds.right - validBounds.left;
+    if (width > boundsWidth) return (validBounds.left + validBounds.right) / 2 - anchorCenterX;
+    const left = anchorCenterX - width / 2;
+    const right = anchorCenterX + width / 2;
+    if (left < validBounds.left) return validBounds.left - left;
+    if (right > validBounds.right) return validBounds.right - right;
+    return 0;
+  };
+  const nonzero = (entries: readonly [string, number][]) =>
+    Object.fromEntries(entries.filter(([, shift]) => shift !== 0));
+
+  if (geometries.length === 1) {
+    const only = geometries[0];
+    return nonzero([[only.id, clampToBounds(only)]]);
+  }
+
+  const [first, second] = geometries;
+  if (first.id === second.id) return {};
+
+  // Tooltips on separate wrapped rows need no horizontal displacement when
+  // their rendered vertical ranges do not intersect, but each must still stay
+  // inside the viewport independently.
+  const verticalOverlap = Math.min(first.bottom, second.bottom) - Math.max(first.top, second.top);
+  if (verticalOverlap <= 0) {
+    return nonzero([
+      [first.id, clampToBounds(first)],
+      [second.id, clampToBounds(second)],
+    ]);
+  }
+
+  const [left, right] = first.anchorCenterX <= second.anchorCenterX
+    ? [first, second]
+    : [second, first];
+  const currentGap = (right.anchorCenterX - right.width / 2) - (left.anchorCenterX + left.width / 2);
+  const missingGap = Math.max(0, Math.max(0, gap) - currentGap);
+  const shift = missingGap / 2;
+  const shifts = { [left.id]: -shift, [right.id]: shift };
+
+  if (validBounds) {
+    const groupLeft = left.anchorCenterX + shifts[left.id] - left.width / 2;
+    const groupRight = right.anchorCenterX + shifts[right.id] + right.width / 2;
+    const groupWidth = groupRight - groupLeft;
+    const boundsWidth = validBounds.right - validBounds.left;
+    const groupOffset = groupWidth <= boundsWidth
+      ? groupLeft < validBounds.left
+        ? validBounds.left - groupLeft
+        : groupRight > validBounds.right
+          ? validBounds.right - groupRight
+          : 0
+      : (validBounds.left + validBounds.right - groupLeft - groupRight) / 2;
+    shifts[left.id] += groupOffset;
+    shifts[right.id] += groupOffset;
+  }
+
+  return nonzero(Object.entries(shifts));
+}
+
+function sameTooltipShifts(a: Readonly<Record<string, number>>, b: Readonly<Record<string, number>>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  return aKeys.length === bKeys.length && aKeys.every(key => a[key] === b[key]);
+}
+
 /** The mode-aware hover card: cost in the active funding mode, then the specs. */
 function InfoCard({ engine, defId, mode, currency, shiftX }: { engine: GameEngine; defId: string; mode: BuildPayMode; currency: 'east' | 'west'; shiftX?: number }) {
   const def = BUILDINGS[defId];
@@ -29,8 +124,9 @@ function InfoCard({ engine, defId, mode, currency, shiftX }: { engine: GameEngin
   const powerLine = def.powerOutput ? `+${def.powerOutput} MW` : def.power ? `−${def.power} MW` : null;
   return (
     <div
+      data-build-tooltip
       className="pointer-events-none absolute bottom-full left-1/2 z-40 mb-2 w-56 rounded-lg border border-yellow-600/60 bg-red-950/95 p-2.5 text-yellow-50 shadow-2xl"
-      style={{ transform: shiftX ? `translateX(calc(-50% + ${shiftX}px))` : 'translateX(-50%)' }}
+      style={{ transform: `translateX(-50%) translateX(${shiftX ?? 0}px)` }}
     >
       <div className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-yellow-300">
         <GameIcon name={def.icon} size={14} /> {def.name}
@@ -74,9 +170,16 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
 
   const [hoveredDefId, setHoveredDefId] = useState<string | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const cardRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [tooltipShifts, setTooltipShifts] = useState<Record<string, number>>({});
+
+  useEffect(() => () => {
+    if (hoverTimerRef.current !== null) clearTimeout(hoverTimerRef.current);
+  }, []);
 
   const clearHoverTimer = () => {
-    if (hoverTimerRef.current) {
+    if (hoverTimerRef.current !== null) {
       clearTimeout(hoverTimerRef.current);
       hoverTimerRef.current = null;
     }
@@ -85,6 +188,7 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
   const handleMouseEnterCard = (id: string) => {
     clearHoverTimer();
     hoverTimerRef.current = setTimeout(() => {
+      hoverTimerRef.current = null;
       setHoveredDefId(id);
     }, 500);
   };
@@ -96,8 +200,20 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
 
   const mode: BuildPayMode = policy.instant ? 'instant' : policy.autoBuy ? 'autoBuy' : 'materials';
 
-  // re-render when affordability, the foreign-labor default, or the planned-site count changes
-  useEngineSignature(engine, (e) => [e.rubles, e.dollars, e.globalConstructionEnabled, e.foreignLaborEnabled, e.foreignLaborCurrency, e.plannedCount()]);
+  // Include the exact bulk-import target set: the click handler closes over the
+  // rendered sites, so a same-sized membership change must also re-render.
+  useEngineSignature(engine, (e) => [
+    e.rubles,
+    e.dollars,
+    e.globalConstructionEnabled,
+    e.foreignLaborEnabled,
+    e.foreignLaborCurrency,
+    e.plannedCount(),
+    [...e.buildings.values()]
+      .filter(b => !b.constructed && !b.autoBought)
+      .map(b => b.id)
+      .join(','),
+  ]);
 
   const plannedN = engine.plannedCount();
   const commenceCost = plannedN > 0 ? engine.plannedCommenceCost() : null;
@@ -121,33 +237,61 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
 
   const selectedDefId = tool.kind === 'build' ? tool.defId : null;
 
-  // Active tooltip IDs in current subcategory
+  // Active tooltip IDs in the current subcategory. Selection is inserted first
+  // to provide a deterministic left/right split when wrapped cards share an x.
   const activeTooltipIds = new Set<string>();
   if (selectedDefId && activeSub?.ids.includes(selectedDefId)) activeTooltipIds.add(selectedDefId);
   if (hoveredDefId && activeSub?.ids.includes(hoveredDefId)) activeTooltipIds.add(hoveredDefId);
 
-  // Compute horizontal push-apart shifts if two tooltips (Selected & Hovered) are active simultaneously
-  const tooltipShifts: Record<string, number> = {};
-  if (activeTooltipIds.size === 2 && activeSub) {
-    const ids = Array.from(activeTooltipIds);
-    const idx0 = activeSub.ids.indexOf(ids[0]);
-    const idx1 = activeSub.ids.indexOf(ids[1]);
-    if (idx0 !== -1 && idx1 !== -1) {
-      const [leftId, rightId, leftIdx, rightIdx] = idx0 <= idx1
-        ? [ids[0], ids[1], idx0, idx1]
-        : [ids[1], ids[0], idx1, idx0];
-      const idxDistance = rightIdx - leftIdx;
-      const cardPitch = 82; // approximate grid card pitch (76px width + 6px gap)
-      const distance = idxDistance * cardPitch;
-      const requiredDistance = 224 + 6; // 224px tooltip width + 6px gap
-      if (distance < requiredDistance) {
-        const overlap = requiredDistance - distance;
-        const shift = Math.round(overlap / 2);
-        tooltipShifts[leftId] = -shift;
-        tooltipShifts[rightId] = shift;
-      }
-    }
-  }
+  const selectedTooltipId = selectedDefId && activeTooltipIds.has(selectedDefId) ? selectedDefId : null;
+  const hoveredTooltipId = hoveredDefId && activeTooltipIds.has(hoveredDefId) ? hoveredDefId : null;
+
+  useLayoutEffect(() => {
+    const ids = [...new Set([selectedTooltipId, hoveredTooltipId].filter((id): id is string => id !== null))];
+
+    const measure = () => {
+      const geometries = ids.flatMap<TooltipGeometry>(id => {
+        const card = cardRefs.current[id];
+        const tooltip = card?.querySelector<HTMLElement>('[data-build-tooltip]');
+        if (!card || !tooltip) return [];
+
+        const cardRect = card.getBoundingClientRect();
+        const tooltipRect = tooltip.getBoundingClientRect();
+        return [{
+          id,
+          anchorCenterX: cardRect.left + cardRect.width / 2,
+          width: tooltipRect.width,
+          top: tooltipRect.top,
+          bottom: tooltipRect.bottom,
+        }];
+      });
+      const next = computeTooltipShifts(geometries, 6, {
+        left: 6,
+        right: Math.max(6, window.innerWidth - 6),
+      });
+      setTooltipShifts(current => sameTooltipShifts(current, next) ? current : next);
+    };
+
+    measure();
+    if (ids.length === 0) return;
+
+    const observedElements = [
+      gridRef.current,
+      ...ids.flatMap(id => {
+        const card = cardRefs.current[id];
+        const tooltip = card?.querySelector<HTMLElement>('[data-build-tooltip]') ?? null;
+        return [card, tooltip];
+      }),
+    ].filter((element): element is HTMLElement => element !== null);
+    const observer = new ResizeObserver(measure);
+    for (const element of observedElements) observer.observe(element);
+    window.addEventListener('resize', measure);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [activeSub?.id, hoveredTooltipId, selectedTooltipId]);
 
   return (
     <div
@@ -181,7 +325,7 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
           </div>
           {/* tier 3: building grid for the chosen sub-category */}
           {activeSub && (
-            <div className="mt-2 grid grid-cols-[repeat(auto-fill,minmax(4.75rem,1fr))] gap-1.5" style={{ minWidth: 'min(34rem, 78vw)' }}>
+            <div ref={gridRef} className="mt-2 grid grid-cols-[repeat(auto-fill,minmax(4.75rem,1fr))] gap-1.5" style={{ minWidth: 'min(34rem, 78vw)' }}>
               {activeSub.ids.map(id => {
                 const def = BUILDINGS[id];
                 const active = tool.kind === 'build' && tool.defId === id;
@@ -190,6 +334,10 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
                 return (
                   <button
                     key={id}
+                    ref={element => {
+                      if (element) cardRefs.current[id] = element;
+                      else delete cardRefs.current[id];
+                    }}
                     data-sfx="none" // the setTool funnel voices toolArm/toolCancel
                     disabled={!afford && !active}
                     onMouseEnter={() => handleMouseEnterCard(id)}
@@ -278,7 +426,11 @@ export default function BottomBar({ engine, tool, setTool, policy, setPolicy, pu
                 onClick={() => {
                   const res = engine.setSiteImportMany(unautoboughtSites.map(b => b.id), policy.currency);
                   if (res.succeeded > 0) {
-                    push(`Auto-buying materials for ${res.succeeded} site${res.succeeded > 1 ? 's' : ''} (${policy.currency === 'east' ? `₽${fmtMoney(res.totalCost)}` : `$${fmtMoney(res.totalCost)}`})`, 'good', 'truck');
+                    const imported = `Auto-buying materials for ${res.succeeded} site${res.succeeded > 1 ? 's' : ''} (${policy.currency === 'east' ? `₽${fmtMoney(res.totalCost)}` : `$${fmtMoney(res.totalCost)}`})`;
+                    push(res.failed > 0
+                      ? `${imported}; ${res.failed} skipped${res.reason ? ` — ${res.reason}` : ''}`
+                      : imported,
+                    res.failed > 0 ? 'bad' : 'good', 'truck');
                   } else if (res.reason) {
                     push(res.reason, 'bad', 'truck');
                   }

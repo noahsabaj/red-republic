@@ -128,6 +128,7 @@ export default function App() {
   /** Common swap: fresh world, fresh UI state, keyed GameCanvas remount. */
   const startGame = useCallback((s: GameSession) => {
     setSession(s);
+    setPolicyState(p => ({ ...p, currency: s.engine.foreignLaborCurrency }));
     setTool({ kind: 'select' });
     setSelection([]);
     setPanel(null);

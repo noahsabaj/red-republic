@@ -115,21 +115,42 @@ describe('save round-trip', () => {
     placeBuilt(e, 'constructionOffice', 7, 10);
     placeBuilt(e, 'customs', 9, 10);
     e.setForeignLaborEnabled(false);                                   // global master switch state
+    e.setForeignLaborCurrency('west');
     e.tryPlace('house', 12, 10, { plan: true });                      // paused blueprint
     e.tryPlace('house', 14, 10, { autoBuy: true, currency: 'west' }); // $-West bonded site, trucks en route
     e.tryPlace('house', 16, 10, { foreignLabor: false });             // domestic-only site
     runDays(e, 3);
+    e.setGlobalConstructionEnabled(false);
+    e.tradeLedger.today.foreignLabor = -12;
+    e.tradeLedger.today.foreignLaborRubles = -12;
+    e.tradeLedger.today.foreignLaborDollars = -3;
 
     const snap = e.serialize();
     const e2 = GameEngine.fromSave(snap, { weatherScript: CALM_WEATHER });
     expect(stable(e2.serialize())).toEqual(stable(snap));
+    expect(e2.globalConstructionEnabled).toBe(false);
     expect(e2.foreignLaborEnabled).toBe(false);
+    expect(e2.foreignLaborCurrency).toBe('west');
+    expect(e2.tradeLedger.today.foreignLaborRubles).toBe(-12);
+    expect(e2.tradeLedger.today.foreignLaborDollars).toBe(-3);
     expect(e2.buildingAt(12, 10)!.paused).toBe(true);
     expect(e2.buildingAt(14, 10)!.importCurrency).toBe('west');
     expect(e2.buildingAt(16, 10)!.foreignLabor).toBe(false);
 
     runDays(e, 30); runDays(e2, 30);
     expect(stable(e2.serialize())).toEqual(stable(e.serialize()));
+  });
+
+  it('hydrates legacy construction and foreign-labor policy defaults', () => {
+    const legacy = makeEngine().serialize();
+    delete legacy.body.globalConstructionEnabled;
+    delete legacy.body.foreignLaborEnabled;
+    delete legacy.body.foreignLaborCurrency;
+
+    const loaded = GameEngine.fromSave(legacy, { weatherScript: CALM_WEATHER });
+    expect(loaded.globalConstructionEnabled).toBe(true);
+    expect(loaded.foreignLaborEnabled).toBe(true);
+    expect(loaded.foreignLaborCurrency).toBe('east');
   });
 
   it('ids allocated after a load never collide with saved entities', () => {

@@ -77,4 +77,45 @@ describe('construction pause controls', () => {
     expect(site1.progress).toBeGreaterThan(0);
     expect(site2.progress).toBeGreaterThan(0);
   });
+
+  it('global construction pause suppresses new material dispatches until resumed', () => {
+    const e = laborTown();
+    const depot = [...e.buildings.values()].find(b => b.defId === 'depot')!;
+    depot.stock.planks = 20;
+    depot.stock.bricks = 20;
+    expect(e.tryPlace('house', 10, 10).ok).toBe(true);
+    const site = e.buildingAt(10, 10)!;
+    const siteDispatches = () => e.trucks.filter(t =>
+      t.phase === 'go' && t.destId === site.id && (t.cargo === 'planks' || t.cargo === 'bricks'));
+
+    e.setGlobalConstructionEnabled(false);
+    runDays(e, 1);
+    expect(siteDispatches()).toHaveLength(0);
+    expect((site.incoming.planks ?? 0) + (site.incoming.bricks ?? 0)).toBe(0);
+
+    e.setGlobalConstructionEnabled(true);
+    runDays(e, 1);
+    expect(siteDispatches().length).toBeGreaterThan(0);
+    expect((site.incoming.planks ?? 0) + (site.incoming.bricks ?? 0)).toBeGreaterThan(0);
+  });
+
+  it('global construction pause suppresses builder-capacity advisories', () => {
+    const noBuilders = makeEngine();
+    expect(noBuilders.tryPlace('house', 10, 10).ok).toBe(true);
+    noBuilders.setGlobalConstructionEnabled(false);
+    runDays(noBuilders, 1);
+    expect(noBuilders.alerts.some(a => a.id === 'builders' || a.id === 'buildersSlow')).toBe(false);
+
+    const constrained = laborTown();
+    readyHouse(constrained, 10, 10);
+    readyHouse(constrained, 13, 10);
+    readyHouse(constrained, 16, 10);
+    runDays(constrained, 1);
+    expect(constrained.constructionThrottled()).toBe(true);
+    expect(constrained.alerts.some(a => a.id === 'buildersSlow')).toBe(true);
+    constrained.setGlobalConstructionEnabled(false);
+    expect(constrained.constructionThrottled()).toBe(false);
+    runDays(constrained, 1);
+    expect(constrained.alerts.some(a => a.id === 'builders' || a.id === 'buildersSlow')).toBe(false);
+  });
 });

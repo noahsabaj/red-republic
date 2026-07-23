@@ -19,7 +19,13 @@ interface Props {
   onOpenMenu: () => void;
 }
 
-function HappinessCard({ engine }: { engine: GameEngine }) {
+function formatSignedPercent(value: number): string {
+  const rounded = Math.round(value * 10) / 10;
+  const amount = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  return `${rounded > 0 ? '+' : ''}${amount}%`;
+}
+
+export function HappinessCard({ engine }: { engine: GameEngine }) {
   const breakdown = engine.happinessBreakdown();
   return (
     <div className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 w-72 -translate-x-1/2 rounded-lg border border-yellow-600/60 bg-red-950/95 p-3 text-yellow-50 shadow-2xl backdrop-blur-md">
@@ -71,7 +77,7 @@ function HappinessCard({ engine }: { engine: GameEngine }) {
               <span className="inline-flex items-center gap-1">
                 <GameIcon name={breakdown.modifiers.weatherMoralePct > 0 ? 'sun' : 'cloud'} size={10} /> Weather Morale
               </span>
-              <span className="font-bold tabular-nums">{breakdown.modifiers.weatherMoralePct > 0 ? `+${breakdown.modifiers.weatherMoralePct}%` : `${breakdown.modifiers.weatherMoralePct}%`}</span>
+              <span className="font-bold tabular-nums">{formatSignedPercent(breakdown.modifiers.weatherMoralePct)}</span>
             </div>
           )}
         </div>

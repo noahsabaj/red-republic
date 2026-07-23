@@ -1,42 +1,103 @@
 import { describe, expect, it } from 'vitest';
-import { BUILDINGS, CATEGORIES, SUBCATEGORIES } from '../config';
+import { computeTooltipShifts, type TooltipGeometry } from '../../components/BottomBar';
 
-describe('build menu tooltip configuration & push-apart math', () => {
-  it('defines building tooltips and categories cleanly', () => {
-    expect(CATEGORIES.length).toBeGreaterThan(0);
-    const industryCat = CATEGORIES.find(c => c.id === 'industry');
-    expect(industryCat).toBeDefined();
+const geometry = (
+  id: string,
+  anchorCenterX: number,
+  width: number,
+  top = 20,
+  bottom = 140,
+): TooltipGeometry => ({ id, anchorCenterX, width, top, bottom });
 
-    const industrySubs = SUBCATEGORIES.industry;
-    expect(industrySubs.length).toBeGreaterThan(0);
+describe('build menu tooltip collision geometry', () => {
+  it('uses measured centers and widths to leave an exact six-pixel border gap', () => {
+    const tooltips = [
+      geometry('selected', 150, 210),
+      geometry('hovered', 310, 250),
+    ];
 
-    const firstSub = industrySubs[0];
-    expect(firstSub.ids.length).toBeGreaterThan(0);
+    const shifts = computeTooltipShifts(tooltips);
+    const selectedRight = tooltips[0].anchorCenterX + shifts.selected + tooltips[0].width / 2;
+    const hoveredLeft = tooltips[1].anchorCenterX + shifts.hovered - tooltips[1].width / 2;
 
-    const buildingDef = BUILDINGS[firstSub.ids[0]];
-    expect(buildingDef.name).toBeDefined();
-    expect(buildingDef.description).toBeDefined();
+    expect(shifts).toEqual({ selected: -38, hovered: 38 });
+    expect(hoveredLeft - selectedRight).toBe(6);
   });
-  it('calculates push-apart offsets for overlapping tooltips', () => {
-    const tooltipWidth = 224;
-    const gap = 6;
-    const requiredDistance = tooltipWidth + gap; // 230px
 
-    const centerA = 100;
-    const centerB = 180;
-    const distance = centerB - centerA; // 80px
+  it('uses physical left/right order even when responsive wrapping reverses source order', () => {
+    const shifts = computeTooltipShifts([
+      geometry('last-on-first-row', 520, 224),
+      geometry('first-on-next-row', 80, 224),
+    ]);
 
-    expect(distance).toBeLessThan(requiredDistance);
+    expect(shifts).toEqual({});
+  });
 
-    const overlap = requiredDistance - distance; // 150px
-    const shift = overlap / 2; // 75px
+  it('leaves already-separated tooltips on the same row at their card centers', () => {
+    const shifts = computeTooltipShifts([
+      geometry('left', 120, 180),
+      geometry('right', 420, 200),
+    ]);
 
-    const shiftedCenterA = centerA - shift; // 25px
-    const shiftedCenterB = centerB + shift; // 255px
+    expect(shifts).toEqual({});
+  });
 
-    const leftRightEdge = shiftedCenterA + tooltipWidth / 2; // 25 + 112 = 137px
-    const rightLeftEdge = shiftedCenterB - tooltipWidth / 2; // 255 - 112 = 143px
+  it('does not move horizontally overlapping tooltips whose vertical ranges do not intersect', () => {
+    const shifts = computeTooltipShifts([
+      geometry('upper-row', 140, 224, 10, 90),
+      geometry('lower-row', 140, 224, 96, 176),
+    ]);
 
-    expect(rightLeftEdge - leftRightEdge).toBe(gap); // 6px gap
+    expect(shifts).toEqual({});
+  });
+
+  it('assigns shift directions from measured positions rather than input order', () => {
+    const shifts = computeTooltipShifts([
+      geometry('right', 260, 224),
+      geometry('left', 150, 224),
+    ]);
+
+    expect(shifts.left).toBeLessThan(0);
+    expect(shifts.right).toBeGreaterThan(0);
+  });
+
+  it('moves an overlapping pair back inside viewport bounds without changing its gap', () => {
+    const tooltips = [
+      geometry('left', 80, 224),
+      geometry('right', 160, 224),
+    ];
+    const shifts = computeTooltipShifts(tooltips, 6, { left: 6, right: 1394 });
+    const leftEdge = tooltips[0].anchorCenterX + shifts.left - tooltips[0].width / 2;
+    const leftRightEdge = tooltips[0].anchorCenterX + shifts.left + tooltips[0].width / 2;
+    const rightLeftEdge = tooltips[1].anchorCenterX + shifts.right - tooltips[1].width / 2;
+
+    expect(leftEdge).toBe(6);
+    expect(rightLeftEdge - leftRightEdge).toBe(6);
+  });
+
+  it('keeps a single edge tooltip inside viewport bounds', () => {
+    const tooltip = geometry('hovered', 40, 224);
+    const shifts = computeTooltipShifts([tooltip], 6, { left: 6, right: 1018 });
+    const leftEdge = tooltip.anchorCenterX + shifts.hovered - tooltip.width / 2;
+
+    expect(shifts).toEqual({ hovered: 78 });
+    expect(leftEdge).toBe(6);
+  });
+
+  it('clamps an already-separated pair as a group without changing its gap', () => {
+    const tooltips = [
+      geometry('left', 80, 224),
+      geometry('right', 420, 224),
+    ];
+    const initialGap = tooltips[1].anchorCenterX - tooltips[1].width / 2
+      - (tooltips[0].anchorCenterX + tooltips[0].width / 2);
+    const shifts = computeTooltipShifts(tooltips, 6, { left: 6, right: 1018 });
+    const leftEdge = tooltips[0].anchorCenterX + shifts.left - tooltips[0].width / 2;
+    const shiftedGap = tooltips[1].anchorCenterX + shifts.right - tooltips[1].width / 2
+      - (tooltips[0].anchorCenterX + shifts.left + tooltips[0].width / 2);
+
+    expect(shifts).toEqual({ left: 38, right: 38 });
+    expect(leftEdge).toBe(6);
+    expect(shiftedGap).toBe(initialGap);
   });
 });

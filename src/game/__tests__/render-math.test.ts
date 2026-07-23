@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { STATUS_PALETTES, hash01, isoCompare, pickBuilding, precipParticle, screenToTile, toScreen, truckWorldPos, type Camera } from '../render';
+import { STATUS_PALETTES, hash01, isoCompare, pickBuilding, precipParticle, screenToTile, shouldRenderBackdropFrame, shouldRenderFrame, toScreen, truckWorldPos, type Camera, type FrameInvalidation } from '../render';
 import type { Truck } from '../engine';
 import { makeEngine, placeBuilt } from './helpers';
 
@@ -20,6 +20,36 @@ describe('status palettes', () => {
     expect(new Set(keySets).size).toBe(1);
     expect(STATUS_PALETTES.default.crossInvalid).toBe(false);
     expect(STATUS_PALETTES.colorblind.crossInvalid).toBe(true);
+  });
+});
+
+describe('paused reduced-motion render scheduling', () => {
+  const stable: FrameInvalidation = {
+    hasRendered: true,
+    cameraChanged: false,
+    hoverChanged: false,
+    engineChanged: false,
+    externalChanged: false,
+  };
+
+  it('sleeps only when a paused reduced-motion frame is fully unchanged', () => {
+    expect(shouldRenderFrame(0, true, stable)).toBe(false);
+    expect(shouldRenderFrame(1, true, stable)).toBe(true);
+    expect(shouldRenderFrame(0, false, stable)).toBe(true);
+    expect(shouldRenderFrame(0, true, { ...stable, hasRendered: false })).toBe(true);
+  });
+
+  it.each(['cameraChanged', 'hoverChanged', 'engineChanged', 'externalChanged'] as const)(
+    'repaints when %s',
+    (key) => expect(shouldRenderFrame(0, true, { ...stable, [key]: true })).toBe(true),
+  );
+
+  it('repaints a reduced-motion backdrop after resize and on each transition into reduced motion', () => {
+    expect(shouldRenderBackdropFrame(true, true, true, 0)).toBe(true);   // dirty backing buffer
+    expect(shouldRenderBackdropFrame(true, false, false, 0)).toBe(true); // transition
+    expect(shouldRenderBackdropFrame(true, false, true, 1000)).toBe(false);
+    expect(shouldRenderBackdropFrame(false, false, false, 31)).toBe(false);
+    expect(shouldRenderBackdropFrame(false, false, false, 32)).toBe(true);
   });
 });
 
