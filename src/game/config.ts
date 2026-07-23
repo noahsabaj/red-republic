@@ -481,6 +481,30 @@ export const CONTRACTS = {
   relationsDecayPerDay: 0.002, // a failure haunts prices for ~2 months
 };
 
+// ------------------------------------------------------------
+// Foreign loans (bloc advances with fixed simple interest)
+// ------------------------------------------------------------
+
+export const LOANS = {
+  // Loan tiers per bloc [Small, Medium, Large]
+  tiersEast: [500, 1500, 3000] as const,   // ₽ principal amounts
+  tiersWest: [200, 500, 1000] as const,     // $ principal amounts
+  tierLabels: ['Small', 'Medium', 'Large'] as const,
+  // Interest rates (simple, applied at origination to compute total owed)
+  interestEast: 0.04,   // 4% fraternal rate
+  interestWest: 0.08,   // 8% Western premium
+  // Deadlines per tier (days)
+  deadlines: [90, 120, 180] as const,
+  // Default consequences
+  defaultRelationsHit: 0.20,     // stacks with contract penalty
+  defaultCooldownDays: 120,      // can't borrow from that bloc again for N days
+  // Warning thresholds
+  warningDays: 30,               // alert fires when loan has ≤30 days left
+  // Auto-repay defaults
+  autoRepayThresholdRubles: 2000,
+  autoRepayThresholdDollars: 500,
+};
+
 // Farm seasonal factor by month (1-12): sowing, growth, harvest
 export const FARM_SEASON: Record<number, number> = {
   1: 0, 2: 0, 3: 0.2, 4: 0.3, 5: 0.35, 6: 0.5,
@@ -651,5 +675,6 @@ export const OBJECTIVES: ObjectiveDef[] = [
   { id: 'meansOfProduction', title: 'Means of Production', description: 'Build the Machine Works', rewardRubles: 800, rewardDollars: 200 },
   { id: 'autarky', title: 'Autarky', description: 'Produce 50 machinery — the republic no longer needs to buy its machines', rewardDollars: 500 },
   { id: 'pop150', title: 'A Growing Republic', description: 'Reach 150 citizens', rewardRubles: 600 },
+  { id: 'debtFree', title: 'Creditworthy Republic', description: 'Take and fully repay a foreign loan', rewardRubles: 500 },
   { id: 'flourish', title: 'The Republic Flourishes', description: 'Reach 300 citizens with happiness ≥ 65%', rewardRubles: 1000, rewardDollars: 300 },
 ];

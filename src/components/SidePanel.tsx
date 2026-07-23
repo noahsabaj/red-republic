@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { buildingWorn } from '@/game/engine';
 import type { GameEngine, BuildingInst } from '@/game/engine';
-import { BALANCE, BUILDINGS, RESOURCES, ALL_RESOURCES, OBJECTIVES, FARM_SEASON } from '@/game/config';
+import { BALANCE, BUILDINGS, CATEGORIES, RESOURCES, ALL_RESOURCES, OBJECTIVES, LOANS, FARM_SEASON } from '@/game/config';
 import type { DepositType, ResourceId } from '@/game/config';
 import type { Contract } from '@/game/engine';
 import { fmtQty, fmtLevel, fmtRate, fmtPct, fmtMoney } from '@/game/format';
@@ -25,9 +25,10 @@ interface Props {
   onOpenTrade: () => void;
   onArmBuild: (defId: string) => void;
   notify: (msg: string, kind: 'good' | 'bad' | 'info') => void;
+  onOpenMasterConstruction?: () => void;
 }
 
-export default function SidePanel({ engine, mode, selection, policy, onClose, onOpenTrade, onArmBuild, notify }: Props) {
+export default function SidePanel({ engine, mode, selection, policy, onClose, onOpenTrade, onArmBuild, notify, onOpenMasterConstruction }: Props) {
   const payMode: BuildPayMode = policy.instant ? 'instant' : policy.autoBuy ? 'autoBuy' : 'materials';
   const currency = policy.currency;
   // the open detail panel mirrors live engine state — re-render on every bump
@@ -56,7 +57,7 @@ export default function SidePanel({ engine, mode, selection, policy, onClose, on
               ? <MultiInfo engine={engine} items={selection} payMode={payMode} currency={currency} onArmBuild={onArmBuild} notify={notify} />
               : single?.kind === 'deposit'
                 ? <DepositInfo engine={engine} x={single.x} y={single.y} payMode={payMode} currency={currency} onArmBuild={onArmBuild} />
-                : <BuildingInfo engine={engine} id={single?.kind === 'building' ? single.id : null} onOpenTrade={onOpenTrade} notify={notify} />
+                : <BuildingInfo engine={engine} id={single?.kind === 'building' ? single.id : null} onOpenTrade={onOpenTrade} notify={notify} onOpenMasterConstruction={onOpenMasterConstruction} />
           )}
           {mode === 'trade' && <TradePanel engine={engine} notify={notify} />}
           {mode === 'objectives' && <ObjectivesPanel engine={engine} />}
@@ -411,7 +412,7 @@ function DepositInfo({ engine, x, y, payMode, currency, onArmBuild }: { engine: 
 
 // ------------------------------------------------------------
 
-function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine; id: number | null; onOpenTrade: () => void; notify: (msg: string, kind: 'good' | 'bad' | 'info') => void }) {
+function BuildingInfo({ engine, id, onOpenTrade, notify, onOpenMasterConstruction }: { engine: GameEngine; id: number | null; onOpenTrade: () => void; notify: (msg: string, kind: 'good' | 'bad' | 'info') => void; onOpenMasterConstruction?: () => void }) {
   const b: BuildingInst | undefined = id ? engine.buildings.get(id) : undefined;
   if (!b) return <div className="text-xs text-yellow-200/60">Select a building on the map to inspect it.</div>;
   const def = BUILDINGS[b.defId];
@@ -481,10 +482,24 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
             </button>
 
             <div>
-              <div className="mb-1 text-[0.625rem] font-black uppercase tracking-wider text-yellow-400/80">Construction priority</div>
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400/80">
+                  Construction priority
+                </div>
+                {b.buildPriority !== undefined && (
+                  <button
+                    onClick={() => engine.setSitePriority(b.id, undefined)}
+                    className="text-[0.625rem] text-yellow-400 underline hover:text-yellow-200"
+                    title="Reset to global category default"
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
               <div className="flex gap-1.5" role="group" aria-label="Construction priority">
                 {([[1, 'High'], [0, 'Normal'], [-1, 'Low']] as const).map(([tier, label]) => {
-                  const active = (b.buildPriority ?? 0) === tier;
+                  const active = engine.effectiveBuildPriority(b) === tier;
+                  const isExplicit = b.buildPriority === tier;
                   return (
                     <button
                       key={tier}
@@ -492,12 +507,17 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
                       data-sfx="toggle"
                       onClick={() => engine.setSitePriority(b.id, tier)}
                       className={`flex-1 rounded px-2 py-1.5 text-xs font-bold ${active ? 'bg-yellow-500 text-red-950' : 'border border-yellow-600/30 bg-red-900/50 text-yellow-100/80 hover:bg-red-800'}`}
-                      title={tier === 1 ? 'Build this site before Normal and Low sites — its crews and materials come first' : tier === -1 ? 'Build this site only after higher-priority sites are crewed' : 'Default — shares builders evenly with other Normal sites'}
+                      title={isExplicit ? `Local override: ${label}` : `Inherited from Global ${def.category}: ${label}`}
                     >
-                      {label}
+                      {label}{isExplicit ? '*' : ''}
                     </button>
                   );
                 })}
+              </div>
+              <div className="mt-1 text-[0.625rem] text-yellow-200/50">
+                {b.buildPriority !== undefined
+                  ? 'Local priority override active (*)'
+                  : `Inherited from Global ${def.category.toUpperCase()} default`}
               </div>
             </div>
 
@@ -573,6 +593,57 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
             })()}
           </div>
 
+          {def.isConstructionOffice && (
+            <div className="rounded bg-red-900/40 p-2 space-y-2 border border-yellow-600/30">
+              <div className="flex items-center justify-between">
+                <span className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400">
+                  Global Category Priorities
+                </span>
+                {onOpenMasterConstruction && (
+                  <button
+                    onClick={onOpenMasterConstruction}
+                    className="text-[0.625rem] text-yellow-300 font-bold underline hover:text-yellow-100"
+                  >
+                    Master Menu
+                  </button>
+                )}
+              </div>
+              <div className="grid gap-1">
+                {CATEGORIES.map(cat => {
+                  const prio = engine.globalCategoryPriorities[cat.id];
+                  return (
+                    <div key={cat.id} className="flex items-center justify-between text-xs rounded bg-red-900/50 px-2 py-1">
+                      <span className="flex items-center gap-1 font-semibold text-yellow-200">
+                        <GameIcon name={cat.icon} size={12} /> {cat.name}
+                      </span>
+                      <div className="flex gap-0.5 text-[0.625rem] font-bold">
+                        {(
+                          [
+                            [-1, 'Low', 'bg-blue-600 text-white'],
+                            [0, 'Norm', 'bg-yellow-500 text-red-950'],
+                            [1, 'High', 'bg-red-600 text-white'],
+                          ] as const
+                        ).map(([t, l, activeBg]) => (
+                          <button
+                            key={t}
+                            onClick={() => engine.setGlobalCategoryPriority(cat.id, t)}
+                            className={`px-1.5 py-0.5 rounded ${
+                              prio === t
+                                ? `${activeBg} font-black shadow`
+                                : 'bg-red-950/60 text-yellow-200/50 hover:bg-red-800'
+                            }`}
+                          >
+                            {l}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {(def.inputs || def.outputs) && (() => {
             // the engine's own numbers — includes season, fields, forest and
             // input starvation, so this always matches what actually happens
@@ -641,7 +712,7 @@ function BuildingInfo({ engine, id, onOpenTrade, notify }: { engine: GameEngine;
               if ((def.outputs?.[r] ?? 0) > 0) groups[1].rs.push(r);
               else if ((def.inputs?.[r] ?? 0) > 0) groups[0].rs.push(r);
               else if ((def.wear?.[r] ?? 0) > 0) groups[2].rs.push(r);
-              else if ((b.stock[r] ?? 0) > 0.05 || (b.incoming[r] ?? 0) > 0.05 || def.serviceType === 'shop') groups[3].rs.push(r);
+              else if ((b.stock[r] ?? 0) > 0.05 || (b.incoming[r] ?? 0) > 0.05 || def.serviceType === 'shop' || def.isConstructionOffice) groups[3].rs.push(r);
             }
             const shown = groups.filter(g => g.rs.length > 0);
             if (shown.length === 0) return null;
@@ -739,8 +810,9 @@ function LogisticsPanel({ engine }: { engine: GameEngine }) {
   const depots = bs.filter(b => b.constructed && BUILDINGS[b.defId].isMotorDepot);
   const stations = bs.filter(b => b.constructed && BUILDINGS[b.defId].isGasStation);
   const util = f.max > 0 ? Math.min(100, (f.active / f.max) * 100) : 0;
-  const fuelLimited = f.driverTrucks > f.depotTrucks;
-  const idle = f.driverTrucks - f.depotTrucks;
+  const fleetPotential = f.officeTrucks + f.driverTrucks;
+  const fuelLimited = f.max < fleetPotential;
+  const idle = fleetPotential - f.max;
   const line = (key: number, name: string, icon: string, value: string, sub: string, bad = false) => (
     <div key={key} className="flex items-center justify-between text-[0.6875rem] rounded bg-red-900/30 px-2 py-1">
       <span className="flex items-center gap-1"><GameIcon name={icon} size={12} /> {name} <span className="text-yellow-200/40">· {sub}</span></span>
@@ -758,11 +830,11 @@ function LogisticsPanel({ engine }: { engine: GameEngine }) {
           <div className={`h-full ${f.max > 0 && f.active >= f.max ? 'bg-red-500/80' : 'bg-yellow-500/80'}`} style={{ width: `${util}%` }} />
         </div>
         <div className="text-[0.625rem] text-yellow-200/70 leading-relaxed">
-          Concurrent hauling trucks. Construction Offices give a fuel-free base; Motor Depots add a truck per driver, capped by the fuel your Gas Stations hold. Grow the fleet by building depots and keeping them fuelled.
+          Concurrent hauling trucks. Construction Offices and Motor Depots add vehicles to one fleet; every working truck draws from the connected fuel supply.
         </div>
-        <Row label="Office base (fuel-free)" value={f.officeTrucks} />
-        <Row label="Depot drivers" value={f.driverTrucks} />
-        <Row label="Depot trucks running" value={f.depotTrucks} ok={fuelLimited ? false : undefined} />
+        <Row label="Office trucks" value={f.officeTrucks} />
+        <Row label="Motor Depot trucks" value={f.driverTrucks} />
+        <Row label="Fuelled capacity" value={`${f.max}/${fleetPotential}`} ok={fuelLimited ? false : undefined} />
       </section>
 
       <section className="rounded bg-red-900/40 p-2 space-y-1">
@@ -772,9 +844,9 @@ function LogisticsPanel({ engine }: { engine: GameEngine }) {
         </div>
         <div className="text-[0.625rem] text-yellow-200/70 leading-relaxed">
           {stations.length === 0
-            ? 'No Gas Station — Motor Depot trucks cannot run. Build one and feed it fuel from a refinery or imports.'
+            ? 'No Gas Station — any connected building with fuel storage can still supply the fleet, but a station adds dedicated capacity.'
             : fuelLimited
-              ? `Low on fuel — ${idle} depot truck${idle === 1 ? '' : 's'} idle. Route more fuel to your stations.`
+              ? `Low on fuel — ${idle} truck${idle === 1 ? '' : 's'} idle. Route more fuel into connected fleet storage.`
               : Number.isFinite(f.fuelDaysLeft)
                 ? `About ${Math.floor(f.fuelDaysLeft)} day${Math.floor(f.fuelDaysLeft) === 1 ? '' : 's'} of fuel left at the current pace.`
                 : 'Well supplied — the fleet is idle or fuel is plentiful.'}
@@ -795,6 +867,7 @@ function LogisticsPanel({ engine }: { engine: GameEngine }) {
 
 function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string, k: 'good' | 'bad' | 'info') => void }) {
   const [amount, setAmount] = useState(10);
+  const [loanTier, setLoanTier] = useState<Record<'east' | 'west', number>>({ east: 0, west: 0 });
   const doTrade = (fn: () => { ok: boolean; msg: string }) => {
     const res = fn();
     audio.sfx(res.ok ? 'coin' : 'error');
@@ -885,6 +958,153 @@ function TradePanel({ engine, notify }: { engine: GameEngine; notify: (m: string
             {led.repairImports !== 0 && (
               <span className="ml-auto font-bold" title="Machinery imported for repairs yesterday">{money(led.repairImports, engine.repairImportCurrency === 'east' ? '₽' : '$')}</span>
             )}
+          </div>
+        )}
+      </section>
+
+      {/* ---- State Loans ---- */}
+      <section className="rounded bg-red-900/40 p-2 space-y-2">
+        <div className="text-[0.625rem] font-black uppercase tracking-wider text-yellow-400 flex items-center gap-1">
+          <GameIcon name="coins" size={11} /> State Loans
+        </div>
+        <div className="text-[0.625rem] text-yellow-200/60 leading-tight">
+          Borrow foreign currency from the East (₽) or the West ($). Fixed interest, repaid by deadline or relations suffer.
+        </div>
+
+        {/* Active loans */}
+        {(['east', 'west'] as const).map(bloc => {
+          const loan = engine.activeLoan(bloc);
+          const cur = bloc === 'east' ? '₽' : '$';
+          const blocLabel = bloc === 'east' ? 'East' : 'West';
+          if (loan) {
+            const remaining = loan.totalOwed - loan.repaid;
+            const daysLeft = engine.loanDaysLeft(loan);
+            const pct = Math.round((loan.repaid / loan.totalOwed) * 100);
+            return (
+              <div key={bloc} className="rounded bg-red-950/60 p-2 space-y-1.5 border border-yellow-600/20">
+                <div className="flex items-center justify-between text-xs font-bold">
+                  <span className={bloc === 'west' ? 'text-green-300' : ''}>{blocLabel} Loan — {LOANS.tierLabels[loan.tierIndex]}</span>
+                  <span className={daysLeft <= 7 ? 'text-red-300' : daysLeft <= LOANS.warningDays ? 'text-amber-300' : 'text-yellow-200/70'}>
+                    {daysLeft} days left
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[0.625rem] text-yellow-200/70">
+                  <span>Principal {cur}{fmtMoney(loan.principal)}</span>
+                  <span>Total owed {cur}{fmtMoney(loan.totalOwed)}</span>
+                </div>
+                <div className="flex items-center justify-between text-[0.625rem]">
+                  <span className="text-yellow-200/70">Repaid {cur}{fmtMoney(loan.repaid)}</span>
+                  <span className="font-bold">Remaining {cur}{fmtMoney(remaining)}</span>
+                </div>
+                <div className="h-1.5 w-full rounded-full bg-red-900/60 overflow-hidden border border-yellow-600/20">
+                  <div
+                    className={`h-full transition-all duration-300 ${pct >= 100 ? 'bg-emerald-400' : pct > 50 ? 'bg-amber-400' : 'bg-red-500'}`}
+                    style={{ width: `${Math.min(100, pct)}%` }}
+                  />
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => {
+                      const res = engine.repayLoan(bloc, remaining);
+                      audio.sfx(res.ok ? 'coin' : 'error');
+                      notify(res.msg, res.ok ? 'good' : 'bad');
+                    }}
+                    disabled={(bloc === 'east' ? engine.rubles : engine.dollars) < 1}
+                    data-sfx="none"
+                    className="flex-1 rounded bg-yellow-500 text-red-950 font-bold text-[0.625rem] py-0.5 hover:bg-yellow-400 disabled:opacity-30"
+                  >
+                    Repay All ({cur}{fmtMoney(remaining)})
+                  </button>
+                  <button
+                    onClick={() => {
+                      const partial = Math.min(remaining, Math.round(loan.principal * 0.25));
+                      const res = engine.repayLoan(bloc, partial);
+                      audio.sfx(res.ok ? 'coin' : 'error');
+                      notify(res.msg, res.ok ? 'good' : 'bad');
+                    }}
+                    disabled={(bloc === 'east' ? engine.rubles : engine.dollars) < 1}
+                    data-sfx="none"
+                    className="flex-1 rounded bg-red-800 hover:bg-red-700 font-bold text-[0.625rem] py-0.5 disabled:opacity-30"
+                  >
+                    Repay 25%
+                  </button>
+                </div>
+              </div>
+            );
+          }
+          // Take new loan UI
+          const check = engine.canTakeLoan(bloc, loanTier[bloc]);
+          const tiers = bloc === 'east' ? LOANS.tiersEast : LOANS.tiersWest;
+          const rate = bloc === 'east' ? LOANS.interestEast : LOANS.interestWest;
+          const principal = tiers[loanTier[bloc]];
+          const totalOwed = Math.round(principal * (1 + rate));
+          const deadline = LOANS.deadlines[loanTier[bloc]];
+          return (
+            <div key={bloc} className="rounded bg-red-950/60 p-2 space-y-1.5">
+              <div className={`text-xs font-bold ${bloc === 'west' ? 'text-green-300' : ''}`}>{blocLabel} — {Math.round(rate * 100)}% interest</div>
+              <div className="flex items-center gap-1">
+                {LOANS.tierLabels.map((label, i) => (
+                  <button
+                    key={label}
+                    onClick={() => setLoanTier(prev => ({ ...prev, [bloc]: i }))}
+                    className={`flex-1 rounded text-[0.625rem] font-bold py-0.5 ${loanTier[bloc] === i ? 'bg-yellow-500 text-red-950' : 'bg-red-900/70 hover:bg-red-800'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center justify-between text-[0.625rem] text-yellow-200/70">
+                <span>Borrow {cur}{fmtMoney(principal)}</span>
+                <span>Repay {cur}{fmtMoney(totalOwed)} in {deadline} days</span>
+              </div>
+              <button
+                onClick={() => {
+                  const res = engine.takeLoan(bloc, loanTier[bloc] as 0 | 1 | 2);
+                  audio.sfx(res.ok ? 'coin' : 'error');
+                  notify(res.msg, res.ok ? 'good' : 'bad');
+                }}
+                disabled={!check.ok}
+                data-sfx="none"
+                title={check.reason ?? `Borrow ${cur}${fmtMoney(principal)} from the ${blocLabel}`}
+                className={`w-full rounded font-bold text-[0.625rem] py-1 disabled:opacity-30 ${
+                  bloc === 'east' ? 'bg-red-800 hover:bg-red-700' : 'bg-green-900 hover:bg-green-800'}`}
+              >
+                Borrow {cur}{fmtMoney(principal)}
+              </button>
+              {!check.ok && check.reason && (
+                <div className="text-[0.5625rem] text-red-300/80">{check.reason}</div>
+              )}
+            </div>
+          );
+        })}
+
+        {/* Loan history */}
+        {engine.loans.filter(l => l.state === 'repaid' || l.state === 'defaulted').length > 0 && (
+          <div className="space-y-0.5">
+            <div className="text-[0.5625rem] font-bold uppercase tracking-wider text-yellow-400/60">History</div>
+            {engine.loans.filter(l => l.state === 'repaid' || l.state === 'defaulted').map(l => (
+              <div key={l.id} className={`text-[0.625rem] flex justify-between px-1 ${l.state === 'repaid' ? 'text-yellow-200/40' : 'text-red-300/60'}`}>
+                <span>{LOANS.tierLabels[l.tierIndex]} {l.bloc === 'east' ? 'East' : 'West'} — {l.bloc === 'east' ? '₽' : '$'}{fmtMoney(l.principal)}</span>
+                <span>{l.state === 'repaid' ? 'repaid' : 'defaulted'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Auto-repay */}
+        <ToggleButton
+          on={engine.loanAutoRepay.enabled}
+          onChange={v => engine.setLoanAutoRepay(v)}
+          icon="coins"
+          label="Auto-repay"
+          title="Automatically repay active loans when the treasury exceeds these thresholds"
+          className="uppercase tracking-wider"
+        />
+        {engine.loanAutoRepay.enabled && (
+          <div className="flex items-center gap-2 text-[0.6875rem]" title="Auto-repay sends surplus above these floors toward active loans">
+            <span className="text-yellow-200/70 shrink-0">Keep above</span>
+            <label className="flex items-center gap-1">₽ <NumInput value={engine.loanAutoRepay.thresholdRubles} onValue={v => engine.setLoanAutoRepayThreshold('east', v)} step={500} /></label>
+            <label className="flex items-center gap-1 text-green-300">$ <NumInput value={engine.loanAutoRepay.thresholdDollars} onValue={v => engine.setLoanAutoRepayThreshold('west', v)} step={100} /></label>
           </div>
         )}
       </section>

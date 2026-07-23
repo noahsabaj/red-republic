@@ -13,9 +13,9 @@
 // - Newer-version saves are refused, never down-migrated.
 // ============================================================
 import { BUILDINGS, CLIMATES, DIFFICULTIES } from './config';
-import type { ClimateId, DifficultyId, ResourceId } from './config';
+import type { Category, ClimateId, DifficultyId, ResourceId } from './config';
 import type { BorderEdge, Tile } from './mapgen';
-import type { AutoTradeRule, BuildingInst, Contract, TradeDayLedger, Truck } from './engine';
+import type { AutoTradeRule, BuildingInst, Contract, Loan, TradeDayLedger, Truck } from './engine';
 
 export const SAVE_FORMAT_VERSION = 1;
 
@@ -51,6 +51,7 @@ export interface SaveBodyV1 {
   priceFactorEast: number;
   priceFactorWest: number;
   autoTrade: { enabled: boolean; reserveRubles: number; reserveDollars: number; rules: Partial<Record<ResourceId, AutoTradeRule>> };
+  globalCategoryPriorities?: Partial<Record<Category, -1 | 0 | 1>>;
   globalConstructionEnabled?: boolean; // optional: old saves default to true
   foreignLaborEnabled?: boolean; // optional: old saves default to true
   foreignLaborCurrency?: 'east' | 'west'; // optional: old saves default to east
@@ -58,6 +59,9 @@ export interface SaveBodyV1 {
   repairImportCurrency?: 'east' | 'west'; // optional: old saves default to east
   tradeLedger: { today: TradeDayLedger; yesterday: TradeDayLedger };
   contracts: Contract[];
+  loans?: Loan[];
+  loanAutoRepay?: { enabled: boolean; thresholdRubles: number; thresholdDollars: number };
+  loanCooldown?: { east: number; west: number };
   relationsPenalty: { east: number; west: number };
   objectivesDone: string[];
   stats: {
@@ -70,7 +74,7 @@ export interface SaveBodyV1 {
   happiness: number;
   sat: Record<'food' | 'clothes' | 'power' | 'heat' | 'culture' | 'health' | 'employment' | 'pollution', number>;
   streaks: { dry: number; gloom: number; sun: number; wasFrost: boolean };
-  counters: { building: number; truck: number; boat: number; contract: number };
+  counters: { building: number; truck: number; boat: number; contract: number; loan?: number };
   /** Display aggregates so the paused post-load HUD reads correctly before the next tick. */
   aggregates: {
     capacity: number; workers: number; employed: number; jobs: number;

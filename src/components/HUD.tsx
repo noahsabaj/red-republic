@@ -106,8 +106,11 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
     Math.round(e.tradeLedger.yesterday.foreignLaborDollars),
     e.foreignLaborCurrency,
     e.contracts.filter(c => c.state === 'offer').length,
+    e.loans.map(l => `${l.id}:${l.state}:${l.repaid}:${l.totalOwed}`).join('|'),
   ]);
   const offersPending = engine.contracts.filter(c => c.state === 'offer').length;
+  const activeLoansCount = engine.loans.filter(l => l.state === 'active').length;
+  const debt = engine.totalDebt();
   const tradeNote = (v: number, sym: string) =>
     Math.round(v) !== 0 ? ` · auto-trade yesterday ${v > 0 ? '+' : '−'}${sym}${fmtMoney(Math.abs(v))}` : '';
   const laborNote = (v: number, sym: string) =>
@@ -186,8 +189,12 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
         <div className="h-5 w-px bg-yellow-600/40" />
 
         <div className="flex items-center gap-3 text-xs font-bold">
-          <span title={`Rubles — foreign currency earned from trade with the East; buys imports and machinery${tradeNote(engine.tradeLedger.yesterday.rubles, '₽')}${laborNote(engine.tradeLedger.yesterday.foreignLaborRubles ?? engine.tradeLedger.yesterday.foreignLabor, '₽')}`}>₽ {fmtMoney(engine.rubles)}</span>
-          <span title={`Dollars — hard currency from the West${tradeNote(engine.tradeLedger.yesterday.dollars, '$')}${laborNote(engine.tradeLedger.yesterday.foreignLaborDollars, '$')}`} className="text-green-300">$ {fmtMoney(engine.dollars)}</span>
+          <span title={`Rubles — foreign currency earned from trade with the East; buys imports and machinery${tradeNote(engine.tradeLedger.yesterday.rubles, '₽')}${laborNote(engine.tradeLedger.yesterday.foreignLaborRubles ?? engine.tradeLedger.yesterday.foreignLabor, '₽')}${debt.rubles > 0 ? ` · debt: −₽${fmtMoney(debt.rubles)}` : ''}`}>
+            ₽ {fmtMoney(engine.rubles)}{debt.rubles > 0 && <span className="text-red-300 font-normal text-[0.6875rem] ml-1">(−₽{fmtMoney(debt.rubles)})</span>}
+          </span>
+          <span title={`Dollars — hard currency from the West${tradeNote(engine.tradeLedger.yesterday.dollars, '$')}${laborNote(engine.tradeLedger.yesterday.foreignLaborDollars, '$')}${debt.dollars > 0 ? ` · debt: −$${fmtMoney(debt.dollars)}` : ''}`} className="text-green-300">
+            $ {fmtMoney(engine.dollars)}{debt.dollars > 0 && <span className="text-red-300 font-normal text-[0.6875rem] ml-1">(−${fmtMoney(debt.dollars)})</span>}
+          </span>
           <span title={`Citizens: ${engine.pop} / housing ${engine.capacity} · workers ${engine.workers} · employed ${engine.employed}`} className="flex items-center gap-1">
             <GameIcon name="users" size={12} /> {engine.pop}<span className="text-yellow-200/50">/{engine.capacity}</span>
           </span>
@@ -208,7 +215,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
             </span>
           )}
           {(() => { const f = engine.fleetStatus(); return (
-            <span title={`Trucks in use ${f.active}/${f.max} — offices ${f.officeTrucks} + depots ${f.depotTrucks}${f.driverTrucks > f.depotTrucks ? ` (${f.driverTrucks - f.depotTrucks} idle: low fuel)` : ''}`} className={`flex items-center gap-1 ${f.max > 0 && f.active >= f.max ? 'text-red-300' : ''}`}>
+            <span title={`Trucks in use ${f.active}/${f.max} — offices ${f.officeTrucks} + Motor Depots ${f.driverTrucks}${f.officeTrucks + f.driverTrucks > f.max ? ` (${f.officeTrucks + f.driverTrucks - f.max} idle: low fuel)` : ''}`} className={`flex items-center gap-1 ${f.max > 0 && f.active >= f.max ? 'text-red-300' : ''}`}>
               <GameIcon name="truck" size={12} /> {f.active}/{f.max}
             </span>
           ); })()}
@@ -219,9 +226,9 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
           {panelBtn('Logistics & Fleet', 'truck', activePanel === 'logistics', onOpenLogistics)}
           {panelBtn('Five-Year Plan', 'plan', activePanel === 'objectives', onOpenObjectives)}
           {panelBtn(
-            `Foreign Trade${offersPending ? ` — ${offersPending} contract offer${offersPending > 1 ? 's' : ''} pending` : ''}${engine.autoTrade.enabled ? ' — auto-trade ON' : ''}`,
+            `Foreign Trade${offersPending ? ` — ${offersPending} contract offer${offersPending > 1 ? 's' : ''} pending` : ''}${activeLoansCount ? ` — ${activeLoansCount} active loan${activeLoansCount > 1 ? 's' : ''}` : ''}${engine.autoTrade.enabled ? ' — auto-trade ON' : ''}`,
             'trade', activePanel === 'trade', onOpenTrade,
-            engine.autoTrade.enabled || offersPending > 0,
+            engine.autoTrade.enabled || offersPending > 0 || activeLoansCount > 0,
           )}
           {panelBtn('State Radio (music)', 'music', activePanel === 'music', onOpenMusic)}
           {panelBtn('Help', 'help', helpOpen, onOpenHelp)}

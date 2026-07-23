@@ -2,11 +2,11 @@
 // Red Republic — game engine & simulation
 // ============================================================
 import {
-  BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, CONTRACTS, FARM_SEASON, WEATHER,
+  BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, CONTRACTS, LOANS, FARM_SEASON, WEATHER,
   INSTANT_BUILD, IMPORT_MARKUP, OBJECTIVES,
   CLIMATES, DEFAULT_CLIMATE, DIFFICULTIES, DEFAULT_DIFFICULTY,
 } from './config';
-import type { ClimateId, DepositType, DifficultyId, ResourceId } from './config';
+import type { Category, ClimateId, DepositType, DifficultyId, ResourceId } from './config';
 import { generateMap, mulberry32 } from './mapgen';
 import type { BorderEdge, MapData, SeededRng, Tile } from './mapgen';
 import { SAVE_FORMAT_VERSION, packTiles, unpackTiles, validateSave } from './save-format';
@@ -144,6 +144,19 @@ export interface Contract {
   offerExpiresIdx: number; // unaccepted offers are withdrawn after this day
   state: 'offer' | 'active' | 'done' | 'failed';
   closedIdx?: number;      // when it reached done/failed (for pruning the history)
+}
+
+/** A foreign currency advance from one of the two blocs. */
+export interface Loan {
+  id: number;
+  bloc: 'east' | 'west';
+  principal: number;        // original amount borrowed
+  totalOwed: number;        // principal × (1 + interest rate)
+  repaid: number;           // cumulative amount repaid so far
+  takenDayIdx: number;      // absolute day index when taken
+  deadlineDayIdx: number;   // absolute day index when due
+  tierIndex: number;        // 0/1/2 = Small/Medium/Large
+  state: 'active' | 'repaid' | 'defaulted';
 }
 
 interface LogisticsDemand { b: BuildingInst; r: ResourceId; amt: number; prio: number; from?: number; noCustomsSrc?: boolean; bonded?: boolean; repairImport?: 'east' | 'west' }
@@ -344,11 +357,32 @@ export class GameEngine {
   contracts: Contract[] = [];
   /** 0..cap price malus per bloc from failed contracts; decays daily. */
   relationsPenalty = { east: 0, west: 0 };
-  private nextContractId = 1;
+  /** Active, repaid and recently-defaulted loans. */
+  loans: Loan[] = [];
+  /** Auto-repay: when treasury exceeds threshold, chip away at active loans. */
+  loanAutoRepay = {
+    enabled: false,
+    thresholdRubles: LOANS.autoRepayThresholdRubles,
+    thresholdDollars: LOANS.autoRepayThresholdDollars,
+  };
+  /** Per-bloc cooldown: absolute dayIndex when borrowing is allowed again. */
+  loanCooldown = { east: 0, west: 0 };
+
+  /** Global category construction priorities (Low -1 / Normal 0 / High 1).
+   *  Applies to all sites in that category unless overridden on the individual site. */
+  globalCategoryPriorities: Record<Category, -1 | 0 | 1> = {
+    infra: 0,
+    housing: 0,
+    industry: 0,
+    services: 0,
+    trade: 0,
+  };
 
   private nextBuildingId = 1;
   private nextTruckId = 1;
   private nextBoatId = 1;
+  private nextContractId = 1;
+  private nextLoanId = 1;
   private nextEventId = 1;
   private boatOrders: BoatOrder[] = [];
   private acc = 0;
@@ -1023,7 +1057,7 @@ export class GameEngine {
     let n = 0;
     const planned = [...this.buildings.values()]
       .filter(b => b.paused)
-      .sort((a, b) => (b.buildPriority ?? 0) - (a.buildPriority ?? 0) || a.id - b.id);
+      .sort((a, b) => this.effectiveBuildPriority(b) - this.effectiveBuildPriority(a) || a.id - b.id);
     for (const b of planned) {
       if (this.commenceSite(b.id).ok) n++;
     }
@@ -1117,7 +1151,7 @@ export class GameEngine {
     const targets = [...new Set(ids)]
       .map(id => this.buildings.get(id))
       .filter((b): b is BuildingInst => !!b && !b.constructed)
-      .sort((a, b) => (b.buildPriority ?? 0) - (a.buildPriority ?? 0) || a.id - b.id);
+      .sort((a, b) => this.effectiveBuildPriority(b) - this.effectiveBuildPriority(a) || a.id - b.id);
 
     if (targets.length === 0) return { totalCost: 0, succeeded: 0, failed: 0, reason: 'No unconstructed sites selected' };
 
@@ -1493,6 +1527,7 @@ export class GameEngine {
     this.production();
     this.foreignTrade();
     this.updateContracts();
+    this.updateLoans();
     this.logistics();
     this.burnFleetFuel();
     this.dispatchBoats();
@@ -2961,6 +2996,160 @@ export class GameEngine {
     }
   }
 
+  // --------------------------------------------------------------------------
+  // Loans
+  // --------------------------------------------------------------------------
+
+  activeLoan(bloc: 'east' | 'west'): Loan | undefined {
+    return this.loans.find(l => l.bloc === bloc && l.state === 'active');
+  }
+
+  canTakeLoan(bloc: 'east' | 'west', tierIndex?: number): { ok: boolean; reason?: string } {
+    if (tierIndex !== undefined && (tierIndex < 0 || tierIndex >= LOANS.tierLabels.length)) {
+      return { ok: false, reason: 'Invalid loan tier' };
+    }
+    const label = bloc === 'east' ? 'East' : 'West';
+    if (this.activeLoan(bloc)) return { ok: false, reason: `Already have an active ${label} loan` };
+    if (this.dayIndex() < this.loanCooldown[bloc]) {
+      const days = this.loanCooldown[bloc] - this.dayIndex();
+      return { ok: false, reason: `${label} credit frozen for ${days} more days` };
+    }
+    return { ok: true };
+  }
+
+  takeLoan(bloc: 'east' | 'west', tierIdx: 0 | 1 | 2): { ok: boolean; msg: string } {
+    const check = this.canTakeLoan(bloc, tierIdx);
+    if (!check.ok) return { ok: false, msg: check.reason! };
+    const principal = bloc === 'east' ? LOANS.tiersEast[tierIdx] : LOANS.tiersWest[tierIdx];
+    const interest = bloc === 'east' ? LOANS.interestEast : LOANS.interestWest;
+    const totalOwed = Math.round(principal * (1 + interest));
+    const deadlineDayIdx = this.dayIndex() + LOANS.deadlines[tierIdx];
+
+    const loan: Loan = {
+      id: this.nextLoanId++,
+      bloc,
+      principal,
+      totalOwed,
+      repaid: 0,
+      takenDayIdx: this.dayIndex(),
+      deadlineDayIdx,
+      tierIndex: tierIdx,
+      state: 'active',
+    };
+
+    this.loans.push(loan);
+    if (bloc === 'east') this.rubles += principal;
+    else this.dollars += principal;
+    
+    const cur = bloc === 'east' ? '\u20bd' : '$';
+    this.pushEvent(`Secured ${LOANS.tierLabels[tierIdx]} ${bloc === 'east' ? 'East' : 'West'} Loan: received ${cur}${fmtMoney(principal)}`, 'good', 'coins');
+    this.bump();
+    return { ok: true, msg: `Borrowed ${cur}${fmtMoney(principal)}` };
+  }
+
+  repayLoan(bloc: 'east' | 'west', amount: number): { ok: boolean; msg: string } {
+    const loan = this.activeLoan(bloc);
+    if (!loan) return { ok: false, msg: `No active ${bloc === 'east' ? 'East' : 'West'} loan` };
+    if (amount <= 0) return { ok: false, msg: 'Invalid amount' };
+    
+    const funds = bloc === 'east' ? this.rubles : this.dollars;
+    const remaining = loan.totalOwed - loan.repaid;
+    const payment = Math.min(amount, remaining, funds);
+    if (payment <= 0) return { ok: false, msg: bloc === 'east' ? 'Not enough rubles' : 'Not enough dollars' };
+
+    if (bloc === 'east') this.rubles -= payment;
+    else this.dollars -= payment;
+
+    loan.repaid += payment;
+    const cur = bloc === 'east' ? '\u20bd' : '$';
+    if (loan.repaid >= loan.totalOwed) {
+      loan.state = 'repaid';
+      this.checkObjectives();
+      this.pushEvent(`${bloc === 'east' ? 'East' : 'West'} loan fully repaid!`, 'good', 'coins');
+    }
+    this.bump();
+    return { ok: true, msg: `Repaid ${cur}${fmtMoney(payment)}` };
+  }
+
+  loanDaysLeft(loan: Loan): number {
+    return Math.max(0, loan.deadlineDayIdx - this.dayIndex());
+  }
+
+  /** Total outstanding debt across all active loans, per currency. */
+  totalDebt(): { rubles: number; dollars: number } {
+    let rubles = 0, dollars = 0;
+    for (const l of this.loans) {
+      if (l.state !== 'active') continue;
+      const rem = l.totalOwed - l.repaid;
+      if (l.bloc === 'east') rubles += rem;
+      else dollars += rem;
+    }
+    return { rubles, dollars };
+  }
+
+  setLoanAutoRepay(enabled: boolean) {
+    this.loanAutoRepay.enabled = enabled;
+    this.bump();
+  }
+
+  setLoanAutoRepayThreshold(bloc: 'east' | 'west', value: number) {
+    if (bloc === 'east') this.loanAutoRepay.thresholdRubles = Math.max(0, Math.round(value));
+    else this.loanAutoRepay.thresholdDollars = Math.max(0, Math.round(value));
+    this.bump();
+  }
+
+  private updateLoans() {
+    const idx = this.dayIndex();
+    for (const loan of this.loans) {
+      if (loan.state !== 'active') continue;
+      // Deadline enforcement
+      if (idx > loan.deadlineDayIdx) {
+        loan.state = 'defaulted';
+        this.loanCooldown[loan.bloc] = idx + LOANS.defaultCooldownDays;
+        this.relationsPenalty[loan.bloc] = Math.min(
+          CONTRACTS.relationsCap + LOANS.defaultRelationsHit,
+          this.relationsPenalty[loan.bloc] + LOANS.defaultRelationsHit);
+        const cur = loan.bloc === 'east' ? '\u20bd' : '$';
+        const remaining = loan.totalOwed - loan.repaid;
+        this.pushEvent(
+          `Defaulted on ${loan.bloc === 'east' ? 'East' : 'West'} loan \u2014 ${cur}${fmtMoney(remaining)} unpaid. Relations damaged; credit frozen for ${LOANS.defaultCooldownDays} days.`,
+          'bad', 'coins');
+        continue;
+      }
+    }
+    // Auto-repay
+    if (this.loanAutoRepay.enabled) {
+      for (const bloc of ['east', 'west'] as const) {
+        const loan = this.activeLoan(bloc);
+        if (!loan) continue;
+        const funds = bloc === 'east' ? this.rubles : this.dollars;
+        const threshold = bloc === 'east' ? this.loanAutoRepay.thresholdRubles : this.loanAutoRepay.thresholdDollars;
+        const surplus = funds - threshold;
+        if (surplus > 0) {
+          const remaining = loan.totalOwed - loan.repaid;
+          const payment = Math.min(surplus, remaining);
+          if (payment > 0) {
+            if (bloc === 'east') this.rubles -= payment;
+            else this.dollars -= payment;
+            loan.repaid += payment;
+            if (loan.repaid >= loan.totalOwed) {
+              loan.state = 'repaid';
+              this.checkObjectives();
+              this.pushEvent(`${bloc === 'east' ? 'East' : 'West'} loan auto-repaid in full!`, 'good', 'coins');
+            }
+          }
+        }
+      }
+    }
+    // Prune old closed loans (keep for 90 days for UI history)
+    for (let i = this.loans.length - 1; i >= 0; i--) {
+      const l = this.loans[i];
+      if ((l.state === 'repaid' || l.state === 'defaulted') && idx - l.deadlineDayIdx > 90) {
+        this.loans.splice(i, 1);
+      }
+    }
+  }
+
   private checkObjectives() {
     for (const o of OBJECTIVES) {
       if (this.objectivesDone.includes(o.id)) continue;
@@ -2980,6 +3169,7 @@ export class GameEngine {
         case 'steel': done = this.stats.produced.steel >= 15; break;
         case 'foodchain': done = this.stats.produced.food >= 25; break;
         case 'export': done = this.stats.exportedValue >= 5000; break;
+        case 'debtFree': done = this.loans.some(l => l.state === 'repaid'); break;
         case 'pop150': done = this.pop >= 150; break;
         case 'flourish': done = this.pop >= 300 && this.happiness >= 65; break;
       }
@@ -3050,6 +3240,21 @@ export class GameEngine {
         level: 'warn',
       });
     }
+    // Loan deadline warnings
+    for (const loan of this.loans) {
+      if (loan.state !== 'active') continue;
+      const daysLeft = this.loanDaysLeft(loan);
+      const cur = loan.bloc === 'east' ? '\u20bd' : '$';
+      const remaining = loan.totalOwed - loan.repaid;
+      if (daysLeft <= LOANS.warningDays) {
+        a.push({
+          id: `loan-${loan.bloc}`,
+          icon: 'coins',
+          text: `${loan.bloc === 'east' ? 'East' : 'West'} loan due in ${Math.max(0, daysLeft)} days \u2014 ${cur}${fmtMoney(remaining)} owed`,
+          level: daysLeft <= 7 ? 'bad' : 'warn',
+        });
+      }
+    }
     this.alerts = a;
   }
 
@@ -3093,11 +3298,18 @@ export class GameEngine {
   }
 
   /** Set a site's construction priority tier (Low -1 / Normal 0 / High 1): higher
-   *  tiers are fully crewed — and their materials hauled — before lower ones. */
-  setSitePriority(id: number, tier: -1 | 0 | 1) {
+   *  tiers are fully crewed — and their materials hauled — before lower ones.
+   *  Pass undefined to clear the per-site override and inherit the global category default. */
+  setSitePriority(id: number, tier: -1 | 0 | 1 | undefined) {
     const b = this.buildings.get(id);
-    if (!b || (b.buildPriority ?? 0) === tier) return;
-    b.buildPriority = tier;
+    if (!b) return;
+    if (tier === undefined) {
+      if (b.buildPriority === undefined) return;
+      delete b.buildPriority;
+    } else {
+      if ((b.buildPriority ?? 0) === tier) return;
+      b.buildPriority = tier;
+    }
     this.bump();
   }
 
@@ -3109,6 +3321,21 @@ export class GameEngine {
       if (b && (b.buildPriority ?? 0) !== tier) { b.buildPriority = tier; changed = true; }
     }
     if (changed) this.bump();
+  }
+
+  /** Set a global category construction priority. Sites without an explicit per-site
+   *  override inherit this. */
+  setGlobalCategoryPriority(cat: Category, tier: -1 | 0 | 1) {
+    if (this.globalCategoryPriorities[cat] === tier) return;
+    this.globalCategoryPriorities[cat] = tier;
+    this.bump();
+  }
+
+  /** Effective construction priority for a building: per-site override wins,
+   *  otherwise falls back to the global category priority. */
+  effectiveBuildPriority(b: BuildingInst): -1 | 0 | 1 {
+    if (b.buildPriority !== undefined) return b.buildPriority;
+    return this.globalCategoryPriorities[this.def(b).category] ?? 0;
   }
 
   /** Daily citizen demand for a resource (what stores would sell at full coverage). */
@@ -3253,6 +3480,7 @@ export class GameEngine {
         priceFactorEast: this.priceFactorEast,
         priceFactorWest: this.priceFactorWest,
         autoTrade: { enabled: this.autoTrade.enabled, reserveRubles: this.autoTrade.reserveRubles, reserveDollars: this.autoTrade.reserveDollars, rules },
+        globalCategoryPriorities: { ...this.globalCategoryPriorities },
         globalConstructionEnabled: this.globalConstructionEnabled,
         foreignLaborEnabled: this.foreignLaborEnabled,
         foreignLaborCurrency: this.foreignLaborCurrency,
@@ -3260,13 +3488,16 @@ export class GameEngine {
         repairImportCurrency: this.repairImportCurrency,
         tradeLedger: { today: cloneLedger(this.tradeLedger.today), yesterday: cloneLedger(this.tradeLedger.yesterday) },
         contracts: this.contracts.map(c => ({ ...c })),
+        loans: this.loans.map(l => ({ ...l })),
+        loanAutoRepay: { ...this.loanAutoRepay },
+        loanCooldown: { ...this.loanCooldown },
         relationsPenalty: { ...this.relationsPenalty },
         objectivesDone: [...this.objectivesDone],
         stats: { produced: { ...this.stats.produced }, imported: { ...this.stats.imported }, exportedValue: this.stats.exportedValue, roadsBuilt: this.stats.roadsBuilt },
         happiness: this.happiness,
         sat: { ...this.sat },
         streaks: { dry: this.dryStreak, gloom: this.gloomStreak, sun: this.sunStreak, wasFrost: this.wasFrost },
-        counters: { building: this.nextBuildingId, truck: this.nextTruckId, boat: this.nextBoatId, contract: this.nextContractId },
+        counters: { building: this.nextBuildingId, truck: this.nextTruckId, boat: this.nextBoatId, contract: this.nextContractId, loan: this.nextLoanId },
         aggregates: {
           capacity: this.capacity, workers: this.workers, employed: this.employed, jobs: this.jobs,
           powerProduced: this.powerProduced, powerDemand: this.powerDemand,
@@ -3319,6 +3550,13 @@ export class GameEngine {
       reserveDollars: body.autoTrade.reserveDollars,
       rules: Object.fromEntries((Object.entries(body.autoTrade.rules) as [ResourceId, AutoTradeRule][]).map(([r, rule]) => [r, { ...rule }])),
     };
+    if (body.globalCategoryPriorities) {
+      for (const [cat, tier] of Object.entries(body.globalCategoryPriorities)) {
+        if (tier !== undefined) {
+          e.globalCategoryPriorities[cat as Category] = tier;
+        }
+      }
+    }
     e.globalConstructionEnabled = body.globalConstructionEnabled ?? true;
     e.foreignLaborEnabled = body.foreignLaborEnabled ?? true;
     e.foreignLaborCurrency = body.foreignLaborCurrency ?? 'east';
@@ -3340,6 +3578,9 @@ export class GameEngine {
       });
     e.tradeLedger = { today: cloneLedger(body.tradeLedger.today), yesterday: cloneLedger(body.tradeLedger.yesterday) };
     e.contracts = body.contracts.map(c => ({ ...c }));
+    e.loans = (body.loans ?? []).map(l => ({ ...l }));
+    if (body.loanAutoRepay) e.loanAutoRepay = { ...body.loanAutoRepay };
+    if (body.loanCooldown) e.loanCooldown = { ...body.loanCooldown };
     e.dryStreak = body.streaks.dry;
     e.gloomStreak = body.streaks.gloom;
     e.sunStreak = body.streaks.sun;
@@ -3350,6 +3591,7 @@ export class GameEngine {
     e.nextTruckId = body.counters.truck;
     e.nextBoatId = body.counters.boat;
     e.nextContractId = body.counters.contract;
+    e.nextLoanId = body.counters.loan ?? 1;
     e.capacity = body.aggregates.capacity;
     e.workers = body.aggregates.workers;
     e.employed = body.aggregates.employed;
