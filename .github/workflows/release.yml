@@ -55,12 +55,20 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Build and attach installers to a draft GitHub Release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          # Asset names must not contain a dot before the version. GitHub
+          # substitutes periods for the space in productName ("Red Republic"),
+          # and KDE Discover names a local package with Qt's baseName(), which
+          # truncates at the FIRST dot — so "Red.Republic-1.9.2-…rpm" listed in
+          # the software centre as plain "Red". Tauri has no per-target filename
+          # knob, so the naming is fixed here instead; latest.json is generated
+          # from whatever is actually uploaded, so it stays consistent.
+          releaseAssetNamePattern: 'Red-Republic_[version]_[arch][_setup][ext]'
           tagName: ${{ github.ref_name }}
           releaseName: 'Red Republic ${{ github.ref_name }}'
           releaseBody: >
