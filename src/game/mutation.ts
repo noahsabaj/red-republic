@@ -70,6 +70,27 @@ export type Mutation =
   /** The national stockpile table, recounted from every bin. */
   | { k: 'totals'; totals: Record<ResourceId, number> }
 
+  // ---- the ledger ----
+  /** Money crosses the border. `bloc` picks the currency: east = rubles, west
+   *  = dollars. Emitters clamp so the treasury can never go negative. */
+  | { k: 'treasury'; bloc: 'east' | 'west'; delta: number }
+  /** Standing price malus with one bloc (0..cap). */
+  | { k: 'relations'; bloc: 'east' | 'west'; penalty: number }
+
+  // ---- contracts ----
+  | { k: 'contractState'; id: number; state: 'active' | 'done' | 'failed'; closedIdx?: number }
+  /** Withdraw an expired offer or retire old history. */
+  | { k: 'contractDrop'; id: number }
+
+  // ---- loans ----
+  | { k: 'loanState'; id: number; state: 'active' | 'repaid' | 'defaulted' }
+  | { k: 'loanRepaid'; id: number; amount: number }
+  | { k: 'loanCooldown'; bloc: 'east' | 'west'; untilDayIdx: number }
+  | { k: 'loanDrop'; id: number }
+
+  // ---- the five-year plan ----
+  | { k: 'objectiveDone'; id: string }
+
   // ---- the notice board ----
   /** A message for the player. Queued, not state — but it is an effect, so it
    *  is declared like one; that is what keeps a system from needing the engine. */
@@ -83,6 +104,40 @@ let journal: ((m: Mutation) => void) | null = null;
 
 export function setMutationJournal(fn: ((m: Mutation) => void) | null): void {
   journal = fn;
+}
+
+/**
+ * Records what a system does, and does it, in emission order.
+ *
+ * The derivations need nothing like this: each reads the world as it was and
+ * its effects don't feed back into its own reads. The transactions do — a loan
+ * repayment checks objectives, which reads the treasury the repayment just
+ * changed — and so does logistics, whose marginal-greedy pass re-scores a
+ * building after every dispatch it makes.
+ *
+ * A copy-on-write overlay (nothing written until the day loop applies) would
+ * buy nothing over this and would cost a shadow of the whole object graph.
+ * Either way every effect passes through `applyMutations` and lands in the
+ * returned list, which is the property that makes a write-set auditable — the
+ * point was never to delay the write, it was to declare it.
+ */
+export class Staged {
+  readonly muts: Mutation[] = [];
+  readonly w: World;
+  constructor(w: World) { this.w = w; }
+
+  emit(...ms: Mutation[]): void {
+    for (const m of ms) {
+      this.muts.push(m);
+      applyMutations(this.w, [m]);
+    }
+  }
+
+  /** Fold in a nested staged system's list. It has already applied them — this
+   *  only keeps the caller's record of the day complete. */
+  record(ms: readonly Mutation[]): void {
+    this.muts.push(...ms);
+  }
 }
 
 export function applyMutations(w: World, muts: readonly Mutation[]): void {
@@ -159,6 +214,43 @@ export function applyMutations(w: World, muts: readonly Mutation[]): void {
         break;
       case 'totals':
         w.totals = m.totals;
+        break;
+      case 'treasury':
+        if (m.bloc === 'east') w.rubles += m.delta; else w.dollars += m.delta;
+        break;
+      case 'relations':
+        w.relationsPenalty[m.bloc] = m.penalty;
+        break;
+      case 'contractState': {
+        const c = w.contracts.find(x => x.id === m.id);
+        if (c) { c.state = m.state; if (m.closedIdx !== undefined) c.closedIdx = m.closedIdx; }
+        break;
+      }
+      case 'contractDrop': {
+        const i = w.contracts.findIndex(x => x.id === m.id);
+        if (i >= 0) w.contracts.splice(i, 1);
+        break;
+      }
+      case 'loanState': {
+        const l = w.loans.find(x => x.id === m.id);
+        if (l) l.state = m.state;
+        break;
+      }
+      case 'loanRepaid': {
+        const l = w.loans.find(x => x.id === m.id);
+        if (l) l.repaid += m.amount;
+        break;
+      }
+      case 'loanCooldown':
+        w.loanCooldown[m.bloc] = m.untilDayIdx;
+        break;
+      case 'loanDrop': {
+        const i = w.loans.findIndex(x => x.id === m.id);
+        if (i >= 0) w.loans.splice(i, 1);
+        break;
+      }
+      case 'objectiveDone':
+        w.objectivesDone.push(m.id);
         break;
       case 'event':
         w.pushEvent(m.text, m.kind, m.icon);

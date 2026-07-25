@@ -3,7 +3,7 @@
 // ============================================================
 import {
   BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, CONTRACTS, LOANS, WEATHER,
-  INSTANT_BUILD, IMPORT_MARKUP, OBJECTIVES,
+  INSTANT_BUILD, IMPORT_MARKUP,
   DEFAULT_CLIMATE, DIFFICULTIES, DEFAULT_DIFFICULTY, POWER_SECTORS,
 } from './config';
 import type { Category, ClimateId, DepositType, DifficultyId, ResourceId } from './config';
@@ -20,7 +20,10 @@ import { fmtQty, fmtOwed, fmtMoney } from './format';
 import { applyMutations } from './mutation';
 import type { Mutation } from './mutation';
 import { citizens } from './systems/citizens';
+import { contracts } from './systems/contracts';
 import { connectivity } from './systems/connectivity';
+import { loans } from './systems/loans';
+import { objectives } from './systems/objectives';
 import { powerHeat } from './systems/power-heat';
 import { production } from './systems/production';
 import { totals } from './systems/totals';
@@ -1512,6 +1515,12 @@ export class GameEngine {
     applyMutations(this.w, system(this.w));
   }
 
+  /** Run a system that applies as it goes (see `Staged`). Its mutations are
+   *  already in the world — re-applying them here would double every effect. */
+  private runStaged(system: (w: World) => Mutation[]): void {
+    system(this.w);
+  }
+
   private simulateDay() {
     // advance date
     this.day++;
@@ -1534,8 +1543,8 @@ export class GameEngine {
     this.run(powerHeat);
     this.run(production);
     this.foreignTrade();
-    this.updateContracts();
-    this.updateLoans();
+    this.runStaged(contracts);
+    this.runStaged(loans);
     // The fleet reconciles with its garages, tops up dry tanks, then works.
     // Fuel leaves a bin only inside refuelVehicles() — there is no second,
     // pooled levy anywhere in the day.
@@ -1594,38 +1603,6 @@ export class GameEngine {
     this.pushEvent(
       `The ${bloc === 'east' ? 'East' : 'West'} tenders a contract: ${amount} ${RESOURCES[r].name} at ${cur}${c.pricePerUnit.toFixed(1)}/unit within ${days} days.`,
       'info', 'contract');
-  }
-
-  /** Daily contract sweep: withdraw stale offers, fail passed deadlines, heal relations. */
-  private updateContracts() {
-    const idx = this.dayIndex();
-    for (let i = this.contracts.length - 1; i >= 0; i--) {
-      const c = this.contracts[i];
-      if (c.state === 'offer' && idx > c.offerExpiresIdx) {
-        this.contracts.splice(i, 1);
-        this.pushEvent(`The ${c.bloc === 'east' ? 'East' : 'West'} withdrew its ${RESOURCES[c.r].name} offer.`, 'info', 'contract');
-        continue;
-      }
-      if (c.state === 'active' && idx > c.deadlineIdx) {
-        c.state = 'failed';
-        c.closedIdx = idx;
-        const fine = CONTRACTS.finePct * (c.amount - c.delivered) * c.pricePerUnit;
-        if (c.bloc === 'east') this.rubles = Math.max(0, this.rubles - fine);
-        else this.dollars = Math.max(0, this.dollars - fine);
-        this.relationsPenalty[c.bloc] = Math.min(CONTRACTS.relationsCap, this.relationsPenalty[c.bloc] + CONTRACTS.relationsHit);
-        const cur = c.bloc === 'east' ? '₽' : '$';
-        this.pushEvent(
-          `Contract failed: ${fmtOwed(c.amount - c.delivered)} ${RESOURCES[c.r].name} undelivered. Fined ${cur}${fmtMoney(fine)}; the ${c.bloc === 'east' ? 'East' : 'West'} sours on us.`,
-          'bad', 'contract');
-        continue;
-      }
-      // prune old history so the panel stays readable
-      if ((c.state === 'done' || c.state === 'failed') && c.closedIdx !== undefined && idx - c.closedIdx > 60) {
-        this.contracts.splice(i, 1);
-      }
-    }
-    this.relationsPenalty.east = Math.max(0, this.relationsPenalty.east - CONTRACTS.relationsDecayPerDay);
-    this.relationsPenalty.west = Math.max(0, this.relationsPenalty.west - CONTRACTS.relationsDecayPerDay);
   }
 
   // ---------------- systems ----------------
@@ -3203,92 +3180,7 @@ export class GameEngine {
     this.bump();
   }
 
-  private updateLoans() {
-    const idx = this.dayIndex();
-    for (const loan of this.loans) {
-      if (loan.state !== 'active') continue;
-      // Deadline enforcement
-      if (idx > loan.deadlineDayIdx) {
-        loan.state = 'defaulted';
-        this.loanCooldown[loan.bloc] = idx + LOANS.defaultCooldownDays;
-        this.relationsPenalty[loan.bloc] = Math.min(
-          CONTRACTS.relationsCap + LOANS.defaultRelationsHit,
-          this.relationsPenalty[loan.bloc] + LOANS.defaultRelationsHit);
-        const cur = loan.bloc === 'east' ? '\u20bd' : '$';
-        const remaining = loan.totalOwed - loan.repaid;
-        this.pushEvent(
-          `Defaulted on ${loan.bloc === 'east' ? 'East' : 'West'} loan \u2014 ${cur}${fmtMoney(remaining)} unpaid. Relations damaged; credit frozen for ${LOANS.defaultCooldownDays} days.`,
-          'bad', 'coins');
-        continue;
-      }
-    }
-    // Auto-repay
-    if (this.loanAutoRepay.enabled) {
-      for (const bloc of ['east', 'west'] as const) {
-        const loan = this.activeLoan(bloc);
-        if (!loan) continue;
-        const funds = bloc === 'east' ? this.rubles : this.dollars;
-        const threshold = bloc === 'east' ? this.loanAutoRepay.thresholdRubles : this.loanAutoRepay.thresholdDollars;
-        const surplus = funds - threshold;
-        if (surplus > 0) {
-          const remaining = loan.totalOwed - loan.repaid;
-          const payment = Math.min(surplus, remaining);
-          if (payment > 0) {
-            if (bloc === 'east') this.rubles -= payment;
-            else this.dollars -= payment;
-            loan.repaid += payment;
-            if (loan.repaid >= loan.totalOwed) {
-              loan.state = 'repaid';
-              this.checkObjectives();
-              this.pushEvent(`${bloc === 'east' ? 'East' : 'West'} loan auto-repaid in full!`, 'good', 'coins');
-            }
-          }
-        }
-      }
-    }
-    // Prune old closed loans (keep for 90 days for UI history)
-    for (let i = this.loans.length - 1; i >= 0; i--) {
-      const l = this.loans[i];
-      if ((l.state === 'repaid' || l.state === 'defaulted') && idx - l.deadlineDayIdx > 90) {
-        this.loans.splice(i, 1);
-      }
-    }
-  }
-
-  private checkObjectives() {
-    for (const o of OBJECTIVES) {
-      if (this.objectivesDone.includes(o.id)) continue;
-      let done = false;
-      switch (o.id) {
-        case 'roads': done = this.stats.roadsBuilt >= 10; break;
-        case 'housing': done = this.pop >= 20; break;
-        case 'shop': done = [...this.buildings.values()].some(b => this.def(b).serviceType === 'shop' && b.constructed && this.stockOf(b, 'food') >= 5); break;
-        case 'sow': done = [...this.buildings.values()].some(b => this.def(b).isFarm && b.constructed); break;
-        case 'builders': done = this.stats.produced.planks >= 20 && this.stats.produced.bricks >= 20; break;
-        case 'firstMachines': done = (this.stats.imported.machinery ?? 0) >= 5; break;
-        case 'meansOfProduction': done = [...this.buildings.values()].some(b => b.defId === 'machineWorks' && b.constructed); break;
-        case 'autarky': done = this.stats.produced.machinery >= 50; break;
-        case 'coal': done = this.stats.produced.coal >= 30; break;
-        // must match the threshold OBJECTIVES advertises — display and
-        // simulation disagreeing is the one thing the UI rule forbids
-        case 'power': done = this.powerProduced >= 50; break;
-        case 'heat': done = [...this.buildings.values()].some(b => this.def(b).heatOutput && b.constructed && b.staff > 0); break;
-        case 'steel': done = this.stats.produced.steel >= 15; break;
-        case 'foodchain': done = this.stats.produced.food >= 25; break;
-        case 'export': done = this.stats.exportedValue >= 5000; break;
-        case 'debtFree': done = this.loans.some(l => l.state === 'repaid'); break;
-        case 'pop150': done = this.pop >= 150; break;
-        case 'flourish': done = this.pop >= 300 && this.happiness >= 65; break;
-      }
-      if (done) {
-        this.objectivesDone.push(o.id);
-        if (o.rewardRubles) this.rubles += o.rewardRubles;
-        if (o.rewardDollars) this.dollars += o.rewardDollars;
-        const rw = [o.rewardRubles ? `+₽${o.rewardRubles.toLocaleString()}` : '', o.rewardDollars ? `+$${o.rewardDollars.toLocaleString()}` : ''].filter(Boolean).join(' ');
-        this.pushEvent(`Objective complete: ${o.title}! ${rw}`, 'good', 'star');
-      }
-    }
-  }
+  private checkObjectives() { objectives(this.w); }
 
   private updateAlerts() {
     const a: Alert[] = [];
