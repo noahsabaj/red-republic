@@ -31,6 +31,10 @@
     "targets": "all",
     "category": "Game",
     "publisher": "Noah Sabaj",
+    "copyright": "Copyright (c) 2026 Noah Sabaj. All rights reserved.",
+    "license": "LicenseRef-Proprietary",
+    "licenseFile": "../LICENSE",
+    "homepage": "https://github.com/noahsabaj/red-republic",
     "shortDescription": "Planned-economy city builder",
     "longDescription": "Red Republic is an isometric planned-economy city builder: industry chains, housing, deterministic weather, and physical cross-border trade.",
     "icon": [
@@ -40,7 +44,19 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/share/metainfo/com.noahsabaj.redrepublic.metainfo.xml": "metainfo/com.noahsabaj.redrepublic.metainfo.xml"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/share/metainfo/com.noahsabaj.redrepublic.metainfo.xml": "metainfo/com.noahsabaj.redrepublic.metainfo.xml"
+        }
+      }
+    }
   },
   "plugins": {
     "updater": {
