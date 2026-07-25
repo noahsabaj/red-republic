@@ -79,6 +79,29 @@ export type Mutation =
   /** Standing price malus with one bloc (0..cap). */
   | { k: 'relations'; bloc: 'east' | 'west'; penalty: number }
 
+  // ---- delivery ----
+  /** Cargo booked in to a destination so nothing double-orders against it. */
+  | { k: 'incoming'; id: number; r: ResourceId; amount: number }
+  /** Give a lorry a delivery job. `approach` is the empty run out to the
+   *  supplier (absent when it is already parked there); `loadedPath` is the
+   *  laden leg, routed now and carried so the run costs one search, not two. */
+  | {
+      k: 'vehicleJob'; vehicleId: number; supplierId: number; destId: number;
+      r: ResourceId; amount: number;
+      approach: { x: number; y: number }[]; approachTiles: number;
+      loadedPath: { x: number; y: number }[]; loadedTiles: number;
+    }
+  /** Machinery bought at the border to un-wear a building no domestic supply
+   *  can reach — charged on dispatch, unlike a construction auto-buy. */
+  | { k: 'repairImport'; r: ResourceId; bloc: 'east' | 'west'; amount: number; cost: number }
+  /** The bootstrap fuel ration: bought when the pumps are dry and the fleet
+   *  therefore cannot go and fetch fuel. */
+  | { k: 'emergencyFuel'; customsId: number; amount: number; cost: number }
+  /** Queue a barge order raised by a cross-water relay. */
+  | { k: 'boatOrderAdd'; srcId: number; destId: number; r: ResourceId; amt: number }
+  /** One routing diagnostic tick. */
+  | { k: 'routingCounter'; field: 'demandsConsidered' | 'successfulDispatches' }
+
   // ---- the road fleet ----
   /** A garage takes delivery of a new lorry. It arrives with a dry tank. */
   | { k: 'vehicleCommission'; homeId: number }
@@ -275,6 +298,67 @@ export function applyMutations(w: World, muts: readonly Mutation[]): void {
         break;
       case 'relations':
         w.relationsPenalty[m.bloc] = m.penalty;
+        break;
+      case 'incoming': {
+        const b = w.buildings.get(m.id);
+        if (b) b.incoming[m.r] = w.incomingOf(b, m.r) + m.amount;
+        break;
+      }
+      case 'vehicleJob': {
+        const v = w.trucks.find(x => x.id === m.vehicleId);
+        const supplier = w.buildings.get(m.supplierId), dest = w.buildings.get(m.destId);
+        if (!v || !supplier || !dest) break;
+        const parkedAt = w.buildings.get(v.atId) ?? supplier;
+        v.cargo = m.r;
+        v.amount = m.amount;
+        v.srcId = supplier.id;
+        v.destId = dest.id; // the job's destination, stable across both legs
+        v.phase = 'go';
+        v.daysDone = 0;
+        v.atId = 0;
+        if (m.approachTiles > 0) {
+          // Empty run out to the supplier first, carrying the loaded route with it.
+          v.state = 'toPickup';
+          v.legTo = supplier.id;
+          v.legTiles = m.approachTiles;
+          v.daysTotal = Math.max(0.6, m.approachTiles * BALANCE.truckDaysPerTile);
+          v.points = [w.centerOf(parkedAt), ...m.approach, w.centerOf(supplier)];
+          v.pendingPath = m.loadedPath;
+          v.pendingTiles = m.loadedTiles;
+        } else {
+          v.state = 'toDeliver';
+          v.legTo = dest.id;
+          v.legTiles = m.loadedTiles;
+          v.daysTotal = Math.max(0.6, m.loadedTiles * BALANCE.truckDaysPerTile);
+          v.points = [w.centerOf(supplier), ...m.loadedPath, w.centerOf(dest)];
+          v.pendingPath = undefined;
+          v.pendingTiles = undefined;
+        }
+        break;
+      }
+      case 'repairImport':
+        if (m.bloc === 'east') w.rubles -= m.cost; else w.dollars -= m.cost;
+        w.stats.imported[m.r] = (w.stats.imported[m.r] ?? 0) + m.amount;
+        w.tradeLedger.today.repairImports -= m.cost;
+        break;
+      case 'emergencyFuel': {
+        const customs = w.buildings.get(m.customsId);
+        if (!customs) break;
+        const led = w.tradeLedger.today;
+        w.rubles -= m.cost;
+        led.rubles -= m.cost;
+        w.addStock(customs, 'fuel', m.amount);
+        w.stats.imported.fuel = (w.stats.imported.fuel ?? 0) + m.amount;
+        led.imports.fuel = (led.imports.fuel ?? 0) + m.amount;
+        led.used += m.amount;
+        w.spawnForeignTruck(customs, 'fuel', m.amount);
+        break;
+      }
+      case 'boatOrderAdd':
+        w.boatOrders.push({ srcId: m.srcId, destId: m.destId, r: m.r, amt: m.amt });
+        break;
+      case 'routingCounter':
+        w.routingDay[m.field]++;
         break;
       case 'vehicleCommission': {
         const b = w.buildings.get(m.homeId);
