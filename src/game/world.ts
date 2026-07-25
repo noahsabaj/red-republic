@@ -511,6 +511,63 @@ export class World {
     return eff;
   }
 
+  /**
+   * Actual per-day resource flows for a building under current conditions.
+   * `production()` applies exactly these deltas, and the UI displays them, so
+   * the simulation and the inspector cannot diverge.
+   */
+  productionRates(b: BuildingInst): { inputs: Partial<Record<ResourceId, number>>; outputs: Partial<Record<ResourceId, number>> } {
+    const rates: { inputs: Partial<Record<ResourceId, number>>; outputs: Partial<Record<ResourceId, number>> } = { inputs: {}, outputs: {} };
+    const def = this.def(b);
+    if (!b.constructed) return rates;
+
+    // fuel burners: eff & coalFactor were fixed by the power/heat system this day
+    if (def.powerOutput || def.heatOutput) {
+      const inputRes = def.inputs ? (Object.keys(def.inputs)[0] as ResourceId) : 'coal';
+      const burn = (def.inputs?.[inputRes] ?? 0) * b.eff * b.coalFactor;
+      if (burn > 0) rates.inputs[inputRes] = burn;
+      // machinery wears with actual burn intensity — an idle plant wears nothing
+      for (const [r, amt] of Object.entries(def.wear ?? {}) as [ResourceId, number][]) {
+        const worn = amt * b.eff * b.coalFactor;
+        if (worn > 0) rates.inputs[r] = (rates.inputs[r] ?? 0) + worn;
+      }
+      return rates;
+    }
+    if (!def.outputs) return rates;
+
+    const outMul = this.outputMultiplier(b);
+
+    // input-limited?
+    let inputFactor = 1;
+    if (def.inputs) {
+      for (const [r, amt] of Object.entries(def.inputs) as [ResourceId, number][]) {
+        const need = amt * outMul;
+        if (need > 0) inputFactor = Math.min(inputFactor, this.stockOf(b, r) / need);
+      }
+      inputFactor = Math.min(1, inputFactor);
+    }
+    const finalMul = outMul * inputFactor;
+    if (finalMul <= 0) return rates;
+    if (def.inputs) {
+      for (const [r, amt] of Object.entries(def.inputs) as [ResourceId, number][]) rates.inputs[r] = amt * finalMul;
+    }
+    // wear scales with actual activity and NEVER gates output (addStock clamps
+    // an empty bin at 0; the worn penalty rides in baseEff instead)
+    for (const [r, amt] of Object.entries(def.wear ?? {}) as [ResourceId, number][]) {
+      const worn = amt * finalMul;
+      if (worn > 0) rates.inputs[r] = (rates.inputs[r] ?? 0) + worn;
+    }
+    for (const [r, amt] of Object.entries(def.outputs) as [ResourceId, number][]) rates.outputs[r] = amt * finalMul;
+    return rates;
+  }
+
+  /** What `addStock` WOULD change, without changing it — the pure half of the
+   *  same clamp, so a system can know the result of its own effect. `from`
+   *  lets a caller chain several deltas within one batch. */
+  clampedAdd(b: BuildingInst, r: ResourceId, amt: number, from = this.stockOf(b, r)): number {
+    return Math.max(0, Math.min(this.capOf(b, r), from + amt)) - from;
+  }
+
   /** Connectivity is expensive and changes rarely, so its mutation list is
    *  cached until the topology or the facility set moves. The cache lives here
    *  (it is derived world state); the computation stays in the system module,

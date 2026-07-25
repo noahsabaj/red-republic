@@ -48,6 +48,24 @@ export type Mutation =
   /** Whether the boilers could reach this building today. */
   | { k: 'heated'; id: number; heated: boolean }
 
+  // ---- work done ----
+  /** A bin changes by `delta`, already clamped by the emitting system to what
+   *  the bin can actually take. Applying it re-clamps, so it can never overfill. */
+  | { k: 'stock'; id: number; r: ResourceId; delta: number }
+  /** Cumulative national output, the objective metric. */
+  | { k: 'produced'; r: ResourceId; amount: number }
+  /** A farm's worked field count (display). */
+  | { k: 'farmFields'; id: number; fields: number }
+
+  // ---- the people ----
+  /** Beds in the republic. */
+  | { k: 'housingCapacity'; capacity: number }
+  /** The satisfaction table, lerped as a set so every figure reads the same
+   *  previous day. */
+  | { k: 'satisfaction'; sat: World['sat'] }
+  | { k: 'happiness'; happiness: number }
+  | { k: 'population'; pop: number }
+
   // ---- national accounts ----
   /** The national stockpile table, recounted from every bin. */
   | { k: 'totals'; totals: Record<ResourceId, number> }
@@ -114,6 +132,31 @@ export function applyMutations(w: World, muts: readonly Mutation[]): void {
         if (b) b.heated = m.heated;
         break;
       }
+      case 'stock': {
+        const b = w.buildings.get(m.id);
+        if (b) w.addStock(b, m.r, m.delta);
+        break;
+      }
+      case 'produced':
+        w.stats.produced[m.r] += m.amount;
+        break;
+      case 'farmFields': {
+        const b = w.buildings.get(m.id);
+        if (b) b.farmFields = m.fields;
+        break;
+      }
+      case 'housingCapacity':
+        w.capacity = m.capacity;
+        break;
+      case 'satisfaction':
+        w.sat = m.sat;
+        break;
+      case 'happiness':
+        w.happiness = m.happiness;
+        break;
+      case 'population':
+        w.pop = m.pop;
+        break;
       case 'totals':
         w.totals = m.totals;
         break;

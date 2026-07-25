@@ -19,8 +19,10 @@ import type { DayWeather } from './weather';
 import { fmtQty, fmtOwed, fmtMoney } from './format';
 import { applyMutations } from './mutation';
 import type { Mutation } from './mutation';
+import { citizens } from './systems/citizens';
 import { connectivity } from './systems/connectivity';
 import { powerHeat } from './systems/power-heat';
+import { production } from './systems/production';
 import { totals } from './systems/totals';
 import { weather } from './systems/weather';
 import { workers } from './systems/workers';
@@ -1545,7 +1547,7 @@ export class GameEngine {
     this.run(connectivity);
     this.run(workers);
     this.run(powerHeat);
-    this.production();
+    this.run(production);
     this.foreignTrade();
     this.updateContracts();
     this.updateLoans();
@@ -1557,7 +1559,7 @@ export class GameEngine {
     this.logistics();
     this.dispatchBoats();
     this.construction();
-    this.citizens();
+    this.run(citizens);
     this.run(totals);
     this.checkObjectives();
     this.updateAlerts();
@@ -1682,68 +1684,7 @@ export class GameEngine {
     return (input + wear) * this.outputMultiplier(b, this.nominalEff(b));
   }
 
-  productionRates(b: BuildingInst): { inputs: Partial<Record<ResourceId, number>>; outputs: Partial<Record<ResourceId, number>> } {
-    const rates: { inputs: Partial<Record<ResourceId, number>>; outputs: Partial<Record<ResourceId, number>> } = { inputs: {}, outputs: {} };
-    const def = this.def(b);
-    if (!b.constructed) return rates;
-
-    // fuel burners: eff & coalFactor were fixed by updatePowerHeat this day
-    if (def.powerOutput || def.heatOutput) {
-      const inputRes = def.inputs ? (Object.keys(def.inputs)[0] as ResourceId) : 'coal';
-      const burn = (def.inputs?.[inputRes] ?? 0) * b.eff * b.coalFactor;
-      if (burn > 0) rates.inputs[inputRes] = burn;
-      // machinery wears with actual burn intensity — an idle plant wears nothing
-      for (const [r, amt] of Object.entries(def.wear ?? {}) as [ResourceId, number][]) {
-        const w = amt * b.eff * b.coalFactor;
-        if (w > 0) rates.inputs[r] = (rates.inputs[r] ?? 0) + w;
-      }
-      return rates;
-    }
-    if (!def.outputs) return rates;
-
-    const outMul = this.outputMultiplier(b);
-
-    // input-limited?
-    let inputFactor = 1;
-    if (def.inputs) {
-      for (const [r, amt] of Object.entries(def.inputs) as [ResourceId, number][]) {
-        const need = amt * outMul;
-        if (need > 0) inputFactor = Math.min(inputFactor, this.stockOf(b, r) / need);
-      }
-      inputFactor = Math.min(1, inputFactor);
-    }
-    const finalMul = outMul * inputFactor;
-    if (finalMul <= 0) return rates;
-    if (def.inputs) {
-      for (const [r, amt] of Object.entries(def.inputs) as [ResourceId, number][]) rates.inputs[r] = amt * finalMul;
-    }
-    // wear scales with actual activity and NEVER gates output (addStock clamps
-    // an empty bin at 0; the worn penalty rides in baseEff instead)
-    for (const [r, amt] of Object.entries(def.wear ?? {}) as [ResourceId, number][]) {
-      const w = amt * finalMul;
-      if (w > 0) rates.inputs[r] = (rates.inputs[r] ?? 0) + w;
-    }
-    for (const [r, amt] of Object.entries(def.outputs) as [ResourceId, number][]) rates.outputs[r] = amt * finalMul;
-    return rates;
-  }
-
-  private production() {
-    for (const b of this.buildings.values()) {
-      const def = this.def(b);
-      if (!b.constructed) continue;
-      if (!def.powerOutput && !def.heatOutput) {
-        b.eff = this.baseEff(b); // plants keep the eff set by updatePowerHeat
-        if (def.isFarm) b.farmFields = Math.min(12, this.countFarmFields(b.x, b.y, b.w, b.h));
-      }
-      const rates = this.productionRates(b);
-      for (const [r, amt] of Object.entries(rates.inputs) as [ResourceId, number][]) {
-        this.addStock(b, r, -amt);
-      }
-      for (const [r, amt] of Object.entries(rates.outputs) as [ResourceId, number][]) {
-        this.stats.produced[r] += this.addStock(b, r, amt);
-      }
-    }
-  }
+  productionRates(b: BuildingInst) { return this.w.productionRates(b); }
 
   // ---------------- foreign trade (auto) ----------------
 
@@ -3143,136 +3084,6 @@ export class GameEngine {
   }
 
   // ---------------- citizens ----------------
-
-  private citizens() {
-    // capacity
-    this.capacity = 0;
-    const housing: BuildingInst[] = [];
-    for (const b of this.buildings.values()) {
-      const def = this.def(b);
-      if (b.constructed && def.housingCapacity) {
-        this.capacity += def.housingCapacity;
-        housing.push(b);
-      }
-    }
-
-    // services coverage
-    const servicesOf = (type: 'shop' | 'health' | 'culture') =>
-      [...this.buildings.values()].filter(b => {
-        const def = this.def(b);
-        return b.constructed && def.serviceType === type && b.staff > 0;
-      });
-    const coveredRatio = (type: 'shop' | 'health' | 'culture') => {
-      if (this.capacity === 0) return 0;
-      const svcs = servicesOf(type);
-      if (!svcs.length) return 0;
-      let covered = 0;
-      for (const h of housing) {
-        const hc = this.centerOf(h);
-        const ok = svcs.some(s => {
-          const sc = this.centerOf(s);
-          return Math.max(Math.abs(hc.x - sc.x), Math.abs(hc.y - sc.y)) <= (this.def(s).serviceRadius ?? BALANCE.serviceRadius);
-        });
-        if (ok) covered += this.def(h).housingCapacity!;
-      }
-      return covered / this.capacity;
-    };
-
-    const shopCov = coveredRatio('shop');
-    const healthCov = coveredRatio('health');
-    const cultureCov = coveredRatio('culture');
-    this.sat.health = this.lerp(this.sat.health, healthCov, 0.1);
-    this.sat.culture = this.lerp(this.sat.culture, cultureCov, 0.1);
-
-    // food & clothes consumption from stores
-    const stores = servicesOf('shop');
-    const consume = (r: ResourceId, perCapita: number, satKey: 'food' | 'clothes') => {
-      const demand = this.pop * perCapita;
-      if (demand <= 0) { this.sat[satKey] = this.lerp(this.sat[satKey], 1, 0.1); return; }
-      const coveredDemand = demand * shopCov;
-      let available = 0;
-      for (const s of stores) available += this.stockOf(s, r);
-      const served = Math.min(coveredDemand, available);
-      // consume proportionally
-      if (available > 0) {
-        for (const s of stores) {
-          const share = this.stockOf(s, r) / available;
-          this.addStock(s, r, -served * share);
-        }
-      }
-      const raw = served / demand;
-      this.sat[satKey] = this.lerp(this.sat[satKey], Math.min(1, raw), 0.12);
-    };
-    consume('food', BALANCE.foodPerCitizen, 'food');
-    consume('clothes', BALANCE.clothesPerCitizen, 'clothes');
-
-    // power / heat satisfaction
-    let poweredCap = 0, heatedCap = 0;
-    for (const h of housing) {
-      if (h.powered) poweredCap += this.def(h).housingCapacity!;
-      if (h.heated) heatedCap += this.def(h).housingCapacity!;
-    }
-    this.sat.power = this.lerp(this.sat.power, this.capacity ? poweredCap / this.capacity : 1, 0.15);
-    this.sat.heat = this.lerp(this.sat.heat, this.capacity ? heatedCap / this.capacity : 1, 0.15);
-
-    // employment
-    this.sat.employment = this.workers > 0
-      ? Math.min(1, this.employed / (this.workers * 0.95))
-      : 1;
-
-    // pollution
-    const polluters = [...this.buildings.values()].filter(b => {
-      const def = this.def(b);
-      return b.constructed && def.pollution && b.eff > 0;
-    });
-    if (this.capacity > 0 && polluters.length) {
-      let penaltySum = 0;
-      for (const h of housing) {
-        const hc = this.centerOf(h);
-        let pl = 0;
-        for (const p of polluters) {
-          const pc = this.centerOf(p);
-          if (Math.max(Math.abs(hc.x - pc.x), Math.abs(hc.y - pc.y)) <= BALANCE.pollutionRadius) {
-            pl += this.def(p).pollution!;
-          }
-        }
-        penaltySum += Math.max(0.6, 1 - 0.05 * pl) * this.def(h).housingCapacity!;
-      }
-      this.sat.pollution = this.lerp(this.sat.pollution, penaltySum / this.capacity, 0.1);
-    } else {
-      this.sat.pollution = this.lerp(this.sat.pollution, 1, 0.1);
-    }
-
-    // happiness
-    const w = this.sat;
-    let target = 100 * (
-      0.30 * w.food + 0.14 * w.clothes + 0.12 * w.power + 0.12 * w.heat +
-      0.10 * w.culture + 0.10 * w.health + 0.12 * w.employment
-    ) * w.pollution;
-    // No wages: citizens are compensated in what they consume — food, clothes,
-    // warmth, light — which the republic must actually produce or import.
-    // weather morale: long gray spells wear on people, sunny runs lift them
-    target *= 1 - Math.min(0.06, this.gloomStreak * 0.01) + Math.min(0.02, this.sunStreak * 0.005);
-    this.happiness = this.lerp(this.happiness, Math.max(0, Math.min(100, target)), 0.2);
-
-    // migration — settlers only (re)found the republic while its reputation holds
-    const freeBeds = this.capacity - this.pop;
-    if (this.pop === 0 && freeBeds > 0 && this.happiness >= 48) {
-      this.pop = Math.min(freeBeds, 6);
-      this.pushEvent('First settlers arrived to your republic!', 'good', 'users');
-    } else if (this.happiness >= 48 && freeBeds > 0) {
-      const arrivals = Math.min(freeBeds, 1 + Math.floor(this.happiness / 35));
-      this.pop += arrivals;
-      if (arrivals > 1) this.pushEvent(`${arrivals} migrants joined your republic`, 'good', 'users');
-    } else if (this.happiness < 30 && this.pop > 0) {
-      const departures = Math.min(this.pop, Math.max(1, Math.min(Math.ceil(this.pop * 0.1), Math.ceil((30 - this.happiness) / 8))));
-      this.pop -= departures;
-      this.pushEvent(`${departures} citizens left the republic (unhappy)`, 'bad', 'users');
-    }
-    if (this.pop > this.capacity) this.pop = this.capacity;
-  }
-
-  private lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
 
   happinessBreakdown(): HappinessBreakdown {
     const w = this.sat;
