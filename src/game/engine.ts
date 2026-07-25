@@ -17,6 +17,11 @@ import { shareAnyComponent, unionComponents, forEachPerimeterTile } from './topo
 import type { TopologyAccess, TopologyDomain, TopologyPos } from './topology';
 import type { DayWeather } from './weather';
 import { fmtQty, fmtOwed, fmtMoney } from './format';
+import { applyMutations } from './mutation';
+import type { Mutation } from './mutation';
+import { connectivity } from './systems/connectivity';
+import { totals } from './systems/totals';
+import { weather } from './systems/weather';
 import {
   DEFAULT_ALLOCATION_PRIORITY, DEFAULT_UNPOWERED_EFF, RevisionMemo,
   World, buildingWorn, emptyLedger, rankedGoals,
@@ -154,7 +159,6 @@ export class GameEngine {
   get mapH() { return this.w.mapH; }
   get borderEdge(): BorderEdge | null { return this.w.borderEdge; }
   private get topology() { return this.w.topology; }
-  private get hasWater() { return this.w.hasWater; }
   private get routingDay() { return this.w.routingDay; }
   private set routingDay(v: Omit<RoutingDiagnostics, 'topologyRebuilds'>) { this.w.routingDay = v; }
   private get facilityRevision() { return this.w.facilityRevision; }
@@ -295,10 +299,8 @@ export class GameEngine {
   private nextBoatId = 1;
   private nextContractId = 1;
   private nextLoanId = 1;
-  private nextEventId = 1;
   private boatOrders: BoatOrder[] = [];
   private acc = 0;
-  private events: GameEvent[] = [];
   private listeners = new Set<() => void>();
   private version = 0;
 
@@ -1522,6 +1524,13 @@ export class GameEngine {
     };
   }
 
+  /** Run one pure system and apply what it asked for. The engine's only role in
+   *  a converted system is to sequence it — it neither reads nor edits the
+   *  mutation list, which is what makes the write-set guard test meaningful. */
+  private run(system: (w: World) => Mutation[]): void {
+    applyMutations(this.w, system(this.w));
+  }
+
   private simulateDay() {
     // advance date
     this.day++;
@@ -1534,8 +1543,12 @@ export class GameEngine {
     }
 
     this.resetRoutingDiagnostics();
-    this.updateWeather();
-    this.updateConnectivity();
+    // Converted systems are pure: they read the World and return what they want
+    // changed; applyMutations is the only writer. Applied one system at a time,
+    // in this order, so a later system reads the earlier one's effects exactly
+    // as it did when these were void methods.
+    this.run(weather);
+    this.run(connectivity);
     this.assignWorkers();
     this.updatePowerHeat();
     this.production();
@@ -1551,7 +1564,7 @@ export class GameEngine {
     this.dispatchBoats();
     this.construction();
     this.citizens();
-    this.computeTotals();
+    this.run(totals);
     this.checkObjectives();
     this.updateAlerts();
     this.bump();
@@ -1636,71 +1649,6 @@ export class GameEngine {
 
   // ---------------- systems ----------------
 
-  private updateWeather() {
-    const prev = this.weather;
-    this.weather = this.weatherAt(this.dayIndex());
-    const w = this.weather;
-    const hasFarms = [...this.buildings.values()].some(b => this.def(b).isFarm && b.constructed);
-
-    // drought bookkeeping: hot rainless days accumulate, any precipitation resets
-    const wet = w.condition === 'rain' || w.condition === 'storm' || w.condition === 'snow' || w.condition === 'blizzard';
-    if (wet) {
-      if (this.dryStreak > BALANCE.droughtAfterDays && hasFarms) this.pushEvent('Rain breaks the drought — the fields recover.', 'good', 'rain');
-      this.dryStreak = 0;
-    } else if (w.tempC >= 18) {
-      this.dryStreak++;
-      if (this.dryStreak === BALANCE.droughtAfterDays + 1 && hasFarms) this.pushEvent('Drought — the fields are withering.', 'bad', 'summer');
-    }
-
-    // frost: one warning per cold spell while crops are growing
-    const frost = w.tempC < 0 && (FARM_SEASON[this.month] ?? 0) > 0;
-    if (frost && !this.wasFrost && hasFarms) this.pushEvent('Frost grips the fields — crops stop growing.', 'bad', 'freeze');
-    this.wasFrost = frost;
-
-    // morale streaks: long gray spells wear people down, sunny runs lift them
-    const mood = WEATHER[w.condition].morale;
-    if (mood < 0) { this.gloomStreak++; this.sunStreak = 0; }
-    else if (mood > 0) { this.sunStreak++; this.gloomStreak = 0; }
-    else { this.gloomStreak = Math.max(0, this.gloomStreak - 1); this.sunStreak = Math.max(0, this.sunStreak - 1); }
-
-    // river freeze-over / break-up
-    if (this.hasWater && w.riverFrozen !== prev.riverFrozen) {
-      if (w.riverFrozen) this.pushEvent('The river has frozen over — barges are ice-locked until the thaw.', 'bad', 'freeze');
-      else this.pushEvent('The ice breaks up — barges can sail again.', 'good', 'port');
-    }
-  }
-
-  /** Sets b.connected / b.roadConnected on every building. Sim-internal derived
-   * state, recomputed only when the road/land topology or facility set changes. */
-  private readonly connectivityMemo = new RevisionMemo<void>(
-    () => [this.topology.revision('road'), this.topology.revision('land'), this.facilityRevision],
-    () => {
-      // A building participates if ANY component touched by its access perimeter
-      // also touches the freight network. With no hub at all, preserve the
-      // historical fallback: any local access tile counts as connected.
-      //
-      // Ports seed the network as well as depots. A port IS a freight hub — it
-      // is where barges land goods — and now that lorries are physical, a
-      // building that is not `connected` owns no fleet. Without this an island
-      // served by barge could never unload them: nothing over there would be
-      // connected, so no garage there would have a single lorry.
-      const depots = [...this.buildings.values()].filter(b => {
-        const def = this.def(b);
-        return (def.isDepot || def.isPort) && b.constructed;
-      });
-      const roadComponents = unionComponents(...depots.map(d => this.roadAccess(d).components));
-      const landComponents = unionComponents(...depots.map(d => this.landAccess(d).components));
-      for (const b of this.buildings.values()) {
-        const road = this.roadAccess(b);
-        const land = this.landAccess(b);
-        b.roadConnected = road.tiles.length > 0 &&
-          (!depots.length || shareAnyComponent(road.components, roadComponents));
-        b.connected = land.tiles.length > 0 &&
-          (!depots.length || shareAnyComponent(land.components, landComponents));
-      }
-    },
-  );
-  private updateConnectivity() { this.connectivityMemo.get(); }
 
   /** Where `b` sits in the queue for a resource the republic hands out in a
    *  fixed order (workers, power). Authored per building in config. */
@@ -3534,13 +3482,6 @@ export class GameEngine {
 
   // ---------------- totals, objectives, alerts ----------------
 
-  private computeTotals() {
-    for (const r of ALL_RESOURCES) this.totals[r] = 0;
-    for (const b of this.buildings.values()) {
-      for (const r of ALL_RESOURCES) this.totals[r] += this.stockOf(b, r);
-    }
-  }
-
   // --------------------------------------------------------------------------
   // Loans
   // --------------------------------------------------------------------------
@@ -4408,7 +4349,7 @@ export class GameEngine {
 
     // rebuild derived state: weather replays to the saved day; totals/alerts recompute
     e.weather = e.weatherAt(e.dayIndex());
-    e.computeTotals();
+    e.run(totals);
     e.updateAlerts();
     e.speed = 0;
     e.bump();
@@ -4418,12 +4359,12 @@ export class GameEngine {
   // ---------------- events / subscription ----------------
 
   private pushEvent(text: string, kind: GameEvent['kind'], icon?: string) {
-    this.events.push({ id: this.nextEventId++, text, kind, icon });
+    this.w.pushEvent(text, kind, icon);
   }
 
   drainEvents(): GameEvent[] {
-    const e = this.events;
-    this.events = [];
+    const e = this.w.events;
+    this.w.events = [];
     return e;
   }
 

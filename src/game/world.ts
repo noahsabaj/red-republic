@@ -18,6 +18,9 @@ import { TopologyIndex } from './topology';
 import type { RoutingTile, TopologyDomain, TopologyPos } from './topology';
 import { WeatherTimeline } from './weather';
 import type { DayWeather } from './weather';
+// Type-only, so World and Mutation never form a runtime cycle: the systems
+// import both at runtime, neither imports the other's code.
+import type { Mutation } from './mutation';
 
 /** Brownout efficiency for a powered building the grid cannot feed. Buildings
  *  that stop dead instead author `unpoweredEff: 0` in config — there is no list
@@ -314,6 +317,25 @@ export class RevisionMemo<T> {
   }
 }
 
+/**
+ * A `RevisionMemo` whose computation is supplied by the caller instead of the
+ * constructor. That is what lets an expensive system cache its mutation list on
+ * the World it reads — the state lives with the state, the code lives with the
+ * system, and World never imports a system module.
+ */
+export class RevisionCache<T> {
+  private key: readonly number[] | null = null;
+  private value!: T;
+
+  get(deps: readonly number[], compute: () => T): T {
+    if (this.key === null || !sameRevisions(this.key, deps)) {
+      this.value = compute();
+      this.key = deps;
+    }
+    return this.value;
+  }
+}
+
 /** Build a bounded-search goal list from a facility's access tiles, ranked by
  *  (buildingRank, then tile order). `value` is shared across all of a facility's
  *  tiles (created once by the caller, not per tile). */
@@ -416,6 +438,24 @@ export class World {
   };
   objectivesDone: string[] = [];
   alerts: Alert[] = [];
+
+  /** The notice board. Systems never push directly — they emit an `event`
+   *  mutation, and `applyMutations` calls this — so ids stay in emission order.
+   *  `GameEngine.drainEvents()` is the single (destructive) consumer. */
+  events: GameEvent[] = [];
+  private nextEventId = 1;
+  pushEvent(text: string, kind: GameEvent['kind'], icon?: string): void {
+    this.events.push({ id: this.nextEventId++, text, kind, icon });
+  }
+
+  /** Connectivity is expensive and changes rarely, so its mutation list is
+   *  cached until the topology or the facility set moves. The cache lives here
+   *  (it is derived world state); the computation stays in the system module,
+   *  so World never has to import a system. */
+  readonly connectivityCache = new RevisionCache<Mutation[]>();
+  connectivityDeps(): readonly number[] {
+    return [this.topology.revision('road'), this.topology.revision('land'), this.facilityRevision];
+  }
 
   constructor(
     tiles: Tile[][],
