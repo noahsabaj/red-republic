@@ -4,13 +4,14 @@ import { fmtMoney } from '@/game/format';
 import { useEngineSignature } from '@/hooks/use-engine';
 import { GameIcon } from '@/ui/GameIcon';
 
-export type PanelMode = 'building' | 'trade' | 'objectives' | 'stockpiles' | 'music' | 'logistics';
+export type PanelMode = 'building' | 'trade' | 'objectives' | 'stockpiles' | 'music' | 'logistics' | 'power';
 
 interface Props {
   engine: GameEngine;
   activePanel: PanelMode | null;
   helpOpen: boolean;
   onOpenStockpiles: () => void;
+  onOpenPower: () => void;
   onOpenLogistics: () => void;
   onOpenObjectives: () => void;
   onOpenTrade: () => void;
@@ -86,7 +87,7 @@ export function HappinessCard({ engine }: { engine: GameEngine }) {
   );
 }
 
-export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, onOpenLogistics, onOpenObjectives, onOpenTrade, onOpenMusic, onOpenHelp, onOpenMenu }: Props) {
+export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, onOpenPower, onOpenLogistics, onOpenObjectives, onOpenTrade, onOpenMusic, onOpenHelp, onOpenMenu }: Props) {
   // re-render only when something the HUD actually displays changes
   useEngineSignature(engine, (e) => [
     e.day, e.month, e.year, e.speed,
@@ -99,7 +100,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
     e.weather.condition, Math.round(e.weather.tempC), e.weather.riverFrozen,
     e.forecast().map(d => d.condition + Math.round(d.tempC)).join('|'),
     e.alerts.map(a => a.id + a.text).join('|'),
-    (() => { const f = e.fleetStatus(); return `${f.active}/${f.max}/${f.driverTrucks}/${Math.round(f.gasFuel)}`; })(),
+    (() => { const f = e.fleetStatus(); return `${f.active}/${f.max}/${f.grounded}/${Math.round(f.tankFuel)}/${Math.round(f.pumpFuel)}`; })(),
     e.autoTrade.enabled,
     Math.round(e.tradeLedger.yesterday.rubles), Math.round(e.tradeLedger.yesterday.dollars),
     Math.round(e.tradeLedger.yesterday.foreignLaborRubles ?? e.tradeLedger.yesterday.foreignLabor),
@@ -206,16 +207,20 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
               <HappinessCard engine={engine} />
             </div>
           </div>
-          <span title={`Power: ${engine.powerProduced.toFixed(1)} / ${engine.powerDemand.toFixed(1)} MW`} className={`flex items-center gap-1 ${engine.powerDemand > engine.powerProduced + 0.01 ? 'text-red-300' : ''}`}>
+          <button
+            onClick={onOpenPower}
+            title={`Power: ${engine.powerProduced.toFixed(1)} / ${engine.powerDemand.toFixed(1)} MW — open the Power Grid to set who keeps the lights`}
+            className={`flex items-center gap-1 rounded px-1 hover:bg-yellow-500/20 ${engine.powerDemand > engine.powerProduced + 0.01 ? 'text-red-300' : ''}`}
+          >
             <GameIcon name="power" size={12} /> {engine.powerProduced.toFixed(0)}/{engine.powerDemand.toFixed(0)}
-          </span>
+          </button>
           {engine.heatingRequired() && (
             <span title={`Heat: ${engine.heatProduced.toFixed(1)} / ${engine.heatDemand.toFixed(1)}`} className={`flex items-center gap-1 ${engine.heatDemand > engine.heatProduced + 0.01 ? 'text-red-300' : ''}`}>
               <GameIcon name="heat" size={12} /> {engine.heatProduced.toFixed(0)}/{engine.heatDemand.toFixed(0)}
             </span>
           )}
           {(() => { const f = engine.fleetStatus(); return (
-            <span title={`Trucks in use ${f.active}/${f.max} — offices ${f.officeTrucks} + Motor Depots ${f.driverTrucks}${f.officeTrucks + f.driverTrucks > f.max ? ` (${f.officeTrucks + f.driverTrucks - f.max} idle: low fuel)` : ''}`} className={`flex items-center gap-1 ${f.max > 0 && f.active >= f.max ? 'text-red-300' : ''}`}>
+            <span title={`Vehicles hauling ${f.active}/${f.max} — offices ${f.officeTrucks} + Motor Depots ${f.driverTrucks}${f.grounded > 0 ? ` (${f.grounded} grounded: empty tanks)` : ''}`} className={`flex items-center gap-1 ${f.grounded > 0 ? 'text-red-300' : f.max > 0 && f.active >= f.max ? 'text-amber-300' : ''}`}>
               <GameIcon name="truck" size={12} /> {f.active}/{f.max}
             </span>
           ); })()}
@@ -223,6 +228,7 @@ export default function HUD({ engine, activePanel, helpOpen, onOpenStockpiles, o
 
         <div className="ml-auto flex items-center gap-1.5">
           {panelBtn('Stockpiles', 'stockpiles', activePanel === 'stockpiles', onOpenStockpiles)}
+          {panelBtn('Power Grid', 'power', activePanel === 'power', onOpenPower, engine.powerDemand > engine.powerProduced + 0.01)}
           {panelBtn('Logistics & Fleet', 'truck', activePanel === 'logistics', onOpenLogistics)}
           {panelBtn('Five-Year Plan', 'plan', activePanel === 'objectives', onOpenObjectives)}
           {panelBtn(

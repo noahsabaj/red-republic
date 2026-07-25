@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { GameEngine } from '@/game/engine';
-import { render, screenToTile, pickBuilding, shouldRenderFrame, STATUS_PALETTES, type Camera, type UIState } from '@/game/render';
+import { render, screenToTile, pickEntity, centerCameraOn, shouldRenderFrame, STATUS_PALETTES, type Camera, type UIState } from '@/game/render';
 import { InputController, type NormPointerEvent, type Tool } from '@/game/input';
 import type { SelectionItem } from '@/game/selection';
 import { getSettings, subscribeSettings } from '@/app/settings';
@@ -24,11 +24,15 @@ interface Props {
   onError: (msg: string) => void;
   /** Escape with no tool armed — App opens the pause menu. */
   onOpenMenu: () => void;
+  /** Centre the camera on a world position. `nonce` must change to re-fire, so
+   *  asking for the same spot twice still moves the camera back to it. */
+  focus?: { wx: number; wy: number; nonce: number } | null;
 }
 
-export default function GameCanvas({ engine, tool, setTool, selection, onSelect, policy, hotkeysEnabled, onError, onOpenMenu }: Props) {
+export default function GameCanvas({ engine, tool, setTool, selection, onSelect, policy, hotkeysEnabled, onError, onOpenMenu, focus }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const camRef = useRef<Camera>({ x: 0, y: 0, z: 0.8 });
+  const viewportRef = useRef({ vw: 0, vh: 0 });
   const uiRef = useRef<UIState>({ hoverTile: null, tool, selection, time: 0 });
   const engineRef = useRef(engine);
   const cbRef = useRef({ setTool, onSelect, onError, onOpenMenu });
@@ -70,6 +74,7 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
       dpr = nextDpr;
       vw = nextVw;
       vh = nextVh;
+      viewportRef.current = { vw, vh }; // the focus effect lives outside this closure
 
       // Only reassign canvas backing size when actual dimensions or DPR change:
       // prevents clearing the canvas buffer on unrelated settings (audio sliders)
@@ -204,10 +209,15 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
       },
       selectAt: (sx, sy, additive) => {
         const eng = engineRef.current;
-        const b = pickBuilding(eng, sx, sy, camRef.current);
-        if (b) {
+        // one resolver, so a vehicle can only win a click when it is actually
+        // drawn in front of the building under the cursor
+        const hit = pickEntity(eng, sx, sy, camRef.current);
+        if (hit) {
           audio.ui('select');
-          cbRef.current.onSelect({ kind: 'building', id: b.id }, additive);
+          cbRef.current.onSelect(
+            hit.kind === 'truck' ? { kind: 'truck', id: hit.truck.id } : { kind: 'building', id: hit.building.id },
+            additive,
+          );
           return;
         }
         // bare ground: deposit tiles are inspectable too
@@ -309,6 +319,20 @@ export default function GameCanvas({ engine, tool, setTool, selection, onSelect,
       ctrl.reset();
     };
   }, []);
+
+  // Camera focus requests from the panel (e.g. Track a vehicle). Keyed on the
+  // nonce, so asking for the same spot twice pans back to it both times.
+  useEffect(() => {
+    if (!focus) return;
+    // Measure the canvas directly rather than trusting the resize pass to have
+    // run — a focus request arriving on the first frame must still land.
+    const canvas = canvasRef.current;
+    const vw = viewportRef.current.vw || canvas?.clientWidth || 0;
+    const vh = viewportRef.current.vh || canvas?.clientHeight || 0;
+    if (vw <= 0 || vh <= 0) return;
+    centerCameraOn(camRef.current, focus.wx, focus.wy, vw, vh);
+    renderRevisionRef.current++; // a paused, reduced-motion scheduler must still repaint
+  }, [focus]);
 
   // touch-action: none is load-bearing — without it the browser hijacks touch
   // drags for scrolling and fires pointercancel mid-gesture

@@ -106,9 +106,12 @@ describe('ports and barges', () => {
     layRoad(e, 4, 9, 19, 9);
     depot.stock.planks = 60;
     depot.stock.bricks = 60;
-    // east shore: a construction site that nothing on its network can supply
+    // east shore: a construction site that nothing on its network can supply.
+    // Lorries are physical, so the far shore needs its own garage to run the
+    // last leg — a barge lands the goods, it does not deliver them.
     const portE = placeBuilt(e, 'port', 23, 10);
     layRoad(e, 23, 9, 32, 9);
+    placeBuilt(e, 'constructionOffice', 25, 10);
     e.rubles = 10000;
     const placed = e.tryPlace('house', 30, 10); // needs 6 planks + 4 bricks
     expect(placed.ok).toBe(true);
@@ -135,9 +138,11 @@ describe('ports and barges', () => {
     const portW = placeBuilt(e, 'port', 18, 10);
     layRoad(e, 6, 9, 19, 9);
     customs.stock.planks = 40; customs.stock.bricks = 40; // REAL stock that bonded imports must never touch
-    // EAST island: a port + road + the auto-buy site; NO domestic planks/bricks anywhere
+    // EAST island: a port + road + a garage to run the island leg + the
+    // auto-buy site; NO domestic planks/bricks anywhere
     const portE = placeBuilt(e, 'port', 23, 10);
     layRoad(e, 23, 9, 32, 9);
+    placeBuilt(e, 'constructionOffice', 25, 10);
     e.rubles = 100_000;
     const cost = e.autoBuyImportCost('house');
     const before = e.rubles;

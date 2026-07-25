@@ -89,6 +89,9 @@ describe('weather gameplay effects', () => {
       e.trucks.push({
         id: 1, points: [{ x: 0, y: 0 }, { x: 30, y: 0 }], cargo: 'food', amount: 1,
         daysTotal: 30, daysDone: 0, phase: 'go', destId: 999, srcId: 999,
+        homeId: 0, atId: 0, legTo: 999, state: 'toDeliver',
+        fuel: BALANCE.vehicleFuelCap, fuelCap: BALANCE.vehicleFuelCap,
+        odometer: 0, legTiles: 30, speed: 0,
       });
       e.setSpeed(1);
       e.advance(e.TICK_MS); // exactly one day
@@ -116,6 +119,7 @@ describe('weather gameplay effects', () => {
     depot.stock.bricks = 60;
     placeBuilt(e, 'port', 23, 10);
     layRoad(e, 23, 9, 32, 9);
+    placeBuilt(e, 'constructionOffice', 25, 10); // the far shore runs its own lorries
     expect(e.tryPlace('house', 30, 10).ok).toBe(true);
     const site = e.buildingAt(30, 10)!;
 
@@ -140,8 +144,10 @@ describe('weather gameplay effects', () => {
     const script = { current: still('clear', 20) };
     const e = makeEngine({ weather: () => script.current });
     e.month = 7;
-    layRoad(e, 4, 9, 20, 9);
+    layRoad(e, 2, 9, 20, 9);
     placeBuilt(e, 'depot', 5, 10);
+    const plant = placeBuilt(e, 'powerPlant', 2, 10);
+    plant.stock.coal = 500;
     const farm = placeBuilt(e, 'farm', 10, 10);
     placeBuilt(e, 'apartment', 17, 10);
     e.pop = 40;

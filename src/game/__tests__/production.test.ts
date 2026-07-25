@@ -26,8 +26,10 @@ describe('farm placement', () => {
 describe('productionRates', () => {
   it('matches exactly what production() applies (farm, seasonal)', () => {
     const e = makeEngine();
-    layRoad(e, 4, 9, 33, 9);
+    layRoad(e, 2, 9, 33, 9);
     placeBuilt(e, 'depot', 5, 10);
+    const plant = placeBuilt(e, 'powerPlant', 2, 10);
+    plant.stock.coal = 50;
     const farm = placeBuilt(e, 'farm', 10, 10);
     placeBuilt(e, 'apartment', 30, 10); // beds keep pop from clamping to 0
     placeBuilt(e, 'apartment', 27, 10);
@@ -35,8 +37,8 @@ describe('productionRates', () => {
     runDays(e, 1); // settle staffing
 
     const rates = e.productionRates(farm);
-    // March (month 3), 12 fields, staffed, unpowered: 6 * 0.5 * 1 * 0.2 * 2.2
-    expect(rates.outputs.crops).toBeCloseTo(6 * 0.5 * 0.2 * 2.2, 9);
+    // March (month 3), 12 fields, staffed, powered: 6 * 1 * 0.2 * 2.2
+    expect(rates.outputs.crops).toBeCloseTo(6 * 1 * 0.2 * 2.2, 9);
 
     const before = farm.stock.crops ?? 0;
     runDays(e, 1);
@@ -48,6 +50,7 @@ describe('productionRates', () => {
     layRoad(e, 4, 9, 33, 9);
     placeBuilt(e, 'depot', 5, 10);
     const farm = placeBuilt(e, 'farm', 10, 10);
+    farm.powered = true;
     placeBuilt(e, 'apartment', 30, 10);
     e.pop = 40; // exactly the beds placed
     runDays(e, 1);
@@ -60,6 +63,7 @@ describe('productionRates', () => {
     layRoad(e, 4, 9, 33, 9);
     placeBuilt(e, 'depot', 5, 10);
     const mill = placeBuilt(e, 'sawmill', 10, 10);
+    mill.powered = true;
     placeBuilt(e, 'apartment', 30, 10);
     e.pop = 40; // exactly the beds placed
     runDays(e, 1);
@@ -88,6 +92,20 @@ describe('productionRates', () => {
     runDays(e, 1);
     // 4 forest tiles → factor 4/6; fully staffed, no power need → eff 1
     expect(e.productionRates(wc).outputs.wood).toBeCloseTo(4 * (4 / 6), 9);
+  });
+
+  it('oil power plant consumes crude oil to generate 80 MW of electricity', () => {
+    const e = makeEngine();
+    layRoad(e, 4, 9, 33, 9);
+    placeBuilt(e, 'depot', 5, 10);
+    const plant = placeBuilt(e, 'oilPowerPlant', 10, 10);
+    plant.stock.oil = 60;
+    placeBuilt(e, 'apartment', 30, 10);
+    e.pop = 40;
+    runDays(e, 1);
+
+    expect(plant.stock.oil).toBeLessThan(60);
+    expect(e.powerProduced).toBeGreaterThan(0);
   });
 });
 

@@ -19,14 +19,25 @@ describe('trade', () => {
     expect(store.stock.food).toBe(30);
   });
 
-  it('sell() leaves a power plant its 3-day coal reserve', () => {
+  it('sell() never drains Power Plant coal input', () => {
     const e = withCustoms();
-    const plant = placeBuilt(e, 'powerPlant', 15, 10); // inputs 2 coal/day → keeps 6
+    const plant = placeBuilt(e, 'powerPlant', 15, 10);
     plant.stock.coal = 40;
-    expect(e.sellableStock('coal')).toBe(34);
-    const res = e.sell('coal', 100, 'east');
+    expect(e.sellableStock('coal')).toBe(0);
+    const res = e.sell('coal', 10, 'east');
+    expect(res.ok).toBe(false);
+    expect(plant.stock.coal).toBe(40);
+  });
+
+  it('sell() exports coal from a Coal Mine while protecting non-producers', () => {
+    const e = withCustoms();
+    e.applyTilePatches([{ x: 15, y: 10, deposit: 'coal' }]);
+    const mine = placeBuilt(e, 'coalMine', 15, 10);
+    mine.stock.coal = 40;
+    expect(e.sellableStock('coal')).toBe(40);
+    const res = e.sell('coal', 10, 'east');
     expect(res.ok).toBe(true);
-    expect(plant.stock.coal).toBe(6);
+    expect(mine.stock.coal).toBe(30);
   });
 
   it('sell() reaches any drivable building — road or off-road', () => {

@@ -57,6 +57,14 @@ export interface SaveBodyV1 {
   foreignLaborCurrency?: 'east' | 'west'; // optional: old saves default to east
   repairImportsEnabled?: boolean; // optional: old saves default to true
   repairImportCurrency?: 'east' | 'west'; // optional: old saves default to east
+  /** Consequence dials for delivery dispatch. */
+  logisticsCategoryWeights?: Partial<Record<'lifeline' | 'consumer' | 'industry' | 'construction', number>>;
+  /** Pre-dial saves ranked resources instead; read on load to seed the dials, never written. */
+  logisticsPriorityMode?: 'dynamic' | 'lifeline' | 'construction' | 'custom';
+  logisticsResourceOrder?: ResourceId[];
+  emergencyFuelAutoBuy?: boolean;
+  /** Player's brownout order for the grid; pre-grid saves get the default plan. */
+  powerSectorOrder?: Category[];
   tradeLedger: { today: TradeDayLedger; yesterday: TradeDayLedger };
   contracts: Contract[];
   loans?: Loan[];

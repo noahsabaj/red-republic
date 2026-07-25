@@ -61,6 +61,20 @@ export const CATEGORY_NAMES: Record<Category, string> = {
   trade: 'Trade & Storage',
 };
 
+/**
+ * The sectors the grid serves, in the order a fresh republic serves them.
+ *
+ * Power allocation is a queue, not a market: when generation falls short the
+ * grid walks this order and the back of it goes dark. WHO that is, is the
+ * player's call — it is their republic — so this is only the starting plan,
+ * reordered in the Power Grid panel and stored on the engine.
+ *
+ * These are the four build categories that draw power at all (`infra` is roads
+ * and bridges), reused deliberately: the player already sorts buildings into
+ * them on the build bar, so the grid speaks a vocabulary they know.
+ */
+export const POWER_SECTORS: Category[] = ['industry', 'services', 'trade', 'housing'];
+
 export type DepositType = 'coal' | 'ironOre' | 'oil' | 'gravel';
 
 export interface BuildingDef {
@@ -76,10 +90,34 @@ export interface BuildingDef {
   becomesRoad?: boolean;
   // operation
   workers: number; // jobs at full staffing
+  /**
+   * Where this building sits in the queue when the republic is short of
+   * something it allocates in a fixed order — **workers** and **power**.
+   * Lower is served first; equal ranks fall back to commissioning order.
+   *
+   * Authored HERE, next to the crew and the load it draws, rather than as an
+   * ordered list of building ids in the engine: a list is a thing you must
+   * remember to edit, and everything you forget lands silently in last place.
+   * That is exactly how housing ended up last on the grid (see `house`).
+   *
+   * Spaced by 10 so a new building can be slotted between two existing ones
+   * without renumbering. `ui-guards.test.ts` requires it on anything that
+   * competes — i.e. any building with `workers > 0` or `power > 0`.
+   */
+  allocationPriority?: number;
   /** Daily operational consumption at full activity (machinery wear). An empty
    *  bin never stalls the building — it runs 'worn' at BALANCE.wornEffMult. */
   wear?: Partial<Record<ResourceId, number>>;
   power: number;   // MW consumed (+) or produced handled via powerOutput
+  /**
+   * What this building does when the grid cannot feed it: the efficiency
+   * multiplier applied while `power > 0` and unpowered. Authored HERE, next to
+   * the load it draws, rather than as a list of building ids in the engine —
+   * a mine that limps and a mill that stops are a data difference, not a code
+   * difference. 0 = stalls dead, 1 = unaffected; the default is a brownout.
+   * Meaningless (and rejected by ui-guards) when `power` is 0.
+   */
+  unpoweredEff?: number;
   powerOutput?: number; // MW produced (power plants)
   heatOutput?: number;  // heat units produced
   heat: number;    // heat consumed (housing)
@@ -127,17 +165,24 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   }),
 
   // ---------- Housing ----------
+  // Housing employs nobody, so it never appeared in the engine's old jobs
+  // ranking — and since that same list also decided who keeps their power,
+  // households went dark before anything else on the grid, by omission rather
+  // than by decision. Where housing sits on the grid is now the PLAYER's, via
+  // the Power Grid sector order; these ranks only break the tie between the
+  // two housing types. Small houses go first: 16 citizens housed per MW
+  // against the block's 13, so the same shortfall leaves fewer people dark.
   house: B({
     id: 'house', name: 'Small House', icon: 'house', category: 'housing', size: [1, 1],
     materials: { planks: 6, bricks: 4 }, labor: 60,
-    workers: 0, power: 0.3, heat: 0.5, storage: {},
+    workers: 0, allocationPriority: 900, power: 0.5, heat: 0.5, storage: {},
     housingCapacity: 8, boxHeight: 12, color: '#b0483a', wallColor: '#e2d3b3',
     description: 'A modest family house for 8 citizens. Needs power, heat in winter, and a shop nearby.',
   }),
   apartment: B({
     id: 'apartment', name: 'Apartment Block', icon: 'apartment', category: 'housing', size: [2, 2],
     materials: { planks: 10, bricks: 30, steel: 6, gravel: 8 }, labor: 300,
-    workers: 0, power: 1.2, heat: 2, storage: {},
+    workers: 0, allocationPriority: 910, power: 3, heat: 2, storage: {},
     housingCapacity: 40, boxHeight: 30, color: '#8f3d31', wallColor: '#c9b18a',
     description: 'A proud socialist prefab block housing 40 citizens.',
   }),
@@ -146,7 +191,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   woodcutter: B({
     id: 'woodcutter', name: 'Woodcutter Post', icon: 'woodcutter', category: 'industry', size: [1, 1],
     materials: { planks: 4 }, labor: 50,
-    workers: 6, power: 0, heat: 0, storage: { wood: 30 },
+    workers: 6, allocationPriority: 150, power: 0, heat: 0, storage: { wood: 30 },
     outputs: { wood: 4 }, requiresForest: true, pollution: 1,
     boxHeight: 10, color: '#4a6b3a', wallColor: '#8a6b45',
     description: 'Lumberjacks fell trees nearby. Place close to forest. Produces wood.',
@@ -154,7 +199,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   sawmill: B({
     id: 'sawmill', name: 'Sawmill', icon: 'sawmill', category: 'industry', size: [1, 1],
     materials: { bricks: 10, planks: 6, steel: 2 }, labor: 120,
-    workers: 6, power: 1, heat: 0, storage: { wood: 20, planks: 30 },
+    workers: 6, allocationPriority: 130, power: 0, heat: 0, storage: { wood: 20, planks: 30 },
     inputs: { wood: 2 }, outputs: { planks: 3 }, pollution: 1,
     boxHeight: 14, color: '#7a5230', wallColor: '#b08b5e',
     description: 'Saws 2 wood into 3 planks per day. Planks are a core construction material.',
@@ -162,7 +207,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   gravelQuarry: B({
     id: 'gravelQuarry', name: 'Gravel Quarry', icon: 'gravelQuarry', category: 'industry', size: [1, 1],
     materials: { planks: 6, bricks: 4 }, labor: 80,
-    workers: 8, power: 0.5, heat: 0, storage: { gravel: 40 },
+    workers: 8, allocationPriority: 160, power: 0, heat: 0, storage: { gravel: 40 },
     outputs: { gravel: 5 }, requiresDeposit: 'gravel', pollution: 2,
     boxHeight: 8, color: '#6d6d6d', wallColor: '#9a9a9a',
     description: 'Must be built on a gravel deposit. Extracts gravel.',
@@ -170,7 +215,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   brickworks: B({
     id: 'brickworks', name: 'Brickworks', icon: 'brickworks', category: 'industry', size: [1, 1],
     materials: { bricks: 12, steel: 4, planks: 4 }, labor: 130,
-    workers: 10, power: 1.5, heat: 0, storage: { gravel: 25, bricks: 35 },
+    workers: 10, allocationPriority: 140, power: 0, heat: 0, storage: { gravel: 25, bricks: 35 },
     inputs: { gravel: 3 }, outputs: { bricks: 4 }, pollution: 2,
     boxHeight: 16, color: '#8a3226', wallColor: '#b0604a',
     description: 'Fires 3 gravel into 4 bricks per day. Bricks are needed for almost everything.',
@@ -178,7 +223,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   coalMine: B({
     id: 'coalMine', name: 'Coal Mine', icon: 'coalMine', category: 'industry', size: [1, 1],
     materials: { bricks: 15, steel: 6, planks: 4, machinery: 2 }, labor: 200,
-    workers: 14, power: 2, heat: 0, storage: { coal: 60, machinery: 6 },
+    workers: 14, allocationPriority: 170, power: 6, heat: 0, storage: { coal: 60, machinery: 6 },
     wear: { machinery: 0.015 },
     outputs: { coal: 6 }, requiresDeposit: 'coal', pollution: 3,
     boxHeight: 12, color: '#2e2e2e', wallColor: '#4f4f4f',
@@ -187,7 +232,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   ironMine: B({
     id: 'ironMine', name: 'Iron Ore Mine', icon: 'ironMine', category: 'industry', size: [1, 1],
     materials: { bricks: 15, steel: 6, planks: 4, machinery: 2 }, labor: 200,
-    workers: 14, power: 2, heat: 0, storage: { ironOre: 60, machinery: 6 },
+    workers: 14, allocationPriority: 180, power: 6, heat: 0, storage: { ironOre: 60, machinery: 6 },
     wear: { machinery: 0.015 },
     outputs: { ironOre: 5 }, requiresDeposit: 'ironOre', pollution: 3,
     boxHeight: 12, color: '#6e3a24', wallColor: '#8a5a40',
@@ -195,8 +240,8 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   }),
   steelMill: B({
     id: 'steelMill', name: 'Steel Mill', icon: 'steelMill', category: 'industry', size: [2, 2],
-    materials: { bricks: 30, steel: 15, planks: 8, gravel: 16, machinery: 8 }, labor: 400,
-    workers: 30, power: 6, heat: 0, storage: { ironOre: 40, coal: 40, steel: 40, machinery: 6 },
+    materials: { bricks: 30, steel: 15, planks: 8, gravel: 16, machinery: 8 }, labor: 220,
+    workers: 20, allocationPriority: 190, power: 40, unpoweredEff: 0, heat: 0, storage: { ironOre: 40, coal: 40, steel: 40, machinery: 6 },
     wear: { machinery: 0.03 },
     inputs: { ironOre: 2, coal: 1 }, outputs: { steel: 1.5 }, pollution: 4,
     boxHeight: 24, color: '#5a5f66', wallColor: '#7d838c',
@@ -205,7 +250,10 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   oilPump: B({
     id: 'oilPump', name: 'Oil Pump', icon: 'oilPump', category: 'industry', size: [1, 1],
     materials: { bricks: 12, steel: 10, machinery: 3 }, labor: 220,
-    workers: 10, power: 2, heat: 0, storage: { oil: 50, machinery: 6 },
+    // No unpoweredEff: a pump is an extractor, so it browns out like the coal
+    // and iron mines rather than stalling. Anything else makes the oil chain
+    // unbootstrappable without a coal plant.
+    workers: 10, allocationPriority: 210, power: 1.5, heat: 0, storage: { oil: 50, machinery: 6 },
     wear: { machinery: 0.02 },
     outputs: { oil: 4 }, requiresDeposit: 'oil', pollution: 2,
     boxHeight: 18, color: '#1e2126', wallColor: '#3a3f46',
@@ -214,7 +262,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   refinery: B({
     id: 'refinery', name: 'Oil Refinery', icon: 'refinery', category: 'industry', size: [2, 2],
     materials: { bricks: 30, steel: 18, planks: 6, gravel: 16, machinery: 6 }, labor: 420,
-    workers: 25, power: 5, heat: 0, storage: { oil: 40, fuel: 40, machinery: 6 },
+    workers: 25, allocationPriority: 220, power: 30, unpoweredEff: 0, heat: 0, storage: { oil: 40, fuel: 40, machinery: 6 },
     wear: { machinery: 0.025 },
     inputs: { oil: 3 }, outputs: { fuel: 2 }, pollution: 3,
     boxHeight: 22, color: '#8c7a2a', wallColor: '#a89a4a',
@@ -222,17 +270,26 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   }),
   powerPlant: B({
     id: 'powerPlant', name: 'Coal Power Plant', icon: 'powerPlant', category: 'industry', size: [2, 2],
-    materials: { bricks: 25, steel: 12, planks: 6, gravel: 12, machinery: 5 }, labor: 350,
-    workers: 15, power: 0, powerOutput: 12, heat: 0,
-    storage: { coal: 50, machinery: 6 }, inputs: { coal: 2 }, pollution: 3,
-    wear: { machinery: 0.02 },
+    materials: { bricks: 25, steel: 12, planks: 6, gravel: 12, machinery: 5 }, labor: 200,
+    workers: 15, allocationPriority: 10, power: 0, powerOutput: 100, heat: 0,
+    storage: { coal: 50, machinery: 6 }, inputs: { coal: 4 }, pollution: 3,
+    wear: { machinery: 0.03 },
     boxHeight: 26, color: '#4e5661', wallColor: '#6b7480',
-    description: 'Burns 2 coal daily to generate 12 MW. Without power, industry stalls and homes go dark.',
+    description: 'Burns 4 coal daily to generate 100 MW. Without power, industry stalls and homes go dark.',
+  }),
+  oilPowerPlant: B({
+    id: 'oilPowerPlant', name: 'Oil Power Plant', icon: 'powerPlant', category: 'industry', size: [2, 2],
+    materials: { bricks: 30, steel: 18, planks: 6, gravel: 16, machinery: 8 }, labor: 400,
+    workers: 16, allocationPriority: 20, power: 0, powerOutput: 80, heat: 0,
+    storage: { oil: 60, machinery: 6 }, inputs: { oil: 4 }, pollution: 3,
+    wear: { machinery: 0.025 },
+    boxHeight: 24, color: '#5e4e61', wallColor: '#7d6b80',
+    description: 'Burns 4 crude oil daily to generate 80 MW of electricity. Ideal for oil-rich republics.',
   }),
   heatingPlant: B({
     id: 'heatingPlant', name: 'Heating Plant', icon: 'heatingPlant', category: 'industry', size: [1, 1],
     materials: { bricks: 18, steel: 8, planks: 4, machinery: 1 }, labor: 180,
-    workers: 8, power: 1, heatOutput: 8, heat: 0,
+    workers: 8, allocationPriority: 30, power: 1, heatOutput: 8, heat: 0,
     storage: { coal: 40, machinery: 6 }, inputs: { coal: 1 }, pollution: 2,
     wear: { machinery: 0.01 },
     boxHeight: 16, color: '#7a3b2a', wallColor: '#9c5a44',
@@ -241,7 +298,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   farm: B({
     id: 'farm', name: 'Collective Farm', icon: 'farm', category: 'industry', size: [2, 2],
     materials: { planks: 12, bricks: 8 }, labor: 150,
-    workers: 10, power: 0.5, heat: 0, storage: { crops: 80 },
+    workers: 10, allocationPriority: 110, power: 0, heat: 0, storage: { crops: 80 },
     outputs: { crops: 6 }, isFarm: true, pollution: 0,
     boxHeight: 8, color: '#8a6b3a', wallColor: '#c9a86b',
     description: 'Yields crops from open ground around it. Sowing in spring, harvest late summer–autumn. Nothing grows in winter!',
@@ -249,7 +306,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   foodFactory: B({
     id: 'foodFactory', name: 'Food Factory', icon: 'foodFactory', category: 'industry', size: [1, 1],
     materials: { bricks: 18, steel: 6, planks: 6, machinery: 1 }, labor: 200,
-    workers: 12, power: 2, heat: 0, storage: { crops: 40, food: 40, machinery: 6 },
+    workers: 12, allocationPriority: 50, power: 4, heat: 0, storage: { crops: 40, food: 40, machinery: 6 },
     wear: { machinery: 0.01 },
     inputs: { crops: 2.5 }, outputs: { food: 2.5 }, pollution: 1,
     boxHeight: 16, color: '#b06a2a', wallColor: '#d09a5a',
@@ -258,7 +315,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   textileMill: B({
     id: 'textileMill', name: 'Textile Mill', icon: 'textileMill', category: 'industry', size: [1, 1],
     materials: { bricks: 16, steel: 5, planks: 6, machinery: 1 }, labor: 180,
-    workers: 12, power: 2, heat: 0, storage: { crops: 30, clothes: 30, machinery: 6 },
+    workers: 12, allocationPriority: 120, power: 4, heat: 0, storage: { crops: 30, clothes: 30, machinery: 6 },
     wear: { machinery: 0.01 },
     inputs: { crops: 2 }, outputs: { clothes: 1.2 }, pollution: 1,
     boxHeight: 16, color: '#3a5a8a', wallColor: '#6b8ab5',
@@ -266,8 +323,8 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   }),
   machineWorks: B({
     id: 'machineWorks', name: 'Machine Works', icon: 'machineWorks', category: 'industry', size: [2, 2],
-    materials: { bricks: 35, steel: 20, planks: 10, gravel: 16, machinery: 6 }, labor: 450,
-    workers: 22, power: 4, heat: 0, storage: { steel: 30, machinery: 20 },
+    materials: { bricks: 35, steel: 20, planks: 10, gravel: 16, machinery: 6 }, labor: 250,
+    workers: 22, allocationPriority: 200, power: 20, unpoweredEff: 0, heat: 0, storage: { steel: 30, machinery: 20 },
     wear: { machinery: 0.02 },
     inputs: { steel: 3 }, outputs: { machinery: 1 }, pollution: 2,
     boxHeight: 24, color: '#4a5e42', wallColor: '#77906b',
@@ -278,7 +335,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   store: B({
     id: 'store', name: 'State Store', icon: 'store', category: 'services', size: [1, 1],
     materials: { planks: 6, bricks: 8 }, labor: 80,
-    workers: 3, power: 0.5, heat: 0, storage: { food: 40, clothes: 20 },
+    workers: 3, allocationPriority: 40, power: 1, heat: 0, storage: { food: 40, clothes: 20 },
     serviceRadius: 8, serviceType: 'shop',
     boxHeight: 12, color: '#3a6b4f', wallColor: '#d8cdb0',
     description: 'Sells food and clothes to citizens within 8 tiles. Keep it stocked by road!',
@@ -286,7 +343,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   clinic: B({
     id: 'clinic', name: 'Polyclinic', icon: 'clinic', category: 'services', size: [1, 1],
     materials: { bricks: 14, steel: 4, planks: 6 }, labor: 150,
-    workers: 6, power: 1, heat: 0, storage: {},
+    workers: 6, allocationPriority: 60, power: 2, heat: 0, storage: {},
     serviceRadius: 8, serviceType: 'health',
     boxHeight: 14, color: '#b5b5b5', wallColor: '#e8e8e8',
     description: 'Free healthcare for citizens within 8 tiles. Healthy workers work harder.',
@@ -294,7 +351,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   pub: B({
     id: 'pub', name: 'Culture Club', icon: 'pub', category: 'services', size: [1, 1],
     materials: { planks: 8, bricks: 10 }, labor: 100,
-    workers: 4, power: 0.5, heat: 0, storage: {},
+    workers: 4, allocationPriority: 70, power: 1, heat: 0, storage: {},
     serviceRadius: 8, serviceType: 'culture',
     boxHeight: 12, color: '#6b4a8a', wallColor: '#9a7ab5',
     description: 'Beer, chess and patriotic cinema within 8 tiles. Raises happiness.',
@@ -304,7 +361,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   warehouse: B({
     id: 'warehouse', name: 'Warehouse', icon: 'warehouse', category: 'trade', size: [1, 1],
     materials: { planks: 8, bricks: 10 }, labor: 90,
-    workers: 2, power: 0.2, heat: 0,
+    workers: 2, allocationPriority: 250, power: 1, heat: 0,
     storage: { coal: 40, ironOre: 40, steel: 40, oil: 40, fuel: 40, wood: 40, planks: 40, gravel: 40, bricks: 40, crops: 40, food: 40, clothes: 40, machinery: 20 },
     boxHeight: 14, color: '#7a6a4a', wallColor: '#a89878',
     description: 'Open storage for 40 units of every good. Trucks haul surplus here.',
@@ -312,7 +369,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   depot: B({
     id: 'depot', name: 'Council Depot', icon: 'depot', category: 'trade', size: [2, 2],
     materials: { bricks: 15, planks: 10 }, labor: 120,
-    workers: 4, power: 0.5, heat: 0, isDepot: true,
+    workers: 4, allocationPriority: 240, power: 1, heat: 0, isDepot: true,
     storage: { coal: 120, ironOre: 120, steel: 120, oil: 120, fuel: 120, wood: 120, planks: 120, gravel: 120, bricks: 120, crops: 120, food: 120, clothes: 120, machinery: 60 },
     boxHeight: 18, color: '#8a2a2a', wallColor: '#c9b890',
     description: 'Central storage of the republic. Holds 120 of every good.',
@@ -320,7 +377,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   constructionOffice: B({
     id: 'constructionOffice', name: 'Construction Office', icon: 'constructionOffice', category: 'infra', size: [1, 1],
     materials: { bricks: 10, planks: 8 }, labor: 110,
-    workers: 10, power: 0.5, heat: 0, storage: {},
+    workers: 10, allocationPriority: 260, power: 0, heat: 0, storage: { fuel: 60 },
     isConstructionOffice: true,
     boxHeight: 12, color: '#b0802a', wallColor: '#d0aa5a',
     description: 'Employs builders and operates trucks. No office, no construction, no haulage.',
@@ -328,7 +385,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   port: B({
     id: 'port', name: 'River Port', icon: 'port', category: 'trade', size: [2, 2],
     materials: { planks: 14, bricks: 10, steel: 4, gravel: 8 }, labor: 160,
-    workers: 6, power: 0.5, heat: 0, isPort: true,
+    workers: 6, allocationPriority: 230, power: 1, heat: 0, isPort: true,
     storage: { coal: 50, ironOre: 50, steel: 50, oil: 50, fuel: 50, wood: 50, planks: 50, gravel: 50, bricks: 50, crops: 50, food: 50, clothes: 50, machinery: 30 },
     boxHeight: 14, color: '#3a6b8a', wallColor: '#7a99ad',
     description: 'Dockside freight hub — must be built on the shore. Barges ferry goods between ports across water, far cheaper than long bridges.',
@@ -336,21 +393,21 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   motorDepot: B({
     id: 'motorDepot', name: 'Motor Depot', icon: 'truck', category: 'trade', size: [2, 2],
     materials: { bricks: 18, planks: 12, steel: 6, gravel: 8 }, labor: 150,
-    workers: 16, power: 0.5, heat: 0, isMotorDepot: true, storage: {},
+    workers: 16, allocationPriority: 100, power: 1, heat: 0, isMotorDepot: true, storage: { fuel: 60 },
     boxHeight: 14, color: '#54584e', wallColor: '#8a8f80',
-    description: 'Garage for the haulage fleet. Every staffed driver puts another truck on the road, on top of your Construction Offices — but those trucks burn fuel from a Gas Station.',
+    description: 'Garage for the haulage fleet. Every staffed driver puts another truck on the road. Stores fuel on-site for the fleet, drawing from refineries, imports, or Gas Stations.',
   }),
   gasStation: B({
     id: 'gasStation', name: 'Gas Station', icon: 'fuel', category: 'trade', size: [1, 1],
     materials: { bricks: 8, steel: 6, planks: 4 }, labor: 90,
-    workers: 4, power: 0.5, heat: 0, isGasStation: true, storage: { fuel: 60 },
+    workers: 4, allocationPriority: 90, power: 1, heat: 0, isGasStation: true, storage: { fuel: 60 },
     boxHeight: 12, color: '#a83a2a', wallColor: '#cf6a4a',
     description: 'Fuels the truck fleet. Depot trucks burn fuel as they haul — keep it stocked (refinery fuel or imports) or the fleet grinds down. Refills by truck like any store.',
   }),
   customs: B({
     id: 'customs', name: 'Customs House', icon: 'customs', category: 'trade', size: [2, 2],
     materials: { bricks: 20, steel: 6, planks: 8, gravel: 10 }, labor: 200,
-    workers: 8, power: 1, heat: 0, isCustoms: true,
+    workers: 8, allocationPriority: 80, power: 2, heat: 0, isCustoms: true,
     storage: { coal: 80, ironOre: 80, steel: 80, oil: 80, fuel: 80, wood: 80, planks: 80, gravel: 80, bricks: 80, crops: 80, food: 80, clothes: 80, machinery: 40 },
     boxHeight: 16, color: '#2a4a7a', wallColor: '#5a7aaa',
     description: 'Foreign trade terminal. Imports arrive here; exports leave from here. Must connect by road.',
@@ -362,7 +419,7 @@ export const BUILD_LIST: string[] = [
   'house', 'apartment',
   'woodcutter', 'sawmill', 'gravelQuarry', 'brickworks',
   'coalMine', 'ironMine', 'steelMill', 'oilPump', 'refinery',
-  'powerPlant', 'heatingPlant', 'farm', 'foodFactory', 'textileMill', 'machineWorks',
+  'powerPlant', 'oilPowerPlant', 'heatingPlant', 'farm', 'foodFactory', 'textileMill', 'machineWorks',
   'store', 'clinic', 'pub',
   'warehouse', 'depot', 'motorDepot', 'gasStation', 'port', 'customs',
 ];
@@ -384,7 +441,7 @@ export const SUBCATEGORIES: Record<Category, SubCategory[]> = {
   industry: [
     { id: 'timber', name: 'Timber', ids: ['woodcutter', 'sawmill'] },
     { id: 'mining', name: 'Mining', ids: ['gravelQuarry', 'coalMine', 'ironMine'] },
-    { id: 'energy', name: 'Energy & Fuel', ids: ['powerPlant', 'heatingPlant', 'oilPump', 'refinery'] },
+    { id: 'energy', name: 'Energy & Fuel', ids: ['powerPlant', 'oilPowerPlant', 'heatingPlant', 'oilPump', 'refinery'] },
     { id: 'materials', name: 'Materials', ids: ['brickworks', 'steelMill', 'machineWorks'] },
     { id: 'consumer', name: 'Food & Textile', ids: ['farm', 'foodFactory', 'textileMill'] },
   ],
@@ -395,8 +452,8 @@ export const SUBCATEGORIES: Record<Category, SubCategory[]> = {
   ],
   trade: [
     { id: 'storage', name: 'Storage', ids: ['warehouse', 'depot'] },
-    { id: 'fleet', name: 'Fleet', ids: ['motorDepot', 'gasStation'] },
-    { id: 'border', name: 'Border', ids: ['port', 'customs'] },
+    { id: 'transport', name: 'Transport & Ports', ids: ['motorDepot', 'gasStation', 'port'] },
+    { id: 'border', name: 'Border', ids: ['customs'] },
   ],
 };
 
@@ -431,9 +488,30 @@ export const BALANCE = {
   foreignLaborPerDay: 0.5, // ₽/builder-day for imported (non-citizen) construction crews (×importPriceMult)
   foreignLaborPerDayEast: 0.5, // ₽/builder-day (East)
   foreignLaborPerDayWest: 0.1, // $/builder-day (West)
-  maxActiveTrucksPerOffice: 6,
-  trucksPerDriver: 1,      // Motor Depot: trucks added per staffed driver (on top of office trucks)
-  truckFuelPerDay: 0.1,    // fuel a working depot-truck burns per day, drawn from Gas Stations
+  // A Construction Office's lorry pool: a base plus one per fraction of its
+  // crew. These count VEHICLES — half of a lorry's life is the empty run out
+  // to collect — where the pre-fleet figures counted concurrent outbound
+  // shipments only, which is why both doubled when the fleet became physical.
+  officeTruckBase: 12,
+  maxActiveTrucksPerOffice: 12,
+  trucksPerDriver: 2,      // Motor Depot: lorries per staffed driver (a driver and a relief driver)
+
+  // ---- The fleet: every vehicle carries its own fuel ----
+  // A vehicle is a persistent machine owned by a garage, not a per-shipment
+  // ticket. It fills a tank at a pump, burns it by driving, and parks where it
+  // finished. There is deliberately no pooled fleet tank and no per-day fleet
+  // levy: fuel leaves a building's bin exactly once, when a vehicle pumps it.
+  // A 1.5-ton tank on a lorry that hauls 6 tons, good for ~750 road tiles.
+  // Both figures are sized against the rest of the economy, not in a vacuum:
+  // the tank against a garage's 60-ton bin (a bin that cannot fill the fleet
+  // grounds it the day it is built), and the burn rate against what the border
+  // earns — a mature fleet's fuel bill is a real line in the budget and one
+  // refinery covers it several times over, which is the point of building one.
+  vehicleFuelCap: 1.5,       // tank size, in the same bulk unit as the `fuel` resource
+  vehicleFuelPerTile: 0.002, // burn per road-tile-equivalent; off-road costs offRoadStepCost× the tiles, so it costs that much more fuel too
+  vehicleRefuelAt: 0.35,     // tank fraction below which an idle vehicle goes to a pump
+  vehicleReserveTiles: 20,   // range a vehicle keeps in hand — it will not accept a job that would leave it stranded
+  limpSpeedMult: 0.2,       // a vehicle that ran dry mid-leg crawls the rest of the way at this fraction of speed
   boatCapacity: 24,       // one barge hauls four truckloads
   boatDaysPerTile: 0.22,  // barges are slower per tile but shortcut the water
   buildersPerSite: 10,    // max builders on one site per day
@@ -448,17 +526,45 @@ export const BALANCE = {
   customsThroughputPerDay: 30, // units a fully staffed customs house clears daily (auto-trade)
   autoReserveRubles: 500,      // default treasury floor auto-imports never spend below
   autoReserveDollars: 50,
+  // Emergency fuel: the fleet hauls fuel, so an empty republic cannot restock
+  // itself. These buy just enough across the border to get lorries rolling
+  // again — a bootstrap, deliberately not a supply strategy.
+  emergencyFuelFloor: 1,   // pumps below this (town-wide) arm the safety net
+  emergencyFuelTarget: 20, // top the customs house up to this much fuel
+  emergencyFuelBuy: 10,    // …no more than this per day
   wornEffMult: 0.5,       // efficiency of a building whose machinery bin ran dry
   wearReserveDays: 30,    // days of wear stock supplyOf protects from being hauled away
-  // Machinery-repair dispatch priorities (lower = served first). A worn or
-  // critically-low bin is urgent — a half-dead building loses more output than a
-  // fed one gains from one more input load — so it outranks factory inputs (20),
-  // staying below the construction band (15-17). A healthy bin tops up lazily.
-  wearRepairPrio: 18,     // worn/critical machinery bin — urgent domestic repair
-  wearImportPrio: 19,     // worn bin, no domestic machinery — paid border import fallback
-  wearTopUpPrio: 24,      // healthy bin — routine top-up when trucks are free
   wearCriticalFrac: 0.25, // a bin below this fraction of cap is 'critical' (repaired before it runs dry)
   repairImportTopUpFrac: 0.5, // a repair import buys at most this fraction of the bin — clears 'worn', domestic fills the rest
+
+  // ---- Delivery dispatch: value = downtime prevented ----
+  // There is deliberately NO priority-band table here. A demand's rank is
+  // derived from the sim: how many days of operation the destination has left
+  // (`cover`), how long a truck takes to arrive, and how much downtime the load
+  // actually prevents. A bin that was never going to run dry prevents nothing
+  // and scores ~0 no matter how empty or how close it is — that non-linearity
+  // is physics, not a tuned curve, and it is what lets round-trip cost divide
+  // the score unconditionally without a lifeline carve-out.
+  logisticsHorizonDays: 10,   // planning window; downtime beyond it is not counted
+  logisticsMinLoad: 1,        // a constructed building won't be served below this (truck churn)
+  logisticsCandidateFactor: 4, // route this many candidates per free truck (keeps routing O(budget))
+
+  // Consequence weight — the only authored knowledge left. Multiplied by the
+  // player's category dial and by live blast radius (dependent buildings,
+  // population served, how cold it is outside).
+  consequencePlantFuel: 10,   // × buildings that go dark
+  consequenceHeatFuel: 8,     // × heatDemandFactor() — self-silencing in summer
+  consequenceShopGoods: 6,    // × population served
+  consequenceFleetFuel: 7,    // × fleet dependence — the fleet hauls everything else
+  consequenceWear: 4,         // a worn building bleeds output every day it waits
+  consequenceFactoryInput: 3,
+  consequenceConstruction: 8, // × build priority tier
+  // Housekeeping (overflow, export staging) prevents no downtime by
+  // construction, so it has no weight — it runs as an opportunistic pass on
+  // trucks left over after everything preventable has been prevented.
+
+  categoryDialMin: 0.25,      // player dial range; 1 = neutral
+  categoryDialMax: 4,
 };
 
 // ------------------------------------------------------------
@@ -667,7 +773,7 @@ export const OBJECTIVES: ObjectiveDef[] = [
   { id: 'builders', title: 'Bricks and Planks', description: 'Produce 20 planks and 20 bricks in total', rewardRubles: 350 },
   { id: 'firstMachines', title: 'First Machines', description: 'Import 5 machinery through the customs house', rewardRubles: 400 },
   { id: 'coal', title: 'Black Gold', description: 'Mine 30 coal in total', rewardRubles: 400 },
-  { id: 'power', title: 'Electrification', description: 'Generate at least 8 MW of power', rewardRubles: 500 },
+  { id: 'power', title: 'Electrification', description: 'Generate at least 50 MW of power', rewardRubles: 500 },
   { id: 'heat', title: 'Winter is Coming', description: 'Have a working Heating Plant before winter', rewardRubles: 400 },
   { id: 'steel', title: 'Steel for the Motherland', description: 'Produce 15 steel in total', rewardDollars: 150 },
   { id: 'foodchain', title: 'From Field to Table', description: 'Produce 25 food in total', rewardRubles: 400 },

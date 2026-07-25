@@ -12,9 +12,11 @@ import { layRoad, makeEngine, placeBuilt, runDays } from './helpers';
 /** Staffed food factory town. placeBuilt seeds min(bin cap, bill) spares. */
 function factoryTown() {
   const e = makeEngine();
-  layRoad(e, 4, 9, 33, 9);
+  layRoad(e, 2, 9, 33, 9);
   const depot = placeBuilt(e, 'depot', 5, 10);
   placeBuilt(e, 'constructionOffice', 8, 10); // trucks + builders
+  const plant = placeBuilt(e, 'powerPlant', 2, 10);
+  plant.stock.coal = 50;
   const factory = placeBuilt(e, 'foodFactory', 10, 10);
   placeBuilt(e, 'apartment', 30, 10);
   e.pop = 40;
@@ -157,8 +159,10 @@ describe('imports and the Machine Works', () => {
 
   it('the Machine Works turns steel into machinery and unlocks the arc objectives', () => {
     const e = makeEngine();
-    layRoad(e, 4, 9, 40, 9);
+    layRoad(e, 2, 9, 40, 9);
     placeBuilt(e, 'depot', 5, 10);
+    const plant = placeBuilt(e, 'powerPlant', 2, 10);
+    plant.stock.coal = 50;
     const works = placeBuilt(e, 'machineWorks', 10, 10);
     placeBuilt(e, 'apartment', 30, 10);
     placeBuilt(e, 'apartment', 33, 10);

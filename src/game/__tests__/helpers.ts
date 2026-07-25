@@ -1,6 +1,6 @@
 import { GameEngine } from '../engine';
 import type { TilePatch } from '../engine';
-import { BALANCE } from '../config';
+import { BALANCE, BUILDINGS } from '../config';
 import type { ResourceId } from '../config';
 import type { MapData, Tile } from '../mapgen';
 import { DEFAULT_MAP_W, DEFAULT_MAP_H } from '../mapgen';
@@ -38,12 +38,23 @@ export function makeEngine(opts: { withBase?: boolean; weather?: (dayIndex: numb
   });
 }
 
-/** Instant-build a constructed building, throwing on invalid placement. */
+/**
+ * Instant-build a constructed building, throwing on invalid placement.
+ *
+ * A garage (Construction Office / Motor Depot) is handed a full fuel bin, the
+ * same grant `setupStartingBase` makes: every vehicle burns fuel, so a dry
+ * garage owns lorries that cannot move, and a test about crop hauling should
+ * not have to be a test about fuel. Tests that ARE about fuel zero the bin
+ * themselves.
+ */
 export function placeBuilt(e: GameEngine, defId: string, x: number, y: number) {
   e.dollars = 1e9;
   const res = e.tryPlace(defId, x, y, { instant: true });
   if (!res.ok) throw new Error(`placeBuilt ${defId}@${x},${y}: ${res.reason}`);
-  return e.buildingAt(x, y)!;
+  const b = e.buildingAt(x, y)!;
+  const def = BUILDINGS[defId];
+  if (def.isConstructionOffice || def.isMotorDepot) b.stock.fuel = def.storage.fuel ?? 0;
+  return b;
 }
 
 /** Paint a road rectangle directly (no cost, no stats). */

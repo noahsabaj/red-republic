@@ -20,7 +20,9 @@ export function campaignMap(): MapData {
   // gravel south, coal and iron north
   for (const [x, y] of [[18, 24], [18, 25], [19, 24], [19, 25]]) { t[y][x].deposit = 'gravel'; t[y][x].terrain = 'rock'; }
   for (const [x, y] of [[21, 22], [21, 21], [22, 21]]) t[y][x].deposit = 'coal';
-  for (const [x, y] of [[23, 22], [24, 22], [23, 21]]) t[y][x].deposit = 'ironOre';
+  for (const [x, y] of [[23, 22], [23, 21]]) t[y][x].deposit = 'ironOre';
+  // oil east of the iron, for the fuel chain that ends the import bill
+  for (const [x, y] of [[24, 22], [24, 21]]) t[y][x].deposit = 'oil';
   return map;
 }
 
@@ -96,6 +98,10 @@ export const CAMPAIGN_STEPS: CampaignStep[] = [
       e.setAutoTradeRule('bricks', { mode: 'export', level: 40, currency: 'east' });
       e.setAutoTradeRule('food', { mode: 'export', level: 60, currency: 'east' });
       e.setAutoTradeRule('clothes', { mode: 'import', level: 6, currency: 'east' });
+      // Every lorry burns fuel and the republic makes none yet, so a standing
+      // fuel order is as load-bearing as the food supply. The Politburo's
+      // opening grant only covers the first weeks.
+      e.setAutoTradeRule('fuel', { mode: 'import', level: 40, currency: 'east' });
     },
   },
   {
@@ -109,12 +115,18 @@ export const CAMPAIGN_STEPS: CampaignStep[] = [
       // electrification + the housing to staff it
       buyMachines(e, 7); // coal mine 2 + power plant 5
       place(e, 'coalMine', 21, 22);
-      place(e, 'powerPlant', 26, 24); // the industrial quarter, far from homes
+      place(e, 'powerPlant', 26, 24);
+      for (const b of e.buildings.values()) {
+        if (['coalMine', 'powerPlant'].includes(b.defId) && !b.constructed) {
+          e.setSitePriority(b.id, 1);
+          b.priorityHigh = true;
+        }
+      }
       place(e, 'apartment', 10, 19); // flanking the new street
       place(e, 'apartment', 13, 19);
       // modest coal exports (winter heating still eats most of it); spares
       // trickle in as machines wear down
-      e.setAutoTradeRule('coal', { mode: 'export', level: 60, currency: 'east' });
+      e.setAutoTradeRule('coal', { mode: 'export', level: 20, currency: 'east' });
       e.setAutoTradeRule('machinery', { mode: 'import', level: 12, currency: 'east' });
     },
   },
@@ -151,37 +163,84 @@ export const CAMPAIGN_STEPS: CampaignStep[] = [
   },
   {
     day: 560, act: e => {
-      // the steel town: mill + the second power plant that keeps it lit
+      // the steel town: mill + the second power plant that keeps it lit + second coal mine
       e.buy('steel', 35, 'east'); // frames for the mill and the plant
-      buyMachines(e, 13); // steel mill 8 + power plant 5
+      e.setAutoTradeRule('bricks', { mode: 'export', level: 80, currency: 'east' });
+      e.setAutoTradeRule('coal', { mode: 'export', level: 50, currency: 'east' });
+      // A standing steel order until the mill closes the loop: every frame from
+      // here to autarky — mill, works, boilers, blocks — is structural steel,
+      // and a one-off crate leaves the biggest site 3 tons short for ever.
+      e.setAutoTradeRule('steel', { mode: 'import', level: 45, currency: 'east' });
+      e.setAutoTradeRule('fuel', { mode: 'import', level: 70, currency: 'east' }); // the fleet doubled with the second office
+      buyMachines(e, 15); // steel mill 8 + power plant 5 + coal mine 2
       place(e, 'steelMill', 28, 24);  // east, away from town
       place(e, 'powerPlant', 28, 21); // beside it, same industrial quarter
+      place(e, 'road', 22, 22);         // spur to the second coal seam
+      place(e, 'coalMine', 22, 21);     // fuel for the second plant and mill
+      place(e, 'house', 15, 22);        // housing for steelworkers
+      place(e, 'house', 16, 22);
+      for (const b of e.buildings.values()) {
+        if ((['steelMill', 'powerPlant', 'coalMine'].includes(b.defId) || (b.defId === 'road' && b.x >= 26)) && !b.constructed) {
+          e.setSitePriority(b.id, 1);
+          b.priorityHigh = true;
+        }
+      }
+    },
+  },
+  {
+    day: 660, act: e => {
+      // Fuel autarky. Every lorry burns fuel and the fleet is now the largest
+      // standing cost the republic has; a pump and a refinery on the eastern
+      // seam end the import bill the way the Machine Works ends the machinery
+      // one. Both sit in the industrial quarter, off the housing rows.
+      buyMachines(e, 9); // oil pump 3 + refinery 6
+      place(e, 'oilPump', 24, 22);
+      place(e, 'road', 31, 23);      // the row runs two tiles further east…
+      place(e, 'road', 32, 23);
+      place(e, 'refinery', 31, 24);  // …to the refinery beyond the steel mill
+      for (const b of e.buildings.values()) {
+        if (['oilPump', 'refinery'].includes(b.defId) || (b.defId === 'road' && b.x >= 31)) {
+          if (b.constructed) continue;
+          e.setSitePriority(b.id, 1);
+          b.priorityHigh = true;
+        }
+      }
     },
   },
   {
     day: 700, act: e => {
       // infill housing on the remaining road-row frontage
-      for (const [x, y] of [[15, 22], [16, 22], [18, 22], [25, 22], [21, 24]]) {
+      for (const [x, y] of [[18, 22], [25, 22], [21, 24]]) {
         place(e, 'house', x, y);
       }
+      // The mill is rolling steel now, so the standing order drops to a thin
+      // top-up. Left at 45 it never stops buying — construction eats the yard
+      // as fast as the mill fills it, so the town total never clears the level
+      // and the republic keeps paying the border for its own product.
+      e.setAutoTradeRule('steel', { mode: 'import', level: 15, currency: 'east' });
     },
   },
   {
     day: 800, act: e => {
-      e.buy('steel', 30, 'east'); // the last structural import before autarky
-      buyMachines(e, 9); // machine works 6 + second coal mine 2 + third boiler 1
+      e.buy('steel', 30, 'east'); // the Machine Works' frame — 20 of it goes straight in
+      // Exactly what the two buildings need (6 + 1) plus one spare. The old
+      // order of 11 bought four machines nobody had a bin for on the day the
+      // treasury is at its lowest of the whole plan; the standing machinery
+      // order refills the wear reserves afterwards, when exports are flowing.
+      buyMachines(e, 8);
       place(e, 'machineWorks', 26, 21); // beside the mill, off the row's north side
-      place(e, 'road', 22, 22);         // spur to the second coal seam
-      place(e, 'coalMine', 22, 21);     // two plants and three boilers eat coal
       place(e, 'heatingPlant', 20, 22); // winter with 250 souls needs a third boiler
       place(e, 'apartment', 13, 17);
     },
   },
   {
     day: 980, act: e => {
-      // autarky in practice: every material below — steel, machinery, bricks —
-      // now comes off the republic's own lines, not across the border
-      place(e, 'powerPlant', 30, 24);   // third plant closes the power gap
+      // autarky in practice: steel, machinery and fuel now come off the
+      // republic's own lines, so the standing orders are cancelled outright —
+      // the border is for what we cannot make, not what we already do.
+      e.setAutoTradeRule('steel', null);
+      e.setAutoTradeRule('fuel', null);
+      place(e, 'powerPlant', 31, 21);   // third plant closes the power gap
       place(e, 'foodFactory', 17, 24);  // second bakery for 300 mouths
       for (const [x, y] of [[4, 25], [4, 26], [5, 26], [6, 26], [7, 26]]) place(e, 'road', x, y);
       place(e, 'farm', 5, 27);          // southern fields feed the new bakery

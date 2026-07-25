@@ -16,6 +16,8 @@ import { useAutosave } from './hooks/use-autosave';
 import { MENU_ROOT, PLAYING, screenReducer } from './app/screens';
 import { bootFromUrl, createSession, sessionFromSave } from './app/session';
 import type { GameSession, NewGameConfig } from './app/session';
+import { truckWorldPos } from './game/engine';
+import type { Vehicle } from './game/engine';
 import { getSettings, subscribeSettings } from './app/settings';
 import { SaveError } from './game/save-format';
 import type { SaveGameV1 } from './game/save-format';
@@ -33,6 +35,8 @@ export default function App() {
   const [screen, dispatch] = useReducer(screenReducer, undefined, () => (session ? PLAYING : MENU_ROOT));
   const [tool, setTool] = useState<Tool>({ kind: 'select' });
   const [selection, setSelection] = useState<SelectionItem[]>([]);
+  // one-shot camera pan request handed down to GameCanvas (which owns the camera)
+  const [camFocus, setCamFocus] = useState<{ wx: number; wy: number; nonce: number } | null>(null);
   // placement defaults stamped onto each new site (foreign-labor default is engine state)
   const [policy, setPolicyState] = useState<BuildPolicy>({ autoBuy: false, currency: 'east', instant: false, plan: false });
   // instant ($) completes now, so it's exclusive with the deferred/paid modes;
@@ -301,6 +305,7 @@ export default function App() {
           hotkeysEnabled={hotkeysEnabled}
           onError={(msg) => push(msg, 'bad')}
           onOpenMenu={openPause}
+          focus={camFocus}
         />
       )}
 
@@ -311,6 +316,7 @@ export default function App() {
             activePanel={panel}
             helpOpen={showHelp}
             onOpenStockpiles={() => togglePanel('stockpiles')}
+            onOpenPower={() => togglePanel('power')}
             onOpenLogistics={() => togglePanel('logistics')}
             onOpenObjectives={() => togglePanel('objectives')}
             onOpenTrade={() => togglePanel('trade')}
@@ -336,6 +342,14 @@ export default function App() {
               onOpenTrade={() => setPanel('trade')}
               onArmBuild={(defId) => setToolSfx({ kind: 'build', defId })}
               notify={push}
+              onSelectTruck={(tr: Vehicle) => {
+                setSelection([{ kind: 'truck', id: tr.id }]);
+                setPanel('building');
+                // "Track" is a camera command, not just a selection — the
+                // vehicle the player wants to watch is usually off screen.
+                const { wx, wy } = truckWorldPos(tr);
+                setCamFocus(f => ({ wx, wy, nonce: (f?.nonce ?? 0) + 1 }));
+              }}
             />
           )}
         </>

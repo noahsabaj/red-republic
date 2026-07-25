@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { STATUS_PALETTES, hash01, isoCompare, pickBuilding, precipParticle, screenToTile, shouldRenderBackdropFrame, shouldRenderFrame, toScreen, truckWorldPos, type Camera, type FrameInvalidation } from '../render';
-import type { Truck } from '../engine';
-import { makeEngine, placeBuilt } from './helpers';
+import { STATUS_PALETTES, centerCameraOn, hash01, isoCompare, pickBuilding, pickEntity, precipParticle, screenToTile, shouldRenderBackdropFrame, shouldRenderFrame, toScreen, truckWorldPos, type Camera, type FrameInvalidation } from '../render';
+import type { Mover } from '../engine';
+import { layRoad, makeEngine, placeBuilt, runDays } from './helpers';
 
 const cam: Camera = { x: 137, y: 42, z: 1.3 };
 
@@ -100,8 +100,78 @@ describe('pickBuilding', () => {
   });
 });
 
+describe('pickEntity (trucks vs buildings)', () => {
+  /** Park a lorry at an exact world position by giving it a zero-length route. */
+  function parkLorryAt(e: ReturnType<typeof makeEngine>, wx: number, wy: number) {
+    const v = e.trucks[0];
+    if (!v) throw new Error('no lorry in the fleet');
+    v.points = [{ x: wx, y: wy }];
+    v.daysDone = 0;
+    v.daysTotal = 0;
+    return v;
+  }
+
+  function fleetTown() {
+    const e = makeEngine();
+    layRoad(e, 8, 9, 20, 9);
+    placeBuilt(e, 'depot', 10, 10);
+    placeBuilt(e, 'constructionOffice', 14, 10);
+    runDays(e, 1); // the garage's lorries exist
+    return e;
+  }
+
+  it('a lorry on open ground is selectable', () => {
+    const e = fleetTown();
+    const v = parkLorryAt(e, 18.5, 6.5); // empty tile, nothing drawn behind it
+    const cam: Camera = { x: 0, y: 0, z: 1 };
+    const p = toScreen(18.5, 6.5, cam);
+    const hit = pickEntity(e, p.x, p.y - 6, cam);
+    expect(hit).toEqual({ kind: 'truck', truck: v });
+  });
+
+  it('a lorry BEHIND a building does not steal the click from it', () => {
+    // The regression: pickTruck ran first with a 15z-radius circle and no
+    // occlusion test, so a lorry the player could not even see won the click.
+    const e = fleetTown();
+    const depot = e.buildingAt(10, 10)!;
+    parkLorryAt(e, depot.x - 0.5, depot.y - 0.5); // north-west of it = drawn behind
+    const cam: Camera = { x: 0, y: 0, z: 1 };
+    const p = toScreen(depot.x + 0.5, depot.y + 0.5, cam);
+    const hit = pickEntity(e, p.x, p.y - 10, cam);
+    expect(hit?.kind).toBe('building');
+  });
+
+  it('picks the front-most lorry when two overlap, not the first in the array', () => {
+    const e = fleetTown();
+    const [a, b] = e.trucks;
+    a.points = [{ x: 17.5, y: 5.5 }]; a.daysTotal = 0; a.daysDone = 0; // behind
+    b.points = [{ x: 17.6, y: 5.6 }]; b.daysTotal = 0; b.daysDone = 0; // in front
+    const cam: Camera = { x: 0, y: 0, z: 1 };
+    const p = toScreen(17.6, 5.6, cam);
+    const hit = pickEntity(e, p.x, p.y - 6, cam);
+    expect(hit).toEqual({ kind: 'truck', truck: b });
+  });
+
+  it('empty ground picks nothing', () => {
+    const e = fleetTown();
+    const cam: Camera = { x: 0, y: 0, z: 1 };
+    const p = toScreen(40.5, 40.5, cam);
+    expect(pickEntity(e, p.x, p.y, cam)).toBeNull();
+  });
+});
+
+describe('centerCameraOn', () => {
+  it('puts the requested world position in the middle of the viewport', () => {
+    const c: Camera = { x: 0, y: 0, z: 1.4 };
+    centerCameraOn(c, 12.5, 30.5, 900, 600);
+    const p = toScreen(12.5, 30.5, c);
+    expect(p.x).toBeCloseTo(450, 9);
+    expect(p.y).toBeCloseTo(300, 9);
+  });
+});
+
 describe('truckWorldPos', () => {
-  const truck = (over: Partial<Truck>): Truck => ({
+  const truck = (over: Partial<Mover>): Mover => ({
     id: 1, points: [{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 3 }],
     cargo: 'coal', amount: 6, daysTotal: 2, daysDone: 0,
     phase: 'go', destId: 1, srcId: 2, ...over,

@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { OBJECTIVES } from '../config';
-import type { BuildingInst, GameEngine, Truck } from '../engine';
+import { BALANCE, OBJECTIVES } from '../config';
+import type { BuildingInst, GameEngine, Mover } from '../engine';
 import { layRoad, makeEngine, placeBuilt, runDays } from './helpers';
 
-function truckTrace(truck: Truck) {
+function truckTrace(truck: Mover) {
   return {
     id: truck.id,
     srcId: truck.srcId,
@@ -15,6 +15,32 @@ function truckTrace(truck: Truck) {
     daysDone: truck.daysDone,
     phase: truck.phase,
   };
+}
+
+/**
+ * Every lorry this pass put to work, traced as the LOADED supplier→destination
+ * run that dispatch chose for it.
+ *
+ * Lorries are persistent machines now, so one starts at its garage and drives
+ * out empty to collect. That first leg is not what these tests are about: they
+ * pin the dispatch decision — which supplier won, by which ranked access tile,
+ * over which path, for how much. Dispatch still routes exactly that leg and
+ * hands it to the lorry (`pendingPath`), so the traces below are unchanged
+ * from the shipment model they were written against. If the loaded route ever
+ * stops being chosen at dispatch, every one of them fails.
+ */
+function dispatchedTrucks(e: GameEngine) {
+  return e.trucks.filter(v => v.state !== 'idle').map(v => {
+    if (v.state !== 'toPickup' || !v.pendingPath) return truckTrace(v);
+    const src = e.buildings.get(v.srcId)!;
+    const dest = e.buildings.get(v.destId)!;
+    const tiles = v.pendingTiles ?? v.pendingPath.length;
+    return {
+      ...truckTrace(v),
+      points: [e.centerOf(src), ...v.pendingPath, e.centerOf(dest)],
+      daysTotal: Math.max(0.6, tiles * BALANCE.truckDaysPerTile),
+    };
+  });
 }
 
 function stockTrace(e: GameEngine, buildings: BuildingInst[]) {
@@ -54,7 +80,7 @@ describe('logistics compatibility characterization', () => {
     runDays(e, 1);
 
     expect({
-      trucks: e.trucks.map(truckTrace),
+      trucks: dispatchedTrucks(e),
       buildings: stockTrace(e, [warehouse, firstStore, secondStore]),
     }).toEqual({
       trucks: [
@@ -90,7 +116,7 @@ describe('logistics compatibility characterization', () => {
     runDays(e, 1);
 
     expect({
-      trucks: e.trucks.map(truckTrace),
+      trucks: dispatchedTrucks(e),
       buildings: stockTrace(e, [firstWarehouse, secondWarehouse, store]),
     }).toEqual({
       trucks: [{
@@ -119,7 +145,7 @@ describe('logistics compatibility characterization', () => {
 
     expect({
       access: e.adjacentRoads(warehouse),
-      trucks: e.trucks.map(truckTrace),
+      trucks: dispatchedTrucks(e),
       buildings: stockTrace(e, [warehouse, store]),
     }).toEqual({
       access: [{ x: 10, y: 9 }, { x: 10, y: 11 }],
@@ -148,7 +174,7 @@ describe('logistics compatibility characterization', () => {
     runDays(e, 1);
 
     expect({
-      trucks: e.trucks.map(truckTrace),
+      trucks: dispatchedTrucks(e),
       buildings: stockTrace(e, [nearOffRoad, farOnRoad, store]),
     }).toEqual({
       trucks: [{
@@ -178,7 +204,7 @@ describe('logistics compatibility characterization', () => {
     runDays(e, 1);
 
     expect({
-      trucks: e.trucks.map(truckTrace),
+      trucks: dispatchedTrucks(e),
       buildings: stockTrace(e, [closeWarehouse, backupWarehouse, firstStore, secondStore]),
     }).toEqual({
       trucks: [
@@ -217,7 +243,7 @@ describe('logistics compatibility characterization', () => {
     runDays(e, 1);
 
     expect({
-      trucks: e.trucks.map(truckTrace),
+      trucks: dispatchedTrucks(e),
       customsMachinery: e.stockOf(customs, 'machinery'),
       wornMachinery: e.stockOf(worn, 'machinery'),
       wornIncoming: e.incomingOf(worn, 'machinery'),
@@ -258,7 +284,7 @@ describe('logistics compatibility characterization', () => {
     runDays(e, 1);
 
     expect({
-      trucks: e.trucks.map(truckTrace),
+      trucks: dispatchedTrucks(e),
       rubles: e.rubles,
       afterPlacement,
       depot: { planks: e.stockOf(depot, 'planks'), bricks: e.stockOf(depot, 'bricks') },
@@ -285,7 +311,7 @@ describe('logistics compatibility characterization', () => {
     });
   });
 
-  it('auto-export excludes both the destination itself and every other customs source, then stops at the truck budget', () => {
+  it('auto-export excludes both the destination itself and every other customs source, then stops at the surplus', () => {
     const e = makeEngine();
     layRoad(e, 4, 9, 30, 9);
     const destinationCustoms = placeBuilt(e, 'customs', 5, 10);
@@ -307,23 +333,34 @@ describe('logistics compatibility characterization', () => {
       { x: 6, y: 11 },
     ];
     expect({
-      trucks: e.trucks.map(truckTrace),
+      trucks: dispatchedTrucks(e),
       destination: { stock: e.stockOf(destinationCustoms, 'steel'), incoming: e.incomingOf(destinationCustoms, 'steel') },
       otherCustoms: e.stockOf(otherCustoms, 'steel'),
       warehouse: e.stockOf(warehouse, 'steel'),
       fleet: e.fleetStatus(),
     }).toEqual({
-      trucks: Array.from({ length: 6 }, (_, i) => ({
-        id: i + 1, srcId: 3, destId: 1, cargo: 'steel', amount: 6,
-        points: expectedPath,
-        daysTotal: 2.6999999999999997, daysDone: 0, phase: 'go',
-      })),
-      destination: { stock: 30, incoming: 36 },
+      // six full loads and the 4-ton remainder: staging stops when the surplus
+      // above the keep-level is gone, with lorries still parked in the yard
+      trucks: [
+        ...Array.from({ length: 6 }, (_, i) => ({
+          id: i + 1, srcId: 3, destId: 1, cargo: 'steel', amount: 6,
+          points: expectedPath,
+          daysTotal: 2.6999999999999997, daysDone: 0, phase: 'go',
+        })),
+        {
+          id: 7, srcId: 3, destId: 1, cargo: 'steel', amount: 4,
+          points: expectedPath,
+          daysTotal: 2.6999999999999997, daysDone: 0, phase: 'go',
+        },
+      ],
+      destination: { stock: 30, incoming: 40 },
       otherCustoms: 30,
-      warehouse: 24,
+      warehouse: 20,
+      // each lorry filled its own 1.5-ton tank from the garage's 60-ton bin
       fleet: {
-        active: 6, max: 6, officeTrucks: 6, driverTrucks: 0,
-        depotTrucks: 0, fuelCap: 0, gasFuel: 0, fuelDaysLeft: Infinity,
+        active: 7, max: 12, idle: 5, grounded: 0,
+        officeTrucks: 12, driverTrucks: 0,
+        tankFuel: 18, pumpFuel: 42, customsFuel: 0, fuelDaysLeft: Infinity,
       },
     });
   });
@@ -341,7 +378,7 @@ describe('logistics compatibility characterization', () => {
     runDays(e, 1);
 
     expect({
-      trucks: e.trucks.map(truckTrace),
+      trucks: dispatchedTrucks(e),
       mine: { stock: e.stockOf(mine, 'coal'), incoming: e.incomingOf(mine, 'coal') },
       depot: { stock: e.stockOf(depot, 'coal'), incoming: e.incomingOf(depot, 'coal') },
     }).toEqual({
@@ -368,7 +405,7 @@ describe('logistics compatibility characterization', () => {
     runDays(e, 1);
 
     expect({
-      trucks: e.trucks.map(truckTrace),
+      trucks: dispatchedTrucks(e),
       depot: e.stockOf(depot, 'gravel'),
       site: { stock: e.stockOf(site, 'gravel'), incoming: e.incomingOf(site, 'gravel') },
     }).toEqual({
@@ -399,7 +436,7 @@ describe('logistics compatibility characterization', () => {
     runDays(e, 1);
     expect({
       orders: e.serialize().body.boatOrders,
-      trucks: e.trucks.map(truckTrace),
+      trucks: dispatchedTrucks(e),
       westIncoming: { ...westPort.incoming },
       eastIncoming: { ...eastPort.incoming },
     }).toEqual({
@@ -423,7 +460,9 @@ describe('logistics compatibility characterization', () => {
       eastIncoming: {},
     });
 
-    runDays(e, 3);
+    // one day longer than the shipment model needed: the lorry has to drive
+    // out from its garage to the depot before it can carry anything portside
+    runDays(e, 4);
     expect({
       orders: e.serialize().body.boatOrders,
       boats: e.boats.map(truckTrace),
@@ -465,7 +504,7 @@ describe('logistics compatibility characterization', () => {
     // buildings' top-edge access), NOT a road: daysTotal is the weighted travel
     // (7 steps × offRoadStepCost 8 × truckDaysPerTile 0.18 = 10.08), far above the
     // ~1.4 a road hop-count would give — this is the branch no road test exercises.
-    expect(e.trucks.map(truckTrace)).toEqual([{
+    expect(dispatchedTrucks(e)).toEqual([{
       id: 1, srcId: supplier.id, destId: store.id, cargo: 'food', amount: 6,
       points: [
         { x: 5.5, y: 10.5 },

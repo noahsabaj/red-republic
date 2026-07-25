@@ -3,8 +3,8 @@
 // ============================================================
 import { BALANCE, BUILDINGS, RESOURCES } from './config';
 import { drawIcon } from '@/ui/icons';
-import { buildingWorn } from './engine';
-import type { GameEngine, BuildingInst, Season, Truck } from './engine';
+import { buildingWorn, truckWorldPos } from './engine';
+import type { GameEngine, BuildingInst, Season, Mover, Vehicle } from './engine';
 import type { WeatherCondition } from './weather';
 
 export const TILE_W = 64;
@@ -110,6 +110,13 @@ export function toScreen(cx: number, cy: number, cam: Camera) {
   };
 }
 
+/** Pan `cam` so world position (wx, wy) lands in the middle of a vw×vh viewport
+ *  — `toScreen` inverted for the camera offset. Mutates in place. */
+export function centerCameraOn(cam: Camera, wx: number, wy: number, vw: number, vh: number) {
+  cam.x = vw / 2 - (wx - wy) * (TILE_W / 2) * cam.z;
+  cam.y = vh / 2 - (wx + wy) * (TILE_H / 2) * cam.z;
+}
+
 export function screenToTile(sx: number, sy: number, cam: Camera) {
   const A = (sx - cam.x) / ((TILE_W / 2) * cam.z);
   const B = (sy - cam.y) / ((TILE_H / 2) * cam.z);
@@ -204,6 +211,48 @@ export function pickBuilding(engine: GameEngine, sx: number, sy: number, cam: Ca
   return null;
 }
 
+/**
+ * The FRONT-MOST vehicle whose drawn sprite covers (sx, sy).
+ *
+ * The hit box is the sprite `drawTruck` actually paints (x ± 5z, y-12z..y-2z,
+ * padded 2z for small targets), not a generous circle around it — and the scan
+ * keeps the last match in draw order rather than the first in array order, so
+ * two lorries on the same road pick the one in front.
+ */
+export function pickTruck(engine: GameEngine, sx: number, sy: number, cam: Camera): Vehicle | null {
+  const z = cam.z;
+  let best: Vehicle | null = null;
+  let bestBox: { x: number; y: number; w: number; h: number } | null = null;
+  for (const tr of engine.trucks) {
+    const pos = truckWorldPos(tr);
+    const p = toScreen(pos.wx, pos.wy, cam);
+    if (sx < p.x - 7 * z || sx > p.x + 7 * z || sy < p.y - 14 * z || sy > p.y) continue;
+    const box = { x: pos.wx, y: pos.wy, w: 0, h: 0 };
+    if (!bestBox || isoCompare(box, bestBox) > 0) { best = tr; bestBox = box; }
+  }
+  return best;
+}
+
+/** What a click at (sx, sy) actually selects.
+ *
+ *  Trucks are drawn INSIDE the row scan, so a lorry can be genuinely hidden
+ *  behind a building — resolving the two by the same `isoCompare` the scan
+ *  sorts by is the only way a click can agree with what the player sees.
+ *  Testing trucks first (as this used to) let a passing lorry steal clicks
+ *  from the warehouse it was parked behind. */
+export function pickEntity(engine: GameEngine, sx: number, sy: number, cam: Camera):
+  { kind: 'truck'; truck: Vehicle } | { kind: 'building'; building: BuildingInst } | null {
+  const b = pickBuilding(engine, sx, sy, cam);
+  const tr = pickTruck(engine, sx, sy, cam);
+  if (tr && b) {
+    const inFront = isoCompare({ x: truckWorldPos(tr).wx, y: truckWorldPos(tr).wy, w: 0, h: 0 }, b) > 0;
+    return inFront ? { kind: 'truck', truck: tr } : { kind: 'building', building: b };
+  }
+  if (tr) return { kind: 'truck', truck: tr };
+  if (b) return { kind: 'building', building: b };
+  return null;
+}
+
 function pointInPoly(x: number, y: number, pts: { x: number; y: number }[]) {
   let inside = false;
   for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
@@ -219,7 +268,7 @@ interface DepthItem {
   x: number; y: number; w: number; h: number; // footprint (points: w = h = 0)
   kind: 'building' | 'trees' | 'truck' | 'boat' | 'citizen' | 'ghost' | 'borderpost';
   b?: BuildingInst;
-  tr?: Truck;
+  tr?: Mover;
   wx?: number; wy?: number;
   variant?: number;
   foreign?: boolean;
@@ -250,25 +299,9 @@ function fieldTilesOf(engine: GameEngine): Set<number> {
   return tiles;
 }
 
-export function truckWorldPos(tr: Truck): { wx: number; wy: number } {
-  const pts = tr.points;
-  const segs = pts.length - 1;
-  if (segs <= 0) return { wx: pts[0]?.x ?? 0, wy: pts[0]?.y ?? 0 };
-  const frac = Math.min(1, tr.daysDone / tr.daysTotal);
-  const f = frac * segs;
-  if (tr.phase === 'go') {
-    const i = Math.min(segs - 1, Math.floor(f));
-    const t = f - i;
-    const p1 = pts[i], p2 = pts[i + 1];
-    return { wx: p1.x + (p2.x - p1.x) * t, wy: p1.y + (p2.y - p1.y) * t };
-  } else {
-    const revI = Math.min(segs - 1, Math.floor(f));
-    const t = f - revI;
-    const i = segs - revI;
-    const p1 = pts[i], p2 = pts[i - 1];
-    return { wx: p1.x + (p2.x - p1.x) * t, wy: p1.y + (p2.y - p1.y) * t };
-  }
-}
+// truckWorldPos lives in the engine (it is what the fleet itself uses to know
+// where a lorry is) and is re-exported here for the renderer's own consumers.
+export { truckWorldPos };
 
 export function renderGroundTile(
   ctx: CanvasRenderingContext2D,
@@ -532,6 +565,17 @@ export function render(ctx: CanvasRenderingContext2D, engine: GameEngine, cam: C
     ctx.strokeStyle = frame.palette.selection;
     ctx.lineWidth = 2;
     for (const sel of ui.selection) {
+      if (sel.kind === 'truck') {
+        const tr = engine.trucks.find(t => t.id === sel.id);
+        if (tr) {
+          const pos = truckWorldPos(tr);
+          const p = toScreen(pos.wx, pos.wy, cam);
+          ctx.beginPath();
+          ctx.arc(p.x, p.y - 4 * cam.z, 12 * cam.z, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        continue;
+      }
       let rect: { x: number; y: number; w: number; h: number } | null = null;
       if (sel.kind === 'building') {
         const b = engine.buildings.get(sel.id);
@@ -915,7 +959,7 @@ function drawRoad(ctx: CanvasRenderingContext2D, engine: GameEngine, x: number, 
   ctx.setLineDash([]);
 }
 
-function drawBoat(ctx: CanvasRenderingContext2D, boat: Truck, wx: number, wy: number, cam: Camera, time: number | null) {
+function drawBoat(ctx: CanvasRenderingContext2D, boat: Mover, wx: number, wy: number, cam: Camera, time: number | null) {
   const p = toScreen(wx, wy, cam);
   const s = cam.z;
   const y = time === null ? p.y : p.y + Math.sin(time / 600 + boat.id * 1.3) * 0.8 * s; // gentle bob (null = reduced motion)
@@ -943,7 +987,7 @@ function drawBoat(ctx: CanvasRenderingContext2D, boat: Truck, wx: number, wy: nu
   ctx.fillRect(p.x + 5.5 * s, y - 7.5 * s, 2.5 * s, 3.5 * s);
 }
 
-const CHIMNEY_DEFS = new Set(['powerPlant', 'steelMill', 'refinery', 'heatingPlant', 'brickworks']);
+const CHIMNEY_DEFS = new Set(['powerPlant', 'oilPowerPlant', 'steelMill', 'refinery', 'heatingPlant', 'brickworks']);
 
 function drawBuilding(ctx: CanvasRenderingContext2D, b: BuildingInst, cam: Camera, frame: FrameStyle) {
   const def = BUILDINGS[b.defId];
@@ -1044,7 +1088,7 @@ function drawBuilding(ctx: CanvasRenderingContext2D, b: BuildingInst, cam: Camer
   }
 }
 
-function drawTruck(ctx: CanvasRenderingContext2D, tr: Truck, wx: number, wy: number, cam: Camera, foreign?: boolean) {
+function drawTruck(ctx: CanvasRenderingContext2D, tr: Mover, wx: number, wy: number, cam: Camera, foreign?: boolean) {
   const p = toScreen(wx, wy, cam);
   const s = cam.z;
   // body — foreign lorries wear a pale international livery with a red band
@@ -1054,9 +1098,12 @@ function drawTruck(ctx: CanvasRenderingContext2D, tr: Truck, wx: number, wy: num
     ctx.fillStyle = '#b03030';
     ctx.fillRect(p.x - 5 * s, p.y - 6 * s, 10 * s, 1.4 * s);
   }
-  // cargo dot
-  ctx.fillStyle = RESOURCES[tr.cargo].color;
-  ctx.fillRect(p.x - 3 * s, p.y - 12 * s, 6 * s, 4 * s);
+  // cargo dot — only when there is actually something on the bed. A lorry
+  // running empty out to collect, or parked, shows a bare flatbed.
+  if (tr.amount > 0.001) {
+    ctx.fillStyle = RESOURCES[tr.cargo].color;
+    ctx.fillRect(p.x - 3 * s, p.y - 12 * s, 6 * s, 4 * s);
+  }
   // cab light
   ctx.fillStyle = '#e8e04a';
   ctx.fillRect(p.x + 3 * s, p.y - 8 * s, 2 * s, 2 * s);

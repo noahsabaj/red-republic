@@ -60,7 +60,8 @@ describe('logistics', () => {
       expect(totalOf(e, 'food')).toBeCloseTo(baseline, 6); // never destroyed
     }
     expect(store.stock.food).toBe(40);
-    expect(e.trucks.length).toBe(0);        // round trip finished
+    // Vehicles are persistent, so "finished" means parked and empty — not gone.
+    expect(e.trucks.every(v => v.state === 'idle' && v.amount === 0)).toBe(true);
     expect(depot.stock.food).toBe(98);      // 6 out, 4 returned
   });
 
@@ -87,7 +88,45 @@ describe('logistics', () => {
     expect(e.buildings.has(store.id)).toBe(false);
 
     for (let i = 0; i < 20; i++) runDays(e, 1);
-    expect(e.trucks.length).toBe(0);
+    expect(e.trucks.every(v => v.state === 'idle' && v.amount === 0)).toBe(true);
     expect(depot.stock.food).toBe(100); // full load came home
+  });
+
+  it('never dispatches trucks to transfer fuel between gas stations', () => {
+    const e = makeEngine();
+    layRoad(e, 4, 9, 30, 9);
+    placeBuilt(e, 'constructionOffice', 5, 10);
+    const station1 = placeBuilt(e, 'gasStation', 10, 10);
+    const station2 = placeBuilt(e, 'gasStation', 25, 10);
+    station1.stock.fuel = 60;
+    station2.stock.fuel = 0;
+
+    runDays(e, 5);
+
+    const fuelHaul = e.trucks.find(t => t.cargo === 'fuel' && t.amount > 0);
+    expect(fuelHaul).toBeUndefined();
+    expect(station1.stock.fuel).toBe(60);
+    expect(station2.stock.fuel).toBe(0);
+  });
+
+  it('never dispatches trucks to transfer machinery between coal mines', () => {
+    const e = makeEngine();
+    layRoad(e, 4, 9, 30, 9);
+    placeBuilt(e, 'constructionOffice', 5, 10);
+    e.applyTilePatches([
+      { x: 10, y: 10, deposit: 'coal' },
+      { x: 25, y: 10, deposit: 'coal' },
+    ]);
+    const mine1 = placeBuilt(e, 'coalMine', 10, 10);
+    const mine2 = placeBuilt(e, 'coalMine', 25, 10);
+    mine1.stock.machinery = 6;
+    mine2.stock.machinery = 0;
+
+    runDays(e, 5);
+
+    const machineryHaul = e.trucks.find(t => t.cargo === 'machinery' && t.amount > 0);
+    expect(machineryHaul).toBeUndefined();
+    expect(mine1.stock.machinery).toBe(6);
+    expect(mine2.stock.machinery).toBe(0);
   });
 });

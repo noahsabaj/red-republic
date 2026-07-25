@@ -90,6 +90,7 @@ describe('road construction lifecycle', () => {
 
   it('bulldozing a site returns its ALREADY-DELIVERED stock to storage (no vanish)', () => {
     const { e, depot } = roadTown();
+    runDays(e, 2); // the garage's lorries exist and are fuelled before we need one
     depot.stock.bricks = 0;
     e.tryPlace('sawmill', 8, 10);
     const site = e.buildingAt(8, 10)!;
@@ -105,6 +106,7 @@ describe('road construction lifecycle', () => {
 
   it('a bill larger than one truck refunds in multiple loads', () => {
     const { e, depot } = roadTown();
+    runDays(e, 2); // the garage's lorries exist and are fuelled before we need one
     depot.stock.planks = 0;
     e.tryPlace('apartment', 7, 11);
     const site = e.buildingAt(7, 11)!;

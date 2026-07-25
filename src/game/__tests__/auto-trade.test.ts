@@ -118,7 +118,9 @@ describe('auto-export', () => {
     const { e, customs, wh } = exportTown();
     let sold = 0;
     let earned = 0;
-    for (let i = 0; i < 8; i++) {
+    // A lorry drives out to the depot to collect before it can stage anything,
+    // so the first cycle costs an extra leg the old teleporting truck did not.
+    for (let i = 0; i < 16; i++) {
       runDays(e, 1);
       sold += e.tradeLedger.today.exports.steel ?? 0;
       earned += e.tradeLedger.today.rubles;

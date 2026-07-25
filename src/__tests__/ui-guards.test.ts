@@ -39,6 +39,52 @@ describe('icon registry coverage', () => {
   });
 });
 
+describe('allocationPriority covers everything that competes for it', () => {
+  // This replaced JOB_PRIORITY, an ordered list of building ids in engine.ts.
+  // A list is a thing you must remember to edit, and what you forget lands
+  // silently in last place — which is how HOUSING came to be the first thing
+  // switched off in a brownout: it employs nobody, so it was never in the
+  // *jobs* list that also happened to decide the power queue.
+  it('every building that competes for workers or power declares a rank', () => {
+    for (const def of Object.values(BUILDINGS)) {
+      if (def.workers <= 0 && def.power <= 0) continue;
+      expect(def.allocationPriority, `${def.id} competes but declares no allocationPriority`)
+        .toBeTypeOf('number');
+    }
+  });
+
+  it('does not set one on a building that never queues for anything', () => {
+    for (const def of Object.values(BUILDINGS)) {
+      if (def.allocationPriority === undefined) continue;
+      expect(def.workers > 0 || def.power > 0, `${def.id} sets allocationPriority but queues for nothing`).toBe(true);
+    }
+  });
+
+  it('ranks are distinct among the buildings that draw power, so a brownout order is unambiguous', () => {
+    // Ties are legal (they fall back to commissioning order) but two DIFFERENT
+    // power consumers sharing a rank means the author did not really choose.
+    // Housing is the deliberate exception: both blocks sit together, last.
+    const consumers = Object.values(BUILDINGS).filter(d => d.power > 0 && d.category !== 'housing');
+    const ranks = consumers.map(d => d.allocationPriority);
+    expect(new Set(ranks).size, 'duplicate allocationPriority among power consumers').toBe(ranks.length);
+  });
+});
+
+describe('unpoweredEff is authored where it means something', () => {
+  // `unpoweredEff` replaced a hardcoded set of building ids in the engine. It
+  // only ever applies while a building draws power and cannot get it, so
+  // setting it on a generator or an unpowered building is a silent no-op —
+  // exactly the kind of dead data the set it replaced had two of.
+  it('is only set on buildings that actually draw power, and is a real fraction', () => {
+    for (const def of Object.values(BUILDINGS)) {
+      if (def.unpoweredEff === undefined) continue;
+      expect(def.power, `${def.id} sets unpoweredEff but draws no power`).toBeGreaterThan(0);
+      expect(def.unpoweredEff, `${def.id} unpoweredEff`).toBeGreaterThanOrEqual(0);
+      expect(def.unpoweredEff, `${def.id} unpoweredEff`).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
 describe('no emoji in first-party sources', () => {
   it('finds zero emoji (the icon system replaced them)', () => {
     const emoji = /[\u{1F000}-\u{1FAFF}\u{2190}-\u{21FF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}]/u;

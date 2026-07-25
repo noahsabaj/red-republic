@@ -5,10 +5,12 @@
 
 export type SelectionItem =
   | { kind: 'building'; id: number }
-  | { kind: 'deposit'; x: number; y: number };
+  | { kind: 'deposit'; x: number; y: number }
+  | { kind: 'truck'; id: number };
 
 export function sameItem(a: SelectionItem, b: SelectionItem): boolean {
   if (a.kind === 'building') return b.kind === 'building' && a.id === b.id;
+  if (a.kind === 'truck') return b.kind === 'truck' && a.id === b.id;
   return b.kind === 'deposit' && a.x === b.x && a.y === b.y;
 }
 

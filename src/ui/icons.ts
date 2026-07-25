@@ -14,10 +14,11 @@ import {
   Magnet, Map as MapIcon, Menu, Package, Pause, Pickaxe, Play, RotateCcw, Route, Ruler, Save,
   ScrollText, Settings, ShoppingBasket, Shirt, Shovel, Slice, Smile, Snowflake, Sprout, Square, Star,
   Sun, Target, Tractor, TreePine, Trash2, Truck, Upload, Users, Warehouse, Wheat, Wind, X, Zap, BedDouble,
-  ChevronDown, Pin, Music, SkipForward, SkipBack, Shuffle, Repeat, Repeat1, Volume2,
+  ChevronDown, Pin, Music, SkipForward, SkipBack, Shuffle, Repeat, Repeat1, Volume2, Eye,
 } from 'lucide';
 
 export const GAME_ICONS = {
+  eye: Eye,
   // resources
   coal: CircleDot,
   ironOre: Magnet,
@@ -46,6 +47,7 @@ export const GAME_ICONS = {
   oilPump: Droplet,
   refinery: FlaskConical,
   powerPlant: Zap,
+  oilPowerPlant: Zap,
   heatingPlant: Flame,
   farm: Tractor,
   foodFactory: CookingPot,

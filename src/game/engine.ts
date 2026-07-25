@@ -4,7 +4,7 @@
 import {
   BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, CONTRACTS, LOANS, FARM_SEASON, WEATHER,
   INSTANT_BUILD, IMPORT_MARKUP, OBJECTIVES,
-  CLIMATES, DEFAULT_CLIMATE, DIFFICULTIES, DEFAULT_DIFFICULTY,
+  CLIMATES, DEFAULT_CLIMATE, DIFFICULTIES, DEFAULT_DIFFICULTY, POWER_SECTORS,
 } from './config';
 import type { Category, ClimateId, DepositType, DifficultyId, ResourceId } from './config';
 import { generateMap, mulberry32 } from './mapgen';
@@ -18,6 +18,11 @@ import type { RoutingTile, TopologyAccess, TopologyDomain, TopologyPos } from '.
 import { WeatherTimeline } from './weather';
 import type { DayWeather } from './weather';
 import { fmtQty, fmtOwed, fmtMoney } from './format';
+
+/** Brownout efficiency for a powered building the grid cannot feed. Buildings
+ *  that stop dead instead author `unpoweredEff: 0` in config — there is no list
+ *  of ids here, because which buildings stall is game data, not engine logic. */
+const DEFAULT_UNPOWERED_EFF = 0.5;
 
 export interface BuildingInst {
   id: number;
@@ -73,7 +78,13 @@ export interface PlacePolicy {
   plan?: boolean;             // place paused (planning mode) — commence later
 }
 
-export interface Truck {
+/**
+ * Anything that moves along a tile-space polyline: barges and foreign lorries.
+ * These really are shipments — created for one delivery, retired on arrival —
+ * and that is the right model for them. Road vehicles are NOT movers; see
+ * `Vehicle`.
+ */
+export interface Mover {
   id: number;
   points: { x: number; y: number }[]; // tile-space polyline incl. building centers
   cargo: ResourceId;
@@ -83,6 +94,85 @@ export interface Truck {
   phase: 'go' | 'back';
   destId: number;
   srcId: number; // undelivered cargo returns here
+}
+
+/** What a road vehicle is doing right now. `idle` means parked at `atId`. */
+export type VehicleState = 'idle' | 'toPickup' | 'toDeliver' | 'returning' | 'toRefuel';
+
+/**
+ * A road vehicle: a persistent machine owned by a garage, not a per-delivery
+ * ticket. It exists from the day its garage is staffed until the garage is
+ * demolished, carries its own fuel between jobs, parks where it finished, and
+ * drives to a pump when it runs low.
+ *
+ * This is why there is no pooled fleet tank and no per-day fleet fuel levy:
+ * fuel leaves a building's bin exactly once, when a vehicle pumps it, and the
+ * gauge on the inspector is that vehicle's actual tank. A shipment-shaped
+ * truck (created at dispatch, spliced on return) could never make a fuel
+ * gauge mean anything, which is what the old per-truck fuel fields were.
+ *
+ * A vehicle is always either parked at a building (`atId`) or driving a single
+ * leg that ends at one (`destId`). It never re-routes mid-leg, so a failed
+ * route can never strand it on a stale path.
+ */
+export interface Vehicle extends Mover {
+  homeId: number;   // the garage that owns it
+  atId: number;     // building it is parked at (meaningful while `state === 'idle'`)
+  /**
+   * The building the CURRENT leg ends at. Differs from `destId` only while
+   * running empty out to a supplier: `destId` stays the job's real destination
+   * for the whole task, so anything asking "where is this load going?" gets a
+   * stable answer whichever leg the lorry is on.
+   */
+  legTo: number;
+  state: VehicleState;
+  fuel: number;
+  fuelCap: number;
+  odometer: number; // lifetime road-tile-equivalents driven
+  /** Live road-tile-equivalents per day on the current leg — 0 when parked.
+   *  Derived, never authored: an off-road or storm-slowed leg reads slower
+   *  because it IS slower. (Deliberately not km/h: a day covers ~5 tiles, so
+   *  any real-world unit here would be a fiction the sim cannot back.) */
+  speed: number;
+  /** Road-tile-equivalents in the current leg — off-road legs cost more of
+   *  these per map tile, so fuel and travel time scale together. */
+  legTiles: number;
+  /**
+   * The loaded supplier→destination leg, routed at DISPATCH and driven once
+   * the lorry has collected. Held rather than re-routed on arrival so the
+   * supplier's ranked access-tile tie-breaking decides the path actually
+   * driven — and so a delivery costs one pathfinding search, not two.
+   */
+  pendingPath?: { x: number; y: number }[];
+  pendingTiles?: number;
+  /** True once the tank ran dry mid-leg: it crawls to the end at limpSpeedMult. */
+  limping?: boolean;
+}
+
+/** Legacy alias: saves, the renderer and the boat/foreign-lorry paths all
+ *  speak `Truck`. Road vehicles are the richer `Vehicle`. */
+export type Truck = Mover;
+
+export function truckWorldPos(tr: Mover): { wx: number; wy: number } {
+  const pts = tr.points;
+  const segs = pts.length - 1;
+  if (segs <= 0) return { wx: pts[0]?.x ?? 0, wy: pts[0]?.y ?? 0 };
+  const frac = Math.min(1, tr.daysDone / Math.max(0.1, tr.daysTotal));
+  const f = frac * segs;
+  if (tr.phase === 'go') {
+    const i = Math.min(segs - 1, Math.floor(f));
+    const t = f - i;
+    const p1 = pts[i], p2 = pts[i + 1];
+    if (!p1 || !p2) return { wx: pts[0]?.x ?? 0, wy: pts[0]?.y ?? 0 };
+    return { wx: p1.x + (p2.x - p1.x) * t, wy: p1.y + (p2.y - p1.y) * t };
+  } else {
+    const revI = Math.min(segs - 1, Math.floor(f));
+    const t = f - revI;
+    const i = segs - revI;
+    const p1 = pts[i], p2 = pts[i - 1];
+    if (!p1 || !p2) return { wx: pts[0]?.x ?? 0, wy: pts[0]?.y ?? 0 };
+    return { wx: p1.x + (p2.x - p1.x) * t, wy: p1.y + (p2.y - p1.y) * t };
+  }
 }
 
 /** A barge sailing between ports — same lifecycle as a truck, on water. */
@@ -159,7 +249,56 @@ export interface Loan {
   state: 'active' | 'repaid' | 'defaulted';
 }
 
-interface LogisticsDemand { b: BuildingInst; r: ResourceId; amt: number; prio: number; from?: number; noCustomsSrc?: boolean; bonded?: boolean; repairImport?: 'east' | 'west' }
+/** Player-facing grouping of demand kinds — the four dials on the Delivery panel. */
+export type LogisticsCategory = 'lifeline' | 'consumer' | 'industry' | 'construction';
+
+/**
+ * What a delivery is FOR. Drives the consequence weight and which drain model
+ * applies. There is no priority number: urgency is computed from how many days
+ * of operation the destination has left, not declared here.
+ */
+export type DemandKind =
+  | 'plantFuel' | 'heatFuel' | 'fleetFuel'   // lifeline
+  | 'shopGoods'                              // consumer
+  | 'factoryInput' | 'wear'                  // industry
+  | 'construction'
+  | 'housekeeping';                          // overflow / export staging — prevents no downtime
+
+export const DEMAND_CATEGORY: Record<DemandKind, LogisticsCategory> = {
+  plantFuel: 'lifeline', heatFuel: 'lifeline', fleetFuel: 'lifeline',
+  shopGoods: 'consumer',
+  factoryInput: 'industry', wear: 'industry',
+  construction: 'construction',
+  housekeeping: 'industry',
+};
+
+interface LogisticsDemand {
+  b: BuildingInst;
+  r: ResourceId;
+  amt: number;
+  kind: DemandKind;
+  /** Cached score for the dispatch loop; recomputed when the destination's incoming changes. */
+  score?: number;
+  /**
+   * A cross-water relay leg is addressed to a PORT, which consumes nothing and
+   * would therefore score zero on its own. It carries the urgency of the real
+   * destination it is serving instead, so island deliveries keep the priority
+   * of whatever is actually running dry.
+   */
+  relayScore?: number;
+  /** Days of operation the destination has left for this resource (Infinity = never drains). */
+  cover?: number;
+  from?: number;
+  noCustomsSrc?: boolean;
+  bonded?: boolean;
+  repairImport?: 'east' | 'west';
+}
+
+/** One dispatch pass's straight-line ETA scratch. Local to the pass, never engine state. */
+interface EtaPass {
+  cache: Map<number, number>;
+  storages: { x: number; y: number }[];
+}
 
 interface IndexedFacility {
   b: BuildingInst;
@@ -233,12 +372,9 @@ export interface RoutingDiagnostics {
   topologyRebuilds: { road: number; land: number; water: number };
 }
 
-const JOB_PRIORITY = [
-  'powerPlant', 'heatingPlant', 'store', 'foodFactory',
-  'clinic', 'pub', 'customs', 'gasStation', 'motorDepot', 'farm', 'textileMill', 'sawmill', 'brickworks',
-  'woodcutter', 'gravelQuarry', 'coalMine', 'ironMine', 'steelMill', 'machineWorks',
-  'oilPump', 'refinery', 'port', 'depot', 'warehouse', 'constructionOffice',
-];
+/** Queue position for a building that authored none — behind everything that
+ *  did. Ties fall back to commissioning order, which is deterministic. */
+const DEFAULT_ALLOCATION_PRIORITY = 900;
 
 function sameRevisions(a: readonly number[], b: readonly number[]): boolean {
   if (a.length !== b.length) return false;
@@ -301,10 +437,11 @@ export class GameEngine {
    * regression vector; both residuals are dev-only and out of the type system's reach. */
   get tiles(): readonly (readonly Readonly<Tile>[])[] { return this._tiles; }
   buildings = new Map<number, BuildingInst>();
-  trucks: Truck[] = [];
+  /** The road fleet. Persistent machines owned by garages — see `Vehicle`. */
+  trucks: Vehicle[] = [];
   boats: Boat[] = [];
   /** Cosmetic border traffic: foreign lorries visiting the customs on trade days. */
-  foreignTrucks: Truck[] = [];
+  foreignTrucks: Mover[] = [];
   day = 1; month = 3; year = 1960;
   // Foreign currency only — nothing domestic ever charges the treasury.
   // The real starting grants come from DIFFICULTIES in the constructor.
@@ -377,6 +514,29 @@ export class GameEngine {
     services: 0,
     trade: 0,
   };
+
+  /**
+   * What the republic values, per demand category. Dispatch rank is otherwise
+   * derived entirely from the sim (days of cover vs. delivery time), so these
+   * dials are the player's whole control surface: they scale consequence, they
+   * never override urgency. 1 = neutral.
+   */
+  logisticsCategoryWeights: Record<LogisticsCategory, number> = {
+    lifeline: 1, consumer: 1, industry: 1, construction: 1,
+  };
+  /** Enable automatic emergency fuel imports at Customs House when city fuel is dry. */
+  emergencyFuelAutoBuy = true;
+
+  /**
+   * Who the grid keeps lit when generation falls short, worst-served last.
+   *
+   * Deliberately the player's, not the engine's: a brownout is a choice about
+   * whether the plan or the people come first, and that is the one question a
+   * planned-economy game should never answer on the player's behalf. The
+   * engine only decides the order WITHIN a sector (see `allocationPriority`).
+   */
+  powerSectorOrder: Category[] = [...POWER_SECTORS];
+
 
   private nextBuildingId = 1;
   private nextTruckId = 1;
@@ -585,7 +745,13 @@ export class GameEngine {
       planks: Math.round(120 * mult), bricks: Math.round(120 * mult),
       steel: Math.round(50 * mult), food: Math.round(100 * mult),
       gravel: Math.round(80 * mult), machinery: Math.round(2 * mult),
+      // Every lorry burns fuel, so the grant includes a fuel ration. Without
+      // it day one has no haulage at all and nothing can fetch more.
+      fuel: Math.round(40 * mult),
     };
+    const office = [...this.buildings.values()].find(b => this.def(b).isConstructionOffice);
+    if (office) this.addStock(office, 'fuel', Math.round(30 * mult));
+    this.syncFleet(); // the granted lorries exist from day one
     this.pushEvent('The Politburo has granted you this land. Build a thriving socialist republic!', 'info', 'star');
   }
 
@@ -1239,16 +1405,21 @@ export class GameEngine {
             }
           }
         }
-        if (bs && bt) {
+        // A real vehicle has to come and collect it. If the fleet is fully
+        // committed we fall through to the direct salvage below rather than
+        // leaving the pile to evaporate — conservation outranks the fiction.
+        const hauler = bs && bt ? this.takeIdleVehicle(bCenter) : null;
+        if (bs && bt && hauler) {
           const load = Math.min(amt, BALANCE.truckCapacity, roomFor(bs, r));
           this.addStock(b, r, -load); amt -= load;
           bs.incoming[r] = this.incomingOf(bs, r) + load; // reserve so logistics won't overfill
           const path = flood!.pathFrom(bt.x, bt.y) ?? [];
-          this.trucks.push({
-            id: this.nextTruckId++, points: [bCenter, ...path.slice().reverse(), this.centerOf(bs)],
-            cargo: r, amount: load, daysTotal: Math.max(0.6, bd * BALANCE.truckDaysPerTile),
-            daysDone: 0, phase: 'go', destId: bs.id, srcId: bs.id,
-          });
+          hauler.cargo = r; hauler.amount = load;
+          hauler.srcId = bs.id; hauler.destId = bs.id; hauler.legTo = bs.id; hauler.atId = 0;
+          hauler.state = 'toDeliver'; hauler.phase = 'go'; hauler.daysDone = 0;
+          hauler.legTiles = Math.max(path.length, bd);
+          hauler.daysTotal = Math.max(0.6, bd * BALANCE.truckDaysPerTile);
+          hauler.points = [bCenter, ...path.slice().reverse(), this.centerOf(bs)];
           continue;
         }
         // nothing reachable by truck — salvage directly into any storage with room
@@ -1268,12 +1439,24 @@ export class GameEngine {
       const b = this.buildings.get(t.buildingId);
       if (!b) return false;
       this.clearFootprint(b); // refund routing must see the newly opened land
-      // trucks and barges en route turn around and return their cargo
-      for (const tr of [...this.trucks, ...this.boats]) {
+      // barges en route turn around and return their cargo
+      for (const tr of this.boats) {
         if (tr.destId === b.id && tr.phase === 'go') {
           tr.phase = 'back';
           tr.daysDone = Math.max(0, tr.daysTotal - tr.daysDone);
         }
+      }
+      // so do vehicles: a load bound for a building that no longer exists goes
+      // back to the supplier it came from, never into the void
+      for (const v of this.trucks) {
+        if (v.state === 'idle') continue;
+        const bound = v.destId === b.id || v.legTo === b.id;
+        if (!bound) continue;
+        v.state = 'returning';
+        v.destId = v.srcId;
+        v.legTo = v.srcId;
+        v.phase = 'back';
+        v.daysDone = Math.max(0, v.daysTotal - v.daysDone);
       }
       this.boatOrders = this.boatOrders.filter(o => o.srcId !== b.id && o.destId !== b.id);
       // an unfinished site's delivered materials go back to storage, not the void
@@ -1443,7 +1626,7 @@ export class GameEngine {
     // mid-trip. Grounding weather (boatMult 0) stops new sailings, but a
     // barge already out limps on rather than stalling forever.
     const wx = WEATHER[this.weather.condition];
-    this.moveFleet(this.trucks, daysDelta * wx.truckMult);
+    this.moveVehicles(daysDelta * wx.truckMult);
     this.moveFleet(this.boats, daysDelta * Math.max(0.4, wx.boatMult));
     this.moveForeignTrucks(daysDelta * wx.truckMult);
     this.acc += dtMs * this.speed;
@@ -1455,8 +1638,9 @@ export class GameEngine {
     }
   }
 
-  /** Shared truck/barge lifecycle: deliver, return undelivered cargo, retire. */
-  private moveFleet(fleet: Truck[], daysDelta: number) {
+  /** Barge/foreign-lorry lifecycle: deliver, return undelivered cargo, retire.
+   *  Road vehicles do NOT use this — they are persistent, see `moveVehicles`. */
+  private moveFleet(fleet: Mover[], daysDelta: number) {
     for (let i = fleet.length - 1; i >= 0; i--) {
       const t = fleet[i];
       t.daysDone += daysDelta;
@@ -1476,6 +1660,331 @@ export class GameEngine {
           if (src) this.addStock(src, t.cargo, t.amount);
         }
         fleet.splice(i, 1);
+      }
+    }
+  }
+
+  // ---------------- the road fleet ----------------
+
+  /**
+   * Drive every road vehicle. One leg at a time, always ending at a building:
+   * a vehicle never re-routes mid-leg, so there is no state in which its
+   * `destId` and its polyline can disagree.
+   *
+   * Fuel burns per road-tile-equivalent actually covered, which means an
+   * off-road leg (costed at `offRoadStepCost`× per map tile) burns that much
+   * more fuel as well as taking that much longer — one number, both
+   * consequences. A vehicle only accepts work it can finish (`canReach`), so a
+   * dry tank mid-leg is the rare case: it crawls to the end of the current leg
+   * and must then find a pump before it works again.
+   */
+  private moveVehicles(daysDelta: number) {
+    for (let i = this.trucks.length - 1; i >= 0; i--) {
+      const v = this.trucks[i];
+      if (v.state === 'idle') { v.speed = 0; continue; }
+
+      // Limping is the penalty for running dry PART WAY through a leg. A lorry
+      // that was already empty when it was sent to a pump is being recovered,
+      // not punished — crawling there would strand the fleet for weeks.
+      if (v.fuel <= 1e-9 && v.state !== 'toRefuel') v.limping = true;
+      const stepDelta = daysDelta * (v.limping ? BALANCE.limpSpeedMult : 1);
+
+      // distance covered this tick, in road-tile-equivalents
+      const frac = v.daysTotal > 0 ? Math.min(stepDelta, v.daysTotal - v.daysDone) / v.daysTotal : 0;
+      const tiles = Math.max(0, v.legTiles * frac);
+      v.odometer += tiles;
+      v.fuel = Math.max(0, v.fuel - tiles * BALANCE.vehicleFuelPerTile);
+      v.speed = v.daysTotal > 0 ? (v.legTiles / v.daysTotal) * (v.limping ? BALANCE.limpSpeedMult : 1) : 0;
+
+      v.daysDone += stepDelta;
+      if (v.daysDone < v.daysTotal) continue;
+      this.arriveVehicle(v);
+    }
+  }
+
+  /** A vehicle reached the end of its leg. Resolve it and pick the next one. */
+  private arriveVehicle(v: Vehicle) {
+    const at = this.buildings.get(v.legTo);
+    v.limping = false;
+    switch (v.state) {
+      case 'toPickup': {
+        // Loaded at the supplier (the goods were reserved at dispatch, exactly
+        // as they were under the old model). Drive the route that dispatch
+        // already chose; only re-route if it was somehow never recorded.
+        const dest = this.buildings.get(v.destId);
+        if (!dest || !at) { this.parkVehicle(v, at ?? this.buildings.get(v.homeId)); return; }
+        if (v.pendingPath) {
+          const tiles = v.pendingTiles ?? v.pendingPath.length;
+          v.state = 'toDeliver';
+          v.phase = 'go';
+          v.daysDone = 0;
+          v.legTo = dest.id;
+          v.legTiles = tiles;
+          v.daysTotal = Math.max(0.6, tiles * BALANCE.truckDaysPerTile);
+          v.points = [this.centerOf(at), ...v.pendingPath, this.centerOf(dest)];
+          v.pendingPath = undefined;
+          v.pendingTiles = undefined;
+          return;
+        }
+        if (!this.startLeg(v, at, dest, 'toDeliver')) {
+          // The destination became unreachable while we drove here. Put the
+          // load back where it came from rather than losing it.
+          this.releaseVehicleCargo(v, dest);
+          this.parkVehicle(v, at);
+        }
+        return;
+      }
+      case 'toDeliver': {
+        if (at) {
+          const delivered = this.addStock(at, v.cargo, v.amount);
+          at.incoming[v.cargo] = Math.max(0, this.incomingOf(at, v.cargo) - v.amount);
+          v.amount -= delivered; // whatever didn't fit rides back to the source
+        }
+        if (v.amount > 0.001) {
+          const src = this.buildings.get(v.srcId);
+          if (src && at && this.startLeg(v, at, src, 'returning')) return;
+          if (src) this.addStock(src, v.cargo, v.amount);
+        }
+        v.amount = 0;
+        this.parkVehicle(v, at);
+        return;
+      }
+      case 'returning': {
+        if (at && v.amount > 0.001) this.addStock(at, v.cargo, v.amount);
+        v.amount = 0;
+        this.parkVehicle(v, at);
+        return;
+      }
+      case 'toRefuel': {
+        if (at) {
+          const take = Math.min(v.fuelCap - v.fuel, this.stockOf(at, 'fuel'));
+          if (take > 0) {
+            this.addStock(at, 'fuel', -take);
+            v.fuel += take;
+          }
+        }
+        this.parkVehicle(v, at);
+        return;
+      }
+      default:
+        this.parkVehicle(v, at);
+    }
+  }
+
+  /** Park a vehicle at `at` (falling back to its garage, then to where it stands). */
+  private parkVehicle(v: Vehicle, at: BuildingInst | null | undefined) {
+    const spot = at ?? this.buildings.get(v.homeId);
+    v.state = 'idle';
+    v.speed = 0;
+    v.daysDone = 0;
+    v.daysTotal = 0;
+    v.legTiles = 0;
+    v.pendingPath = undefined;
+    v.pendingTiles = undefined;
+    if (spot) {
+      v.atId = spot.id;
+      v.destId = spot.id;
+      v.legTo = spot.id;
+      v.points = [this.centerOf(spot)];
+    }
+  }
+
+  /** Hand a load back to the destination's reservation and the supplier's bin. */
+  private releaseVehicleCargo(v: Vehicle, dest: BuildingInst) {
+    dest.incoming[v.cargo] = Math.max(0, this.incomingOf(dest, v.cargo) - v.amount);
+    const src = this.buildings.get(v.srcId);
+    if (src && v.amount > 0.001) this.addStock(src, v.cargo, v.amount);
+    v.amount = 0;
+  }
+
+  /**
+   * Route `v` from building `from` to building `to` and start driving.
+   * Roads first, weighted land second — the same two-tier rule dispatch uses.
+   * Returns false and leaves the vehicle untouched when no route exists, so a
+   * failed search can never desync `destId` from `points`.
+   */
+  private startLeg(v: Vehicle, from: BuildingInst, to: BuildingInst, state: VehicleState): boolean {
+    const leg = this.routeBetween(from, to);
+    if (!leg) return false;
+    v.state = state;
+    v.phase = 'go';
+    v.daysDone = 0;
+    v.legTiles = leg.tiles;
+    v.daysTotal = Math.max(0.6, leg.tiles * BALANCE.truckDaysPerTile);
+    v.points = [this.centerOf(from), ...leg.path, this.centerOf(to)];
+    v.legTo = to.id;
+    if (state !== 'toPickup') v.destId = to.id;
+    v.atId = 0;
+    return true;
+  }
+
+  /** Road-first, off-road-second building-to-building route. `tiles` is the
+   *  weighted cost: off-road tiles count `offRoadStepCost` each, so travel time
+   *  and fuel burn both scale with the real difficulty of the route. */
+  private routeBetween(from: BuildingInst, to: BuildingInst):
+    { path: { x: number; y: number }[]; tiles: number } | null {
+    if (from.id === to.id) return { path: [], tiles: 0 };
+    const road = this.findPath(this.accessTiles(from), this.accessTiles(to));
+    if (road) return { path: road, tiles: road.length };
+    const land = this.nearestPath('land', this.accessTiles(to), rankedGoals(this.accessTiles(from), 0, to));
+    if (!land) return null;
+    return { path: land.path, tiles: Math.max(land.path.length, land.cost) };
+  }
+
+  /** Every building that can pump fuel into a tank, nearest first.
+   *  Customs is last-resort — it is the border, not a filling station. */
+  private fuelSourcesFor(v: Vehicle): BuildingInst[] {
+    const here = this.buildings.get(v.atId) ?? this.buildings.get(v.homeId);
+    const ox = here ? here.x : 0, oy = here ? here.y : 0;
+    const rank = (b: BuildingInst) => {
+      const def = this.def(b);
+      const tier = def.isGasStation || def.isMotorDepot || def.isConstructionOffice ? 0 : 1;
+      return tier * 1e6 + Math.hypot(b.x - ox, b.y - oy);
+    };
+    return [...this.buildings.values()]
+      .filter(b => {
+        if (!b.constructed || !b.connected || this.stockOf(b, 'fuel') <= 0.001) return false;
+        const def = this.def(b);
+        return def.isGasStation || def.isMotorDepot || def.isConstructionOffice || def.isCustoms;
+      })
+      .sort((a, b) => rank(a) - rank(b) || a.id - b.id);
+  }
+
+  /** Send low idle vehicles to a pump. Runs before dispatch so a topped-up
+   *  vehicle is available for work the same day it fills. */
+  private refuelVehicles() {
+    for (const v of this.trucks) {
+      if (v.state !== 'idle') continue;
+      if (v.fuel > v.fuelCap * BALANCE.vehicleRefuelAt) continue;
+      const here = this.buildings.get(v.atId);
+      // Already standing on fuel? Pump it without moving.
+      if (here && this.stockOf(here, 'fuel') > 0.001 && this.canPumpFuel(here)) {
+        const take = Math.min(v.fuelCap - v.fuel, this.stockOf(here, 'fuel'));
+        if (take > 0) { this.addStock(here, 'fuel', -take); v.fuel += take; }
+        if (v.fuel > v.fuelCap * BALANCE.vehicleRefuelAt) continue;
+      }
+      if (!here) continue;
+      for (const src of this.fuelSourcesFor(v)) {
+        if (src.id === here.id) continue;
+        if (this.startLeg(v, here, src, 'toRefuel')) break;
+      }
+    }
+  }
+
+  private canPumpFuel(b: BuildingInst): boolean {
+    const def = this.def(b);
+    return !!(def.isGasStation || def.isMotorDepot || def.isConstructionOffice || def.isCustoms);
+  }
+
+  /** Fuel a vehicle keeps in hand so it is never stranded away from a pump. */
+  private get vehicleReserveFuel(): number {
+    return BALANCE.vehicleReserveTiles * BALANCE.vehicleFuelPerTile;
+  }
+
+  /** Parked and fuelled enough to be given work at all. */
+  private vehicleAvailable(v: Vehicle): boolean {
+    return v.state === 'idle' && v.fuel > this.vehicleReserveFuel;
+  }
+
+  /**
+   * The vehicle that should take a job collecting from `supplier`, together
+   * with the route it must drive to get there (empty when it is already
+   * parked at the supplier).
+   *
+   * A vehicle only accepts work it can finish: the tank has to cover the run
+   * to the supplier, the loaded run onward, and the reserve that keeps it able
+   * to reach a pump afterwards. This is why nothing in the sim ever strands a
+   * lorry in open country — running dry is a dispatch-time refusal, not a
+   * mid-route accident.
+   */
+  private pickVehicleFor(supplier: BuildingInst, deliveryTiles: number):
+    { v: Vehicle; path: { x: number; y: number }[]; tiles: number } | null {
+    const near = this.centerOf(supplier);
+    const ranked = this.trucks
+      .filter(v => this.vehicleAvailable(v))
+      .map(v => {
+        const at = this.buildings.get(v.atId);
+        const d = at ? Math.max(Math.abs(at.x - near.x), Math.abs(at.y - near.y)) : Infinity;
+        return { v, at, d };
+      })
+      .filter(c => !!c.at)
+      .sort((a, b) => a.d - b.d || a.v.id - b.v.id);
+
+    // Bounded: routing is the expensive step, so only the few nearest lorries
+    // are actually pathed. A jam of unroutable candidates cannot eat the pass.
+    let tried = 0;
+    for (const c of ranked) {
+      if (tried >= 3) break;
+      const budget = (c.v.fuel - this.vehicleReserveFuel) / BALANCE.vehicleFuelPerTile;
+      if (c.d + deliveryTiles > budget) continue; // cannot make it even in a straight line
+      tried++;
+      if (c.at!.id === supplier.id) return { v: c.v, path: [], tiles: 0 };
+      const leg = this.routeBetween(c.at!, supplier);
+      if (!leg) continue;
+      if (leg.tiles + deliveryTiles > budget) continue;
+      return { v: c.v, path: leg.path, tiles: leg.tiles };
+    }
+    return null;
+  }
+
+  /** Grab the nearest available vehicle outright (demolition salvage runs). */
+  private takeIdleVehicle(near: { x: number; y: number }): Vehicle | null {
+    let best: Vehicle | null = null, bestD = Infinity;
+    for (const v of this.trucks) {
+      if (!this.vehicleAvailable(v)) continue;
+      const at = this.buildings.get(v.atId);
+      if (!at) continue;
+      const d = Math.max(Math.abs(at.x - near.x), Math.abs(at.y - near.y));
+      if (d < bestD) { bestD = d; best = v; }
+    }
+    return best;
+  }
+
+  /**
+   * Reconcile the fleet with the garages that own it. A Construction Office or
+   * Motor Depot should own `trucksFrom()` vehicles; missing ones are built
+   * (empty tank — a new lorry arrives dry), surplus ones are retired.
+   *
+   * Only IDLE vehicles are retired, so a garage losing staff never destroys a
+   * load in transit; the busy ones are collected on a later day once parked.
+   * Iteration follows Map insertion order, so fleet composition is
+   * deterministic for a given seed.
+   */
+  private syncFleet() {
+    const owned = new Map<number, Vehicle[]>();
+    for (const v of this.trucks) {
+      const list = owned.get(v.homeId);
+      if (list) list.push(v); else owned.set(v.homeId, [v]);
+    }
+    const garages = new Set<number>();
+    for (const b of this.buildings.values()) {
+      const def = this.def(b);
+      if (!def.isConstructionOffice && !def.isMotorDepot) continue;
+      garages.add(b.id);
+      const want = this.trucksFrom(b);
+      const have = owned.get(b.id) ?? [];
+      for (let i = have.length; i < want; i++) {
+        this.trucks.push({
+          id: this.nextTruckId++, points: [this.centerOf(b)],
+          cargo: 'fuel', amount: 0, daysTotal: 0, daysDone: 0, phase: 'go',
+          destId: b.id, srcId: b.id, homeId: b.id, atId: b.id, legTo: b.id, state: 'idle',
+          fuel: 0, fuelCap: BALANCE.vehicleFuelCap, odometer: 0, legTiles: 0, speed: 0,
+        });
+      }
+    }
+    // retire surplus / orphaned vehicles, idle ones only
+    for (let i = this.trucks.length - 1; i >= 0; i--) {
+      const v = this.trucks[i];
+      if (v.state !== 'idle') continue;
+      const home = this.buildings.get(v.homeId);
+      const quota = home && garages.has(v.homeId) ? this.trucksFrom(home) : 0;
+      const siblings = owned.get(v.homeId);
+      if (!siblings) continue;
+      const rank = siblings.indexOf(v);
+      if (rank >= quota) {
+        // hand back any fuel still in the tank rather than evaporating it
+        if (home && v.fuel > 0.001) this.addStock(home, 'fuel', v.fuel);
+        this.trucks.splice(i, 1);
       }
     }
   }
@@ -1528,8 +2037,12 @@ export class GameEngine {
     this.foreignTrade();
     this.updateContracts();
     this.updateLoans();
+    // The fleet reconciles with its garages, tops up dry tanks, then works.
+    // Fuel leaves a bin only inside refuelVehicles() — there is no second,
+    // pooled levy anywhere in the day.
+    this.syncFleet();
+    this.refuelVehicles();
     this.logistics();
-    this.burnFleetFuel();
     this.dispatchBoats();
     this.construction();
     this.citizens();
@@ -1658,9 +2171,18 @@ export class GameEngine {
     () => [this.topology.revision('road'), this.topology.revision('land'), this.facilityRevision],
     () => {
       // A building participates if ANY component touched by its access perimeter
-      // also touches the depot network. With no depot, preserve the historical
-      // fallback: any local access tile counts as connected.
-      const depots = [...this.buildings.values()].filter(b => this.def(b).isDepot && b.constructed);
+      // also touches the freight network. With no hub at all, preserve the
+      // historical fallback: any local access tile counts as connected.
+      //
+      // Ports seed the network as well as depots. A port IS a freight hub — it
+      // is where barges land goods — and now that lorries are physical, a
+      // building that is not `connected` owns no fleet. Without this an island
+      // served by barge could never unload them: nothing over there would be
+      // connected, so no garage there would have a single lorry.
+      const depots = [...this.buildings.values()].filter(b => {
+        const def = this.def(b);
+        return (def.isDepot || def.isPort) && b.constructed;
+      });
       const roadComponents = unionComponents(...depots.map(d => this.roadAccess(d).components));
       const landComponents = unionComponents(...depots.map(d => this.landAccess(d).components));
       for (const b of this.buildings.values()) {
@@ -1675,15 +2197,21 @@ export class GameEngine {
   );
   private updateConnectivity() { this.connectivityMemo.get(); }
 
+  /** Where `b` sits in the queue for a resource the republic hands out in a
+   *  fixed order (workers, power). Authored per building in config. */
+  private allocationRank(b: BuildingInst): number {
+    return this.def(b).allocationPriority ?? DEFAULT_ALLOCATION_PRIORITY;
+  }
+
   private assignWorkers() {
     this.workers = Math.floor(this.pop * BALANCE.workerShare);
     const list = [...this.buildings.values()]
       .filter(b => b.constructed && this.def(b).workers > 0 && b.connected)
       .sort((a, b2) => {
+        // the player's own per-building flag outranks the authored order
         const hi = Number(b2.priorityHigh ?? false) - Number(a.priorityHigh ?? false);
         if (hi !== 0) return hi;
-        const pa = JOB_PRIORITY.indexOf(a.defId), pb = JOB_PRIORITY.indexOf(b2.defId);
-        return (pa < 0 ? 99 : pa) - (pb < 0 ? 99 : pb);
+        return this.allocationRank(a) - this.allocationRank(b2);
       });
     this.jobs = list.reduce((s, b) => s + this.def(b).workers, 0);
     for (const b of this.buildings.values()) b.staff = 0;
@@ -1712,8 +2240,29 @@ export class GameEngine {
   private baseEff(b: BuildingInst): number {
     const def = this.def(b);
     const staffRatio = def.workers > 0 ? b.staff / def.workers : 1;
-    const powerFactor = def.power > 0 && !b.powered ? 0.5 : 1;
+    const powerFactor = def.power > 0 && !b.powered ? (def.unpoweredEff ?? DEFAULT_UNPOWERED_EFF) : 1;
     // dry machinery bins never stall a building — the machines limp on, worn
+    const wornFactor = buildingWorn(b) ? BALANCE.wornEffMult : 1;
+    return staffRatio * powerFactor * wornFactor;
+  }
+
+  /**
+   * The efficiency a building INTENDS to run at — `baseEff()` with the power
+   * factor floored at the brownout rate instead of allowed to reach zero.
+   *
+   * Used only to size demand. A mill authored `unpoweredEff: 0` produces
+   * nothing while the grid is down, which is correct, but if its *drain* also
+   * read zero it would report needing nothing, score nothing, and never be
+   * delivered to again — so it would still be sitting on empty bins the day
+   * power returned. Intent is what keeps the pipeline stocked through an
+   * outage; `baseEff` is what actually comes out of the building.
+   */
+  private nominalEff(b: BuildingInst): number {
+    const def = this.def(b);
+    const staffRatio = def.workers > 0 ? b.staff / def.workers : 1;
+    const powerFactor = def.power > 0 && !b.powered
+      ? Math.max(DEFAULT_UNPOWERED_EFF, def.unpoweredEff ?? DEFAULT_UNPOWERED_EFF)
+      : 1;
     const wornFactor = buildingWorn(b) ? BALANCE.wornEffMult : 1;
     return staffRatio * powerFactor * wornFactor;
   }
@@ -1729,7 +2278,7 @@ export class GameEngine {
     }
 
     // Plants: fix eff & coalFactor for the whole day (powerFactor uses the
-    // previous day's allocation). production() burns coal via productionRates()
+    // previous day's allocation). production() burns coal/fuel via productionRates()
     // with these same stored factors, so output and fuel always agree.
     this.powerProduced = 0;
     this.heatProduced = 0;
@@ -1740,8 +2289,9 @@ export class GameEngine {
       const eff = this.baseEff(b);
       b.eff = eff;
       if (def.powerOutput) {
-        const need = (def.inputs?.coal ?? 0) * eff;
-        const have = this.stockOf(b, 'coal');
+        const inputRes = def.inputs ? (Object.keys(def.inputs)[0] as ResourceId) : 'coal';
+        const need = (def.inputs?.[inputRes] ?? 0) * eff;
+        const have = this.stockOf(b, inputRes);
         b.coalFactor = need <= 0 ? 1 : Math.min(1, have / need);
         this.powerProduced += def.powerOutput * eff * b.coalFactor;
       }
@@ -1749,8 +2299,9 @@ export class GameEngine {
         // throttle to remaining demand; fuel burn scales with actual output
         const capacity = def.heatOutput * eff;
         const throttle = capacity > 0 ? Math.min(1, heatToServe / capacity) : 0;
-        const need = (def.inputs?.coal ?? 0) * eff * throttle;
-        const have = this.stockOf(b, 'coal');
+        const inputRes = def.inputs ? (Object.keys(def.inputs)[0] as ResourceId) : 'coal';
+        const need = (def.inputs?.[inputRes] ?? 0) * eff * throttle;
+        const have = this.stockOf(b, inputRes);
         const fuel = need <= 0 ? 1 : Math.min(1, have / need);
         b.coalFactor = throttle * fuel;
         const out = capacity * b.coalFactor;
@@ -1763,11 +2314,26 @@ export class GameEngine {
     for (const b of this.buildings.values()) {
       if (b.constructed) this.powerDemand += this.def(b).power;
     }
+
+    // Brownout order. Three layers, coarsest first, and only the middle one is
+    // the engine's opinion:
+    //   1. the player's per-building `priorityHigh` flag (same flag that jumps
+    //      a building to the front of the labour queue — one override, both
+    //      scarce things),
+    //   2. the player's sector order — who the republic keeps lit is a
+    //      political decision, not a simulation detail,
+    //   3. the authored `allocationPriority` inside a sector (a boiler before a
+    //      steel mill; a house before a block).
+    const sector = new Map(this.powerSectorOrder.map((c, i) => [c, i]));
     const ordered = [...this.buildings.values()]
       .filter(b => b.constructed && this.def(b).power > 0)
       .sort((a, b2) => {
-        const pa = JOB_PRIORITY.indexOf(a.defId), pb = JOB_PRIORITY.indexOf(b2.defId);
-        return (pa < 0 ? 99 : pa) - (pb < 0 ? 99 : pb);
+        const hi = Number(b2.priorityHigh ?? false) - Number(a.priorityHigh ?? false);
+        if (hi !== 0) return hi;
+        const sa = sector.get(this.def(a).category) ?? 99;
+        const sb = sector.get(this.def(b2).category) ?? 99;
+        if (sa !== sb) return sa - sb;
+        return this.allocationRank(a) - this.allocationRank(b2);
       });
     let budget = this.powerProduced;
     for (const b of ordered) {
@@ -1799,6 +2365,47 @@ export class GameEngine {
    * production() applies exactly these deltas, and the UI displays them, so
    * the simulation and the inspector cannot diverge.
    */
+  /** Staffing/season/terrain scaling of a producer's design rate, before any
+   *  input-availability throttling. Shared by `productionRates` (actual flow)
+   *  and `nominalInputRate` (what it wants) so the two cannot drift. */
+  private outputMultiplier(b: BuildingInst, eff = this.baseEff(b)): number {
+    const def = this.def(b);
+    if (def.isFarm) {
+      const fields = Math.min(12, this.countFarmFields(b.x, b.y, b.w, b.h));
+      return eff * (fields / 12) * (FARM_SEASON[this.month] ?? 0) * 2.2 * this.farmWeatherMult();
+    }
+    if (def.requiresForest) {
+      return eff * Math.min(1, this.countForestTiles(b.x, b.y, b.w, b.h) / 6);
+    }
+    return eff;
+  }
+
+  /**
+   * What `b` WANTS to consume of `r` per day — its demand, not its flow.
+   *
+   * Deliberately NOT `productionRates()`: that reports what a building actually
+   * manages to consume, which throttles to zero the moment a bin runs dry
+   * (`inputFactor` for factories, `coalFactor` for plants). Driving delivery
+   * urgency off actual flow would mean a starved building reports needing
+   * nothing and is never resupplied again — a genuine deadlock. Cover must be
+   * measured against intent.
+   */
+  nominalInputRate(b: BuildingInst, r: ResourceId): number {
+    const def = this.def(b);
+    if (!b.constructed) return 0;
+    const wear = def.wear?.[r] ?? 0;
+    const input = def.inputs?.[r] ?? 0;
+    // Plants: b.eff carries staffing; coalFactor (fuel on hand) is excluded.
+    if (def.powerOutput || def.heatOutput) {
+      const isFuel = def.inputs ? (Object.keys(def.inputs)[0] as ResourceId) === r : false;
+      return ((isFuel ? input : 0) + wear) * b.eff;
+    }
+    if (!def.outputs) return 0;
+    // nominalEff, not baseEff: a building stalled by an outage still wants its
+    // inputs staged for the moment the lights come back on.
+    return (input + wear) * this.outputMultiplier(b, this.nominalEff(b));
+  }
+
   productionRates(b: BuildingInst): { inputs: Partial<Record<ResourceId, number>>; outputs: Partial<Record<ResourceId, number>> } {
     const rates: { inputs: Partial<Record<ResourceId, number>>; outputs: Partial<Record<ResourceId, number>> } = { inputs: {}, outputs: {} };
     const def = this.def(b);
@@ -1806,8 +2413,9 @@ export class GameEngine {
 
     // fuel burners: eff & coalFactor were fixed by updatePowerHeat this day
     if (def.powerOutput || def.heatOutput) {
-      const burn = (def.inputs?.coal ?? 0) * b.eff * b.coalFactor;
-      if (burn > 0) rates.inputs.coal = burn;
+      const inputRes = def.inputs ? (Object.keys(def.inputs)[0] as ResourceId) : 'coal';
+      const burn = (def.inputs?.[inputRes] ?? 0) * b.eff * b.coalFactor;
+      if (burn > 0) rates.inputs[inputRes] = burn;
       // machinery wears with actual burn intensity — an idle plant wears nothing
       for (const [r, amt] of Object.entries(def.wear ?? {}) as [ResourceId, number][]) {
         const w = amt * b.eff * b.coalFactor;
@@ -1817,15 +2425,7 @@ export class GameEngine {
     }
     if (!def.outputs) return rates;
 
-    const eff = this.baseEff(b);
-    let outMul = eff;
-    if (def.isFarm) {
-      const fields = Math.min(12, this.countFarmFields(b.x, b.y, b.w, b.h));
-      outMul = eff * (fields / 12) * (FARM_SEASON[this.month] ?? 0) * 2.2 * this.farmWeatherMult();
-    }
-    if (def.requiresForest) {
-      outMul = eff * Math.min(1, this.countForestTiles(b.x, b.y, b.w, b.h) / 6);
-    }
+    const outMul = this.outputMultiplier(b);
 
     // input-limited?
     let inputFactor = 1;
@@ -2003,13 +2603,22 @@ export class GameEngine {
     return n;
   }
 
-  /** Trucks a single building adds to the fleet (0 if it isn't a source or is
-   *  unbuilt/off-grid). Offices give a fuel-free base; Motor Depots one per driver.
-   *  The single source of the per-building formula (UI reads it, never recomputes). */
+  /**
+   * Lorries a single building owns (0 if it isn't a garage or is unbuilt /
+   * off-grid). Offices come with a pool; Motor Depots crew one per driver.
+   * The single source of the per-building formula (UI reads it, never recomputes).
+   *
+   * These are VEHICLES, not concurrent shipments. The old figure counted only
+   * outbound trucks — a truck on its way home had already freed its slot — so
+   * the same delivery rate now takes about twice as many machines, because a
+   * real lorry drives the empty leg too. Same capacity, stated physically.
+   */
   trucksFrom(b: BuildingInst): number {
     const def = this.def(b);
     if (!b.constructed || !b.connected) return 0;
-    if (def.isConstructionOffice) return 6 + Math.floor(BALANCE.maxActiveTrucksPerOffice * (b.staff / def.workers));
+    if (def.isConstructionOffice) {
+      return BALANCE.officeTruckBase + Math.floor(BALANCE.maxActiveTrucksPerOffice * (b.staff / def.workers));
+    }
     if (def.isMotorDepot) return Math.floor(BALANCE.trucksPerDriver * b.staff);
     return 0;
   }
@@ -2033,72 +2642,98 @@ export class GameEngine {
       : { state: 'unpaired', label: 'Idle — needs a paired port across the water' };
   }
 
-  /** Fuel-free bootstrap fleet from Construction Offices — unchanged base game. */
+  /** Vehicles the Construction Offices own. */
   private officeTrucks(): number {
     let n = 0;
     for (const b of this.buildings.values()) if (this.def(b).isConstructionOffice) n += this.trucksFrom(b);
     return n;
   }
 
-  /** Trucks the Motor Depots could crew — one per staffed driver (before fuel). */
+  /** Vehicles the Motor Depots crew — one per staffed driver. */
   private driverTrucks(): number {
     let n = 0;
     for (const b of this.buildings.values()) if (this.def(b).isMotorDepot) n += this.trucksFrom(b);
     return n;
   }
 
-  /** Fuel on hand across connected Gas Stations — the depot fleet's shared tank. */
-  private gasFuel(): number {
+  /** Fuel standing in pumps the fleet can actually reach (Gas Stations, Motor
+   *  Depots, Construction Offices). Customs fuel is the emergency reserve and
+   *  is reported separately — it is a border terminal, not a filling station. */
+  private pumpFuel(): number {
     let f = 0;
     for (const b of this.buildings.values()) {
-      if (this.def(b).isGasStation && b.constructed && b.connected) f += this.stockOf(b, 'fuel');
+      const def = this.def(b);
+      if ((def.isGasStation || def.isMotorDepot || def.isConstructionOffice) && b.constructed && b.connected) f += this.stockOf(b, 'fuel');
     }
     return f;
   }
 
-  /** Concurrent-outbound truck cap: the fuel-free office fleet plus the Motor
-   *  Depot fleet, itself capped by the fuel the Gas Stations can supply. */
-  private maxTrucks(): number {
-    const fuelCap = Math.floor(this.gasFuel() / BALANCE.truckFuelPerDay);
-    return this.officeTrucks() + Math.min(this.driverTrucks(), fuelCap);
-  }
-
-  /** Public fleet snapshot for the HUD gauge, Logistics panel and advisories. */
-  fleetStatus(): { active: number; max: number; officeTrucks: number; driverTrucks: number; depotTrucks: number; fuelCap: number; gasFuel: number; fuelDaysLeft: number } {
-    const office = this.officeTrucks();
-    const drivers = this.driverTrucks();
-    const fuel = this.gasFuel();
-    const fuelCap = Math.floor(fuel / BALANCE.truckFuelPerDay);
-    const depotTrucks = Math.min(drivers, fuelCap);
-    const active = this.trucks.filter(t => t.phase === 'go').length;
-    const burnPerDay = Math.max(0, active - office) * BALANCE.truckFuelPerDay;
-    const fuelDaysLeft = burnPerDay > 1e-9 ? fuel / burnPerDay : Infinity;
-    return { active, max: office + depotTrucks, officeTrucks: office, driverTrucks: drivers, depotTrucks, fuelCap, gasFuel: fuel, fuelDaysLeft };
-  }
-
-  /** The depot fleet (trucks beyond the fuel-free office base) burns fuel from
-   *  Gas Stations each day, drained fullest-first. An idle fleet burns nothing. */
-  private burnFleetFuel() {
-    const office = this.officeTrucks();
-    const active = this.trucks.filter(t => t.phase === 'go').length;
-    let burn = Math.max(0, active - office) * BALANCE.truckFuelPerDay;
-    if (burn <= 1e-9) return;
-    const stations = [...this.buildings.values()]
-      .filter(b => this.def(b).isGasStation && b.constructed && b.connected && this.stockOf(b, 'fuel') > 0)
-      .sort((a, b) => this.stockOf(b, 'fuel') - this.stockOf(a, 'fuel'));
-    for (const s of stations) {
-      if (burn <= 1e-9) break;
-      const take = Math.min(burn, this.stockOf(s, 'fuel'));
-      this.addStock(s, 'fuel', -take);
-      burn -= take;
+  /** Emergency fuel on hand at connected Customs Houses. */
+  private customsFuel(): number {
+    let f = 0;
+    for (const b of this.buildings.values()) {
+      if (b.constructed && b.connected && this.def(b).isCustoms) f += this.stockOf(b, 'fuel');
     }
+    return f;
+  }
+
+  /** Fuel in the fleet's own tanks, right now. */
+  private tankFuel(): number {
+    let f = 0;
+    for (const v of this.trucks) f += v.fuel;
+    return f;
+  }
+
+  /**
+   * Public fleet snapshot for the HUD gauge, Logistics panel and advisories.
+   *
+   * Every figure is counted off the real fleet: `max` is how many vehicles
+   * exist, `active` how many are driving, `grounded` how many are parked
+   * because their tanks are too low to accept work. There is no derived
+   * "fuelled capacity" any more — a vehicle either has fuel or it does not.
+   */
+  fleetStatus(): {
+    active: number; max: number; idle: number; grounded: number;
+    officeTrucks: number; driverTrucks: number;
+    tankFuel: number; pumpFuel: number; customsFuel: number;
+    fuelDaysLeft: number;
+  } {
+    let active = 0, idle = 0, grounded = 0;
+    const minTank = BALANCE.vehicleReserveTiles * BALANCE.vehicleFuelPerTile;
+    for (const v of this.trucks) {
+      if (v.state === 'idle') {
+        idle++;
+        if (v.fuel < minTank) grounded++;
+      } else active++;
+    }
+    const tank = this.tankFuel();
+    const pump = this.pumpFuel();
+    // Days of hauling left = fuel everywhere the fleet can draw on, over what
+    // the vehicles currently rolling are actually burning.
+    let burnPerDay = 0;
+    for (const v of this.trucks) if (v.state !== 'idle') burnPerDay += v.speed * BALANCE.vehicleFuelPerTile;
+    const fuelDaysLeft = burnPerDay > 1e-9 ? (tank + pump + this.customsFuel()) / burnPerDay : Infinity;
+    return {
+      active, max: this.trucks.length, idle, grounded,
+      officeTrucks: this.officeTrucks(), driverTrucks: this.driverTrucks(),
+      tankFuel: tank, pumpFuel: pump, customsFuel: this.customsFuel(), fuelDaysLeft,
+    };
+  }
+
+  /** Is the fleet down to drinking the border's emergency reserve? */
+  fleetFuelInfo(): { usingCustomsFuel: boolean; customsFuel: number } {
+    const cFuel = this.customsFuel();
+    return { usingCustomsFuel: this.pumpFuel() <= 0.001 && cFuel > 0, customsFuel: cFuel };
   }
 
   /** stock a building is willing to give away */
   private supplyOf(b: BuildingInst, r: ResourceId): number {
     const def = this.def(b);
     if (!b.constructed) return 0;
-    if (def.serviceType === 'shop' && (r === 'food' || r === 'clothes')) return 0;
+    const isStorage = !!(def.isDepot || def.isCustoms || def.isPort || b.defId === 'warehouse');
+    const isProducer = (def.outputs?.[r] ?? 0) > 0;
+    if (!isStorage && !isProducer) return 0;
+
     // keep 3 days of production inputs plus a month of wear spares — trucks
     // must never rob one factory's machinery bin to feed another's
     const keep = (def.inputs?.[r] ?? 0) * 3 + (def.wear?.[r] ?? 0) * BALANCE.wearReserveDays;
@@ -2296,16 +2931,278 @@ export class GameEngine {
     return false;
   }
 
-  private logistics() {
-    const maxT = this.maxTrucks();
-    let budget = maxT - this.trucks.filter(t => t.phase === 'go').length;
-    if (budget <= 0) return;
+  /**
+   * Per-day consumption of `r` at `b` under today's conditions — the drain that
+   * turns a stock level into "days of operation left".
+   *
+   * Reuses `productionRates()` (the documented single source of truth that
+   * `production()` applies verbatim), so dispatch urgency can never disagree
+   * with what the building actually burns.
+   */
+  private drainRateOf(b: BuildingInst, r: ResourceId, kind: DemandKind): number {
+    switch (kind) {
+      case 'plantFuel':
+      case 'heatFuel':
+      case 'factoryInput':
+      case 'wear':
+        return this.nominalInputRate(b, r);
+      case 'shopGoods': {
+        // Citizens draw from all stores in aggregate; steady-state per-shop
+        // drain is the town's daily appetite spread over the shops that serve it.
+        const shops = this.shopCount();
+        return shops > 0 ? this.citizenDemandOf(r) / shops : 0;
+      }
+      case 'fleetFuel':
+        // Fleet fuel is POOLED — burnFleetFuel() drains town-wide, fullest
+        // first — so a single station's stock is not what keeps trucks rolling.
+        // Cover is computed against the pool in coverDaysOf().
+        return this.fleetFuelBurnPerDay();
+      default:
+        return 0; // construction + housekeeping never "run dry"
+    }
+  }
 
+  /** Number of constructed shops serving citizens (denominator for per-shop drain). */
+  private shopCount(): number {
+    let n = 0;
+    for (const b of this.buildings.values()) if (b.constructed && this.def(b).serviceType === 'shop') n++;
+    return n;
+  }
+
+  /**
+   * Town-wide daily fleet fuel requirement, measured at FULL UTILISATION —
+   * every vehicle the republic owns, driving all day.
+   *
+   * Deliberately not live burn: a grounded fleet burns nothing, so keying off
+   * observed consumption would report "no fuel needed" precisely when every
+   * lorry is parked dry, and the restock would deadlock. Same trap, same
+   * answer, as `nominalInputRate` for factories — measure intent, not flow.
+   */
+  private fleetFuelBurnPerDay(): number {
+    const tilesPerDay = 1 / BALANCE.truckDaysPerTile;
+    return this.trucks.length * tilesPerDay * BALANCE.vehicleFuelPerTile;
+  }
+
+  /** Days of operation `b` has left on `r` before it stalls. Infinity = never drains. */
+  private coverDaysOf(b: BuildingInst, r: ResourceId, kind: DemandKind): number {
+    const drain = this.drainRateOf(b, r, kind);
+    if (drain <= 1e-9) return Infinity;
+    // Fleet fuel is not this bin's problem alone: a vehicle fills at whichever
+    // pump it can reach, and what is already in the tanks is fuel the republic
+    // does not have to deliver again. Cover is measured against both.
+    const have = kind === 'fleetFuel'
+      ? this.pumpFuel() + this.tankFuel() + this.incomingOf(b, r)
+      : this.stockOf(b, r) + this.incomingOf(b, r);
+    return have / drain;
+  }
+
+  /**
+   * A multi-input factory runs only as long as its SCARCEST input lasts, so
+   * hauling the abundant input to a bottlenecked mill prevents no downtime.
+   *
+   * Scoped deliberately to `factoryInput`: nothing else in the sim couples this
+   * way. Machinery wear halves efficiency rather than stopping a building
+   * (`wornEffMult`), a store out of clothes still sells food, plants burn a
+   * single fuel, and fleet fuel is pooled — all independent.
+   *
+   * `binding` is when the building actually stalls; `headroom` is how far
+   * topping up this resource can push that out before the next input binds.
+   */
+  private inputCoupling(b: BuildingInst, r: ResourceId, kind: DemandKind): { binding: number; headroom: number } {
+    const own = this.coverDaysOf(b, r, kind);
+    const def = this.def(b);
+    if (kind !== 'factoryInput' || !def.inputs || Object.keys(def.inputs).length < 2) {
+      return { binding: own, headroom: Infinity };
+    }
+    let worst = Infinity, second = Infinity;
+    for (const i of Object.keys(def.inputs) as ResourceId[]) {
+      const c = this.coverDaysOf(b, i, kind);
+      if (c < worst) { second = worst; worst = c; } else if (c < second) { second = c; }
+    }
+    // Not the binding constraint → topping it up buys no uptime at all.
+    if (own > worst + 1e-6) return { binding: worst, headroom: 0 };
+    return { binding: worst, headroom: Math.max(0, second - worst) };
+  }
+
+  /**
+   * Days of downtime this load prevents, over the planning horizon.
+   *
+   * This is the heart of the model. It is ~0 for any destination that was not
+   * going to run dry within the horizon (however empty its bin looks), and
+   * large for one about to stall — so round-trip cost can divide the score
+   * unconditionally without a healthy-but-near demand ever outranking a
+   * dying-but-far one. No carve-outs, no bands.
+   */
+  private avertedDaysOf(cover: number, eta: number, loadDays: number): number {
+    const H = BALANCE.logisticsHorizonDays;
+    if (!Number.isFinite(cover) || cover >= H) return 0;
+    const without = H - cover;
+    const gap = Math.max(0, eta - cover);            // downtime no delivery can prevent
+    const resumeAt = Math.max(eta, cover);
+    const withLoad = gap + Math.max(0, H - resumeAt - loadDays);
+    return Math.max(0, without - withLoad);
+  }
+
+  /** How badly the republic suffers per day this building is stalled. */
+  private consequenceWeightOf(b: BuildingInst, kind: DemandKind): number {
+    const def = this.def(b);
+    let base: number;
+    switch (kind) {
+      case 'plantFuel':
+        // Blast radius: a dark plant takes its share of the grid down with it.
+        base = BALANCE.consequencePlantFuel * (1 + this.poweredDependents(b));
+        break;
+      case 'heatFuel':
+        // Self-silencing: heatDemandFactor() is 0 above the heating threshold,
+        // so heat fuel simply stops competing in summer — no mode, no toggle.
+        base = BALANCE.consequenceHeatFuel * this.heatDemandFactor() * (1 + this.def(b).heatOutput! * 0.05);
+        break;
+      case 'fleetFuel':
+        // The fleet hauls everything else, so its collapse is systemic.
+        base = BALANCE.consequenceFleetFuel * (1 + Math.min(4, this.driverTrucks() * 0.25));
+        break;
+      case 'shopGoods':
+        base = BALANCE.consequenceShopGoods * (1 + this.pop * 0.01);
+        break;
+      case 'wear':
+        base = BALANCE.consequenceWear * (buildingWorn(b) ? 2 : 1);
+        break;
+      case 'factoryInput':
+        base = BALANCE.consequenceFactoryInput;
+        break;
+      case 'construction':
+        base = BALANCE.consequenceConstruction * (1 + Math.sign(b.buildPriority ?? 0) * 0.5);
+        break;
+      default:
+        return 0; // housekeeping — handled by the opportunistic pass, never ranked here
+    }
+    void def;
+    return base * this.categoryDialOf(kind);
+  }
+
+  /**
+   * Buildings that would lose power if this plant stalled — its share of the
+   * grid, measured against power DEMAND rather than current output. Reading
+   * live `powerProduced` would return zero dependents for a plant that has
+   * already gone dark, i.e. exactly when restoring it matters most.
+   */
+  private poweredDependents(b: BuildingInst): number {
+    const out = this.def(b).powerOutput ?? 0;
+    if (out <= 0) return 0;
+    let consumers = 0, demand = 0;
+    for (const x of this.buildings.values()) {
+      if (!x.constructed) continue;
+      const p = this.def(x).power;
+      if (p > 0) { consumers++; demand += p; }
+    }
+    if (consumers === 0) return 0;
+    return consumers * Math.min(1, out / Math.max(demand, 1e-6));
+  }
+
+  private categoryDialOf(kind: DemandKind): number {
+    const w = this.logisticsCategoryWeights[DEMAND_CATEGORY[kind]];
+    return Number.isFinite(w) && w > 0 ? w : 1;
+  }
+
+  /**
+   * Dispatch score — downtime prevented per truck-day. HIGHER is served first
+   * (the old band table was lower-first; this is the opposite convention).
+   * `eta` is one-way delivery days; pass a cheap estimate for pre-ranking and
+   * the routed value once a path is known.
+   */
+  private dispatchScore(d: LogisticsDemand, eta: number): number {
+    if (d.relayScore !== undefined) return d.relayScore;
+    if (d.kind === 'housekeeping') return 0;
+    const roundTrip = Math.max(0.6, eta * 2);
+
+    if (d.kind === 'construction') {
+      // A site is not losing anything while it waits — it is failing to GAIN,
+      // and it gains NOTHING until it is finished. So the value of a load is
+      // flat (no "how empty" term to reshuffle the build order) and, unlike
+      // every other kind, round-trip cost is deliberately left out: dividing by
+      // distance spreads materials across whichever sites happen to sit nearest
+      // the depot, so a dozen sites crawl in parallel and none gets a roof.
+      // Equal scores fall back to commissioning order, which finishes sites one
+      // at a time — and an early completion compounds, because it staffs up and
+      // pays for the next one. Tier still separates High from Low.
+      //
+      // Nothing escalates inside this category, and that is load-bearing. Both
+      // obvious escalations — by nearness to completion and by days blocked —
+      // measurably starve NEW sites: whoever is already ahead (or has waited
+      // longest, including on a material nobody produces yet) permanently
+      // outranks a large site placed later, and the campaign's steel mill was
+      // never built under either. Construction-vs-industry is balanced by the
+      // category weight, which scales every site equally.
+      return this.consequenceWeightOf(d.b, d.kind);
+    }
+
+    const drain = this.drainRateOf(d.b, d.r, d.kind);
+
+    if (d.kind === 'wear' && buildingWorn(d.b)) {
+      // An already-worn building is not at RISK of stalling — it is losing
+      // output right now, every day, at `wornEffMult`. There is no cover to
+      // compute and no drain rate to wait on: the damage is present tense, so
+      // restoring it is worth the whole horizon. (A healthy spare bin falls
+      // through to the normal cover logic below and usually scores ~0.)
+      const restored = drain > 1e-9
+        ? Math.min(Math.min(d.amt, BALANCE.truckCapacity) / drain, BALANCE.logisticsHorizonDays)
+        : BALANCE.logisticsHorizonDays;
+      return this.consequenceWeightOf(d.b, d.kind) * restored / roundTrip;
+    }
+
+    if (drain <= 1e-9) return 0;
+    const { binding, headroom } = this.inputCoupling(d.b, d.r, d.kind);
+    if (headroom <= 0) return 0; // abundant input to a bottlenecked factory
+    const load = Math.min(d.amt, BALANCE.truckCapacity);
+    const loadDays = Math.min(load / drain, headroom);
+    const averted = this.avertedDaysOf(binding, eta, loadDays);
+    if (averted <= 0) return 0;
+    return this.consequenceWeightOf(d.b, d.kind) * averted / roundTrip;
+  }
+
+  /**
+   * Open a per-pass ETA cache. Scoring needs a delivery time for every demand,
+   * but routing every one of them would cost far more than the old sort did —
+   * so pre-ranking uses a cheap straight-line estimate and only the surviving
+   * candidates are actually routed.
+   *
+   * The pass is a LOCAL object, not engine state. `logisticsPriorityPreview()`
+   * is called from a React render, and a read-only view must not be able to
+   * scribble on the dispatcher's scratch — even harmlessly.
+   */
+  private beginEtaPass(): EtaPass {
+    const storages: { x: number; y: number }[] = [];
+    for (const s of this.buildings.values()) {
+      if (!s.constructed) continue;
+      const def = this.def(s);
+      if (def.isDepot || def.isCustoms || s.defId === 'warehouse') storages.push({ x: s.x, y: s.y });
+    }
+    return { cache: new Map(), storages };
+  }
+
+  /** Straight-line day estimate used to pre-rank before any routing is done. */
+  private estimateEtaDays(pass: EtaPass, b: BuildingInst): number {
+    const hit = pass.cache.get(b.id);
+    if (hit !== undefined) return hit;
+    let best = Infinity;
+    for (const s of pass.storages) best = Math.min(best, Math.max(Math.abs(s.x - b.x), Math.abs(s.y - b.y)));
+    if (!Number.isFinite(best)) best = Math.max(this.mapW, this.mapH) * 0.5;
+    const days = Math.max(0.6, best * BALANCE.truckDaysPerTile);
+    pass.cache.set(b.id, days);
+    return days;
+  }
+
+  /**
+   * Collect every logistics demand for this day (no routing / dispatch).
+   * Overflow hauls need a routing context to pick the nearest storage; pass one
+   * when calling from logistics(). Preview skips overflow (housekeeping only).
+   */
+  private collectLogisticsDemands(routing?: LogisticsRoutingContext): LogisticsDemand[] {
     const demands: LogisticsDemand[] = [];
 
     for (const b of this.buildings.values()) {
       const def = this.def(b);
-      if (b.paused || (!b.constructed && !this.globalConstructionEnabled)) continue; // paused site or global construction pause: order no construction materials
+      if (b.paused || (!b.constructed && !this.globalConstructionEnabled)) continue;
       if (!b.constructed) {
         // construction site materials. Threshold is ~0, not 1: a supply-starved
         // truck can deliver a fraction (e.g. 1.4/2 gravel), and the remainder
@@ -2318,45 +3215,53 @@ export class GameEngine {
           const customs = this.buildings.get(b.bondedCustomsId ?? -1) ?? this.nearestConstructedCustoms(b.x, b.y);
           if (customs?.constructed && this.def(customs).isCustoms) { from = customs.id; bonded = true; }
         }
-        // construction priority pulls a High site's materials forward and a Low
-        // site's back, but stays inside the construction band (clothes 14 .. factory
-        // 20) so ordering vs. other demand types is unchanged; Normal = 16 exactly.
-        const sitePrio = 16 - Math.sign(b.buildPriority ?? 0);
         for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
           const missing = amt - this.stockOf(b, r) - this.incomingOf(b, r);
-          if (missing > 0.001) demands.push({ b, r, amt: missing, prio: sitePrio, from, bonded });
+          if (missing > 0.001) {
+            // A site never "runs dry" — nothing is consuming here — so it earns
+            // no urgency from emptiness. Its rank comes from consequence alone
+            // (× build priority), and ordering inside a tier stays placement
+            // order. Biasing by how much is missing reshuffles the build order
+            // and leaves the town full of 90%-complete sites with no roofs.
+            demands.push({ b, r, amt: missing, kind: 'construction', from, bonded });
+          }
         }
         continue;
       }
-      // power & heating coal — critical, more so for plants short on power
-      if ((def.powerOutput || def.heatOutput) && def.inputs?.coal) {
-        const free = this.capOf(b, 'coal') - this.stockOf(b, 'coal') - this.incomingOf(b, 'coal');
-        if (free >= 2) demands.push({ b, r: 'coal', amt: free, prio: b.powered || def.power === 0 ? 10 : 6 });
+      // power & heating plant fuel
+      if ((def.powerOutput || def.heatOutput) && def.inputs) {
+        for (const r of Object.keys(def.inputs) as ResourceId[]) {
+          if (r === 'machinery') continue;
+          const free = this.capOf(b, r) - this.stockOf(b, r) - this.incomingOf(b, r);
+          if (free >= 2) demands.push({ b, r, amt: free, kind: def.powerOutput ? 'plantFuel' : 'heatFuel' });
+        }
       }
       // store goods
       if (def.serviceType === 'shop') {
         const fFree = this.capOf(b, 'food') - this.stockOf(b, 'food') - this.incomingOf(b, 'food');
-        if (fFree >= 6) demands.push({ b, r: 'food', amt: fFree, prio: 12 });
+        if (fFree >= 6) demands.push({ b, r: 'food', amt: fFree, kind: 'shopGoods' });
         const cFree = this.capOf(b, 'clothes') - this.stockOf(b, 'clothes') - this.incomingOf(b, 'clothes');
-        if (cFree >= 4) demands.push({ b, r: 'clothes', amt: cFree, prio: 14 });
+        if (cFree >= 4) demands.push({ b, r: 'clothes', amt: cFree, kind: 'shopGoods' });
       }
       // factory inputs
       if (def.inputs && !def.powerOutput && !def.heatOutput) {
         for (const [r] of Object.entries(def.inputs) as [ResourceId, number][]) {
           const bufferTarget = this.capOf(b, r) * 0.6;
           const missing = bufferTarget - this.stockOf(b, r) - this.incomingOf(b, r);
-          if (missing >= 6) demands.push({ b, r, amt: missing, prio: 20 });
+          if (missing >= 6) demands.push({ b, r, amt: missing, kind: 'factoryInput' });
         }
       }
-      // gas station: keep its fuel bin stocked so the depot fleet keeps rolling
-      if (def.isGasStation) {
+      // gas station, construction office & motor depot: keep the fleet rolling.
+      // Urgency comes from pooled fuel vs. actual burn — a scarce pool escalates
+      // on its own, so there is no "emergency" band to trip.
+      if (def.isGasStation || def.isConstructionOffice || def.isMotorDepot) {
         const free = this.capOf(b, 'fuel') - this.stockOf(b, 'fuel') - this.incomingOf(b, 'fuel');
-        if (free >= 6) demands.push({ b, r: 'fuel', amt: free, prio: 20 });
+        if (free >= 6) demands.push({ b, r: 'fuel', amt: free, kind: 'fleetFuel' });
       }
-      // wear spares (machinery). A worn or critically-low bin is URGENT — a
-      // half-dead building bleeds output every day it waits — so it outranks
-      // factory inputs; a healthy bin tops up lazily when trucks are free. Both
-      // plants and factories qualify (the coal branch above never hauls machinery).
+      // wear spares (machinery). Urgency is now the bin's own days-of-cover
+      // against its actual wear rate, so a worn bin outranks a healthy top-up
+      // without a second band — and a healthy bin scores ~0 on its own. Both
+      // plants and factories qualify (the fuel branch above skips machinery).
       if (def.wear) {
         for (const r of Object.keys(def.wear) as ResourceId[]) {
           const cap = this.capOf(b, r);
@@ -2364,8 +3269,7 @@ export class GameEngine {
           const free = cap - have;
           if (free < 1) continue;
           const worn = buildingWorn(b);
-          const critical = worn || have < cap * BALANCE.wearCriticalFrac;
-          demands.push({ b, r, amt: free, prio: critical ? BALANCE.wearRepairPrio : BALANCE.wearTopUpPrio });
+          demands.push({ b, r, amt: free, kind: 'wear' });
           // Paid border-import fallback: only for an actually-worn bin, only if a
           // customs house can clear it. Queued just below the domestic urgent
           // demand, so the sort tries domestic first and this fires only for the
@@ -2376,7 +3280,12 @@ export class GameEngine {
             const customs = this.nearestConstructedCustoms(b.x, b.y);
             if (customs?.constructed && this.def(customs).isCustoms) {
               const topUp = Math.min(free, cap * BALANCE.repairImportTopUpFrac);
-              if (topUp >= 1) demands.push({ b, r, amt: topUp, prio: BALANCE.wearImportPrio, from: customs.id, bonded: true, repairImport: this.repairImportCurrency });
+              if (topUp >= 1) {
+                demands.push({
+                  b, r, amt: topUp, kind: 'wear',
+                  from: customs.id, bonded: true, repairImport: this.repairImportCurrency,
+                });
+              }
             }
           }
         }
@@ -2390,8 +3299,6 @@ export class GameEngine {
       for (const r of ALL_RESOURCES) {
         const rule = this.autoTrade.rules[r];
         if (rule?.mode !== 'export' || !customsHouses.length) continue;
-        // surplus measured inland: what connected buildings would sell,
-        // excluding stock already staged border-side
         let inland = 0;
         for (const s of this.sellableSources(r)) if (!this.def(s.b).isCustoms) inland += s.amt;
         let surplus = inland - rule.level;
@@ -2403,137 +3310,266 @@ export class GameEngine {
           surplus -= left;
           while (left >= 1) {
             const chunk = Math.min(left, BALANCE.truckCapacity);
-            demands.push({ b: c, r, amt: chunk, prio: 44, noCustomsSrc: true });
+            demands.push({ b: c, r, amt: chunk, kind: 'housekeeping', noCustomsSrc: true });
             left -= chunk;
           }
         }
       }
     }
 
+    // overflow hauling needs routing to pin nearest storage — only when dispatching
+    if (routing) {
+      const storages = [...this.buildings.values()].filter(b =>
+        (this.def(b).isDepot || this.def(b).isCustoms || b.defId === 'warehouse') && b.constructed);
+      for (const b of this.buildings.values()) {
+        this.assertRoutingFresh(routing);
+        const def = this.def(b);
+        if (!b.constructed || !def.outputs || def.serviceType) continue;
+        const source = routing.facilities.get(b.id);
+        if (!source?.road.tiles.length) continue;
+        for (const [r] of Object.entries(def.outputs) as [ResourceId, number][]) {
+          const cap = this.capOf(b, r);
+          if (cap <= 0 || this.stockOf(b, r) <= cap * 0.8) continue;
+          const goals: RankedGoal<BuildingInst>[] = [];
+          for (const s of storages) {
+            if (s.id === b.id) continue;
+            const free = this.capOf(s, r) - this.stockOf(s, r) - this.incomingOf(s, r);
+            if (free < 4) continue;
+            const facility = routing.facilities.get(s.id)!;
+            if (!shareAnyComponent(source.road.components, facility.road.components)) continue;
+            goals.push(...rankedGoals(facility.road.tiles, facility.buildingRank, s));
+          }
+          if (!goals.length) {
+            this.routingDay.componentRejections++;
+            continue;
+          }
+          const nearest = this.nearestPath('road', source.road.tiles, goals);
+          const best = nearest?.goal.value ?? null;
+          if (best) {
+            const free = this.capOf(best, r) - this.stockOf(best, r) - this.incomingOf(best, r);
+            demands.push({ b: best, r, amt: Math.min(free, this.stockOf(b, r) - cap * 0.3), kind: 'housekeeping', from: b.id });
+          }
+        }
+      }
+    }
+
+    return demands;
+  }
+
+  private logistics() {
+    // The safety net runs FIRST, before the fleet is even counted. It exists to
+    // break the state where there is no fuel and therefore nothing can haul
+    // fuel — so gating it on having a working fleet would disarm it in exactly
+    // the case it was written for.
+    if (this.emergencyFuelAutoBuy) this.checkEmergencyFuelAutoBuy();
+
+    let budget = this.trucks.reduce((n, v) => n + (this.vehicleAvailable(v) ? 1 : 0), 0);
+    if (budget <= 0) return;
+
     // One ordered supplier index per pass. It snapshots Map insertion order,
     // while live active flags/counts are decremented after each dispatch.
     const routing = this.buildLogisticsRoutingContext();
+    const demands = this.collectLogisticsDemands(routing);
+    const eta = this.beginEtaPass();
 
-    // overflow hauling: pin the overflowing producer as the supplier and
-    // target the nearest storage with room, so the producer actually drains
-    const storages = [...this.buildings.values()].filter(b =>
-      (this.def(b).isDepot || this.def(b).isCustoms || b.defId === 'warehouse') && b.constructed);
-    for (const b of this.buildings.values()) {
-      this.assertRoutingFresh(routing);
-      const def = this.def(b);
-      if (!b.constructed || !def.outputs || def.serviceType) continue;
-      const source = routing.facilities.get(b.id);
-      if (!source?.road.tiles.length) continue;
-      for (const [r] of Object.entries(def.outputs) as [ResourceId, number][]) {
-        const cap = this.capOf(b, r);
-        if (cap <= 0 || this.stockOf(b, r) <= cap * 0.8) continue;
-        const goals: RankedGoal<BuildingInst>[] = [];
-        for (const s of storages) {
-          if (s.id === b.id) continue;
-          const free = this.capOf(s, r) - this.stockOf(s, r) - this.incomingOf(s, r);
-          if (free < 4) continue;
-          const facility = routing.facilities.get(s.id)!;
-          if (!shareAnyComponent(source.road.components, facility.road.components)) continue;
-          goals.push(...rankedGoals(facility.road.tiles, facility.buildingRank, s));
-        }
-        if (!goals.length) {
-          this.routingDay.componentRejections++;
-          continue;
-        }
-        const nearest = this.nearestPath('road', source.road.tiles, goals);
-        const best = nearest?.goal.value ?? null;
-        if (best) {
-          const free = this.capOf(best, r) - this.stockOf(best, r) - this.incomingOf(best, r);
-          demands.push({ b: best, r, amt: Math.min(free, this.stockOf(b, r) - cap * 0.3), prio: 40, from: b.id });
+    // ---- Pass 1: prevent downtime, best value per truck-day first ----
+    //
+    // Marginal greedy, NOT a frozen sorted walk. Serving a destination raises
+    // its `incoming`, which lowers what its remaining demands are worth, so the
+    // next truck can fall to a rival building or class. That is what makes
+    // load spread out on its own — no reserved slices, no per-class quotas,
+    // no fair-share pass. Model the diminishing returns and sharing is free.
+    const preventive = demands.filter(d => d.kind !== 'housekeeping');
+    for (const d of preventive) d.score = this.dispatchScore(d, this.estimateEtaDays(eta, d.b));
+
+    // Rank EVERY live demand — the cap below bounds routing work, not what the
+    // republic is willing to look at. Slicing the candidate list instead let a
+    // handful of high-scoring but unservable demands (an aged site waiting on
+    // steel nobody has) crowd every real need out of the window entirely.
+    const pool = preventive
+      .filter(d => (d.score ?? 0) > 0)
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+
+    // Routing is the expensive step, so bound ATTEMPTS: a tick never performs
+    // more than a few route searches per free truck, however long the queue is.
+    // ONE counter for the whole tick — pass 2 walks the entire demand list, so
+    // an unbounded second pass would hand back everything the first pass's cap
+    // was protecting (500 unservable demands × a full pathfinding flood each).
+    let attempts = 0;
+    const maxAttempts = Math.max(8, budget * BALANCE.logisticsCandidateFactor);
+
+    const done = new Set<LogisticsDemand>();
+    while (budget > 0 && attempts < maxAttempts) {
+      let best: LogisticsDemand | null = null;
+      let bestScore = 0;
+      for (const d of pool) {
+        if (done.has(d)) continue;
+        const s = d.score ?? 0;
+        if (s > bestScore) { bestScore = s; best = d; }
+      }
+      if (!best) break;
+      done.add(best);
+      attempts++;
+      const servedId = best.b.id;
+      const before = demands.length;
+      const dispatched = this.tryDispatch(best, routing, demands, eta);
+      // A failed route may have registered cross-water relay legs; they stand in
+      // for this same need, so they join the pool and compete this pass — the
+      // old sorted walk saw them for the same reason (for-of over a growing array).
+      for (let i = before; i < demands.length; i++) {
+        const leg = demands[i];
+        if (leg.kind === 'housekeeping') continue;
+        leg.score = this.dispatchScore(leg, this.estimateEtaDays(eta, leg.b));
+        if ((leg.score ?? 0) > 0) pool.push(leg);
+      }
+      if (dispatched) {
+        budget--;
+        // Only the served building's outlook changed — re-score just those.
+        for (const d of pool) {
+          if (!done.has(d) && d.b.id === servedId) d.score = this.dispatchScore(d, this.estimateEtaDays(eta, d.b));
         }
       }
     }
 
-    demands.sort((a, b) => a.prio - b.prio);
+    // ---- Pass 2: opportunistic, only on trucks nothing preventable needs ----
+    //
+    // Everything that prevents no downtime lands here: overflow hauls, export
+    // staging, comfortable bins topping up, and stocking a shop that has no
+    // citizens drawing on it yet. None of it can outbid a real need — that is
+    // structural, not a priority band kept low by hand — but when the fleet has
+    // spare capacity there is no reason to leave shelves empty.
+    //
+    // This is also why scarcity is the only regime where ranking bites: with
+    // trucks to spare the republic does everything, in collection order.
+    //
+    // Bounded like pass 1, but off ITS OWN budget — the lorries pass 1 did not
+    // use. Sharing one counter looked tidier and was wrong: a busy day of real
+    // needs would spend the whole allowance and leave nothing to stage exports
+    // with, so the border went quiet exactly when the republic was productive.
+    // Total routing work stays O(fleet), which is the invariant that matters.
+    //
+    // Index loop, not for-of: `demands` grows while we walk it (relayViaPorts
+    // appends legs), and the cap has to bound that too.
+    let spare = 0;
+    const maxSpare = Math.max(8, budget * BALANCE.logisticsCandidateFactor);
+    for (let i = 0; i < demands.length && budget > 0 && spare < maxSpare; i++) {
+      const d = demands[i];
+      if (done.has(d)) continue;
+      spare++;
+      if (this.tryDispatch(d, routing, demands, eta)) budget--;
+    }
+  }
 
-    for (const d of demands) {
-      if (budget <= 0) break;
-      this.routingDay.demandsConsidered++;
-      const destFree = d.b.constructed
-        ? this.capOf(d.b, d.r) - this.stockOf(d.b, d.r) - this.incomingOf(d.b, d.r)
-        : (this.def(d.b).materials[d.r] ?? 0) - this.stockOf(d.b, d.r) - this.incomingOf(d.b, d.r);
-      // sites accept fractional remainders (a dribble-fed site missing 0.8
-      // bricks must not starve forever, holding its other materials hostage);
-      // constructed buildings keep the ≥1 gate against truck churn
-      const minLoad = d.b.constructed ? 1 : 0.001;
-      if (destFree < minLoad) continue;
+  /** Route and dispatch one demand. Returns true if a truck actually left. */
+  private tryDispatch(d: LogisticsDemand, routing: LogisticsRoutingContext, demands: LogisticsDemand[], eta: EtaPass): boolean {
+    this.routingDay.demandsConsidered++;
+    const destFree = d.b.constructed
+      ? this.capOf(d.b, d.r) - this.stockOf(d.b, d.r) - this.incomingOf(d.b, d.r)
+      : (this.def(d.b).materials[d.r] ?? 0) - this.stockOf(d.b, d.r) - this.incomingOf(d.b, d.r);
+    // sites accept fractional remainders (a dribble-fed site missing 0.8
+    // bricks must not starve forever, holding its other materials hostage);
+    // constructed buildings keep the ≥1 gate against truck churn
+    const minLoad = d.b.constructed ? BALANCE.logisticsMinLoad : 0.001;
+    if (destFree < minLoad) return false;
 
-      // A repair import that cannot buy even the minimum load at the current
-      // reserve floor is rejected before any routing work.
-      if (d.repairImport) {
-        const cur = d.repairImport;
-        const price = this.importPriceOf(d.r, cur);
-        const reserve = cur === 'east' ? this.autoTrade.reserveRubles : this.autoTrade.reserveDollars;
-        const funds = cur === 'east' ? this.rubles : this.dollars;
-        if (Math.floor(Math.max(0, funds - reserve) / price) < minLoad) continue;
-      }
+    // A repair import that cannot buy even the minimum load at the current
+    // reserve floor is rejected before any routing work.
+    if (d.repairImport) {
+      const cur = d.repairImport;
+      const price = this.importPriceOf(d.r, cur);
+      const reserve = cur === 'east' ? this.autoTrade.reserveRubles : this.autoTrade.reserveDollars;
+      const funds = cur === 'east' ? this.rubles : this.dollars;
+      if (Math.floor(Math.max(0, funds - reserve) / price) < minLoad) return false;
+    }
 
-      // ROAD-FIRST: a bounded destination-origin search sees only eligible
-      // supplier access goals in a shared component, preserving the old tie
-      // and path rules without filling the rest of the map.
-      let pick = this.routeToSupply(routing, d, 'road');
-      let offRoad = false;
+    // ROAD-FIRST: a bounded destination-origin search sees only eligible
+    // supplier access goals in a shared component, preserving the old tie
+    // and path rules without filling the rest of the map.
+    let pick = this.routeToSupply(routing, d, 'road');
+    let offRoad = false;
 
+    if (!pick) {
+      // OFF-ROAD FALLBACK: weighted land, only after the road attempt fails.
+      pick = this.routeToSupply(routing, d, 'land');
+      offRoad = true;
       if (!pick) {
-        // OFF-ROAD FALLBACK: weighted land, only after the road attempt fails.
-        pick = this.routeToSupply(routing, d, 'land');
-        offRoad = true;
-        if (!pick) {
-          // Domestic demands relay any goods across water; an auto-buy construction
-          // site (bonded, pinned to its customs) relays its paid IMPORTS across too.
-          if (d.from === undefined || (d.bonded && !d.b.constructed)) this.relayViaPorts(d, routing, demands);
-          continue;
-        }
+        // Domestic demands relay any goods across water; an auto-buy construction
+        // site (bonded, pinned to its customs) relays its paid IMPORTS across too.
+        if (d.from === undefined || (d.bonded && !d.b.constructed)) this.relayViaPorts(d, routing, demands, eta);
+        return false;
       }
-
-      // bonded goods are a paid virtual import — the customs is an infinite
-      // source and its real stock is never touched (bypasses the storage cap)
-      // Revalidate immediately before charging or mutating sequential stock.
-      const supplyCap = d.bonded ? Infinity : this.supplyOf(pick.supplier, d.r);
-      let amount = Math.min(d.amt, destFree, supplyCap, BALANCE.truckCapacity);
-      if (amount < minLoad) {
-        if (pick.candidate) this.deactivateSupplyCandidate(routing, pick.candidate, d.r);
-        continue;
-      }
-
-      // a repair import is a paid border purchase (unlike a construction auto-buy,
-      // paid upfront): cap it to what the treasury can spend above its auto-reserve,
-      // then charge on dispatch and book it on the ledger + import stats.
-      if (d.repairImport) {
-        const cur = d.repairImport;
-        const price = this.importPriceOf(d.r, cur);
-        const reserve = cur === 'east' ? this.autoTrade.reserveRubles : this.autoTrade.reserveDollars;
-        const funds = cur === 'east' ? this.rubles : this.dollars;
-        amount = Math.min(amount, Math.floor(Math.max(0, funds - reserve) / price));
-        if (amount < minLoad) continue; // treasury at the reserve floor — retry another day
-        const cost = amount * price;
-        if (cur === 'east') this.rubles -= cost; else this.dollars -= cost;
-        this.stats.imported[d.r] = (this.stats.imported[d.r] ?? 0) + amount;
-        this.tradeLedger.today.repairImports -= cost;
-      }
-
-      if (!d.bonded) {
-        this.addStock(pick.supplier, d.r, -amount);
-        if (pick.candidate) this.deactivateSupplyCandidate(routing, pick.candidate, d.r);
-      }
-      d.b.incoming[d.r] = this.incomingOf(d.b, d.r) + amount;
-
-      const pts = [this.centerOf(pick.supplier), ...pick.path, this.centerOf(d.b)];
-      // roads: legacy per-tile timing; off-road: accumulated weighted cost (slower)
-      const travel = offRoad ? pick.cost : pick.path.length;
-      const daysTotal = Math.max(0.6, travel * BALANCE.truckDaysPerTile);
-      this.trucks.push({
-        id: this.nextTruckId++, points: pts, cargo: d.r, amount,
-        daysTotal, daysDone: 0, phase: 'go', destId: d.b.id, srcId: pick.supplier.id,
-      });
-      budget--;
-      this.routingDay.successfulDispatches++;
     }
+
+    // bonded goods are a paid virtual import — the customs is an infinite
+    // source and its real stock is never touched (bypasses the storage cap)
+    // Revalidate immediately before charging or mutating sequential stock.
+    const supplyCap = d.bonded ? Infinity : this.supplyOf(pick.supplier, d.r);
+    let amount = Math.min(d.amt, destFree, supplyCap, BALANCE.truckCapacity);
+    if (amount < minLoad) {
+      if (pick.candidate) this.deactivateSupplyCandidate(routing, pick.candidate, d.r);
+      return false;
+    }
+
+    // roads: legacy per-tile timing; off-road: accumulated weighted cost (slower)
+    const travel = offRoad ? pick.cost : pick.path.length;
+
+    // A lorry has to be free, near enough, and carrying enough fuel to finish
+    // the whole run. Claimed BEFORE any stock or treasury is touched, so a
+    // fleet-limited day never half-commits a trade.
+    const assign = this.pickVehicleFor(pick.supplier, travel);
+    if (!assign) return false;
+
+    // a repair import is a paid border purchase (unlike a construction auto-buy,
+    // paid upfront): cap it to what the treasury can spend above its auto-reserve,
+    // then charge on dispatch and book it on the ledger + import stats.
+    if (d.repairImport) {
+      const cur = d.repairImport;
+      const price = this.importPriceOf(d.r, cur);
+      const reserve = cur === 'east' ? this.autoTrade.reserveRubles : this.autoTrade.reserveDollars;
+      const funds = cur === 'east' ? this.rubles : this.dollars;
+      amount = Math.min(amount, Math.floor(Math.max(0, funds - reserve) / price));
+      if (amount < minLoad) return false; // treasury at the reserve floor — retry another day
+      const cost = amount * price;
+      if (cur === 'east') this.rubles -= cost; else this.dollars -= cost;
+      this.stats.imported[d.r] = (this.stats.imported[d.r] ?? 0) + amount;
+      this.tradeLedger.today.repairImports -= cost;
+    }
+
+    if (!d.bonded) {
+      this.addStock(pick.supplier, d.r, -amount);
+      if (pick.candidate) this.deactivateSupplyCandidate(routing, pick.candidate, d.r);
+    }
+    d.b.incoming[d.r] = this.incomingOf(d.b, d.r) + amount;
+
+    const { v } = assign;
+    const parkedAt = this.buildings.get(v.atId) ?? pick.supplier;
+    v.cargo = d.r;
+    v.amount = amount;
+    v.srcId = pick.supplier.id;
+    v.destId = d.b.id; // the job's destination, stable across both legs
+    v.phase = 'go';
+    v.daysDone = 0;
+    v.atId = 0;
+    if (assign.tiles > 0) {
+      // Empty run out to the supplier first, carrying the loaded route with it.
+      v.state = 'toPickup';
+      v.legTo = pick.supplier.id;
+      v.legTiles = assign.tiles;
+      v.daysTotal = Math.max(0.6, assign.tiles * BALANCE.truckDaysPerTile);
+      v.points = [this.centerOf(parkedAt), ...assign.path, this.centerOf(pick.supplier)];
+      v.pendingPath = pick.path;
+      v.pendingTiles = travel;
+    } else {
+      v.state = 'toDeliver';
+      v.legTo = d.b.id;
+      v.legTiles = travel;
+      v.daysTotal = Math.max(0.6, travel * BALANCE.truckDaysPerTile);
+      v.points = [this.centerOf(pick.supplier), ...pick.path, this.centerOf(d.b)];
+      v.pendingPath = undefined;
+      v.pendingTiles = undefined;
+    }
+    this.routingDay.successfulDispatches++;
+    return true;
   }
 
   /**
@@ -2553,11 +3589,15 @@ export class GameEngine {
     d: LogisticsDemand,
     routing: LogisticsRoutingContext,
     demands: LogisticsDemand[],
+    eta: EtaPass,
   ) {
     const ports = [...this.buildings.values()].filter(p => this.def(p).isPort && p.constructed);
     if (ports.length < 2) return;
     const destination = routing.facilities.get(d.b.id);
     if (!destination) return;
+    // Every leg created below stands in for THIS demand, so it inherits this
+    // demand's value — a port consumes nothing and would otherwise score zero.
+    const relayed = d.relayScore ?? d.score ?? this.dispatchScore(d, this.estimateEtaDays(eta, d.b));
     const pDest = ports.find(p => {
       const port = routing.facilities.get(p.id)!;
       return p.id !== d.b.id && shareAnyComponent(port.land.components, destination.land.components);
@@ -2570,7 +3610,7 @@ export class GameEngine {
     // while the river is frozen.
     if (d.bonded) {
       const landed = this.supplyOf(pDest, d.r);
-      if (landed >= 1) demands.push({ b: d.b, r: d.r, amt: Math.min(d.amt, landed), prio: d.prio, from: pDest.id });
+      if (landed >= 1) demands.push({ b: d.b, r: d.r, amt: Math.min(d.amt, landed), kind: d.kind, relayScore: relayed, from: pDest.id });
     }
 
     if (this.weather.riverFrozen) return; // no new water chains onto an ice-locked river
@@ -2583,8 +3623,8 @@ export class GameEngine {
       if (src) {
         const short = pending.amt - this.stockOf(src, d.r) - this.incomingOf(src, d.r);
         if (short >= 1) demands.push(d.bonded
-          ? { b: src, r: d.r, amt: short, prio: d.prio, from: d.from, bonded: true }
-          : { b: src, r: d.r, amt: short, prio: d.prio });
+          ? { b: src, r: d.r, amt: short, kind: d.kind, relayScore: relayed, from: d.from, bonded: true }
+          : { b: src, r: d.r, amt: short, kind: d.kind, relayScore: relayed });
       }
       return;
     }
@@ -2613,8 +3653,8 @@ export class GameEngine {
       );
       if (amt < 1) return;
       demands.push(d.bonded
-        ? { b: pSrc, r: d.r, amt, prio: d.prio, from: d.from, bonded: true } // bonded import leg
-        : { b: pSrc, r: d.r, amt, prio: d.prio });                            // domestic leg
+        ? { b: pSrc, r: d.r, amt, kind: d.kind, relayScore: relayed, from: d.from, bonded: true } // bonded import leg
+        : { b: pSrc, r: d.r, amt, kind: d.kind, relayScore: relayed });                            // domestic leg
       this.boatOrders.push({ srcId: pSrc.id, destId: pDest.id, r: d.r, amt });
       return;
     }
@@ -3164,7 +4204,9 @@ export class GameEngine {
         case 'meansOfProduction': done = [...this.buildings.values()].some(b => b.defId === 'machineWorks' && b.constructed); break;
         case 'autarky': done = this.stats.produced.machinery >= 50; break;
         case 'coal': done = this.stats.produced.coal >= 30; break;
-        case 'power': done = this.powerProduced >= 8; break;
+        // must match the threshold OBJECTIVES advertises — display and
+        // simulation disagreeing is the one thing the UI rule forbids
+        case 'power': done = this.powerProduced >= 50; break;
         case 'heat': done = [...this.buildings.values()].some(b => this.def(b).heatOutput && b.constructed && b.staff > 0); break;
         case 'steel': done = this.stats.produced.steel >= 15; break;
         case 'foodchain': done = this.stats.produced.food >= 25; break;
@@ -3223,7 +4265,7 @@ export class GameEngine {
     }
     const fleet = this.fleetStatus();
     if (fleet.max === 0) a.push({ id: 'trucks', icon: 'truck', text: 'No trucks — staff a Construction Office or Motor Depot to haul goods', level: 'warn' });
-    else if (fleet.driverTrucks > 0 && fleet.fuelCap < fleet.driverTrucks) a.push({ id: 'fleetFuel', icon: 'fuel', text: 'Fleet short of fuel — supply a Gas Station (refinery fuel or imports)', level: 'warn' });
+    else if (fleet.grounded > 0) a.push({ id: 'fleetFuel', icon: 'fuel', text: `${fleet.grounded} vehicle${fleet.grounded > 1 ? 's' : ''} grounded with empty tanks — get fuel to a pump (refinery fuel or imports)`, level: fleet.grounded >= fleet.max ? 'bad' : 'warn' });
     else if (fleet.active >= fleet.max) a.push({ id: 'fleetFull', icon: 'truck', text: 'Logistics at capacity — build a Motor Depot to grow the fleet', level: 'warn' });
     if (this.jobs > this.workers && this.workers > 0) a.push({ id: 'labor', icon: 'users', text: 'Labor shortage — not enough workers for all jobs', level: 'warn' });
     const customs = [...this.buildings.values()].some(b => this.def(b).isCustoms && b.constructed);
@@ -3289,6 +4331,62 @@ export class GameEngine {
     return { kind, tiles, exploitedBy };
   }
 
+  // ---------------- the power grid ----------------
+
+  /**
+   * Live view of the grid for the Power Grid panel: what each sector draws,
+   * how much of it is actually being served, and how many of its buildings are
+   * dark right now. Engine-owned — the panel displays these numbers, it never
+   * recomputes them.
+   */
+  powerGridStatus(): {
+    produced: number; deficit: number;
+    sectors: { id: Category; draw: number; served: number; buildings: number; dark: number }[];
+  } {
+    const rows = new Map<Category, { id: Category; draw: number; served: number; buildings: number; dark: number }>();
+    for (const c of this.powerSectorOrder) rows.set(c, { id: c, draw: 0, served: 0, buildings: 0, dark: 0 });
+    for (const b of this.buildings.values()) {
+      const def = this.def(b);
+      if (!b.constructed || def.power <= 0) continue;
+      const row = rows.get(def.category);
+      if (!row) continue;
+      row.draw += def.power;
+      row.buildings++;
+      if (b.powered) row.served += def.power;
+      else row.dark++;
+    }
+    return {
+      produced: this.powerProduced,
+      deficit: Math.max(0, this.powerDemand - this.powerProduced),
+      sectors: this.powerSectorOrder.map(c => rows.get(c)!),
+    };
+  }
+
+  /** Move a sector one place up (-1) or down (+1) the grid's priority order. */
+  movePowerSector(cat: Category, dir: -1 | 1) {
+    const order = [...this.powerSectorOrder];
+    const i = order.indexOf(cat);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= order.length) return;
+    [order[i], order[j]] = [order[j], order[i]];
+    this.powerSectorOrder = order;
+    this.bump();
+  }
+
+  /** Replace the whole order. Ignores anything that is not a permutation of the
+   *  real sectors, so a corrupt save or a stale UI can't drop one off the grid. */
+  setPowerSectorOrder(order: readonly Category[]) {
+    const next = order.filter((c, i) => POWER_SECTORS.includes(c) && order.indexOf(c) === i);
+    if (next.length !== POWER_SECTORS.length) return;
+    this.powerSectorOrder = next;
+    this.bump();
+  }
+
+  resetPowerSectorOrder() {
+    this.powerSectorOrder = [...POWER_SECTORS];
+    this.bump();
+  }
+
   /** Flip a building's staffing priority (UI action — keeps mutation + notification in the engine). */
   toggleStaffPriority(id: number) {
     const b = this.buildings.get(id);
@@ -3336,6 +4434,136 @@ export class GameEngine {
   effectiveBuildPriority(b: BuildingInst): -1 | 0 | 1 {
     if (b.buildPriority !== undefined) return b.buildPriority;
     return this.globalCategoryPriorities[this.def(b).category] ?? 0;
+  }
+
+  /**
+   * Live demand snapshot for the Delivery Priorities panel — including the
+   * REASON each delivery is ranked where it is. A dispatcher the player cannot
+   * interrogate is one they cannot trust, and every term here is the same one
+   * the engine actually sorts by, so the explanation can never drift from the
+   * behaviour. UI must not recompute any of this.
+   */
+  logisticsPriorityPreview(): {
+    categories: { id: LogisticsCategory; weight: number; pendingLoads: number; soonestCoverDays: number }[];
+    next: {
+      resource: ResourceId; destId: number; destName: string;
+      kind: DemandKind; category: LogisticsCategory;
+      coverDays: number; etaDays: number; avertedDays: number; score: number;
+      reason: string;
+    }[];
+  } {
+    const etaPass = this.beginEtaPass();
+    const demands = this.collectLogisticsDemands()
+      .map(d => ({ d, eta: this.estimateEtaDays(etaPass, d.b), score: 0 }));
+    for (const x of demands) x.score = this.dispatchScore(x.d, x.eta);
+    demands.sort((a, b) => b.score - a.score);
+
+    const cats = new Map<LogisticsCategory, { pendingLoads: number; soonestCoverDays: number }>();
+    for (const c of ['lifeline', 'consumer', 'industry', 'construction'] as LogisticsCategory[]) {
+      cats.set(c, { pendingLoads: 0, soonestCoverDays: Infinity });
+    }
+    for (const { d } of demands) {
+      if (d.kind === 'housekeeping') continue;
+      const row = cats.get(DEMAND_CATEGORY[d.kind])!;
+      row.pendingLoads += Math.max(1, Math.ceil(d.amt / BALANCE.truckCapacity));
+      row.soonestCoverDays = Math.min(row.soonestCoverDays, this.coverDaysOf(d.b, d.r, d.kind));
+    }
+
+    const categories = (['lifeline', 'consumer', 'industry', 'construction'] as LogisticsCategory[]).map(id => ({
+      id,
+      weight: this.logisticsCategoryWeights[id],
+      pendingLoads: cats.get(id)!.pendingLoads,
+      soonestCoverDays: cats.get(id)!.soonestCoverDays,
+    }));
+
+    const fmtDays = (n: number) => (Number.isFinite(n) ? `${n.toFixed(1)} days` : 'no drain');
+    const next = demands.filter(x => x.score > 0).slice(0, 5).map(({ d, eta, score }) => {
+      const cover = this.coverDaysOf(d.b, d.r, d.kind);
+      const { binding, headroom } = this.inputCoupling(d.b, d.r, d.kind);
+      const load = Math.min(d.amt, BALANCE.truckCapacity);
+      const drain = this.drainRateOf(d.b, d.r, d.kind);
+      const averted = this.avertedDaysOf(binding, eta, Math.min(load / Math.max(drain, 1e-9), headroom));
+      const name = this.def(d.b).name;
+      const why = d.kind === 'plantFuel'
+        ? `${Math.round(this.poweredDependents(d.b))} buildings go dark`
+        : d.kind === 'heatFuel' ? 'citizens freeze'
+        : d.kind === 'fleetFuel' ? 'the fleet stops hauling'
+        : d.kind === 'shopGoods' ? 'citizens go without'
+        : d.kind === 'wear' ? 'output halves when the bin runs dry'
+        : d.kind === 'construction' ? 'work is idle' : 'production stops';
+      return {
+        resource: d.r, destId: d.b.id, destName: name,
+        kind: d.kind, category: DEMAND_CATEGORY[d.kind],
+        coverDays: cover, etaDays: eta, avertedDays: averted, score,
+        reason: `${fmtDays(cover)} of cover, ${eta.toFixed(1)}-day trip — ${why}`,
+      };
+    });
+
+    return { categories, next };
+  }
+
+  /**
+   * The bootstrap breaker. Fuel is hauled BY vehicles, so a republic whose
+   * pumps all ran dry cannot haul itself out — every lorry is parked. This buys
+   * a few tons across the border into the customs house, where a grounded
+   * vehicle can still reach it.
+   *
+   * Called at the very top of `logistics()`, before the fleet is counted: the
+   * one state it exists for is the one where there is nothing to count.
+   *
+   * It is a real import and books like one — same ledger lines, same customs
+   * throughput, same foreign lorry at the gate as `foreignTrade()`. A purchase
+   * that debited the treasury without appearing on the day's trade page is a
+   * purchase the player cannot audit.
+   */
+  private checkEmergencyFuelAutoBuy() {
+    if (this.trucks.length === 0) return;                       // no fleet, no need
+    if (this.pumpFuel() >= BALANCE.emergencyFuelFloor) return;   // pumps still have some
+    const customs = [...this.buildings.values()]
+      .filter(b => b.constructed && b.connected && this.def(b).isCustoms)
+      .sort((a, b) => this.stockOf(a, 'fuel') - this.stockOf(b, 'fuel') || a.id - b.id)[0];
+    if (!customs) return;
+    const led = this.tradeLedger.today;
+
+    const price = this.importPriceOf('fuel', 'east');
+    const throughput = Math.floor(led.capacity - led.used);
+    const free = Math.floor(this.capOf(customs, 'fuel') - this.stockOf(customs, 'fuel') - this.incomingOf(customs, 'fuel'));
+    const affordable = Math.floor(Math.max(0, this.rubles - this.autoTrade.reserveRubles) / price);
+    const wanted = Math.floor(BALANCE.emergencyFuelTarget - this.stockOf(customs, 'fuel'));
+    const amt = Math.min(wanted, BALANCE.emergencyFuelBuy, throughput, free, affordable);
+    if (amt < 1) return;
+
+    const cost = amt * price;
+    this.rubles -= cost;
+    led.rubles -= cost;
+    this.addStock(customs, 'fuel', amt);
+    this.stats.imported.fuel = (this.stats.imported.fuel ?? 0) + amt;
+    led.imports.fuel = (led.imports.fuel ?? 0) + amt;
+    led.used += amt;
+    this.spawnForeignTruck(customs, 'fuel', amt);
+  }
+
+  /**
+   * Set how much the republic values a demand category. This scales
+   * consequence — how badly a stall hurts — and never overrides urgency, so no
+   * dial setting can make an export outrank a plant about to go dark.
+   */
+  setLogisticsCategoryWeight(cat: LogisticsCategory, weight: number) {
+    const w = Math.max(BALANCE.categoryDialMin, Math.min(BALANCE.categoryDialMax, weight));
+    if (this.logisticsCategoryWeights[cat] === w) return;
+    this.logisticsCategoryWeights[cat] = w;
+    this.bump();
+  }
+
+  /** Return every dial to neutral. */
+  resetLogisticsCategoryWeights() {
+    this.logisticsCategoryWeights = { lifeline: 1, consumer: 1, industry: 1, construction: 1 };
+    this.bump();
+  }
+
+  toggleEmergencyFuelAutoBuy() {
+    this.emergencyFuelAutoBuy = !this.emergencyFuelAutoBuy;
+    this.bump();
   }
 
   /** Daily citizen demand for a resource (what stores would sell at full coverage). */
@@ -3486,6 +4714,9 @@ export class GameEngine {
         foreignLaborCurrency: this.foreignLaborCurrency,
         repairImportsEnabled: this.repairImportsEnabled,
         repairImportCurrency: this.repairImportCurrency,
+        logisticsCategoryWeights: { ...this.logisticsCategoryWeights },
+        emergencyFuelAutoBuy: this.emergencyFuelAutoBuy,
+        powerSectorOrder: [...this.powerSectorOrder],
         tradeLedger: { today: cloneLedger(this.tradeLedger.today), yesterday: cloneLedger(this.tradeLedger.yesterday) },
         contracts: this.contracts.map(c => ({ ...c })),
         loans: this.loans.map(l => ({ ...l })),
@@ -3562,6 +4793,28 @@ export class GameEngine {
     e.foreignLaborCurrency = body.foreignLaborCurrency ?? 'east';
     e.repairImportsEnabled = body.repairImportsEnabled ?? true;
     e.repairImportCurrency = body.repairImportCurrency ?? 'east';
+    // Delivery dials. A pre-dial save carries a resource ranking and a mode
+    // instead; there is no faithful mapping from a 13-item order onto four
+    // consequence weights, so translate the INTENT of the old presets and let
+    // everything else land neutral.
+    const dials = { lifeline: 1, consumer: 1, industry: 1, construction: 1 };
+    if (body.logisticsCategoryWeights) {
+      for (const c of ['lifeline', 'consumer', 'industry', 'construction'] as LogisticsCategory[]) {
+        const w = body.logisticsCategoryWeights[c];
+        if (typeof w === 'number' && Number.isFinite(w) && w > 0) {
+          dials[c] = Math.max(BALANCE.categoryDialMin, Math.min(BALANCE.categoryDialMax, w));
+        }
+      }
+    } else if (body.logisticsPriorityMode === 'lifeline') {
+      dials.lifeline = 2;
+    } else if (body.logisticsPriorityMode === 'construction') {
+      dials.construction = 2;
+    }
+    e.logisticsCategoryWeights = dials;
+    e.emergencyFuelAutoBuy = body.emergencyFuelAutoBuy ?? true;
+    // setPowerSectorOrder rejects anything that isn't a full permutation, so a
+    // pre-grid or hand-edited save falls back to the default plan intact.
+    if (body.powerSectorOrder) e.setPowerSectorOrder(body.powerSectorOrder);
     const cloneLedger = (l: TradeDayLedger): TradeDayLedger =>
       ({
         imports: { ...l.imports },
@@ -3616,8 +4869,34 @@ export class GameEngine {
       if (!inst.constructed && inst.foreignLabor === undefined) inst.foreignLabor = true;
       e.addBuilding(inst);
     }
-    const cloneTruck = (t: Truck): Truck => ({ ...t, points: t.points.map(p => ({ ...p })) });
-    e.trucks = body.trucks.map(cloneTruck);
+    const cloneTruck = (t: Mover): Mover => ({ ...t, points: t.points.map(p => ({ ...p })) });
+    // Vehicles hydrate over defaults like buildings do. A pre-fleet save has
+    // shipment-shaped trucks with no garage: adopt them into the nearest one
+    // (syncFleet trims any surplus on the first simulated day) so the loaded
+    // game is never short of lorries and no cargo in transit is dropped.
+    const garages = [...e.buildings.values()].filter(b => {
+      const def = BUILDINGS[b.defId];
+      return def.isConstructionOffice || def.isMotorDepot;
+    });
+    e.trucks = body.trucks.map(t => {
+      const saved = t as Partial<Vehicle> & Mover;
+      const home = e.buildings.get(saved.homeId ?? -1)
+        ?? garages.find(g => g.id === saved.srcId)
+        ?? garages[0];
+      return {
+        ...cloneTruck(saved),
+        homeId: saved.homeId ?? home?.id ?? 0,
+        atId: saved.atId ?? 0,
+        legTo: saved.legTo ?? saved.destId,
+        state: saved.state ?? (saved.amount > 0 ? 'toDeliver' : 'idle'),
+        fuel: saved.fuel ?? BALANCE.vehicleFuelCap,
+        fuelCap: saved.fuelCap ?? BALANCE.vehicleFuelCap,
+        odometer: saved.odometer ?? 0,
+        legTiles: saved.legTiles ?? Math.max(1, saved.daysTotal / BALANCE.truckDaysPerTile),
+        speed: saved.speed ?? 0,
+        limping: saved.limping,
+      } satisfies Vehicle;
+    });
     e.boats = body.boats.map(cloneTruck);
     e.foreignTrucks = body.foreignTrucks.map(cloneTruck);
     e.boatOrders = body.boatOrders.map(o => ({ ...o }));
