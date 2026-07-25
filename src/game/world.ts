@@ -544,6 +544,140 @@ export class World {
    */
   powerSectorOrder: Category[] = [...POWER_SECTORS];
 
+  // ---------------- vehicles ----------------
+
+  /**
+   * Lorries a single building owns (0 if it isn't a garage or is unbuilt /
+   * off-grid). Offices come with a pool; Motor Depots crew one per driver.
+   * The single source of the per-building formula (UI reads it, never recomputes).
+   */
+  trucksFrom(b: BuildingInst): number {
+    const def = this.def(b);
+    if (!b.constructed || !b.connected) return 0;
+    if (def.isConstructionOffice) {
+      return BALANCE.officeTruckBase + Math.floor(BALANCE.maxActiveTrucksPerOffice * (b.staff / def.workers));
+    }
+    if (def.isMotorDepot) return Math.floor(BALANCE.trucksPerDriver * b.staff);
+    return 0;
+  }
+
+  startLeg(v: Vehicle, from: BuildingInst, to: BuildingInst, state: VehicleState): boolean {
+    const leg = this.routeBetween(from, to);
+    if (!leg) return false;
+    v.state = state;
+    v.phase = 'go';
+    v.daysDone = 0;
+    v.legTiles = leg.tiles;
+    v.daysTotal = Math.max(0.6, leg.tiles * BALANCE.truckDaysPerTile);
+    v.points = [this.centerOf(from), ...leg.path, this.centerOf(to)];
+    v.legTo = to.id;
+    if (state !== 'toPickup') v.destId = to.id;
+    v.atId = 0;
+    return true;
+  }
+
+  /** Road-first, off-road-second building-to-building route. `tiles` is the
+   *  weighted cost: off-road tiles count `offRoadStepCost` each, so travel time
+   *  and fuel burn both scale with the real difficulty of the route. */
+  routeBetween(from: BuildingInst, to: BuildingInst):
+    { path: { x: number; y: number }[]; tiles: number } | null {
+    if (from.id === to.id) return { path: [], tiles: 0 };
+    const road = this.findPath(this.accessTiles(from), this.accessTiles(to));
+    if (road) return { path: road, tiles: road.length };
+    const land = this.nearestPath('land', this.accessTiles(to), rankedGoals(this.accessTiles(from), 0, to));
+    if (!land) return null;
+    return { path: land.path, tiles: Math.max(land.path.length, land.cost) };
+  }
+
+  /** Every building that can pump fuel into a tank, nearest first.
+   *  Customs is last-resort — it is the border, not a filling station. */
+  fuelSourcesFor(v: Vehicle): BuildingInst[] {
+    const here = this.buildings.get(v.atId) ?? this.buildings.get(v.homeId);
+    const ox = here ? here.x : 0, oy = here ? here.y : 0;
+    const rank = (b: BuildingInst) => {
+      const def = this.def(b);
+      const tier = def.isGasStation || def.isMotorDepot || def.isConstructionOffice ? 0 : 1;
+      return tier * 1e6 + Math.hypot(b.x - ox, b.y - oy);
+    };
+    return [...this.buildings.values()]
+      .filter(b => {
+        if (!b.constructed || !b.connected || this.stockOf(b, 'fuel') <= 0.001) return false;
+        const def = this.def(b);
+        return def.isGasStation || def.isMotorDepot || def.isConstructionOffice || def.isCustoms;
+      })
+      .sort((a, b) => rank(a) - rank(b) || a.id - b.id);
+  }
+
+  canPumpFuel(b: BuildingInst): boolean {
+    const def = this.def(b);
+    return !!(def.isGasStation || def.isMotorDepot || def.isConstructionOffice || def.isCustoms);
+  }
+
+  /** Fuel a vehicle keeps in hand so it is never stranded away from a pump. */
+  get vehicleReserveFuel(): number {
+    return BALANCE.vehicleReserveTiles * BALANCE.vehicleFuelPerTile;
+  }
+
+  /** Parked and fuelled enough to be given work at all. */
+  vehicleAvailable(v: Vehicle): boolean {
+    return v.state === 'idle' && v.fuel > this.vehicleReserveFuel;
+  }
+
+  /**
+   * The vehicle that should take a job collecting from `supplier`, together
+   * with the route it must drive to get there (empty when it is already
+   * parked at the supplier).
+   *
+   * A vehicle only accepts work it can finish: the tank has to cover the run
+   * to the supplier, the loaded run onward, and the reserve that keeps it able
+   * to reach a pump afterwards. This is why nothing in the sim ever strands a
+   * lorry in open country — running dry is a dispatch-time refusal, not a
+   * mid-route accident.
+   */
+  pickVehicleFor(supplier: BuildingInst, deliveryTiles: number):
+    { v: Vehicle; path: { x: number; y: number }[]; tiles: number } | null {
+    const near = this.centerOf(supplier);
+    const ranked = this.trucks
+      .filter(v => this.vehicleAvailable(v))
+      .map(v => {
+        const at = this.buildings.get(v.atId);
+        const d = at ? Math.max(Math.abs(at.x - near.x), Math.abs(at.y - near.y)) : Infinity;
+        return { v, at, d };
+      })
+      .filter(c => !!c.at)
+      .sort((a, b) => a.d - b.d || a.v.id - b.v.id);
+
+    // Bounded: routing is the expensive step, so only the few nearest lorries
+    // are actually pathed. A jam of unroutable candidates cannot eat the pass.
+    let tried = 0;
+    for (const c of ranked) {
+      if (tried >= 3) break;
+      const budget = (c.v.fuel - this.vehicleReserveFuel) / BALANCE.vehicleFuelPerTile;
+      if (c.d + deliveryTiles > budget) continue; // cannot make it even in a straight line
+      tried++;
+      if (c.at!.id === supplier.id) return { v: c.v, path: [], tiles: 0 };
+      const leg = this.routeBetween(c.at!, supplier);
+      if (!leg) continue;
+      if (leg.tiles + deliveryTiles > budget) continue;
+      return { v: c.v, path: leg.path, tiles: leg.tiles };
+    }
+    return null;
+  }
+
+  /** Grab the nearest available vehicle outright (demolition salvage runs). */
+  takeIdleVehicle(near: { x: number; y: number }): Vehicle | null {
+    let best: Vehicle | null = null, bestD = Infinity;
+    for (const v of this.trucks) {
+      if (!this.vehicleAvailable(v)) continue;
+      const at = this.buildings.get(v.atId);
+      if (!at) continue;
+      const d = Math.max(Math.abs(at.x - near.x), Math.abs(at.y - near.y));
+      if (d < bestD) { bestD = d; best = v; }
+    }
+    return best;
+  }
+
+
   // ---------------- construction ----------------
 
   markConstructed(b: BuildingInst): void {

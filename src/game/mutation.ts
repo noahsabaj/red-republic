@@ -18,7 +18,7 @@
 import { BALANCE } from './config';
 import type { ResourceId } from './config';
 import { emptyLedger } from './world';
-import type { GameEvent, World } from './world';
+import type { GameEvent, VehicleState, World } from './world';
 import type { DayWeather } from './weather';
 
 export type Mutation =
@@ -78,6 +78,18 @@ export type Mutation =
   | { k: 'treasury'; bloc: 'east' | 'west'; delta: number }
   /** Standing price malus with one bloc (0..cap). */
   | { k: 'relations'; bloc: 'east' | 'west'; penalty: number }
+
+  // ---- the road fleet ----
+  /** A garage takes delivery of a new lorry. It arrives with a dry tank. */
+  | { k: 'vehicleCommission'; homeId: number }
+  /** Retire an idle lorry, handing any fuel left in the tank back to its
+   *  garage. By index for the same reason as boatOrderDrop. */
+  | { k: 'vehicleRetire'; index: number }
+  /** Fuel leaves a bin and enters a tank. The only place in the day it does. */
+  | { k: 'vehiclePump'; vehicleId: number; pumpId: number; amount: number }
+  /** Send a lorry on one leg. A no-op if no route exists — a failed search must
+   *  leave the vehicle untouched, or destId and points disagree. */
+  | { k: 'vehicleLeg'; vehicleId: number; fromId: number; toId: number; state: VehicleState }
 
   // ---- barges ----
   /** No port stands: the whole queue is void. */
@@ -264,6 +276,40 @@ export function applyMutations(w: World, muts: readonly Mutation[]): void {
       case 'relations':
         w.relationsPenalty[m.bloc] = m.penalty;
         break;
+      case 'vehicleCommission': {
+        const b = w.buildings.get(m.homeId);
+        if (!b) break;
+        w.trucks.push({
+          id: w.nextTruckId++, points: [w.centerOf(b)],
+          cargo: 'fuel', amount: 0, daysTotal: 0, daysDone: 0, phase: 'go',
+          destId: b.id, srcId: b.id, homeId: b.id, atId: b.id, legTo: b.id, state: 'idle',
+          fuel: 0, fuelCap: BALANCE.vehicleFuelCap, odometer: 0, legTiles: 0, speed: 0,
+        });
+        break;
+      }
+      case 'vehicleRetire': {
+        const v = w.trucks[m.index];
+        if (!v) break;
+        const home = w.buildings.get(v.homeId);
+        // hand back any fuel still in the tank rather than evaporating it
+        if (home && v.fuel > 0.001) w.addStock(home, 'fuel', v.fuel);
+        w.trucks.splice(m.index, 1);
+        break;
+      }
+      case 'vehiclePump': {
+        const v = w.trucks.find(x => x.id === m.vehicleId);
+        const pump = w.buildings.get(m.pumpId);
+        if (!v || !pump) break;
+        w.addStock(pump, 'fuel', -m.amount);
+        v.fuel += m.amount;
+        break;
+      }
+      case 'vehicleLeg': {
+        const v = w.trucks.find(x => x.id === m.vehicleId);
+        const from = w.buildings.get(m.fromId), to = w.buildings.get(m.toId);
+        if (v && from && to) w.startLeg(v, from, to, m.state);
+        break;
+      }
       case 'boatOrdersClear':
         w.boatOrders = [];
         break;

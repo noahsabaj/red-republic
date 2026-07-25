@@ -25,6 +25,7 @@ import { contracts } from './systems/contracts';
 import { connectivity } from './systems/connectivity';
 import { construction } from './systems/construction';
 import { foreignTrade } from './systems/foreign-trade';
+import { refuelVehicles, syncFleet } from './systems/fleet';
 import { loans } from './systems/loans';
 import { objectives } from './systems/objectives';
 import { powerHeat } from './systems/power-heat';
@@ -373,7 +374,7 @@ export class GameEngine {
     };
     const office = [...this.buildings.values()].find(b => this.def(b).isConstructionOffice);
     if (office) this.addStock(office, 'fuel', Math.round(30 * mult));
-    this.syncFleet(); // the granted lorries exist from day one
+    this.runStaged(syncFleet); // the granted lorries exist from day one
     this.pushEvent('The Politburo has granted you this land. Build a thriving socialist republic!', 'info', 'star');
   }
 
@@ -1248,189 +1249,15 @@ export class GameEngine {
    * failed search can never desync `destId` from `points`.
    */
   private startLeg(v: Vehicle, from: BuildingInst, to: BuildingInst, state: VehicleState): boolean {
-    const leg = this.routeBetween(from, to);
-    if (!leg) return false;
-    v.state = state;
-    v.phase = 'go';
-    v.daysDone = 0;
-    v.legTiles = leg.tiles;
-    v.daysTotal = Math.max(0.6, leg.tiles * BALANCE.truckDaysPerTile);
-    v.points = [this.centerOf(from), ...leg.path, this.centerOf(to)];
-    v.legTo = to.id;
-    if (state !== 'toPickup') v.destId = to.id;
-    v.atId = 0;
-    return true;
+    return this.w.startLeg(v, from, to, state);
   }
 
-  /** Road-first, off-road-second building-to-building route. `tiles` is the
-   *  weighted cost: off-road tiles count `offRoadStepCost` each, so travel time
-   *  and fuel burn both scale with the real difficulty of the route. */
-  private routeBetween(from: BuildingInst, to: BuildingInst):
-    { path: { x: number; y: number }[]; tiles: number } | null {
-    if (from.id === to.id) return { path: [], tiles: 0 };
-    const road = this.findPath(this.accessTiles(from), this.accessTiles(to));
-    if (road) return { path: road, tiles: road.length };
-    const land = this.nearestPath('land', this.accessTiles(to), rankedGoals(this.accessTiles(from), 0, to));
-    if (!land) return null;
-    return { path: land.path, tiles: Math.max(land.path.length, land.cost) };
+  private vehicleAvailable(v: Vehicle): boolean { return this.w.vehicleAvailable(v); }
+  private pickVehicleFor(supplier: BuildingInst, deliveryTiles: number) {
+    return this.w.pickVehicleFor(supplier, deliveryTiles);
   }
-
-  /** Every building that can pump fuel into a tank, nearest first.
-   *  Customs is last-resort — it is the border, not a filling station. */
-  private fuelSourcesFor(v: Vehicle): BuildingInst[] {
-    const here = this.buildings.get(v.atId) ?? this.buildings.get(v.homeId);
-    const ox = here ? here.x : 0, oy = here ? here.y : 0;
-    const rank = (b: BuildingInst) => {
-      const def = this.def(b);
-      const tier = def.isGasStation || def.isMotorDepot || def.isConstructionOffice ? 0 : 1;
-      return tier * 1e6 + Math.hypot(b.x - ox, b.y - oy);
-    };
-    return [...this.buildings.values()]
-      .filter(b => {
-        if (!b.constructed || !b.connected || this.stockOf(b, 'fuel') <= 0.001) return false;
-        const def = this.def(b);
-        return def.isGasStation || def.isMotorDepot || def.isConstructionOffice || def.isCustoms;
-      })
-      .sort((a, b) => rank(a) - rank(b) || a.id - b.id);
-  }
-
-  /** Send low idle vehicles to a pump. Runs before dispatch so a topped-up
-   *  vehicle is available for work the same day it fills. */
-  private refuelVehicles() {
-    for (const v of this.trucks) {
-      if (v.state !== 'idle') continue;
-      if (v.fuel > v.fuelCap * BALANCE.vehicleRefuelAt) continue;
-      const here = this.buildings.get(v.atId);
-      // Already standing on fuel? Pump it without moving.
-      if (here && this.stockOf(here, 'fuel') > 0.001 && this.canPumpFuel(here)) {
-        const take = Math.min(v.fuelCap - v.fuel, this.stockOf(here, 'fuel'));
-        if (take > 0) { this.addStock(here, 'fuel', -take); v.fuel += take; }
-        if (v.fuel > v.fuelCap * BALANCE.vehicleRefuelAt) continue;
-      }
-      if (!here) continue;
-      for (const src of this.fuelSourcesFor(v)) {
-        if (src.id === here.id) continue;
-        if (this.startLeg(v, here, src, 'toRefuel')) break;
-      }
-    }
-  }
-
-  private canPumpFuel(b: BuildingInst): boolean {
-    const def = this.def(b);
-    return !!(def.isGasStation || def.isMotorDepot || def.isConstructionOffice || def.isCustoms);
-  }
-
-  /** Fuel a vehicle keeps in hand so it is never stranded away from a pump. */
-  private get vehicleReserveFuel(): number {
-    return BALANCE.vehicleReserveTiles * BALANCE.vehicleFuelPerTile;
-  }
-
-  /** Parked and fuelled enough to be given work at all. */
-  private vehicleAvailable(v: Vehicle): boolean {
-    return v.state === 'idle' && v.fuel > this.vehicleReserveFuel;
-  }
-
-  /**
-   * The vehicle that should take a job collecting from `supplier`, together
-   * with the route it must drive to get there (empty when it is already
-   * parked at the supplier).
-   *
-   * A vehicle only accepts work it can finish: the tank has to cover the run
-   * to the supplier, the loaded run onward, and the reserve that keeps it able
-   * to reach a pump afterwards. This is why nothing in the sim ever strands a
-   * lorry in open country — running dry is a dispatch-time refusal, not a
-   * mid-route accident.
-   */
-  private pickVehicleFor(supplier: BuildingInst, deliveryTiles: number):
-    { v: Vehicle; path: { x: number; y: number }[]; tiles: number } | null {
-    const near = this.centerOf(supplier);
-    const ranked = this.trucks
-      .filter(v => this.vehicleAvailable(v))
-      .map(v => {
-        const at = this.buildings.get(v.atId);
-        const d = at ? Math.max(Math.abs(at.x - near.x), Math.abs(at.y - near.y)) : Infinity;
-        return { v, at, d };
-      })
-      .filter(c => !!c.at)
-      .sort((a, b) => a.d - b.d || a.v.id - b.v.id);
-
-    // Bounded: routing is the expensive step, so only the few nearest lorries
-    // are actually pathed. A jam of unroutable candidates cannot eat the pass.
-    let tried = 0;
-    for (const c of ranked) {
-      if (tried >= 3) break;
-      const budget = (c.v.fuel - this.vehicleReserveFuel) / BALANCE.vehicleFuelPerTile;
-      if (c.d + deliveryTiles > budget) continue; // cannot make it even in a straight line
-      tried++;
-      if (c.at!.id === supplier.id) return { v: c.v, path: [], tiles: 0 };
-      const leg = this.routeBetween(c.at!, supplier);
-      if (!leg) continue;
-      if (leg.tiles + deliveryTiles > budget) continue;
-      return { v: c.v, path: leg.path, tiles: leg.tiles };
-    }
-    return null;
-  }
-
-  /** Grab the nearest available vehicle outright (demolition salvage runs). */
   private takeIdleVehicle(near: { x: number; y: number }): Vehicle | null {
-    let best: Vehicle | null = null, bestD = Infinity;
-    for (const v of this.trucks) {
-      if (!this.vehicleAvailable(v)) continue;
-      const at = this.buildings.get(v.atId);
-      if (!at) continue;
-      const d = Math.max(Math.abs(at.x - near.x), Math.abs(at.y - near.y));
-      if (d < bestD) { bestD = d; best = v; }
-    }
-    return best;
-  }
-
-  /**
-   * Reconcile the fleet with the garages that own it. A Construction Office or
-   * Motor Depot should own `trucksFrom()` vehicles; missing ones are built
-   * (empty tank — a new lorry arrives dry), surplus ones are retired.
-   *
-   * Only IDLE vehicles are retired, so a garage losing staff never destroys a
-   * load in transit; the busy ones are collected on a later day once parked.
-   * Iteration follows Map insertion order, so fleet composition is
-   * deterministic for a given seed.
-   */
-  private syncFleet() {
-    const owned = new Map<number, Vehicle[]>();
-    for (const v of this.trucks) {
-      const list = owned.get(v.homeId);
-      if (list) list.push(v); else owned.set(v.homeId, [v]);
-    }
-    const garages = new Set<number>();
-    for (const b of this.buildings.values()) {
-      const def = this.def(b);
-      if (!def.isConstructionOffice && !def.isMotorDepot) continue;
-      garages.add(b.id);
-      const want = this.trucksFrom(b);
-      const have = owned.get(b.id) ?? [];
-      for (let i = have.length; i < want; i++) {
-        this.trucks.push({
-          id: this.nextTruckId++, points: [this.centerOf(b)],
-          cargo: 'fuel', amount: 0, daysTotal: 0, daysDone: 0, phase: 'go',
-          destId: b.id, srcId: b.id, homeId: b.id, atId: b.id, legTo: b.id, state: 'idle',
-          fuel: 0, fuelCap: BALANCE.vehicleFuelCap, odometer: 0, legTiles: 0, speed: 0,
-        });
-      }
-    }
-    // retire surplus / orphaned vehicles, idle ones only
-    for (let i = this.trucks.length - 1; i >= 0; i--) {
-      const v = this.trucks[i];
-      if (v.state !== 'idle') continue;
-      const home = this.buildings.get(v.homeId);
-      const quota = home && garages.has(v.homeId) ? this.trucksFrom(home) : 0;
-      const siblings = owned.get(v.homeId);
-      if (!siblings) continue;
-      const rank = siblings.indexOf(v);
-      if (rank >= quota) {
-        // hand back any fuel still in the tank rather than evaporating it
-        if (home && v.fuel > 0.001) this.addStock(home, 'fuel', v.fuel);
-        this.trucks.splice(i, 1);
-      }
-    }
+    return this.w.takeIdleVehicle(near);
   }
 
   private resetRoutingDiagnostics(): void {
@@ -1501,8 +1328,8 @@ export class GameEngine {
     // The fleet reconciles with its garages, tops up dry tanks, then works.
     // Fuel leaves a bin only inside refuelVehicles() — there is no second,
     // pooled levy anywhere in the day.
-    this.syncFleet();
-    this.refuelVehicles();
+    this.runStaged(syncFleet);
+    this.runStaged(refuelVehicles);
     this.logistics();
     this.runStaged(boats);
     this.runStaged(construction);
@@ -1632,15 +1459,8 @@ export class GameEngine {
    * the same delivery rate now takes about twice as many machines, because a
    * real lorry drives the empty leg too. Same capacity, stated physically.
    */
-  trucksFrom(b: BuildingInst): number {
-    const def = this.def(b);
-    if (!b.constructed || !b.connected) return 0;
-    if (def.isConstructionOffice) {
-      return BALANCE.officeTruckBase + Math.floor(BALANCE.maxActiveTrucksPerOffice * (b.staff / def.workers));
-    }
-    if (def.isMotorDepot) return Math.floor(BALANCE.trucksPerDriver * b.staff);
-    return 0;
-  }
+  trucksFrom(b: BuildingInst): number { return this.w.trucksFrom(b); }
+
 
   /** Relay status for a River Port — drives its SidePanel row so an idle port
    *  explains itself instead of looking broken. 'relaying' = a barge or queued
