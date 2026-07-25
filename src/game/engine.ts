@@ -2,7 +2,7 @@
 // Red Republic — game engine & simulation
 // ============================================================
 import {
-  BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, CONTRACTS, LOANS, FARM_SEASON, WEATHER,
+  BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, CONTRACTS, LOANS, WEATHER,
   INSTANT_BUILD, IMPORT_MARKUP, OBJECTIVES,
   DEFAULT_CLIMATE, DIFFICULTIES, DEFAULT_DIFFICULTY, POWER_SECTORS,
 } from './config';
@@ -20,11 +20,12 @@ import { fmtQty, fmtOwed, fmtMoney } from './format';
 import { applyMutations } from './mutation';
 import type { Mutation } from './mutation';
 import { connectivity } from './systems/connectivity';
+import { powerHeat } from './systems/power-heat';
 import { totals } from './systems/totals';
 import { weather } from './systems/weather';
+import { workers } from './systems/workers';
 import {
-  DEFAULT_ALLOCATION_PRIORITY, DEFAULT_UNPOWERED_EFF, RevisionMemo,
-  World, buildingWorn, emptyLedger, rankedGoals,
+  RevisionMemo, World, buildingWorn, emptyLedger, rankedGoals,
 } from './world';
 import type {
   Alert, AutoTradeRule, BoatOrder, Boat, BuildingInst, Contract, GameEvent,
@@ -284,15 +285,8 @@ export class GameEngine {
   /** Enable automatic emergency fuel imports at Customs House when city fuel is dry. */
   emergencyFuelAutoBuy = true;
 
-  /**
-   * Who the grid keeps lit when generation falls short, worst-served last.
-   *
-   * Deliberately the player's, not the engine's: a brownout is a choice about
-   * whether the plan or the people come first, and that is the one question a
-   * planned-economy game should never answer on the player's behalf. The
-   * engine only decides the order WITHIN a sector (see `allocationPriority`).
-   */
-  powerSectorOrder: Category[] = [...POWER_SECTORS];
+  get powerSectorOrder() { return this.w.powerSectorOrder; }
+  set powerSectorOrder(v: Category[]) { this.w.powerSectorOrder = v; }
 
 
   private nextTruckId = 1;
@@ -1549,8 +1543,8 @@ export class GameEngine {
     // as it did when these were void methods.
     this.run(weather);
     this.run(connectivity);
-    this.assignWorkers();
-    this.updatePowerHeat();
+    this.run(workers);
+    this.run(powerHeat);
     this.production();
     this.foreignTrade();
     this.updateContracts();
@@ -1650,187 +1644,16 @@ export class GameEngine {
   // ---------------- systems ----------------
 
 
-  /** Where `b` sits in the queue for a resource the republic hands out in a
-   *  fixed order (workers, power). Authored per building in config. */
-  private allocationRank(b: BuildingInst): number {
-    return this.def(b).allocationPriority ?? DEFAULT_ALLOCATION_PRIORITY;
-  }
-
-  private assignWorkers() {
-    this.workers = Math.floor(this.pop * BALANCE.workerShare);
-    const list = [...this.buildings.values()]
-      .filter(b => b.constructed && this.def(b).workers > 0 && b.connected)
-      .sort((a, b2) => {
-        // the player's own per-building flag outranks the authored order
-        const hi = Number(b2.priorityHigh ?? false) - Number(a.priorityHigh ?? false);
-        if (hi !== 0) return hi;
-        return this.allocationRank(a) - this.allocationRank(b2);
-      });
-    this.jobs = list.reduce((s, b) => s + this.def(b).workers, 0);
-    for (const b of this.buildings.values()) b.staff = 0;
-    let pool = this.workers;
-    // pass 1: every workplace gets a skeleton crew so all chains keep running
-    for (const b of list) {
-      if (pool <= 0) break;
-      b.staff = 1;
-      pool--;
-    }
-    // pass 2: distribute the rest proportionally to remaining open jobs
-    const rem = list.map(b => this.def(b).workers - b.staff);
-    const remTotal = rem.reduce((x, y) => x + y, 0);
-    if (pool > 0 && remTotal > 0) {
-      list.forEach((b, i) => { b.staff += Math.min(rem[i], Math.floor((pool * rem[i]) / remTotal)); });
-      const used = list.reduce((x, b) => x + b.staff, 0);
-      let left = this.workers - used;
-      for (const b of list) {
-        while (left > 0 && b.staff < this.def(b).workers) { b.staff++; left--; }
-        if (left <= 0) break;
-      }
-    }
-    this.employed = list.reduce((x, b) => x + b.staff, 0);
-  }
-
-  private baseEff(b: BuildingInst): number {
-    const def = this.def(b);
-    const staffRatio = def.workers > 0 ? b.staff / def.workers : 1;
-    const powerFactor = def.power > 0 && !b.powered ? (def.unpoweredEff ?? DEFAULT_UNPOWERED_EFF) : 1;
-    // dry machinery bins never stall a building — the machines limp on, worn
-    const wornFactor = buildingWorn(b) ? BALANCE.wornEffMult : 1;
-    return staffRatio * powerFactor * wornFactor;
-  }
-
-  /**
-   * The efficiency a building INTENDS to run at — `baseEff()` with the power
-   * factor floored at the brownout rate instead of allowed to reach zero.
-   *
-   * Used only to size demand. A mill authored `unpoweredEff: 0` produces
-   * nothing while the grid is down, which is correct, but if its *drain* also
-   * read zero it would report needing nothing, score nothing, and never be
-   * delivered to again — so it would still be sitting on empty bins the day
-   * power returned. Intent is what keeps the pipeline stocked through an
-   * outage; `baseEff` is what actually comes out of the building.
-   */
-  private nominalEff(b: BuildingInst): number {
-    const def = this.def(b);
-    const staffRatio = def.workers > 0 ? b.staff / def.workers : 1;
-    const powerFactor = def.power > 0 && !b.powered
-      ? Math.max(DEFAULT_UNPOWERED_EFF, def.unpoweredEff ?? DEFAULT_UNPOWERED_EFF)
-      : 1;
-    const wornFactor = buildingWorn(b) ? BALANCE.wornEffMult : 1;
-    return staffRatio * powerFactor * wornFactor;
-  }
-
-  private updatePowerHeat() {
-    // Heat demand first (temperature-scaled) so plants can throttle to it:
-    // mild days sip coal, a January cold snap burns through the stockpile.
-    const heatFactor = this.heatDemandFactor();
-    this.heatDemand = 0;
-    for (const b of this.buildings.values()) {
-      const def = this.def(b);
-      if (b.constructed && def.heat > 0) this.heatDemand += def.heat * heatFactor;
-    }
-
-    // Plants: fix eff & coalFactor for the whole day (powerFactor uses the
-    // previous day's allocation). production() burns coal/fuel via productionRates()
-    // with these same stored factors, so output and fuel always agree.
-    this.powerProduced = 0;
-    this.heatProduced = 0;
-    let heatToServe = this.heatDemand;
-    for (const b of this.buildings.values()) {
-      const def = this.def(b);
-      if (!b.constructed || (!def.powerOutput && !def.heatOutput)) continue;
-      const eff = this.baseEff(b);
-      b.eff = eff;
-      if (def.powerOutput) {
-        const inputRes = def.inputs ? (Object.keys(def.inputs)[0] as ResourceId) : 'coal';
-        const need = (def.inputs?.[inputRes] ?? 0) * eff;
-        const have = this.stockOf(b, inputRes);
-        b.coalFactor = need <= 0 ? 1 : Math.min(1, have / need);
-        this.powerProduced += def.powerOutput * eff * b.coalFactor;
-      }
-      if (def.heatOutput) {
-        // throttle to remaining demand; fuel burn scales with actual output
-        const capacity = def.heatOutput * eff;
-        const throttle = capacity > 0 ? Math.min(1, heatToServe / capacity) : 0;
-        const inputRes = def.inputs ? (Object.keys(def.inputs)[0] as ResourceId) : 'coal';
-        const need = (def.inputs?.[inputRes] ?? 0) * eff * throttle;
-        const have = this.stockOf(b, inputRes);
-        const fuel = need <= 0 ? 1 : Math.min(1, have / need);
-        b.coalFactor = throttle * fuel;
-        const out = capacity * b.coalFactor;
-        this.heatProduced += out;
-        heatToServe = Math.max(0, heatToServe - out);
-      }
-    }
-    // demand & allocation (priority order)
-    this.powerDemand = 0;
-    for (const b of this.buildings.values()) {
-      if (b.constructed) this.powerDemand += this.def(b).power;
-    }
-
-    // Brownout order. Three layers, coarsest first, and only the middle one is
-    // the engine's opinion:
-    //   1. the player's per-building `priorityHigh` flag (same flag that jumps
-    //      a building to the front of the labour queue — one override, both
-    //      scarce things),
-    //   2. the player's sector order — who the republic keeps lit is a
-    //      political decision, not a simulation detail,
-    //   3. the authored `allocationPriority` inside a sector (a boiler before a
-    //      steel mill; a house before a block).
-    const sector = new Map(this.powerSectorOrder.map((c, i) => [c, i]));
-    const ordered = [...this.buildings.values()]
-      .filter(b => b.constructed && this.def(b).power > 0)
-      .sort((a, b2) => {
-        const hi = Number(b2.priorityHigh ?? false) - Number(a.priorityHigh ?? false);
-        if (hi !== 0) return hi;
-        const sa = sector.get(this.def(a).category) ?? 99;
-        const sb = sector.get(this.def(b2).category) ?? 99;
-        if (sa !== sb) return sa - sb;
-        return this.allocationRank(a) - this.allocationRank(b2);
-      });
-    let budget = this.powerProduced;
-    for (const b of ordered) {
-      const need = this.def(b).power;
-      if (budget >= need) { b.powered = true; budget -= need; }
-      else b.powered = false;
-    }
-    for (const b of this.buildings.values()) if (this.def(b).power === 0) b.powered = true;
-
-    // heat allocation
-    const required = this.heatingRequired();
-    for (const b of this.buildings.values()) {
-      if (b.constructed && this.def(b).heat > 0) b.heated = !required; // warm days everyone is fine
-    }
-    if (required) {
-      let hb = this.heatProduced;
-      for (const b of this.buildings.values()) {
-        const def = this.def(b);
-        if (!b.constructed || def.heat === 0) continue;
-        const need = def.heat * heatFactor;
-        if (hb >= need - 1e-9) { b.heated = true; hb -= need; }
-        else b.heated = false;
-      }
-    }
-  }
+  private baseEff(b: BuildingInst): number { return this.w.baseEff(b); }
+  private nominalEff(b: BuildingInst): number { return this.w.nominalEff(b); }
 
   /**
    * Actual per-day resource flows for a building under current conditions.
    * production() applies exactly these deltas, and the UI displays them, so
    * the simulation and the inspector cannot diverge.
    */
-  /** Staffing/season/terrain scaling of a producer's design rate, before any
-   *  input-availability throttling. Shared by `productionRates` (actual flow)
-   *  and `nominalInputRate` (what it wants) so the two cannot drift. */
   private outputMultiplier(b: BuildingInst, eff = this.baseEff(b)): number {
-    const def = this.def(b);
-    if (def.isFarm) {
-      const fields = Math.min(12, this.countFarmFields(b.x, b.y, b.w, b.h));
-      return eff * (fields / 12) * (FARM_SEASON[this.month] ?? 0) * 2.2 * this.farmWeatherMult();
-    }
-    if (def.requiresForest) {
-      return eff * Math.min(1, this.countForestTiles(b.x, b.y, b.w, b.h) / 6);
-    }
-    return eff;
+    return this.w.outputMultiplier(b, eff);
   }
 
   /**

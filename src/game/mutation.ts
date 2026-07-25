@@ -30,6 +30,24 @@ export type Mutation =
   /** One building's freight-network reachability. */
   | { k: 'connectivity'; id: number; connected: boolean; roadConnected: boolean }
 
+  // ---- labour ----
+  /** The labour pool: of-age citizens, posts on offer, posts filled. */
+  | { k: 'labour'; workers: number; jobs: number; employed: number }
+  /** One building's crew. */
+  | { k: 'staff'; id: number; staff: number }
+
+  // ---- the grid and the boilers ----
+  /** The day's power and heat balance. */
+  | { k: 'grid'; powerProduced: number; powerDemand: number; heatProduced: number; heatDemand: number }
+  /** One building's efficiency for the day. */
+  | { k: 'eff'; id: number; eff: number }
+  /** One plant's input-availability throttle for the day. */
+  | { k: 'coalFactor'; id: number; coalFactor: number }
+  /** Whether the grid could feed this building today. */
+  | { k: 'powered'; id: number; powered: boolean }
+  /** Whether the boilers could reach this building today. */
+  | { k: 'heated'; id: number; heated: boolean }
+
   // ---- national accounts ----
   /** The national stockpile table, recounted from every bin. */
   | { k: 'totals'; totals: Record<ResourceId, number> }
@@ -62,6 +80,38 @@ export function applyMutations(w: World, muts: readonly Mutation[]): void {
       case 'connectivity': {
         const b = w.buildings.get(m.id);
         if (b) { b.connected = m.connected; b.roadConnected = m.roadConnected; }
+        break;
+      }
+      case 'labour':
+        w.workers = m.workers; w.jobs = m.jobs; w.employed = m.employed;
+        break;
+      case 'staff': {
+        const b = w.buildings.get(m.id);
+        if (b) b.staff = m.staff;
+        break;
+      }
+      case 'grid':
+        w.powerProduced = m.powerProduced; w.powerDemand = m.powerDemand;
+        w.heatProduced = m.heatProduced; w.heatDemand = m.heatDemand;
+        break;
+      case 'eff': {
+        const b = w.buildings.get(m.id);
+        if (b) b.eff = m.eff;
+        break;
+      }
+      case 'coalFactor': {
+        const b = w.buildings.get(m.id);
+        if (b) b.coalFactor = m.coalFactor;
+        break;
+      }
+      case 'powered': {
+        const b = w.buildings.get(m.id);
+        if (b) b.powered = m.powered;
+        break;
+      }
+      case 'heated': {
+        const b = w.buildings.get(m.id);
+        if (b) b.heated = m.heated;
         break;
       }
       case 'totals':

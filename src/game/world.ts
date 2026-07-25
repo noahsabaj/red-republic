@@ -8,8 +8,8 @@
 // This file holds TYPES and pure helpers only. The mutable `World` state and
 // its primitive accessors land here next; the systems that act on them become
 // modules alongside it.
-import { ALL_RESOURCES, BALANCE, BUILDINGS, CLIMATES, WEATHER } from './config';
-import type { ClimateId, DepositType, ResourceId } from './config';
+import { ALL_RESOURCES, BALANCE, BUILDINGS, CLIMATES, FARM_SEASON, POWER_SECTORS, WEATHER } from './config';
+import type { Category, ClimateId, DepositType, ResourceId } from './config';
 import { mulberry32 } from './mapgen';
 import type { BorderEdge, SeededRng, Tile } from './mapgen';
 import { FloodResult, floodCost, shortestPathToAny } from './pathfind';
@@ -446,6 +446,69 @@ export class World {
   private nextEventId = 1;
   pushEvent(text: string, kind: GameEvent['kind'], icon?: string): void {
     this.events.push({ id: this.nextEventId++, text, kind, icon });
+  }
+
+  /**
+   * Who the grid keeps lit when generation falls short, worst-served last.
+   *
+   * Deliberately the player's, not the engine's: a brownout is a choice about
+   * whether the plan or the people come first, and that is the one question a
+   * planned-economy game should never answer on the player's behalf. The engine
+   * only decides the order WITHIN a sector (see `allocationPriority`).
+   */
+  powerSectorOrder: Category[] = [...POWER_SECTORS];
+
+  // ---------------- how well a building runs ----------------
+
+  /** Where `b` sits in the queue for a resource the republic hands out in a
+   *  fixed order (workers, power). Authored per building in config. */
+  allocationRank(b: BuildingInst): number {
+    return this.def(b).allocationPriority ?? DEFAULT_ALLOCATION_PRIORITY;
+  }
+
+  baseEff(b: BuildingInst): number {
+    const def = this.def(b);
+    const staffRatio = def.workers > 0 ? b.staff / def.workers : 1;
+    const powerFactor = def.power > 0 && !b.powered ? (def.unpoweredEff ?? DEFAULT_UNPOWERED_EFF) : 1;
+    // dry machinery bins never stall a building — the machines limp on, worn
+    const wornFactor = buildingWorn(b) ? BALANCE.wornEffMult : 1;
+    return staffRatio * powerFactor * wornFactor;
+  }
+
+  /**
+   * The efficiency a building INTENDS to run at — `baseEff()` with the power
+   * factor floored at the brownout rate instead of allowed to reach zero.
+   *
+   * Used only to size demand. A mill authored `unpoweredEff: 0` produces
+   * nothing while the grid is down, which is correct, but if its *drain* also
+   * read zero it would report needing nothing, score nothing, and never be
+   * delivered to again — so it would still be sitting on empty bins the day
+   * power returned. Intent is what keeps the pipeline stocked through an
+   * outage; `baseEff` is what actually comes out of the building.
+   */
+  nominalEff(b: BuildingInst): number {
+    const def = this.def(b);
+    const staffRatio = def.workers > 0 ? b.staff / def.workers : 1;
+    const powerFactor = def.power > 0 && !b.powered
+      ? Math.max(DEFAULT_UNPOWERED_EFF, def.unpoweredEff ?? DEFAULT_UNPOWERED_EFF)
+      : 1;
+    const wornFactor = buildingWorn(b) ? BALANCE.wornEffMult : 1;
+    return staffRatio * powerFactor * wornFactor;
+  }
+
+  /** Staffing/season/terrain scaling of a producer's design rate, before any
+   *  input-availability throttling. Shared by `productionRates` (actual flow)
+   *  and `nominalInputRate` (what it wants) so the two cannot drift. */
+  outputMultiplier(b: BuildingInst, eff = this.baseEff(b)): number {
+    const def = this.def(b);
+    if (def.isFarm) {
+      const fields = Math.min(12, this.countFarmFields(b.x, b.y, b.w, b.h));
+      return eff * (fields / 12) * (FARM_SEASON[this.month] ?? 0) * 2.2 * this.farmWeatherMult();
+    }
+    if (def.requiresForest) {
+      return eff * Math.min(1, this.countForestTiles(b.x, b.y, b.w, b.h) / 6);
+    }
+    return eff;
   }
 
   /** Connectivity is expensive and changes rarely, so its mutation list is
