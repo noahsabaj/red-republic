@@ -22,6 +22,7 @@ import type { Mutation } from './mutation';
 import { citizens } from './systems/citizens';
 import { contracts } from './systems/contracts';
 import { connectivity } from './systems/connectivity';
+import { foreignTrade } from './systems/foreign-trade';
 import { loans } from './systems/loans';
 import { objectives } from './systems/objectives';
 import { powerHeat } from './systems/power-heat';
@@ -30,7 +31,7 @@ import { totals } from './systems/totals';
 import { weather } from './systems/weather';
 import { workers } from './systems/workers';
 import {
-  RevisionMemo, World, buildingWorn, emptyLedger, rankedGoals,
+  RevisionMemo, World, buildingWorn, rankedGoals,
 } from './world';
 import type { LogisticsCategory } from './world';
 import type {
@@ -292,8 +293,8 @@ export class GameEngine {
 
   /** Climate region driving the weather timeline. Fixed for the whole run. */
   readonly climate: ClimateId;
-  /** Difficulty preset (start conditions only — the sim is difficulty-blind). */
-  readonly difficulty: DifficultyId;
+  /** Difficulty preset (start conditions, plus the border's import markup). */
+  get difficulty() { return this.w.difficulty; }
   /** The republic's name (player-chosen at founding; shown in HUD and saves). */
   name: string;
   get seed() { return this.w.seed; }
@@ -305,15 +306,15 @@ export class GameEngine {
     skipStartingBase?: boolean; weatherScript?: (dayIndex: number) => Partial<DayWeather>;
   } = {}) {
     const seed = opts.seed ?? Math.floor(Math.random() * 2 ** 31);
+    const difficulty = opts.difficulty ?? DEFAULT_DIFFICULTY;
     this.climate = opts.climate ?? DEFAULT_CLIMATE;
-    this.difficulty = opts.difficulty ?? DEFAULT_DIFFICULTY;
     this.name = opts.name ?? 'Red Republic';
     const map = opts.map ?? generateMap(seed, opts.mapW, opts.mapH);
     // World owns the map, the buildings on it, the topology over both, the
     // calendar/weather, the republic's condition, its fleet and its ledger. Its
     // RNG and weather timeline are decorrelated from map generation, so
     // constructing it after generateMap cannot perturb either stream.
-    this.w = new World(map.tiles, map.border ?? null, seed, this.climate, opts.weatherScript);
+    this.w = new World(map.tiles, map.border ?? null, seed, this.climate, difficulty, opts.weatherScript);
     this.rubles = DIFFICULTIES[this.difficulty].startRubles;
     this.dollars = DIFFICULTIES[this.difficulty].startDollars;
     if (!opts.skipStartingBase) this.setupStartingBase(map);
@@ -962,22 +963,8 @@ export class GameEngine {
 
   // ---------------- trade ----------------
 
-  private marketPrice(r: ResourceId, currency: 'east' | 'west') {
-    const base = currency === 'east' ? RESOURCES[r].priceEast : RESOURCES[r].priceWest;
-    return base * (currency === 'east' ? this.priceFactorEast : this.priceFactorWest);
-  }
-
-  /** Sell price. A failed contract sours relations: the bloc pays less for a while. */
-  priceOf(r: ResourceId, currency: 'east' | 'west') {
-    return this.marketPrice(r, currency) * (1 - this.relationsPenalty[currency]);
-  }
-
-  /** Buy price. Soured relations cut both ways: the bloc also charges more. */
-  importPriceOf(r: ResourceId, currency: 'east' | 'west') {
-    return this.marketPrice(r, currency) * IMPORT_MARKUP
-      * DIFFICULTIES[this.difficulty].importPriceMult
-      * (1 + this.relationsPenalty[currency]);
-  }
+  priceOf(r: ResourceId, currency: 'east' | 'west') { return this.w.priceOf(r, currency); }
+  importPriceOf(r: ResourceId, currency: 'east' | 'west') { return this.w.importPriceOf(r, currency); }
 
   /** Land components touched by the constructed customs network — "can this good
    * physically reach the border". Sim-internal derived state: keyed on the land
@@ -1030,26 +1017,8 @@ export class GameEngine {
     return v;
   }
 
-  /**
-   * Pay for `amt` exported units. Units owed to the oldest active contract
-   * for (r, bloc) are credited and paid at its locked price; the remainder
-   * fetches the market price. Both sale paths (manual sell, auto-trade) route
-   * through here, so contracts cannot miss a delivery.
-   */
   private exportPayout(r: ResourceId, bloc: 'east' | 'west', amt: number): number {
-    const c = this.contracts.find(k => k.state === 'active' && k.r === r && k.bloc === bloc);
-    if (!c) return amt * this.priceOf(r, bloc);
-    // Callers pass whole units (buy/sell/auto-trade all floor at the border), so
-    // `delivered` stays integer. Do NOT floor `credited` here — the caller already
-    // removed `amt` from stock, so flooring would make the sub-unit remainder vanish.
-    const credited = Math.min(amt, c.amount - c.delivered);
-    c.delivered += credited;
-    if (c.delivered >= c.amount - 1e-9) {
-      c.state = 'done';
-      c.closedIdx = this.dayIndex();
-      this.pushEvent(`Contract fulfilled: ${c.amount} ${RESOURCES[r].name} to the ${c.bloc === 'east' ? 'East' : 'West'}!`, 'good', 'contract');
-    }
-    return credited * c.pricePerUnit + (amt - credited) * this.priceOf(r, bloc);
+    return this.w.exportPayout(r, bloc, amt);
   }
 
   sell(r: ResourceId, amount: number, currency: 'east' | 'west'): { ok: boolean; msg: string } {
@@ -1542,7 +1511,7 @@ export class GameEngine {
     this.run(workers);
     this.run(powerHeat);
     this.run(production);
-    this.foreignTrade();
+    this.runStaged(foreignTrade);
     this.runStaged(contracts);
     this.runStaged(loans);
     // The fleet reconciles with its garages, tops up dry tanks, then works.
@@ -1650,31 +1619,8 @@ export class GameEngine {
 
   // ---------------- foreign trade (auto) ----------------
 
-  /** Live town-wide stock incl. cargo on the road — auto-imports measure against this, not yesterday's totals. */
-  private liveTownTotal(r: ResourceId): number {
-    let total = 0;
-    for (const b of this.buildings.values()) total += this.stockOf(b, r);
-    for (const t of this.trucks) if (t.cargo === r) total += t.amount;
-    for (const bt of this.boats) if (bt.cargo === r) total += bt.amount;
-    return total;
-  }
-
-  /**
-   * Flavor: a foreign lorry drives in from the map edge along the crossing
-   * lane, pauses at the customs, and leaves. Purely visual — capped, and
-   * spawned only by actual trades, so it stays deterministic.
-   */
   private spawnForeignTruck(c: BuildingInst, r: ResourceId, amt: number) {
-    const edge = this.borderEdge;
-    if (!edge || this.foreignTrucks.length >= 8) return;
-    const pts = edge === 'W' ? [{ x: -0.8, y: c.y + 0.5 }, { x: c.x - 0.5, y: c.y + 0.5 }]
-      : edge === 'E' ? [{ x: this.mapW - 0.2, y: c.y + 0.5 }, { x: c.x + c.w + 0.5, y: c.y + 0.5 }]
-      : edge === 'N' ? [{ x: c.x + 0.5, y: -0.8 }, { x: c.x + 0.5, y: c.y - 0.5 }]
-      : [{ x: c.x + 0.5, y: this.mapH - 0.2 }, { x: c.x + 0.5, y: c.y + c.h + 0.5 }];
-    this.foreignTrucks.push({
-      id: this.nextTruckId++, points: pts, cargo: r, amount: amt,
-      daysTotal: 0.7, daysDone: 0, phase: 'go', destId: c.id, srcId: 0,
-    });
+    this.w.spawnForeignTruck(c, r, amt);
   }
 
   /** Foreign lorries only cross and return — no delivery logic. */
@@ -1685,77 +1631,6 @@ export class GameEngine {
       if (t.daysDone < t.daysTotal) continue;
       if (t.phase === 'go') { t.phase = 'back'; t.daysDone = 0; }
       else this.foreignTrucks.splice(i, 1);
-    }
-  }
-
-  /**
-   * Standing orders of the Foreign Trade Directorate. Runs before logistics
-   * (imports land in customs stock in time for today's trucks) and before
-   * citizens (the reserve floor keeps wages safe from automation). Each
-   * customs house clears a limited daily tonnage scaled by its staffing —
-   * exports sell from its own stock (trucks stage them via logistics),
-   * imports arrive into it. Manual panel trades stay instant.
-   */
-  private foreignTrade() {
-    this.tradeLedger.yesterday = this.tradeLedger.today;
-    const led = this.tradeLedger.today = emptyLedger();
-    const customsHouses = [...this.buildings.values()]
-      .filter(b => this.def(b).isCustoms && b.constructed)
-      .sort((a, b) => a.id - b.id);
-    for (const c of customsHouses) led.capacity += Math.floor(BALANCE.customsThroughputPerDay * c.eff);
-    if (!this.autoTrade.enabled || !customsHouses.length) return;
-    if (!ALL_RESOURCES.some(r => this.autoTrade.rules[r])) return;
-    const blocked = (why: string) => { if (!led.blocked.includes(why)) led.blocked.push(why); };
-    if (led.capacity <= 0) { blocked('customs house unstaffed'); return; }
-
-    for (const c of customsHouses) {
-      let budget = Math.floor(BALANCE.customsThroughputPerDay * c.eff);
-      if (budget <= 0) continue;
-
-      // exports first — earn before spending, straight from this customs' stock
-      for (const r of ALL_RESOURCES) {
-        if (budget <= 0) break;
-        const rule = this.autoTrade.rules[r];
-        if (rule?.mode !== 'export') continue;
-        const amt = Math.min(budget, Math.floor(this.stockOf(c, r)));
-        if (amt < 1) continue;
-        this.addStock(c, r, -amt);
-        const gain = this.exportPayout(r, rule.currency, amt);
-        if (rule.currency === 'east') { this.rubles += gain; led.rubles += gain; }
-        else { this.dollars += gain; led.dollars += gain; }
-        this.stats.exportedValue += rule.currency === 'east' ? gain : gain * 10;
-        led.exports[r] = (led.exports[r] ?? 0) + amt;
-        led.used += amt;
-        budget -= amt;
-        this.spawnForeignTruck(c, r, amt);
-      }
-
-      // imports — fill the town to each rule's level, throughput- and reserve-limited
-      for (const r of ALL_RESOURCES) {
-        if (budget <= 0) break;
-        const rule = this.autoTrade.rules[r];
-        if (rule?.mode !== 'import') continue;
-        const deficit = Math.floor(rule.level - this.liveTownTotal(r));
-        if (deficit < 1) continue;
-        const free = Math.floor(this.capOf(c, r) - this.stockOf(c, r) - this.incomingOf(c, r));
-        if (free < 1) { blocked('customs storage full'); continue; }
-        const price = this.importPriceOf(r, rule.currency);
-        const spendable = rule.currency === 'east'
-          ? this.rubles - this.autoTrade.reserveRubles
-          : this.dollars - this.autoTrade.reserveDollars;
-        const affordable = Math.floor(spendable / price);
-        if (affordable < 1) { blocked('treasury at reserve floor'); continue; }
-        const amt = Math.min(deficit, budget, free, affordable);
-        const cost = amt * price;
-        if (rule.currency === 'east') { this.rubles -= cost; led.rubles -= cost; }
-        else { this.dollars -= cost; led.dollars -= cost; }
-        this.addStock(c, r, amt);
-        this.stats.imported[r] = (this.stats.imported[r] ?? 0) + amt;
-        led.imports[r] = (led.imports[r] ?? 0) + amt;
-        led.used += amt;
-        budget -= amt;
-        this.spawnForeignTruck(c, r, amt);
-      }
     }
   }
 

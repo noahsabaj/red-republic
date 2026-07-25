@@ -8,8 +8,11 @@
 // This file holds TYPES and pure helpers only. The mutable `World` state and
 // its primitive accessors land here next; the systems that act on them become
 // modules alongside it.
-import { ALL_RESOURCES, BALANCE, BUILDINGS, CLIMATES, FARM_SEASON, LOANS, POWER_SECTORS, WEATHER } from './config';
-import type { Category, ClimateId, DepositType, ResourceId } from './config';
+import {
+  ALL_RESOURCES, BALANCE, BUILDINGS, CLIMATES, DIFFICULTIES, FARM_SEASON, IMPORT_MARKUP,
+  LOANS, POWER_SECTORS, RESOURCES, WEATHER,
+} from './config';
+import type { Category, ClimateId, DepositType, DifficultyId, ResourceId } from './config';
 import { mulberry32 } from './mapgen';
 import type { BorderEdge, SeededRng, Tile } from './mapgen';
 import { FloodResult, floodCost, shortestPathToAny } from './pathfind';
@@ -408,6 +411,9 @@ export class World {
 
   day = 1; month = 3; year = 1960;
   readonly seed: number;
+  /** Start conditions only — except the import price multiplier, which the
+   *  border charges every day, so the sim does read it. */
+  readonly difficulty: DifficultyId;
   /** The economy's stream. Contracts and the weather timeline draw from their
    *  own decorrelated streams, so this one has exactly one call site. */
   rng: SeededRng;
@@ -538,6 +544,105 @@ export class World {
    */
   powerSectorOrder: Category[] = [...POWER_SECTORS];
 
+  // ---------------- the border ----------------
+
+  private marketPrice(r: ResourceId, currency: 'east' | 'west') {
+    const base = currency === 'east' ? RESOURCES[r].priceEast : RESOURCES[r].priceWest;
+    return base * (currency === 'east' ? this.priceFactorEast : this.priceFactorWest);
+  }
+
+  /** Sell price. A failed contract sours relations: the bloc pays less for a while. */
+  priceOf(r: ResourceId, currency: 'east' | 'west') {
+    return this.marketPrice(r, currency) * (1 - this.relationsPenalty[currency]);
+  }
+
+  /** Buy price. Soured relations cut both ways: the bloc also charges more. */
+  importPriceOf(r: ResourceId, currency: 'east' | 'west') {
+    return this.marketPrice(r, currency) * IMPORT_MARKUP
+      * DIFFICULTIES[this.difficulty].importPriceMult
+      * (1 + this.relationsPenalty[currency]);
+  }
+
+  /**
+   * Pay for `amt` exported units. Units owed to the oldest active contract
+   * for (r, bloc) are credited and paid at its locked price; the remainder
+   * fetches the market price. Both sale paths (manual sell, auto-trade) route
+   * through here, so contracts cannot miss a delivery.
+   */
+  exportPayout(r: ResourceId, bloc: 'east' | 'west', amt: number): number {
+    const c = this.contracts.find(k => k.state === 'active' && k.r === r && k.bloc === bloc);
+    if (!c) return amt * this.priceOf(r, bloc);
+    // Callers pass whole units (buy/sell/auto-trade all floor at the border), so
+    // `delivered` stays integer. Do NOT floor `credited` here — the caller already
+    // removed `amt` from stock, so flooring would make the sub-unit remainder vanish.
+    const credited = Math.min(amt, c.amount - c.delivered);
+    c.delivered += credited;
+    if (c.delivered >= c.amount - 1e-9) {
+      c.state = 'done';
+      c.closedIdx = this.dayIndex();
+      this.pushEvent(`Contract fulfilled: ${c.amount} ${RESOURCES[r].name} to the ${c.bloc === 'east' ? 'East' : 'West'}!`, 'good', 'contract');
+    }
+    return credited * c.pricePerUnit + (amt - credited) * this.priceOf(r, bloc);
+  }
+
+  /** Live town-wide stock incl. cargo on the road — auto-imports measure against this, not yesterday's totals. */
+  liveTownTotal(r: ResourceId): number {
+    let total = 0;
+    for (const b of this.buildings.values()) total += this.stockOf(b, r);
+    for (const t of this.trucks) if (t.cargo === r) total += t.amount;
+    for (const bt of this.boats) if (bt.cargo === r) total += bt.amount;
+    return total;
+  }
+
+  /**
+   * Flavor: a foreign lorry drives in from the map edge along the crossing
+   * lane, pauses at the customs, and leaves. Purely visual — capped, and
+   * spawned only by actual trades, so it stays deterministic.
+   */
+  spawnForeignTruck(c: BuildingInst, r: ResourceId, amt: number) {
+    const edge = this.borderEdge;
+    if (!edge || this.foreignTrucks.length >= 8) return;
+    const pts = edge === 'W' ? [{ x: -0.8, y: c.y + 0.5 }, { x: c.x - 0.5, y: c.y + 0.5 }]
+      : edge === 'E' ? [{ x: this.mapW - 0.2, y: c.y + 0.5 }, { x: c.x + c.w + 0.5, y: c.y + 0.5 }]
+      : edge === 'N' ? [{ x: c.x + 0.5, y: -0.8 }, { x: c.x + 0.5, y: c.y - 0.5 }]
+      : [{ x: c.x + 0.5, y: this.mapH - 0.2 }, { x: c.x + 0.5, y: c.y + c.h + 0.5 }];
+    this.foreignTrucks.push({
+      id: this.nextTruckId++, points: pts, cargo: r, amount: amt,
+      daysTotal: 0.7, daysDone: 0, phase: 'go', destId: c.id, srcId: 0,
+    });
+  }
+
+  /**
+   * One export across the border: stock out, contract credited, treasury paid,
+   * ledger booked, lorry waved through. Deliberately one primitive rather than
+   * six mutations — it is a single real transaction, and splitting it would
+   * only produce parts that are never emitted apart.
+   */
+  sellAcrossBorder(c: BuildingInst, r: ResourceId, bloc: 'east' | 'west', amt: number): void {
+    const led = this.tradeLedger.today;
+    this.addStock(c, r, -amt);
+    const gain = this.exportPayout(r, bloc, amt);
+    if (bloc === 'east') { this.rubles += gain; led.rubles += gain; }
+    else { this.dollars += gain; led.dollars += gain; }
+    this.stats.exportedValue += bloc === 'east' ? gain : gain * 10;
+    led.exports[r] = (led.exports[r] ?? 0) + amt;
+    led.used += amt;
+    this.spawnForeignTruck(c, r, amt);
+  }
+
+  /** The mirror of `sellAcrossBorder`: treasury out, goods into customs stock. */
+  buyAcrossBorder(c: BuildingInst, r: ResourceId, bloc: 'east' | 'west', amt: number): void {
+    const led = this.tradeLedger.today;
+    const cost = amt * this.importPriceOf(r, bloc);
+    if (bloc === 'east') { this.rubles -= cost; led.rubles -= cost; }
+    else { this.dollars -= cost; led.dollars -= cost; }
+    this.addStock(c, r, amt);
+    this.stats.imported[r] = (this.stats.imported[r] ?? 0) + amt;
+    led.imports[r] = (led.imports[r] ?? 0) + amt;
+    led.used += amt;
+    this.spawnForeignTruck(c, r, amt);
+  }
+
   // ---------------- how well a building runs ----------------
 
   /** Where `b` sits in the queue for a resource the republic hands out in a
@@ -662,6 +767,7 @@ export class World {
     borderEdge: BorderEdge | null,
     seed: number,
     climate: ClimateId,
+    difficulty: DifficultyId,
     weatherScript?: (dayIndex: number) => Partial<DayWeather>,
   ) {
     this._tiles = tiles;
@@ -676,6 +782,7 @@ export class World {
     this.borderEdge = borderEdge;
     this.hasWater = this._tiles.some(row => row.some(t => t.terrain === 'water'));
     this.seed = seed;
+    this.difficulty = difficulty;
     this.rng = mulberry32(seed ^ 0x9e3779b9); // decorrelate from map generation
     this.timeline = new WeatherTimeline(seed, CLIMATES[climate]);
     this.weatherScript = weatherScript;

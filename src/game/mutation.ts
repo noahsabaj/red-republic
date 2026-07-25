@@ -16,6 +16,7 @@
 // applies in emission order, so float accumulation and event ids stay
 // bit-identical to the hand-written code these replace.
 import type { ResourceId } from './config';
+import { emptyLedger } from './world';
 import type { GameEvent, World } from './world';
 import type { DayWeather } from './weather';
 
@@ -76,6 +77,20 @@ export type Mutation =
   | { k: 'treasury'; bloc: 'east' | 'west'; delta: number }
   /** Standing price malus with one bloc (0..cap). */
   | { k: 'relations'; bloc: 'east' | 'west'; penalty: number }
+
+  // ---- the daily trade ledger ----
+  /** Close the day's book and open a fresh one. */
+  | { k: 'ledgerRoll' }
+  /** Add one customs house's cleared tonnage to today's throughput. */
+  | { k: 'ledgerCapacity'; amount: number }
+  /** Note why auto-trade could not do more (deduplicated by the applier). */
+  | { k: 'ledgerBlocked'; why: string }
+  /** One export across the border, whole units. Atomic on purpose: stock out,
+   *  contract credited, treasury paid, ledger booked, lorry waved through are a
+   *  single transaction and are never emitted apart. */
+  | { k: 'exportSale'; id: number; r: ResourceId; bloc: 'east' | 'west'; amount: number }
+  /** The mirror: treasury out, goods into that customs house's stock. */
+  | { k: 'importPurchase'; id: number; r: ResourceId; bloc: 'east' | 'west'; amount: number }
 
   // ---- contracts ----
   | { k: 'contractState'; id: number; state: 'active' | 'done' | 'failed'; closedIdx?: number }
@@ -221,6 +236,26 @@ export function applyMutations(w: World, muts: readonly Mutation[]): void {
       case 'relations':
         w.relationsPenalty[m.bloc] = m.penalty;
         break;
+      case 'ledgerRoll':
+        w.tradeLedger.yesterday = w.tradeLedger.today;
+        w.tradeLedger.today = emptyLedger();
+        break;
+      case 'ledgerCapacity':
+        w.tradeLedger.today.capacity += m.amount;
+        break;
+      case 'ledgerBlocked':
+        if (!w.tradeLedger.today.blocked.includes(m.why)) w.tradeLedger.today.blocked.push(m.why);
+        break;
+      case 'exportSale': {
+        const c = w.buildings.get(m.id);
+        if (c) w.sellAcrossBorder(c, m.r, m.bloc, m.amount);
+        break;
+      }
+      case 'importPurchase': {
+        const c = w.buildings.get(m.id);
+        if (c) w.buyAcrossBorder(c, m.r, m.bloc, m.amount);
+        break;
+      }
       case 'contractState': {
         const c = w.contracts.find(x => x.id === m.id);
         if (c) { c.state = m.state; if (m.closedIdx !== undefined) c.closedIdx = m.closedIdx; }
