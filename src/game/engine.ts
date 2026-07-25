@@ -4,18 +4,17 @@
 import {
   BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, CONTRACTS, LOANS, FARM_SEASON, WEATHER,
   INSTANT_BUILD, IMPORT_MARKUP, OBJECTIVES,
-  CLIMATES, DEFAULT_CLIMATE, DIFFICULTIES, DEFAULT_DIFFICULTY, POWER_SECTORS,
+  DEFAULT_CLIMATE, DIFFICULTIES, DEFAULT_DIFFICULTY, POWER_SECTORS,
 } from './config';
 import type { Category, ClimateId, DepositType, DifficultyId, ResourceId } from './config';
 import { generateMap, mulberry32 } from './mapgen';
-import type { BorderEdge, MapData, SeededRng, Tile } from './mapgen';
+import type { BorderEdge, MapData, Tile } from './mapgen';
 import { SAVE_FORMAT_VERSION, packTiles, unpackTiles, validateSave } from './save-format';
 import type { SaveGameV1 } from './save-format';
 import { FloodResult } from './pathfind';
 import type { NearestPath, RankedGoal } from './pathfind';
 import { shareAnyComponent, unionComponents, forEachPerimeterTile } from './topology';
 import type { TopologyAccess, TopologyDomain, TopologyPos } from './topology';
-import { WeatherTimeline } from './weather';
 import type { DayWeather } from './weather';
 import { fmtQty, fmtOwed, fmtMoney } from './format';
 import {
@@ -168,35 +167,63 @@ export class GameEngine {
   boats: Boat[] = [];
   /** Cosmetic border traffic: foreign lorries visiting the customs on trade days. */
   foreignTrucks: Mover[] = [];
-  day = 1; month = 3; year = 1960;
   // Foreign currency only — nothing domestic ever charges the treasury.
   // The real starting grants come from DIFFICULTIES in the constructor.
   rubles = 0;
   dollars = 0;
-  pop = 0;
   speed: 0 | 1 | 2 | 4 = 1;
-
-  // computed stats
-  capacity = 0;
-  workers = 0;
-  employed = 0;
-  jobs = 0;
-  happiness = 70;
-  sat = { food: 1, clothes: 1, power: 1, heat: 1, culture: 0, health: 0, employment: 1, pollution: 1 };
-  powerProduced = 0; powerDemand = 0;
-  heatProduced = 0; heatDemand = 0;
   priceFactorEast = 1;
   priceFactorWest = 1;
-  totals: Record<ResourceId, number> = Object.fromEntries(ALL_RESOURCES.map(r => [r, 0])) as Record<ResourceId, number>;
-  stats = {
-    produced: Object.fromEntries(ALL_RESOURCES.map(r => [r, 0])) as Record<ResourceId, number>,
-    /** Cumulative customs imports per resource (objective metric). */
-    imported: {} as Partial<Record<ResourceId, number>>,
-    exportedValue: 0,
-    roadsBuilt: 0, // cumulative COMPLETED road tiles (objective metric; never decremented)
-  };
-  objectivesDone: string[] = [];
-  alerts: Alert[] = [];
+
+  // The calendar, the weather and the republic's measured condition are World
+  // state — every derivation writes them, so they belong where the systems can
+  // reach them. These forward for the UI, the renderer and the tests.
+  get day() { return this.w.day; }
+  set day(v: number) { this.w.day = v; }
+  get month() { return this.w.month; }
+  set month(v: number) { this.w.month = v; }
+  get year() { return this.w.year; }
+  set year(v: number) { this.w.year = v; }
+  get weather() { return this.w.weather; }
+  set weather(v: DayWeather) { this.w.weather = v; }
+  get weatherScript() { return this.w.weatherScript; }
+  set weatherScript(v: ((dayIndex: number) => Partial<DayWeather>) | undefined) { this.w.weatherScript = v; }
+  private get dryStreak() { return this.w.dryStreak; }
+  private set dryStreak(v: number) { this.w.dryStreak = v; }
+  private get gloomStreak() { return this.w.gloomStreak; }
+  private set gloomStreak(v: number) { this.w.gloomStreak = v; }
+  private get sunStreak() { return this.w.sunStreak; }
+  private set sunStreak(v: number) { this.w.sunStreak = v; }
+  private get wasFrost() { return this.w.wasFrost; }
+  private set wasFrost(v: boolean) { this.w.wasFrost = v; }
+
+  get pop() { return this.w.pop; }
+  set pop(v: number) { this.w.pop = v; }
+  get capacity() { return this.w.capacity; }
+  set capacity(v: number) { this.w.capacity = v; }
+  get workers() { return this.w.workers; }
+  set workers(v: number) { this.w.workers = v; }
+  get employed() { return this.w.employed; }
+  set employed(v: number) { this.w.employed = v; }
+  get jobs() { return this.w.jobs; }
+  set jobs(v: number) { this.w.jobs = v; }
+  get happiness() { return this.w.happiness; }
+  set happiness(v: number) { this.w.happiness = v; }
+  get sat() { return this.w.sat; }
+  get powerProduced() { return this.w.powerProduced; }
+  set powerProduced(v: number) { this.w.powerProduced = v; }
+  get powerDemand() { return this.w.powerDemand; }
+  set powerDemand(v: number) { this.w.powerDemand = v; }
+  get heatProduced() { return this.w.heatProduced; }
+  set heatProduced(v: number) { this.w.heatProduced = v; }
+  get heatDemand() { return this.w.heatDemand; }
+  set heatDemand(v: number) { this.w.heatDemand = v; }
+  get totals() { return this.w.totals; }
+  get stats() { return this.w.stats; }
+  get objectivesDone() { return this.w.objectivesDone; }
+  set objectivesDone(v: string[]) { this.w.objectivesDone = v; }
+  get alerts() { return this.w.alerts; }
+  set alerts(v: Alert[]) { this.w.alerts = v; }
   /** National auto-trade policy — mutate only via the setAutoTrade* methods. */
   autoTrade = {
     enabled: false,
@@ -277,42 +304,32 @@ export class GameEngine {
 
   readonly TICK_MS = 500; // one game day at 1x speed
 
-  readonly seed: number;
   /** Climate region driving the weather timeline. Fixed for the whole run. */
   readonly climate: ClimateId;
   /** Difficulty preset (start conditions only — the sim is difficulty-blind). */
   readonly difficulty: DifficultyId;
   /** The republic's name (player-chosen at founding; shown in HUD and saves). */
   name: string;
-  private rng: SeededRng;
-  private timeline: WeatherTimeline;
-  /** Test/debug seam: overlays the deterministic timeline (helpers force calm weather). */
-  weatherScript?: (dayIndex: number) => Partial<DayWeather>;
-  weather: DayWeather;
-  private dryStreak = 0;   // hot rainless days in a row (drought)
-  private gloomStreak = 0; // miserable-weather days in a row (morale)
-  private sunStreak = 0;
-  private wasFrost = false;
+  get seed() { return this.w.seed; }
+  private get rng() { return this.w.rng; }
 
   constructor(opts: {
     seed?: number; map?: MapData; mapW?: number; mapH?: number;
     climate?: ClimateId; difficulty?: DifficultyId; name?: string;
     skipStartingBase?: boolean; weatherScript?: (dayIndex: number) => Partial<DayWeather>;
   } = {}) {
-    this.seed = opts.seed ?? Math.floor(Math.random() * 2 ** 31);
+    const seed = opts.seed ?? Math.floor(Math.random() * 2 ** 31);
     this.climate = opts.climate ?? DEFAULT_CLIMATE;
     this.difficulty = opts.difficulty ?? DEFAULT_DIFFICULTY;
     this.name = opts.name ?? 'Red Republic';
     this.rubles = DIFFICULTIES[this.difficulty].startRubles;
     this.dollars = DIFFICULTIES[this.difficulty].startDollars;
-    this.rng = mulberry32(this.seed ^ 0x9e3779b9); // decorrelate from map generation
-    this.timeline = new WeatherTimeline(this.seed, CLIMATES[this.climate]);
-    this.weatherScript = opts.weatherScript;
-    this.weather = this.weatherAt(this.dayIndex());
-    const map = opts.map ?? generateMap(this.seed, opts.mapW, opts.mapH);
-    // World owns the map, the buildings on it and the topology over both; it
-    // derives its own dimensions and water flag from the tile grid.
-    this.w = new World(map.tiles, map.border ?? null);
+    const map = opts.map ?? generateMap(seed, opts.mapW, opts.mapH);
+    // World owns the map, the buildings on it, the topology over both, the
+    // calendar/weather and the republic's measured condition. Its RNG and
+    // weather timeline are decorrelated from map generation, so constructing it
+    // after generateMap cannot perturb either stream.
+    this.w = new World(map.tiles, map.border ?? null, seed, this.climate, opts.weatherScript);
     if (!opts.skipStartingBase) this.setupStartingBase(map);
   }
 
@@ -439,46 +456,13 @@ export class GameEngine {
 
   def(b: BuildingInst) { return this.w.def(b); }
 
-  season(): Season {
-    if (this.month === 12 || this.month <= 2) return 'winter';
-    if (this.month <= 5) return 'spring';
-    if (this.month <= 8) return 'summer';
-    return 'autumn';
-  }
-
-  /** Heating is needed when it is actually cold out — not by the calendar. */
-  heatingRequired() { return this.weather.tempC < BALANCE.heatThresholdC; }
-
-  /** 0..1.25 share of nominal heat demand: mild days sip coal, deep cold over-drives. */
-  heatDemandFactor(): number {
-    if (!this.heatingRequired()) return 0;
-    return Math.min(1.25,
-      (BALANCE.heatThresholdC - this.weather.tempC) / (BALANCE.heatThresholdC - BALANCE.heatDesignTempC));
-  }
-
-  /** Crop growth multiplier from today's weather: rain feeds, frost stops, drought withers. */
-  farmWeatherMult(): number {
-    if (this.weather.tempC < 0) return 0; // frost — nothing grows
-    const drought = Math.max(0.6, 1 - Math.max(0, this.dryStreak - BALANCE.droughtAfterDays) * 0.05);
-    return WEATHER[this.weather.condition].farmMult * drought;
-  }
-
-  /** Absolute day index into the weather timeline (0 = January 1, 1960). */
-  dayIndex(): number {
-    return (this.year - 1960) * 360 + (this.month - 1) * 30 + (this.day - 1);
-  }
-
-  private weatherAt(index: number): DayWeather {
-    const w = this.timeline.at(index);
-    const o = this.weatherScript?.(index);
-    return { ...w, ...o }; // copy: memoized timeline entries stay pristine
-  }
-
-  /** Exact upcoming weather — the timeline is deterministic, so the State Hydrometeorological Service never misses. */
-  forecast(days = 5): DayWeather[] {
-    const idx = this.dayIndex();
-    return Array.from({ length: days }, (_, i) => this.weatherAt(idx + 1 + i));
-  }
+  season(): Season { return this.w.season(); }
+  heatingRequired() { return this.w.heatingRequired(); }
+  heatDemandFactor(): number { return this.w.heatDemandFactor(); }
+  farmWeatherMult(): number { return this.w.farmWeatherMult(); }
+  dayIndex(): number { return this.w.dayIndex(); }
+  private weatherAt(index: number): DayWeather { return this.w.weatherAt(index); }
+  forecast(days = 5): DayWeather[] { return this.w.forecast(days); }
 
   buildingAt(x: number, y: number) { return this.w.buildingAt(x, y); }
   stockOf(b: BuildingInst, r: ResourceId) { return this.w.stockOf(b, r); }
@@ -4280,14 +4264,14 @@ export class GameEngine {
     e.rubles = h.rubles; e.dollars = h.dollars; e.pop = h.pop;
 
     e.happiness = body.happiness;
-    e.sat = { ...body.sat };
+    e.w.sat = { ...body.sat };
     e.priceFactorEast = body.priceFactorEast;
     e.priceFactorWest = body.priceFactorWest;
     e.relationsPenalty = { ...body.relationsPenalty };
     e.objectivesDone = [...body.objectivesDone];
     // merge produced over fresh defaults: a pre-machinery save must not leave
     // produced.machinery undefined (undefined + n = NaN, forever)
-    e.stats = {
+    e.w.stats = {
       produced: {
         ...(Object.fromEntries(ALL_RESOURCES.map(r => [r, 0])) as Record<ResourceId, number>),
         ...body.stats.produced,

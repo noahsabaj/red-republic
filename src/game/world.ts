@@ -8,13 +8,16 @@
 // This file holds TYPES and pure helpers only. The mutable `World` state and
 // its primitive accessors land here next; the systems that act on them become
 // modules alongside it.
-import { BALANCE, BUILDINGS } from './config';
-import type { DepositType, ResourceId } from './config';
-import type { BorderEdge, Tile } from './mapgen';
+import { ALL_RESOURCES, BALANCE, BUILDINGS, CLIMATES, WEATHER } from './config';
+import type { ClimateId, DepositType, ResourceId } from './config';
+import { mulberry32 } from './mapgen';
+import type { BorderEdge, SeededRng, Tile } from './mapgen';
 import { FloodResult, floodCost, shortestPathToAny } from './pathfind';
 import type { NearestPath, RankedGoal } from './pathfind';
 import { TopologyIndex } from './topology';
 import type { RoutingTile, TopologyDomain, TopologyPos } from './topology';
+import { WeatherTimeline } from './weather';
+import type { DayWeather } from './weather';
 
 /** Brownout efficiency for a powered building the grid cannot feed. Buildings
  *  that stop dead instead author `unpoweredEff: 0` in config — there is no list
@@ -376,7 +379,51 @@ export class World {
   buildings = new Map<number, BuildingInst>();
   nextBuildingId = 1;
 
-  constructor(tiles: Tile[][], borderEdge: BorderEdge | null) {
+  // ---------------- calendar & weather ----------------
+
+  day = 1; month = 3; year = 1960;
+  readonly seed: number;
+  /** The economy's stream. Contracts and the weather timeline draw from their
+   *  own decorrelated streams, so this one has exactly one call site. */
+  rng: SeededRng;
+  private timeline: WeatherTimeline;
+  /** Test/debug seam: overlays the deterministic timeline (helpers force calm weather). */
+  weatherScript?: (dayIndex: number) => Partial<DayWeather>;
+  weather: DayWeather;
+  dryStreak = 0;   // hot rainless days in a row (drought)
+  gloomStreak = 0; // miserable-weather days in a row (morale)
+  sunStreak = 0;
+  wasFrost = false;
+
+  // ---------------- the republic's condition ----------------
+
+  pop = 0;
+  capacity = 0;
+  workers = 0;
+  employed = 0;
+  jobs = 0;
+  happiness = 70;
+  sat = { food: 1, clothes: 1, power: 1, heat: 1, culture: 0, health: 0, employment: 1, pollution: 1 };
+  powerProduced = 0; powerDemand = 0;
+  heatProduced = 0; heatDemand = 0;
+  totals: Record<ResourceId, number> = Object.fromEntries(ALL_RESOURCES.map(r => [r, 0])) as Record<ResourceId, number>;
+  stats = {
+    produced: Object.fromEntries(ALL_RESOURCES.map(r => [r, 0])) as Record<ResourceId, number>,
+    /** Cumulative customs imports per resource (objective metric). */
+    imported: {} as Partial<Record<ResourceId, number>>,
+    exportedValue: 0,
+    roadsBuilt: 0, // cumulative COMPLETED road tiles (objective metric; never decremented)
+  };
+  objectivesDone: string[] = [];
+  alerts: Alert[] = [];
+
+  constructor(
+    tiles: Tile[][],
+    borderEdge: BorderEdge | null,
+    seed: number,
+    climate: ClimateId,
+    weatherScript?: (dayIndex: number) => Partial<DayWeather>,
+  ) {
     this._tiles = tiles;
     this.mapH = tiles.length;
     this.mapW = tiles[0].length;
@@ -388,6 +435,55 @@ export class World {
     });
     this.borderEdge = borderEdge;
     this.hasWater = this._tiles.some(row => row.some(t => t.terrain === 'water'));
+    this.seed = seed;
+    this.rng = mulberry32(seed ^ 0x9e3779b9); // decorrelate from map generation
+    this.timeline = new WeatherTimeline(seed, CLIMATES[climate]);
+    this.weatherScript = weatherScript;
+    this.weather = this.weatherAt(this.dayIndex());
+  }
+
+  // ---------------- calendar & weather accessors ----------------
+
+  season(): Season {
+    if (this.month === 12 || this.month <= 2) return 'winter';
+    if (this.month <= 5) return 'spring';
+    if (this.month <= 8) return 'summer';
+    return 'autumn';
+  }
+
+  /** Heating is needed when it is actually cold out — not by the calendar. */
+  heatingRequired() { return this.weather.tempC < BALANCE.heatThresholdC; }
+
+  /** 0..1.25 share of nominal heat demand: mild days sip coal, deep cold over-drives. */
+  heatDemandFactor(): number {
+    if (!this.heatingRequired()) return 0;
+    return Math.min(1.25,
+      (BALANCE.heatThresholdC - this.weather.tempC) / (BALANCE.heatThresholdC - BALANCE.heatDesignTempC));
+  }
+
+  /** Crop growth multiplier from today's weather: rain feeds, frost stops, drought withers. */
+  farmWeatherMult(): number {
+    if (this.weather.tempC < 0) return 0; // frost — nothing grows
+    const drought = Math.max(0.6, 1 - Math.max(0, this.dryStreak - BALANCE.droughtAfterDays) * 0.05);
+    return WEATHER[this.weather.condition].farmMult * drought;
+  }
+
+  /** Absolute day index into the weather timeline (0 = January 1, 1960). */
+  dayIndex(): number {
+    return (this.year - 1960) * 360 + (this.month - 1) * 30 + (this.day - 1);
+  }
+
+  weatherAt(index: number): DayWeather {
+    const w = this.timeline.at(index);
+    const o = this.weatherScript?.(index);
+    return { ...w, ...o }; // copy: memoized timeline entries stay pristine
+  }
+
+  /** Exact upcoming weather — the timeline is deterministic, so the State
+   *  Hydrometeorological Service never misses. */
+  forecast(days = 5): DayWeather[] {
+    const idx = this.dayIndex();
+    return Array.from({ length: days }, (_, i) => this.weatherAt(idx + 1 + i));
   }
 
   // ---------------- tiles & footprints: the only write door ----------------
