@@ -19,6 +19,7 @@ import type { DayWeather } from './weather';
 import { fmtQty, fmtOwed, fmtMoney } from './format';
 import { applyMutations } from './mutation';
 import type { Mutation } from './mutation';
+import { boats } from './systems/boats';
 import { citizens } from './systems/citizens';
 import { contracts } from './systems/contracts';
 import { connectivity } from './systems/connectivity';
@@ -1503,7 +1504,7 @@ export class GameEngine {
     this.syncFleet();
     this.refuelVehicles();
     this.logistics();
-    this.dispatchBoats();
+    this.runStaged(boats);
     this.runStaged(construction);
     this.run(citizens);
     this.run(totals);
@@ -2691,50 +2692,6 @@ export class GameEngine {
   }
 
   /** Sail pending freight orders whose goods have reached the source port. */
-  private dispatchBoats() {
-    const ports = [...this.buildings.values()].filter(p => this.def(p).isPort && p.constructed);
-    if (!ports.length) { this.boatOrders = []; return; }
-    // ice or grounding weather keeps barges in port — orders wait for fair skies
-    if (this.weather.riverFrozen || WEATHER[this.weather.condition].boatMult === 0) return;
-    let activeBoats = this.boats.filter(b => b.phase === 'go').length;
-    for (let i = this.boatOrders.length - 1; i >= 0; i--) {
-      if (activeBoats >= ports.length) break;
-      const order = this.boatOrders[i];
-      const src = this.buildings.get(order.srcId);
-      const dest = this.buildings.get(order.destId);
-      if (!src?.constructed || !dest?.constructed) { this.boatOrders.splice(i, 1); continue; }
-      const avail = this.stockOf(src, order.r);
-      if (avail < 1) continue; // trucks are still bringing it portside
-
-      const destAccess = this.waterAccess(dest);
-      const srcAccess = this.waterAccess(src);
-      if (!shareAnyComponent(destAccess.components, srcAccess.components)) {
-        this.routingDay.componentRejections++;
-        this.boatOrders.splice(i, 1);
-        continue;
-      }
-      const nearest = this.nearestPath('water', destAccess.tiles, rankedGoals(srcAccess.tiles, 0, null));
-      if (!nearest) { this.boatOrders.splice(i, 1); continue; }
-      const path = nearest.path;
-
-      const amount = Math.min(order.amt, avail, BALANCE.boatCapacity,
-        this.capOf(dest, order.r) - this.stockOf(dest, order.r) - this.incomingOf(dest, order.r));
-      if (amount < 1) { this.boatOrders.splice(i, 1); continue; }
-      this.addStock(src, order.r, -amount);
-      dest.incoming[order.r] = this.incomingOf(dest, order.r) + amount;
-      this.boats.push({
-        id: this.nextBoatId++,
-        points: [this.centerOf(src), ...path, this.centerOf(dest)],
-        cargo: order.r, amount,
-        daysTotal: Math.max(1, path.length * BALANCE.boatDaysPerTile),
-        daysDone: 0, phase: 'go', destId: dest.id, srcId: src.id,
-      });
-      activeBoats++;
-      order.amt -= amount;
-      if (order.amt < 1) this.boatOrders.splice(i, 1);
-    }
-  }
-
   // ---------------- construction ----------------
 
   /** True when construction is throughput-limited: two or more ready sites want

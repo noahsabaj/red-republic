@@ -15,6 +15,7 @@
 // Ordering is load-bearing. Systems emit in source order and the day loop
 // applies in emission order, so float accumulation and event ids stay
 // bit-identical to the hand-written code these replace.
+import { BALANCE } from './config';
 import type { ResourceId } from './config';
 import { emptyLedger } from './world';
 import type { GameEvent, World } from './world';
@@ -77,6 +78,24 @@ export type Mutation =
   | { k: 'treasury'; bloc: 'east' | 'west'; delta: number }
   /** Standing price malus with one bloc (0..cap). */
   | { k: 'relations'; bloc: 'east' | 'west'; penalty: number }
+
+  // ---- barges ----
+  /** No port stands: the whole queue is void. */
+  | { k: 'boatOrdersClear' }
+  /** Remove one queued order. By index because the dispatcher walks the queue
+   *  backwards and Staged applies immediately, so the index it read is the
+   *  index that is removed. */
+  | { k: 'boatOrderDrop'; index: number }
+  /** Draw `amount` off a queued order that has just been loaded. */
+  | { k: 'boatOrderTake'; index: number; amount: number }
+  /** Load a barge and send it: stock out of the source, booked as incoming at
+   *  the destination so nothing double-orders against it. */
+  | {
+      k: 'boatDispatch'; srcId: number; destId: number; r: ResourceId;
+      amount: number; path: { x: number; y: number }[];
+    }
+  /** One route refused because the endpoints share no component. */
+  | { k: 'routingRejection' }
 
   // ---- construction ----
   /** Builder-days applied to a site. */
@@ -244,6 +263,32 @@ export function applyMutations(w: World, muts: readonly Mutation[]): void {
         break;
       case 'relations':
         w.relationsPenalty[m.bloc] = m.penalty;
+        break;
+      case 'boatOrdersClear':
+        w.boatOrders = [];
+        break;
+      case 'boatOrderDrop':
+        w.boatOrders.splice(m.index, 1);
+        break;
+      case 'boatOrderTake':
+        w.boatOrders[m.index].amt -= m.amount;
+        break;
+      case 'boatDispatch': {
+        const src = w.buildings.get(m.srcId), dest = w.buildings.get(m.destId);
+        if (!src || !dest) break;
+        w.addStock(src, m.r, -m.amount);
+        dest.incoming[m.r] = w.incomingOf(dest, m.r) + m.amount;
+        w.boats.push({
+          id: w.nextBoatId++,
+          points: [w.centerOf(src), ...m.path, w.centerOf(dest)],
+          cargo: m.r, amount: m.amount,
+          daysTotal: Math.max(1, m.path.length * BALANCE.boatDaysPerTile),
+          daysDone: 0, phase: 'go', destId: dest.id, srcId: src.id,
+        });
+        break;
+      }
+      case 'routingRejection':
+        w.routingDay.componentRejections++;
         break;
       case 'siteProgress': {
         const b = w.buildings.get(m.id);
