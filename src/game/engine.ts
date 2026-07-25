@@ -11,16 +11,16 @@ import { generateMap, mulberry32 } from './mapgen';
 import type { BorderEdge, MapData, SeededRng, Tile } from './mapgen';
 import { SAVE_FORMAT_VERSION, packTiles, unpackTiles, validateSave } from './save-format';
 import type { SaveGameV1 } from './save-format';
-import { floodCost, shortestPathToAny, FloodResult } from './pathfind';
+import { FloodResult } from './pathfind';
 import type { NearestPath, RankedGoal } from './pathfind';
-import { TopologyIndex, shareAnyComponent, unionComponents, forEachPerimeterTile } from './topology';
-import type { RoutingTile, TopologyAccess, TopologyDomain, TopologyPos } from './topology';
+import { shareAnyComponent, unionComponents, forEachPerimeterTile } from './topology';
+import type { TopologyAccess, TopologyDomain, TopologyPos } from './topology';
 import { WeatherTimeline } from './weather';
 import type { DayWeather } from './weather';
 import { fmtQty, fmtOwed, fmtMoney } from './format';
 import {
   DEFAULT_ALLOCATION_PRIORITY, DEFAULT_UNPOWERED_EFF, RevisionMemo,
-  buildingWorn, emptyLedger, rankedGoals,
+  World, buildingWorn, emptyLedger, rankedGoals,
 } from './world';
 import type {
   Alert, AutoTradeRule, BoatOrder, Boat, BuildingInst, Contract, GameEvent,
@@ -139,17 +139,30 @@ interface SupplyPick {
  * buildingId is owned exclusively by GameEngine's placement lifecycle. */
 
 export class GameEngine {
-  private _tiles: Tile[][];
-  /** Read-only world view. All first-party mutations go through engine methods
-   * (applyInternalTilePatches) so the routing topology is never invalidated
-   * silently. The `Readonly<Tile>` element type rejects `engine.tiles[y][x].road = …`
-   * at compile time. NOTE the residual gaps: TypeScript widens `Readonly<Tile>` back
-   * to a mutable `Tile` on assignment (`const t: Tile = engine.tiles[y][x]; t.road = …`
-   * compiles — a known soundness hole), and the dev console (`__redRepublic`) can
-   * mutate at runtime. mutation-guards.test.ts covers the realistic in-engine
-   * regression vector; both residuals are dev-only and out of the type system's reach. */
-  get tiles(): readonly (readonly Readonly<Tile>[])[] { return this._tiles; }
-  buildings = new Map<number, BuildingInst>();
+  /**
+   * The simulated world — map, buildings and the primitives over them.
+   *
+   * Systems being extracted take a `World` rather than the engine, so this is
+   * the seam the whole refactor is built on. The forwarding members below keep
+   * the engine's public surface identical for the UI, renderer and tests; they
+   * thin out as each system moves to `world.ts`'s side of the line.
+   */
+  readonly w: World;
+
+  get tiles(): readonly (readonly Readonly<Tile>[])[] { return this.w.tiles; }
+  get buildings() { return this.w.buildings; }
+  get mapW() { return this.w.mapW; }
+  get mapH() { return this.w.mapH; }
+  get borderEdge(): BorderEdge | null { return this.w.borderEdge; }
+  private get topology() { return this.w.topology; }
+  private get hasWater() { return this.w.hasWater; }
+  private get routingDay() { return this.w.routingDay; }
+  private set routingDay(v: Omit<RoutingDiagnostics, 'topologyRebuilds'>) { this.w.routingDay = v; }
+  private get facilityRevision() { return this.w.facilityRevision; }
+  private set facilityRevision(v: number) { this.w.facilityRevision = v; }
+  private get nextBuildingId() { return this.w.nextBuildingId; }
+  private set nextBuildingId(v: number) { this.w.nextBuildingId = v; }
+
   /** The road fleet. Persistent machines owned by garages — see `Vehicle`. */
   trucks: Vehicle[] = [];
   boats: Boat[] = [];
@@ -251,7 +264,6 @@ export class GameEngine {
   powerSectorOrder: Category[] = [...POWER_SECTORS];
 
 
-  private nextBuildingId = 1;
   private nextTruckId = 1;
   private nextBoatId = 1;
   private nextContractId = 1;
@@ -262,41 +274,21 @@ export class GameEngine {
   private events: GameEvent[] = [];
   private listeners = new Set<() => void>();
   private version = 0;
-  private topology: TopologyIndex;
-  private facilityRevision = 0;
-  private routingDay: Omit<RoutingDiagnostics, 'topologyRebuilds'> = {
-    dayIndex: 0,
-    demandsConsidered: 0,
-    successfulDispatches: 0,
-    componentRejections: 0,
-    roadSearches: 0,
-    landSearches: 0,
-    waterSearches: 0,
-    supplierCandidatesChecked: 0,
-    settledTiles: 0,
-    pathsMaterialized: 0,
-  };
 
   readonly TICK_MS = 500; // one game day at 1x speed
 
   readonly seed: number;
-  /** Map dimensions in tiles (derived from the tile grid at construction). */
-  readonly mapW: number;
-  readonly mapH: number;
   /** Climate region driving the weather timeline. Fixed for the whole run. */
   readonly climate: ClimateId;
   /** Difficulty preset (start conditions only — the sim is difficulty-blind). */
   readonly difficulty: DifficultyId;
   /** The republic's name (player-chosen at founding; shown in HUD and saves). */
   name: string;
-  /** Which map edge is the national border; null on bare test maps (no border rules). */
-  readonly borderEdge: BorderEdge | null;
   private rng: SeededRng;
   private timeline: WeatherTimeline;
   /** Test/debug seam: overlays the deterministic timeline (helpers force calm weather). */
   weatherScript?: (dayIndex: number) => Partial<DayWeather>;
   weather: DayWeather;
-  private hasWater = false;
   private dryStreak = 0;   // hot rainless days in a row (drought)
   private gloomStreak = 0; // miserable-weather days in a row (morale)
   private sunStreak = 0;
@@ -318,17 +310,9 @@ export class GameEngine {
     this.weatherScript = opts.weatherScript;
     this.weather = this.weatherAt(this.dayIndex());
     const map = opts.map ?? generateMap(this.seed, opts.mapW, opts.mapH);
-    this._tiles = map.tiles;
-    this.mapH = this._tiles.length;
-    this.mapW = this._tiles[0].length;
-    this.topology = new TopologyIndex({
-      width: this.mapW,
-      height: this.mapH,
-      tiles: () => this._tiles,
-      offRoadCost: BALANCE.offRoadStepCost,
-    });
-    this.borderEdge = map.border ?? null;
-    this.hasWater = this._tiles.some(row => row.some(t => t.terrain === 'water'));
+    // World owns the map, the buildings on it and the topology over both; it
+    // derives its own dimensions and water flag from the tile grid.
+    this.w = new World(map.tiles, map.border ?? null);
     if (!opts.skipStartingBase) this.setupStartingBase(map);
   }
 
@@ -341,93 +325,16 @@ export class GameEngine {
     if (this.applyInternalTilePatches(patches)) this.bump();
   }
 
+  // Tile, footprint and routing primitives now live on World. These forward so
+  // the engine's public surface is unchanged for the UI, renderer and tests;
+  // they thin out as each system moves to taking a World directly.
   private applyInternalTilePatches(patches: readonly InternalTilePatch[]): boolean {
-    let changed = false;
-    const dirty = new Set<TopologyDomain>();
-    const owns = (p: InternalTilePatch, key: keyof InternalTilePatch) =>
-      Object.prototype.hasOwnProperty.call(p, key);
-
-    for (const p of patches) {
-      const tile = this._tiles[p.y]?.[p.x];
-      if (!tile) continue;
-
-      // Snapshot the routing-relevant fields before mutating, so the topology's
-      // own cost functions decide which domains this change touches — no hand-kept
-      // field→domain mirror to drift out of sync with the cost predicates.
-      const before: RoutingTile = {
-        terrain: tile.terrain, road: tile.road, buildingId: tile.buildingId, foreign: tile.foreign,
-      };
-      let routingChanged = false;
-
-      if (owns(p, 'road') && p.road !== undefined && !!tile.road !== p.road) {
-        tile.road = p.road; changed = true; routingChanged = true;
-      }
-      if (owns(p, 'terrain') && p.terrain !== undefined && tile.terrain !== p.terrain) {
-        tile.terrain = p.terrain; changed = true; routingChanged = true;
-      }
-      if (owns(p, 'foreign') && p.foreign !== undefined && !!tile.foreign !== p.foreign) {
-        tile.foreign = p.foreign; changed = true; routingChanged = true;
-      }
-      // buildingId/deposit: an explicit `undefined` is a no-op (matching road/terrain/
-      // foreign/variant); `null` is the explicit clear. Only add/removeBuilding pass
-      // buildingId, always as a concrete id or null.
-      if (owns(p, 'buildingId') && p.buildingId !== undefined) {
-        const next = p.buildingId ?? undefined;
-        if (tile.buildingId !== next) { tile.buildingId = next; changed = true; routingChanged = true; }
-      }
-      if (owns(p, 'deposit') && p.deposit !== undefined) {
-        const next = p.deposit ?? undefined;
-        if (tile.deposit !== next) { tile.deposit = next; changed = true; } // routing-irrelevant
-      }
-      if (owns(p, 'variant') && p.variant !== undefined && tile.variant !== p.variant) {
-        tile.variant = p.variant; changed = true;
-      }
-
-      if (routingChanged) {
-        for (const domain of this.topology.affectedDomains(before, tile, p.x, p.y)) dirty.add(domain);
-      }
-    }
-
-    if (dirty.size) this.topology.invalidate(...dirty);
-    if (dirty.has('water')) this.hasWater = this._tiles.some(row => row.some(t => t.terrain === 'water'));
-    return changed;
+    return this.w.applyInternalTilePatches(patches);
   }
-
-  private setRoadTile(x: number, y: number, road: boolean): void {
-    this.applyInternalTilePatches([{ x, y, road }]);
-  }
-
-  private stampFootprint(b: BuildingInst): void {
-    const patches: InternalTilePatch[] = [];
-    for (let dy = 0; dy < b.h; dy++) for (let dx = 0; dx < b.w; dx++) {
-      patches.push({ x: b.x + dx, y: b.y + dy, buildingId: b.id });
-    }
-    this.applyInternalTilePatches(patches);
-  }
-
-  private clearFootprint(b: BuildingInst): void {
-    const patches: InternalTilePatch[] = [];
-    for (let dy = 0; dy < b.h; dy++) for (let dx = 0; dx < b.w; dx++) {
-      patches.push({ x: b.x + dx, y: b.y + dy, buildingId: null });
-    }
-    this.applyInternalTilePatches(patches);
-  }
-
-  private addBuilding(b: BuildingInst): void {
-    this.buildings.set(b.id, b);
-    this.stampFootprint(b);
-    this.facilityRevision++;
-  }
-
-  private removeBuilding(b: BuildingInst): void {
-    // Symmetric with addBuilding's stampFootprint: removeBuilding owns clearing the
-    // footprint so a caller (or a future multi-tile becomesRoad site) can never leave
-    // a phantom buildingId on the map. Callers that must clear earlier for ordering
-    // (bulldoze → refund routing) still may — the second clear is an idempotent no-op.
-    this.clearFootprint(b);
-    this.buildings.delete(b.id);
-    this.facilityRevision++;
-  }
+  private setRoadTile(x: number, y: number, road: boolean): void { this.w.setRoadTile(x, y, road); }
+  private clearFootprint(b: BuildingInst): void { this.w.clearFootprint(b); }
+  private addBuilding(b: BuildingInst): void { this.w.addBuilding(b); }
+  private removeBuilding(b: BuildingInst): void { this.w.removeBuilding(b); }
 
   private markConstructed(b: BuildingInst): void {
     if (b.constructed) return;
@@ -530,7 +437,7 @@ export class GameEngine {
 
   // ---------------- helpers ----------------
 
-  def(b: BuildingInst) { return BUILDINGS[b.defId]; }
+  def(b: BuildingInst) { return this.w.def(b); }
 
   season(): Season {
     if (this.month === 12 || this.month <= 2) return 'winter';
@@ -573,130 +480,31 @@ export class GameEngine {
     return Array.from({ length: days }, (_, i) => this.weatherAt(idx + 1 + i));
   }
 
-  buildingAt(x: number, y: number): BuildingInst | undefined {
-    const id = this.tiles[y]?.[x]?.buildingId;
-    return id ? this.buildings.get(id) : undefined;
-  }
-
-  stockOf(b: BuildingInst, r: ResourceId) { return b.stock[r] ?? 0; }
-  incomingOf(b: BuildingInst, r: ResourceId) { return b.incoming[r] ?? 0; }
-  capOf(b: BuildingInst, r: ResourceId) {
-    const def = this.def(b);
-    if (!b.constructed) return def.materials[r] ?? 0; // construction sites store delivered materials
-    return def.storage[r] ?? 0;
-  }
-
-  /** Add (or remove) stock, clamped to [0, cap]. Returns the actual change. */
-  addStock(b: BuildingInst, r: ResourceId, amt: number): number {
-    const cap = this.capOf(b, r);
-    const before = this.stockOf(b, r);
-    const after = Math.max(0, Math.min(cap, before + amt));
-    b.stock[r] = after;
-    return after - before;
-  }
-
-  adjacentRoads(b: BuildingInst): { x: number; y: number }[] {
-    return this.roadAccess(b).tiles.map(({ x, y }) => ({ x, y }));
-  }
-
-  private roadAccess(b: BuildingInst) {
-    return this.topology.access('road', b);
-  }
-
-  private landAccess(b: BuildingInst) {
-    return this.topology.access('land', b);
-  }
-
-  private waterAccess(b: BuildingInst) {
-    return this.topology.access('water', b);
-  }
-
+  buildingAt(x: number, y: number) { return this.w.buildingAt(x, y); }
+  stockOf(b: BuildingInst, r: ResourceId) { return this.w.stockOf(b, r); }
+  incomingOf(b: BuildingInst, r: ResourceId) { return this.w.incomingOf(b, r); }
+  capOf(b: BuildingInst, r: ResourceId) { return this.w.capOf(b, r); }
+  addStock(b: BuildingInst, r: ResourceId, amt: number) { return this.w.addStock(b, r, amt); }
+  adjacentRoads(b: BuildingInst) { return this.w.adjacentRoads(b); }
+  private roadAccess(b: BuildingInst) { return this.w.roadAccess(b); }
+  private landAccess(b: BuildingInst) { return this.w.landAccess(b); }
+  private waterAccess(b: BuildingInst) { return this.w.waterAccess(b); }
   private nearestPath<T>(
     domain: TopologyDomain,
     sources: readonly TopologyPos[],
     goals: readonly RankedGoal<T>[],
     recordDiagnostics = true,
   ): NearestPath<T> | null {
-    if (!sources.length || !goals.length) return null;
-    const mask = this.topology.mask(domain);
-    if (recordDiagnostics) {
-      if (domain === 'road') this.routingDay.roadSearches++;
-      else if (domain === 'land') this.routingDay.landSearches++;
-      else this.routingDay.waterSearches++;
-    }
-    const result = shortestPathToAny(
-      this.mapW,
-      this.mapH,
-      (x, y) => mask[y * this.mapW + x],
-      sources,
-      goals,
-      this.topology.maxStep(domain), // bound derived from the mask itself — never disagrees
-    );
-    if (recordDiagnostics && result) {
-      this.routingDay.settledTiles += result.settledNodes;
-      this.routingDay.pathsMaterialized++;
-    }
-    return result;
+    return this.w.nearestPath(domain, sources, goals, recordDiagnostics);
   }
-
-  /** Weighted reachability over land: roads cost 1, off-road land costs K,
-   *  water/foreign/footprints are impassable. Roads win purely on cost. */
-  private floodTerrain(sources: readonly TopologyPos[]): FloodResult {
-    const mask = this.topology.mask('land');
-    return floodCost(
-      this.mapW,
-      this.mapH,
-      (x, y) => mask[y * this.mapW + x],
-      [...sources],
-      this.topology.maxStep('land'), // bound derived from the mask itself — never disagrees
-    );
-  }
-
-  /** Footprint-adjacent drivable tiles (roads AND open land) — a vehicle's
-   *  on/off ramps. Superset of adjacentRoads. */
-  accessTiles(b: BuildingInst): { x: number; y: number }[] {
-    return this.landAccess(b).tiles.map(({ x, y }) => ({ x, y }));
-  }
-
-  /** Water tiles orthogonally touching a building's footprint (its docks). */
-  adjacentWater(b: BuildingInst): { x: number; y: number }[] {
-    return this.waterAccess(b).tiles.map(({ x, y }) => ({ x, y }));
-  }
-
-  findPath(from: readonly TopologyPos[], to: readonly TopologyPos[]): { x: number; y: number }[] | null {
-    if (!from.length || !to.length) return null;
-    return this.nearestPath('road', to, rankedGoals(from, 0, null), false)?.path ?? null;
-  }
-
-  centerOf(b: BuildingInst) { return { x: b.x + b.w / 2, y: b.y + b.h / 2 }; }
-
-  topologyRevision(domain: TopologyDomain): number {
-    return this.topology.revision(domain);
-  }
-
-  /** Open grass tiles within the farm's work radius, excluding the (would-be) footprint and foreign soil. */
-  countFarmFields(x: number, y: number, w: number, h: number): number {
-    let fields = 0;
-    for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
-      const tx = x + dx, ty = y + dy;
-      if (tx >= x && tx < x + w && ty >= y && ty < y + h) continue;
-      const t = this.tiles[ty]?.[tx];
-      if (t && t.terrain === 'grass' && !t.buildingId && !t.road && !t.deposit && !t.foreign) fields++;
-    }
-    return fields;
-  }
-
-  /** Unoccupied forest tiles within reach, excluding the (would-be) footprint and foreign soil. */
-  countForestTiles(x: number, y: number, w: number, h: number): number {
-    let forests = 0;
-    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
-      const tx = x + dx, ty = y + dy;
-      if (tx >= x && tx < x + w && ty >= y && ty < y + h) continue;
-      const t = this.tiles[ty]?.[tx];
-      if (t && t.terrain === 'forest' && !t.buildingId && !t.road && !t.foreign) forests++;
-    }
-    return forests;
-  }
+  private floodTerrain(sources: readonly TopologyPos[]): FloodResult { return this.w.floodTerrain(sources); }
+  accessTiles(b: BuildingInst) { return this.w.accessTiles(b); }
+  adjacentWater(b: BuildingInst) { return this.w.adjacentWater(b); }
+  findPath(from: readonly TopologyPos[], to: readonly TopologyPos[]) { return this.w.findPath(from, to); }
+  centerOf(b: BuildingInst) { return this.w.centerOf(b); }
+  topologyRevision(domain: TopologyDomain): number { return this.w.topologyRevision(domain); }
+  countFarmFields(x: number, y: number, w: number, h: number) { return this.w.countFarmFields(x, y, w, h); }
+  countForestTiles(x: number, y: number, w: number, h: number) { return this.w.countForestTiles(x, y, w, h); }
 
   // ---------------- placement ----------------
 
@@ -4409,7 +4217,7 @@ export class GameEngine {
       },
       body: {
         borderEdge: this.borderEdge,
-        ...packTiles(this._tiles),
+        ...packTiles(this.w.tiles as Tile[][]),
         buildings: [...this.buildings.values()].map(b => ({ ...b, stock: { ...b.stock }, incoming: { ...b.incoming } })),
         trucks: this.trucks.map(cloneTruck),
         boats: this.boats.map(cloneTruck),
