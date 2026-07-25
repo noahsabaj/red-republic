@@ -3,8 +3,13 @@
 // drifting away from the bins it claims to summarise.
 import { ALL_RESOURCES } from '../config';
 import type { ResourceId } from '../config';
-import type { Mutation } from '../mutation';
+import type { Mutation, MutationKind } from '../mutation';
 import type { World } from '../world';
+
+/** Every mutation kind this system is allowed to emit. `mutation-writeset.test.ts`
+ *  fails the build if it emits anything else — the enforcement that keeps a new
+ *  mechanic from quietly widening this one's blast radius. */
+export const WRITES: MutationKind[] = ['totals'];
 
 export function totals(w: World): Mutation[] {
   const sum = Object.fromEntries(ALL_RESOURCES.map(r => [r, 0])) as Record<ResourceId, number>;

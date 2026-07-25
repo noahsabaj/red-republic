@@ -3,8 +3,13 @@
 // call the inspector displays — so what the panel promises is literally what
 // gets applied.
 import type { ResourceId } from '../config';
-import type { Mutation } from '../mutation';
+import type { Mutation, MutationKind } from '../mutation';
 import type { BuildingInst, World } from '../world';
+
+/** Every mutation kind this system is allowed to emit. `mutation-writeset.test.ts`
+ *  fails the build if it emits anything else — the enforcement that keeps a new
+ *  mechanic from quietly widening this one's blast radius. */
+export const WRITES: MutationKind[] = ['eff', 'farmFields', 'stock', 'produced'];
 
 export function production(w: World): Mutation[] {
   const out: Mutation[] = [];

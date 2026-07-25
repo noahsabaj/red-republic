@@ -6,8 +6,13 @@
 // what makes the gauge on the inspector mean something.
 import { BALANCE } from '../config';
 import { Staged } from '../mutation';
-import type { Mutation } from '../mutation';
+import type { Mutation, MutationKind } from '../mutation';
 import type { Vehicle, VehicleState, World } from '../world';
+
+/** Every mutation kind this system is allowed to emit. `mutation-writeset.test.ts`
+ *  fails the build if it emits anything else — the enforcement that keeps a new
+ *  mechanic from quietly widening this one's blast radius. */
+export const WRITES: MutationKind[] = ['vehicleCommission', 'vehicleRetire', 'vehiclePump', 'vehicleLeg'];
 
 /**
  * Reconcile the fleet with the garages that own it. A Construction Office or

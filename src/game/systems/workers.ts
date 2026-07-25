@@ -5,8 +5,13 @@
 // `allocationPriority` — the same override that jumps a building up the power
 // queue, because one flag for both scarce things is one thing to learn.
 import { BALANCE } from '../config';
-import type { Mutation } from '../mutation';
+import type { Mutation, MutationKind } from '../mutation';
 import type { World } from '../world';
+
+/** Every mutation kind this system is allowed to emit. `mutation-writeset.test.ts`
+ *  fails the build if it emits anything else — the enforcement that keeps a new
+ *  mechanic from quietly widening this one's blast radius. */
+export const WRITES: MutationKind[] = ['labour', 'staff'];
 
 export function workers(w: World): Mutation[] {
   const total = Math.floor(w.pop * BALANCE.workerShare);

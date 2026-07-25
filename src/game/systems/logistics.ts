@@ -13,11 +13,16 @@
 // slices and no fair-share quotas anywhere in here.
 import { BALANCE } from '../config';
 import { Staged } from '../mutation';
-import type { Mutation } from '../mutation';
+import type { Mutation, MutationKind } from '../mutation';
 import { shareAnyComponent } from '../topology';
 import type {
   EtaPass, IndexedFacility, LogisticsDemand, LogisticsRoutingContext, World,
 } from '../world';
+
+/** Every mutation kind this system is allowed to emit. `mutation-writeset.test.ts`
+ *  fails the build if it emits anything else — the enforcement that keeps a new
+ *  mechanic from quietly widening this one's blast radius. */
+export const WRITES: MutationKind[] = ['routingCounter', 'repairImport', 'stock', 'incoming', 'vehicleJob', 'boatOrderAdd', 'emergencyFuel'];
 
 export function logistics(w: World): Mutation[] {
   const s = new Staged(w);

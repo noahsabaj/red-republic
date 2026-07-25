@@ -9,8 +9,13 @@
 // sweep, and a customs house that spends its rubles on coal has fewer for steel.
 import { ALL_RESOURCES, BALANCE } from '../config';
 import { Staged } from '../mutation';
-import type { Mutation } from '../mutation';
+import type { Mutation, MutationKind } from '../mutation';
 import type { World } from '../world';
+
+/** Every mutation kind this system is allowed to emit. `mutation-writeset.test.ts`
+ *  fails the build if it emits anything else — the enforcement that keeps a new
+ *  mechanic from quietly widening this one's blast radius. */
+export const WRITES: MutationKind[] = ['ledgerRoll', 'ledgerCapacity', 'ledgerBlocked', 'exportSale', 'importPurchase'];
 
 export function foreignTrade(w: World): Mutation[] {
   const s = new Staged(w);

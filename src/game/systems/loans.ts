@@ -3,9 +3,14 @@
 import { CONTRACTS, LOANS } from '../config';
 import { fmtMoney } from '../format';
 import { Staged } from '../mutation';
-import type { Mutation } from '../mutation';
+import type { Mutation, MutationKind } from '../mutation';
 import type { World } from '../world';
 import { objectives } from './objectives';
+
+/** Every mutation kind this system is allowed to emit. `mutation-writeset.test.ts`
+ *  fails the build if it emits anything else — the enforcement that keeps a new
+ *  mechanic from quietly widening this one's blast radius. */
+export const WRITES: MutationKind[] = ['loanState', 'loanCooldown', 'loanRepaid', 'loanDrop', 'treasury', 'relations', 'objectiveDone', 'event'];
 
 export function loans(w: World): Mutation[] {
   const s = new Staged(w);

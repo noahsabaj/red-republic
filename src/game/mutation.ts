@@ -178,10 +178,21 @@ export type MutationKind = Mutation['k'];
 
 /** Set by the write-set guard test to record what each system actually emits.
  *  Null in normal play, so this costs one null check per mutation. */
-let journal: ((m: Mutation) => void) | null = null;
+let journal: ((m: Mutation, system: string) => void) | null = null;
+let currentSystem = '(engine)';
 
-export function setMutationJournal(fn: ((m: Mutation) => void) | null): void {
+export function setMutationJournal(fn: ((m: Mutation, system: string) => void) | null): void {
   journal = fn;
+}
+
+/** Attribute everything applied inside `fn` to `name`. The day loop wraps each
+ *  system call with this, so the guard test can tell who wrote what — including
+ *  a system called from inside another (loans checks objectives mid-repayment,
+ *  and loans is answerable for what that writes). */
+export function underSystem<T>(name: string, fn: () => T): T {
+  const prev = currentSystem;
+  currentSystem = name;
+  try { return fn(); } finally { currentSystem = prev; }
 }
 
 /**
@@ -220,7 +231,7 @@ export class Staged {
 
 export function applyMutations(w: World, muts: readonly Mutation[]): void {
   for (const m of muts) {
-    journal?.(m);
+    journal?.(m, currentSystem);
     switch (m.k) {
       case 'weather':
         w.weather = m.weather;

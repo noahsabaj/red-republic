@@ -6,9 +6,14 @@
 // Expensive and rarely changing, so the result is cached on the World until the
 // road/land topology or the facility set moves. Re-applying a cached list is
 // harmless: every mutation is an absolute set, not a delta.
-import type { Mutation } from '../mutation';
+import type { Mutation, MutationKind } from '../mutation';
 import type { World } from '../world';
 import { shareAnyComponent, unionComponents } from '../topology';
+
+/** Every mutation kind this system is allowed to emit. `mutation-writeset.test.ts`
+ *  fails the build if it emits anything else — the enforcement that keeps a new
+ *  mechanic from quietly widening this one's blast radius. */
+export const WRITES: MutationKind[] = ['connectivity'];
 
 export function connectivity(w: World): Mutation[] {
   return w.connectivityCache.get(w.connectivityDeps(), () => compute(w));

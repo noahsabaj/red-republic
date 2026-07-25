@@ -11,8 +11,13 @@
 // collapses to min(cap, pool).
 import { BALANCE, DIFFICULTIES, WEATHER } from '../config';
 import { Staged } from '../mutation';
-import type { Mutation } from '../mutation';
+import type { Mutation, MutationKind } from '../mutation';
 import type { BuildingInst, World } from '../world';
+
+/** Every mutation kind this system is allowed to emit. `mutation-writeset.test.ts`
+ *  fails the build if it emits anything else — the enforcement that keeps a new
+ *  mechanic from quietly widening this one's blast radius. */
+export const WRITES: MutationKind[] = ['siteProgress', 'siteComplete', 'foreignLaborBill'];
 
 export function construction(w: World): Mutation[] {
   const s = new Staged(w);

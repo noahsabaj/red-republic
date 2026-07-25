@@ -8,10 +8,15 @@
 // previous one left behind.
 import { BALANCE, WEATHER } from '../config';
 import { Staged } from '../mutation';
-import type { Mutation } from '../mutation';
+import type { Mutation, MutationKind } from '../mutation';
 import { shareAnyComponent } from '../topology';
 import { rankedGoals } from '../world';
 import type { World } from '../world';
+
+/** Every mutation kind this system is allowed to emit. `mutation-writeset.test.ts`
+ *  fails the build if it emits anything else — the enforcement that keeps a new
+ *  mechanic from quietly widening this one's blast radius. */
+export const WRITES: MutationKind[] = ['boatOrdersClear', 'boatOrderDrop', 'boatOrderTake', 'boatDispatch', 'routingRejection'];
 
 export function boats(w: World): Mutation[] {
   const s = new Staged(w);

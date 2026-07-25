@@ -16,7 +16,7 @@ import { forEachPerimeterTile, shareAnyComponent } from './topology';
 import type { TopologyDomain, TopologyPos } from './topology';
 import type { DayWeather } from './weather';
 import { fmtQty, fmtOwed, fmtMoney } from './format';
-import { applyMutations } from './mutation';
+import { applyMutations, underSystem } from './mutation';
 import type { Mutation } from './mutation';
 import { boats } from './systems/boats';
 import { citizens } from './systems/citizens';
@@ -1153,13 +1153,13 @@ export class GameEngine {
    *  a converted system is to sequence it — it neither reads nor edits the
    *  mutation list, which is what makes the write-set guard test meaningful. */
   private run(system: (w: World) => Mutation[]): void {
-    applyMutations(this.w, system(this.w));
+    underSystem(system.name, () => applyMutations(this.w, system(this.w)));
   }
 
   /** Run a system that applies as it goes (see `Staged`). Its mutations are
    *  already in the world — re-applying them here would double every effect. */
   private runStaged(system: (w: World) => Mutation[]): void {
-    system(this.w);
+    underSystem(system.name, () => system(this.w));
   }
 
   private simulateDay() {
@@ -1503,7 +1503,7 @@ export class GameEngine {
     this.bump();
   }
 
-  private checkObjectives() { objectives(this.w); }
+  private checkObjectives() { underSystem('objectives', () => objectives(this.w)); }
 
   private updateAlerts() {
     const a: Alert[] = [];

@@ -7,8 +7,13 @@
 // `production()` burns fuel through `productionRates()` using these same stored
 // factors, so what comes out and what gets burnt always agree.
 import type { ResourceId } from '../config';
-import type { Mutation } from '../mutation';
+import type { Mutation, MutationKind } from '../mutation';
 import type { World } from '../world';
+
+/** Every mutation kind this system is allowed to emit. `mutation-writeset.test.ts`
+ *  fails the build if it emits anything else — the enforcement that keeps a new
+ *  mechanic from quietly widening this one's blast radius. */
+export const WRITES: MutationKind[] = ['eff', 'coalFactor', 'grid', 'powered', 'heated'];
 
 export function powerHeat(w: World): Mutation[] {
   const out: Mutation[] = [];
