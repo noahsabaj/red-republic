@@ -1182,7 +1182,7 @@ export class GameEngine {
     this.run(connectivity);
     this.run(workers);
     this.run(powerHeat);
-    this.run(production);
+    this.runStaged(production);
     this.runStaged(foreignTrade);
     this.runStaged(contracts);
     this.runStaged(loans);

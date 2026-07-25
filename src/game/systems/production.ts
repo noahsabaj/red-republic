@@ -2,7 +2,15 @@
 // the outputs. The rates themselves come from `productionRates()` — the same
 // call the inspector displays — so what the panel promises is literally what
 // gets applied.
+//
+// Staged, because it reads its own writes twice over: `clampedAdd` has to see
+// what an earlier emission already put in (or took out of) the same bin, and
+// `productionRates` for a building has to see the world the buildings before it
+// left behind. Batching instead would only be correct while no two buildings
+// ever share a bin — an assumption nothing enforces and nobody would think to
+// check when adding a mechanic that breaks it.
 import type { ResourceId } from '../config';
+import { Staged } from '../mutation';
 import type { Mutation, MutationKind } from '../mutation';
 import type { BuildingInst, World } from '../world';
 
@@ -12,15 +20,12 @@ import type { BuildingInst, World } from '../world';
 export const WRITES: MutationKind[] = ['eff', 'farmFields', 'stock', 'produced'];
 
 export function production(w: World): Mutation[] {
-  const out: Mutation[] = [];
-  // Deltas already emitted this batch, so a bin's clamp accounts for what an
-  // earlier mutation in the same list will have put in (or taken out of) it.
-  const applied = new Map<string, number>();
-  const add = (b: BuildingInst, r: ResourceId, amt: number) => {
-    const key = `${b.id}:${r}`;
-    const prior = applied.get(key) ?? 0;
-    const delta = w.clampedAdd(b, r, amt, w.stockOf(b, r) + prior);
-    applied.set(key, prior + delta);
+  const s = new Staged(w);
+  // What the bin can actually take right now — the world already reflects every
+  // mutation emitted before this one, so there is no shadow ledger to keep.
+  const move = (b: BuildingInst, r: ResourceId, amt: number): number => {
+    const delta = w.clampedAdd(b, r, amt);
+    s.emit({ k: 'stock', id: b.id, r, delta });
     return delta;
   };
 
@@ -30,18 +35,16 @@ export function production(w: World): Mutation[] {
     // Plants keep the eff the power/heat system fixed for them; everyone else
     // gets theirs here. Both are display-only — the rates below recompute.
     if (!def.powerOutput && !def.heatOutput) {
-      out.push({ k: 'eff', id: b.id, eff: w.baseEff(b) });
-      if (def.isFarm) out.push({ k: 'farmFields', id: b.id, fields: Math.min(12, w.countFarmFields(b.x, b.y, b.w, b.h)) });
+      s.emit({ k: 'eff', id: b.id, eff: w.baseEff(b) });
+      if (def.isFarm) s.emit({ k: 'farmFields', id: b.id, fields: Math.min(12, w.countFarmFields(b.x, b.y, b.w, b.h)) });
     }
     const rates = w.productionRates(b);
     for (const [r, amt] of Object.entries(rates.inputs) as [ResourceId, number][]) {
-      out.push({ k: 'stock', id: b.id, r, delta: add(b, r, -amt) });
+      move(b, r, -amt);
     }
     for (const [r, amt] of Object.entries(rates.outputs) as [ResourceId, number][]) {
-      const delta = add(b, r, amt);
-      out.push({ k: 'stock', id: b.id, r, delta });
-      out.push({ k: 'produced', r, amount: delta });
+      s.emit({ k: 'produced', r, amount: move(b, r, amt) });
     }
   }
-  return out;
+  return s.muts;
 }
