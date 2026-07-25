@@ -22,6 +22,7 @@ import type { Mutation } from './mutation';
 import { citizens } from './systems/citizens';
 import { contracts } from './systems/contracts';
 import { connectivity } from './systems/connectivity';
+import { construction } from './systems/construction';
 import { foreignTrade } from './systems/foreign-trade';
 import { loans } from './systems/loans';
 import { objectives } from './systems/objectives';
@@ -340,11 +341,7 @@ export class GameEngine {
   private addBuilding(b: BuildingInst): void { this.w.addBuilding(b); }
   private removeBuilding(b: BuildingInst): void { this.w.removeBuilding(b); }
 
-  private markConstructed(b: BuildingInst): void {
-    if (b.constructed) return;
-    b.constructed = true;
-    this.facilityRevision++;
-  }
+  private markConstructed(b: BuildingInst): void { this.w.markConstructed(b); }
 
   private setupStartingBase(map: MapData) {
     const sx = map.startX, sy = map.startY;
@@ -423,21 +420,7 @@ export class GameEngine {
     this.addBuilding(b);
   }
 
-  /**
-   * A finished building is commissioned with a FULL spare bin, so nothing is
-   * born worn and a new town never starts life half-broken. Callers subtract the
-   * construction bill first (completeSite / instant-build) or place on empty
-   * stock (placeFree), so this sets the bin outright. The spare set is treated as
-   * part of the building — a modest amount beyond the bill's machinery is granted
-   * here as the installed spares (see machinery.test.ts for the born-full invariant).
-   */
-  private seedWearBins(b: BuildingInst) {
-    const def = BUILDINGS[b.defId];
-    for (const r of Object.keys(def.wear ?? {}) as ResourceId[]) {
-      const cap = def.storage[r] ?? 0;
-      if (cap > 0) b.stock[r] = cap; // born with a full spare set
-    }
-  }
+  private seedWearBins(b: BuildingInst) { this.w.seedWearBins(b); }
 
   // ---------------- helpers ----------------
 
@@ -1521,7 +1504,7 @@ export class GameEngine {
     this.refuelVehicles();
     this.logistics();
     this.dispatchBoats();
-    this.construction();
+    this.runStaged(construction);
     this.run(citizens);
     this.run(totals);
     this.checkObjectives();
@@ -1636,26 +1619,7 @@ export class GameEngine {
 
   // ---------------- logistics ----------------
 
-  private builderPool(): number {
-    let n = 0;
-    for (const b of this.buildings.values()) {
-      if (this.def(b).isConstructionOffice && b.constructed && b.connected) {
-        // contract crew guarantees the office works before you have citizens
-        n += Math.max(10, b.staff);
-      }
-    }
-    return n;
-  }
-
-  /** Builders actually manned by citizens — domestic labor is free. Anything
-   *  the full builderPool provides beyond this is imported (foreign) labor. */
-  private domesticBuilderPool(): number {
-    let n = 0;
-    for (const b of this.buildings.values()) {
-      if (this.def(b).isConstructionOffice && b.constructed && b.connected) n += b.staff;
-    }
-    return n;
-  }
+  private builderPool(): number { return this.w.builderPool(); }
 
   /**
    * Lorries a single building owns (0 if it isn't a garage or is unbuilt /
@@ -2773,112 +2737,10 @@ export class GameEngine {
 
   // ---------------- construction ----------------
 
-  private construction() {
-    if (!this.globalConstructionEnabled) return;
-    // Two-phase, domestic-first labor spread by MAX-MIN FAIR-SHARE across every
-    // ready site, segmented by construction priority: builders fill the highest
-    // priority tier first (sharing evenly within a tier), spilling to the next
-    // tier only once the top is fully crewed. Phase 1 spends citizens' FREE
-    // labor; phase 2 tops up with PAID foreign builders — only sites whose
-    // per-site policy permits them, and only as far as the treasury can afford.
-    // Total builder-days applied per day is CONSERVED (same as the old greedy
-    // pool); only the distribution across sites changed. A single ready site
-    // collapses to min(cap, pool) — bit-identical to the old code.
-    const domesticPool = this.domesticBuilderPool();
-    const foreignPool = Math.max(0, this.builderPool() - domesticPool);
-    const isEast = (this.foreignLaborCurrency ?? 'east') === 'east';
-    const rateBase = isEast ? BALANCE.foreignLaborPerDayEast : BALANCE.foreignLaborPerDayWest;
-    const perDay = rateBase * DIFFICULTIES[this.difficulty].importPriceMult;
-    const treasury = isEast ? this.rubles : this.dollars;
-    const affordableForeign = perDay > 0 ? Math.floor(treasury / perDay) : foreignPool;
-    const domestic = domesticPool;
-    const foreign = this.foreignLaborEnabled ? Math.min(foreignPool, affordableForeign) : 0;
-    if (domestic + foreign <= 0) return;
-    const buildMult = WEATHER[this.weather.condition].buildMult;
-
-    // Snapshot ready sites into an ARRAY (id order) — completeSite() deletes
-    // road builders from the live Map mid-apply, so we must not iterate it.
-    const ready = [...this.buildings.values()].filter(
-      b => !b.constructed && !b.paused && this.siteReady(b));
-    if (!ready.length) return;
-    // exact fractional remaining builder-days, capped at the per-site slot —
-    // a near-done or 3-labor road site takes only its true need and releases
-    // the surplus back to the pool (no ceil() rounding to hoard a full slot).
-    const cap = ready.map(b => Math.min(BALANCE.buildersPerSite, (this.def(b).labor - b.progress) / Math.max(1e-4, buildMult)));
-    const tierOf = (b: BuildingInst) => b.buildPriority ?? 0;
-    const tiers = [...new Set(ready.map(tierOf))].sort((x, y) => y - x); // high → low
-
-    const domCrew = new Array<number>(ready.length).fill(0);
-    const forCrew = new Array<number>(ready.length).fill(0);
-
-    // Phase 1 — free domestic labor, tier by tier (strict: top tier first).
-    let domLeft = domestic;
-    for (const tier of tiers) {
-      if (domLeft <= 1e-9) break;
-      const idx = ready.map((_, i) => i).filter(i => tierOf(ready[i]) === tier);
-      const alloc = this.waterFill(idx.map(i => cap[i]), domLeft);
-      for (let k = 0; k < idx.length; k++) { domCrew[idx[k]] = alloc[k]; domLeft -= alloc[k]; }
-    }
-
-    // Phase 2 — paid foreign residual, same tier order, only where policy allows.
-    let forLeft = foreign;
-    for (const tier of tiers) {
-      if (forLeft <= 1e-9) break;
-      const idx = ready.map((_, i) => i).filter(i => tierOf(ready[i]) === tier && ready[i].foreignLabor !== false);
-      const alloc = this.waterFill(idx.map(i => Math.max(0, cap[i] - domCrew[i])), forLeft);
-      for (let k = 0; k < idx.length; k++) { forCrew[idx[k]] = alloc[k]; forLeft -= alloc[k]; }
-    }
-
-    // Apply each site's total crew once, then pay for the foreign builder-days.
-    let foreignUsed = 0;
-    for (let i = 0; i < ready.length; i++) {
-      foreignUsed += forCrew[i];
-      const crew = domCrew[i] + forCrew[i];
-      if (crew <= 0) continue;
-      ready[i].progress += crew * buildMult; // storms slow the site
-      if (ready[i].progress >= this.def(ready[i]).labor) this.completeSite(ready[i]);
-    }
-
-    // foreignUsed ≤ foreign ≤ affordableForeign (= floor(treasury/perDay)), so
-    // cost ≤ treasury — the treasury never goes negative. The min() clamp defends
-    // against a summed-fractional overshoot of at most one ULP.
-    if (foreignUsed > 0) {
-      foreignUsed = Math.min(foreignUsed, affordableForeign);
-      const cost = foreignUsed * perDay;
-      if (isEast) {
-        this.rubles -= cost;
-        this.tradeLedger.today.foreignLaborRubles -= cost;
-        this.tradeLedger.today.foreignLabor = this.tradeLedger.today.foreignLaborRubles;
-      } else {
-        this.dollars -= cost;
-        this.tradeLedger.today.foreignLaborDollars -= cost;
-      }
-    }
-  }
-
-  /** Max-min fair-share (water-filling): split `budget` across sites with the
-   *  given per-site caps, filling the smallest caps first so any surplus from a
-   *  nearly-done site redistributes evenly to the rest. Returns alloc[] with
-   *  Σalloc = min(budget, Σcap). Pure + deterministic (stable index order). */
-  private waterFill(caps: number[], budget: number): number[] {
-    const alloc = new Array<number>(caps.length).fill(0);
-    const order = caps.map((_, i) => i).sort((x, y) => caps[x] - caps[y] || x - y);
-    let rem = budget;
-    let k = caps.length;
-    for (let p = 0; p < order.length; p++) {
-      if (k <= 0 || rem <= 1e-9) break;
-      const i = order[p];
-      const share = rem / k;
-      if (caps[i] <= share) { alloc[i] = caps[i]; rem -= caps[i]; k--; } // saturates below the line
-      else { for (let q = p; q < order.length; q++) alloc[order[q]] = rem / k; rem = 0; break; } // equal split among the rest
-    }
-    return alloc;
-  }
-
   /** True when construction is throughput-limited: two or more ready sites want
    *  more builder-days than the pool can supply, so sites build slowly and the
    *  player should add a Construction Office. Reuses the exact demand/cap math of
-   *  construction() so the advisory can never diverge from the simulation. */
+   *  the construction system so the advisory can never diverge from the simulation. */
   constructionThrottled(): boolean {
     if (!this.globalConstructionEnabled) return false;
     const pool = this.builderPool();
@@ -2893,32 +2755,7 @@ export class GameEngine {
     return ready >= 2 && demand > pool;
   }
 
-  /** All of a site's construction materials delivered? */
-  private siteReady(b: BuildingInst): boolean {
-    const def = this.def(b);
-    return (Object.entries(def.materials) as [ResourceId, number][])
-      .every(([r, amt]) => this.stockOf(b, r) >= amt - 0.001);
-  }
-
-  /** Finish a site whose progress reached its labor bill: a road/bridge site
-   *  dissolves into its tile (silent — a 30-tile paint must not fire 30 toasts);
-   *  a building consumes its materials and installs wear spares. */
-  private completeSite(b: BuildingInst) {
-    const def = this.def(b);
-    if (def.becomesRoad) {
-      this.applyInternalTilePatches([{ x: b.x, y: b.y, road: true, buildingId: null }]);
-      this.removeBuilding(b);
-      this.stats.roadsBuilt++;
-      return;
-    }
-    this.markConstructed(b);
-    b.progress = def.labor;
-    for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
-      this.addStock(b, r, -amt);
-    }
-    this.seedWearBins(b);
-    this.pushEvent(`${def.name} completed!`, 'good', 'check');
-  }
+  private siteReady(b: BuildingInst): boolean { return this.w.siteReady(b); }
 
   // ---------------- citizens ----------------
 

@@ -544,6 +544,79 @@ export class World {
    */
   powerSectorOrder: Category[] = [...POWER_SECTORS];
 
+  // ---------------- construction ----------------
+
+  markConstructed(b: BuildingInst): void {
+    if (b.constructed) return;
+    b.constructed = true;
+    this.facilityRevision++;
+  }
+
+  /**
+   * A finished building is commissioned with a FULL spare bin, so nothing is
+   * born worn and a new town never starts life half-broken. Callers subtract the
+   * construction bill first (completeSite / instant-build) or place on empty
+   * stock (placeFree), so this sets the bin outright. The spare set is treated as
+   * part of the building — a modest amount beyond the bill's machinery is granted
+   * here as the installed spares (see machinery.test.ts for the born-full invariant).
+   */
+  seedWearBins(b: BuildingInst) {
+    const def = BUILDINGS[b.defId];
+    for (const r of Object.keys(def.wear ?? {}) as ResourceId[]) {
+      const cap = def.storage[r] ?? 0;
+      if (cap > 0) b.stock[r] = cap; // born with a full spare set
+    }
+  }
+
+  /** All of a site's construction materials delivered? */
+  siteReady(b: BuildingInst): boolean {
+    const def = this.def(b);
+    return (Object.entries(def.materials) as [ResourceId, number][])
+      .every(([r, amt]) => this.stockOf(b, r) >= amt - 0.001);
+  }
+
+  /** Finish a site whose progress reached its labor bill: a road/bridge site
+   *  dissolves into its tile (silent — a 30-tile paint must not fire 30 toasts);
+   *  a building consumes its materials and installs wear spares. */
+  completeSite(b: BuildingInst) {
+    const def = this.def(b);
+    if (def.becomesRoad) {
+      this.applyInternalTilePatches([{ x: b.x, y: b.y, road: true, buildingId: null }]);
+      this.removeBuilding(b);
+      this.stats.roadsBuilt++;
+      return;
+    }
+    this.markConstructed(b);
+    b.progress = def.labor;
+    for (const [r, amt] of Object.entries(def.materials) as [ResourceId, number][]) {
+      this.addStock(b, r, -amt);
+    }
+    this.seedWearBins(b);
+    this.pushEvent(`${def.name} completed!`, 'good', 'check');
+  }
+
+  /** Builder-days a staffed, connected office can supply today. */
+  builderPool(): number {
+    let n = 0;
+    for (const b of this.buildings.values()) {
+      if (this.def(b).isConstructionOffice && b.constructed && b.connected) {
+        // contract crew guarantees the office works before you have citizens
+        n += Math.max(10, b.staff);
+      }
+    }
+    return n;
+  }
+
+  /** Builders actually manned by citizens — domestic labor is free. Anything
+   *  the full builderPool provides beyond this is imported (foreign) labor. */
+  domesticBuilderPool(): number {
+    let n = 0;
+    for (const b of this.buildings.values()) {
+      if (this.def(b).isConstructionOffice && b.constructed && b.connected) n += b.staff;
+    }
+    return n;
+  }
+
   // ---------------- the border ----------------
 
   private marketPrice(r: ResourceId, currency: 'east' | 'west') {

@@ -78,6 +78,15 @@ export type Mutation =
   /** Standing price malus with one bloc (0..cap). */
   | { k: 'relations'; bloc: 'east' | 'west'; penalty: number }
 
+  // ---- construction ----
+  /** Builder-days applied to a site. */
+  | { k: 'siteProgress'; id: number; days: number }
+  /** The site reached its labour bill: materials consumed, spares installed —
+   *  or, for a road/bridge, the site dissolves into the tile it paved. */
+  | { k: 'siteComplete'; id: number }
+  /** Today's bill for hired foreign crews. */
+  | { k: 'foreignLaborBill'; bloc: 'east' | 'west'; cost: number }
+
   // ---- the daily trade ledger ----
   /** Close the day's book and open a fresh one. */
   | { k: 'ledgerRoll' }
@@ -236,6 +245,28 @@ export function applyMutations(w: World, muts: readonly Mutation[]): void {
       case 'relations':
         w.relationsPenalty[m.bloc] = m.penalty;
         break;
+      case 'siteProgress': {
+        const b = w.buildings.get(m.id);
+        if (b) b.progress += m.days;
+        break;
+      }
+      case 'siteComplete': {
+        const b = w.buildings.get(m.id);
+        if (b) w.completeSite(b);
+        break;
+      }
+      case 'foreignLaborBill': {
+        const led = w.tradeLedger.today;
+        if (m.bloc === 'east') {
+          w.rubles -= m.cost;
+          led.foreignLaborRubles -= m.cost;
+          led.foreignLabor = led.foreignLaborRubles;
+        } else {
+          w.dollars -= m.cost;
+          led.foreignLaborDollars -= m.cost;
+        }
+        break;
+      }
       case 'ledgerRoll':
         w.tradeLedger.yesterday = w.tradeLedger.today;
         w.tradeLedger.today = emptyLedger();
