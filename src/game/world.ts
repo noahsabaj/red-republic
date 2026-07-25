@@ -8,7 +8,7 @@
 // This file holds TYPES and pure helpers only. The mutable `World` state and
 // its primitive accessors land here next; the systems that act on them become
 // modules alongside it.
-import { ALL_RESOURCES, BALANCE, BUILDINGS, CLIMATES, FARM_SEASON, POWER_SECTORS, WEATHER } from './config';
+import { ALL_RESOURCES, BALANCE, BUILDINGS, CLIMATES, FARM_SEASON, LOANS, POWER_SECTORS, WEATHER } from './config';
 import type { Category, ClimateId, DepositType, ResourceId } from './config';
 import { mulberry32 } from './mapgen';
 import type { BorderEdge, SeededRng, Tile } from './mapgen';
@@ -199,6 +199,9 @@ export interface GameEvent {
 }
 
 export type Season = 'winter' | 'spring' | 'summer' | 'autumn';
+
+/** Player-facing grouping of demand kinds — the four dials on the Delivery panel. */
+export type LogisticsCategory = 'lifeline' | 'consumer' | 'industry' | 'construction';
 
 /** A standing order of the Foreign Trade Directorate for one resource. */
 export interface AutoTradeRule {
@@ -447,6 +450,83 @@ export class World {
   pushEvent(text: string, kind: GameEvent['kind'], icon?: string): void {
     this.events.push({ id: this.nextEventId++, text, kind, icon });
   }
+
+  // ---------------- the fleet ----------------
+
+  /** The road fleet. Persistent machines owned by garages — see `Vehicle`. */
+  trucks: Vehicle[] = [];
+  boats: Boat[] = [];
+  /** Cosmetic border traffic: foreign lorries visiting the customs on trade days. */
+  foreignTrucks: Mover[] = [];
+  boatOrders: BoatOrder[] = [];
+  nextTruckId = 1;
+  nextBoatId = 1;
+
+  // ---------------- the ledger and standing policy ----------------
+
+  // Foreign currency only — nothing domestic ever charges the treasury.
+  // The real starting grants come from DIFFICULTIES when the engine is built.
+  rubles = 0;
+  dollars = 0;
+  priceFactorEast = 1;
+  priceFactorWest = 1;
+  /** National auto-trade policy — mutate only via the setAutoTrade* methods. */
+  autoTrade = {
+    enabled: false,
+    reserveRubles: BALANCE.autoReserveRubles,
+    reserveDollars: BALANCE.autoReserveDollars,
+    rules: {} as Partial<Record<ResourceId, AutoTradeRule>>,
+  };
+  tradeLedger = { today: emptyLedger(), yesterday: emptyLedger() };
+  /** Global construction master switch. Off = all construction and material dispatches paused. */
+  globalConstructionEnabled = true;
+  /** Hire imported construction crews with ₽ for builders beyond your citizens.
+   *  Off = domestic builders only (construction stalls without staffed offices). */
+  foreignLaborEnabled = true;
+  foreignLaborCurrency: 'east' | 'west' = 'east';
+  /** Import machinery from the border (paid ₽/$) to repair a worn building when no
+   *  domestic machinery can reach it — a town with no Machine Works is then never
+   *  permanently stuck at half output. Off = domestic supply only. */
+  repairImportsEnabled = true;
+  repairImportCurrency: 'east' | 'west' = 'east';
+  /** Offers, active deals and recent history — mutate only via accept/declineContract. */
+  contracts: Contract[] = [];
+  nextContractId = 1;
+  /** 0..cap price malus per bloc from failed contracts; decays daily. */
+  relationsPenalty = { east: 0, west: 0 };
+  /** Active, repaid and recently-defaulted loans. */
+  loans: Loan[] = [];
+  nextLoanId = 1;
+  /** Auto-repay: when treasury exceeds threshold, chip away at active loans. */
+  loanAutoRepay = {
+    enabled: false,
+    thresholdRubles: LOANS.autoRepayThresholdRubles,
+    thresholdDollars: LOANS.autoRepayThresholdDollars,
+  };
+  /** Per-bloc cooldown: absolute dayIndex when borrowing is allowed again. */
+  loanCooldown = { east: 0, west: 0 };
+
+  /** Global category construction priorities (Low -1 / Normal 0 / High 1).
+   *  Applies to all sites in that category unless overridden on the individual site. */
+  globalCategoryPriorities: Record<Category, -1 | 0 | 1> = {
+    infra: 0,
+    housing: 0,
+    industry: 0,
+    services: 0,
+    trade: 0,
+  };
+
+  /**
+   * What the republic values, per demand category. Dispatch rank is otherwise
+   * derived entirely from the sim (days of cover vs. delivery time), so these
+   * dials are the player's whole control surface: they scale consequence, they
+   * never override urgency. 1 = neutral.
+   */
+  logisticsCategoryWeights: Record<LogisticsCategory, number> = {
+    lifeline: 1, consumer: 1, industry: 1, construction: 1,
+  };
+  /** Enable automatic emergency fuel imports at Customs House when city fuel is dry. */
+  emergencyFuelAutoBuy = true;
 
   /**
    * Who the grid keeps lit when generation falls short, worst-served last.

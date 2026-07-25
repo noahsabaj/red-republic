@@ -29,6 +29,7 @@ import { workers } from './systems/workers';
 import {
   RevisionMemo, World, buildingWorn, emptyLedger, rankedGoals,
 } from './world';
+import type { LogisticsCategory } from './world';
 import type {
   Alert, AutoTradeRule, BoatOrder, Boat, BuildingInst, Contract, GameEvent,
   HappinessBreakdown, HappinessFactor, InternalTilePatch, Loan, Mover, PlacePolicy,
@@ -43,12 +44,9 @@ export {
 } from './world';
 export type {
   Alert, AutoTradeRule, BoatOrder, Boat, BuildingInst, Contract, GameEvent,
-  HappinessBreakdown, HappinessFactor, Loan, Mover, PlacePolicy,
+  HappinessBreakdown, HappinessFactor, Loan, LogisticsCategory, Mover, PlacePolicy,
   RoutingDiagnostics, Season, TilePatch, TradeDayLedger, Truck, Vehicle, VehicleState,
 } from './world';
-
-/** Player-facing grouping of demand kinds — the four dials on the Delivery panel. */
-export type LogisticsCategory = 'lifeline' | 'consumer' | 'industry' | 'construction';
 
 /**
  * What a delivery is FOR. Drives the consequence weight and which drain model
@@ -169,18 +167,66 @@ export class GameEngine {
   private get nextBuildingId() { return this.w.nextBuildingId; }
   private set nextBuildingId(v: number) { this.w.nextBuildingId = v; }
 
-  /** The road fleet. Persistent machines owned by garages — see `Vehicle`. */
-  trucks: Vehicle[] = [];
-  boats: Boat[] = [];
-  /** Cosmetic border traffic: foreign lorries visiting the customs on trade days. */
-  foreignTrucks: Mover[] = [];
-  // Foreign currency only — nothing domestic ever charges the treasury.
-  // The real starting grants come from DIFFICULTIES in the constructor.
-  rubles = 0;
-  dollars = 0;
   speed: 0 | 1 | 2 | 4 = 1;
-  priceFactorEast = 1;
-  priceFactorWest = 1;
+
+  // The fleet, the treasury and every standing policy are World state too — the
+  // transactions read and write them, so they live where the systems can reach
+  // them. These forward for the UI, the renderer, saves and tests.
+  get trucks() { return this.w.trucks; }
+  set trucks(v: Vehicle[]) { this.w.trucks = v; }
+  get boats() { return this.w.boats; }
+  set boats(v: Boat[]) { this.w.boats = v; }
+  get foreignTrucks() { return this.w.foreignTrucks; }
+  set foreignTrucks(v: Mover[]) { this.w.foreignTrucks = v; }
+  private get boatOrders() { return this.w.boatOrders; }
+  private set boatOrders(v: BoatOrder[]) { this.w.boatOrders = v; }
+  private get nextTruckId() { return this.w.nextTruckId; }
+  private set nextTruckId(v: number) { this.w.nextTruckId = v; }
+  private get nextBoatId() { return this.w.nextBoatId; }
+  private set nextBoatId(v: number) { this.w.nextBoatId = v; }
+
+  get rubles() { return this.w.rubles; }
+  set rubles(v: number) { this.w.rubles = v; }
+  get dollars() { return this.w.dollars; }
+  set dollars(v: number) { this.w.dollars = v; }
+  get priceFactorEast() { return this.w.priceFactorEast; }
+  set priceFactorEast(v: number) { this.w.priceFactorEast = v; }
+  get priceFactorWest() { return this.w.priceFactorWest; }
+  set priceFactorWest(v: number) { this.w.priceFactorWest = v; }
+  get autoTrade() { return this.w.autoTrade; }
+  set autoTrade(v: World['autoTrade']) { this.w.autoTrade = v; }
+  get tradeLedger() { return this.w.tradeLedger; }
+  set tradeLedger(v: World['tradeLedger']) { this.w.tradeLedger = v; }
+  get globalConstructionEnabled() { return this.w.globalConstructionEnabled; }
+  set globalConstructionEnabled(v: boolean) { this.w.globalConstructionEnabled = v; }
+  get foreignLaborEnabled() { return this.w.foreignLaborEnabled; }
+  set foreignLaborEnabled(v: boolean) { this.w.foreignLaborEnabled = v; }
+  get foreignLaborCurrency() { return this.w.foreignLaborCurrency; }
+  set foreignLaborCurrency(v: 'east' | 'west') { this.w.foreignLaborCurrency = v; }
+  get repairImportsEnabled() { return this.w.repairImportsEnabled; }
+  set repairImportsEnabled(v: boolean) { this.w.repairImportsEnabled = v; }
+  get repairImportCurrency() { return this.w.repairImportCurrency; }
+  set repairImportCurrency(v: 'east' | 'west') { this.w.repairImportCurrency = v; }
+  get contracts() { return this.w.contracts; }
+  set contracts(v: Contract[]) { this.w.contracts = v; }
+  private get nextContractId() { return this.w.nextContractId; }
+  private set nextContractId(v: number) { this.w.nextContractId = v; }
+  get relationsPenalty() { return this.w.relationsPenalty; }
+  set relationsPenalty(v: World['relationsPenalty']) { this.w.relationsPenalty = v; }
+  get loans() { return this.w.loans; }
+  set loans(v: Loan[]) { this.w.loans = v; }
+  private get nextLoanId() { return this.w.nextLoanId; }
+  private set nextLoanId(v: number) { this.w.nextLoanId = v; }
+  get loanAutoRepay() { return this.w.loanAutoRepay; }
+  set loanAutoRepay(v: World['loanAutoRepay']) { this.w.loanAutoRepay = v; }
+  get loanCooldown() { return this.w.loanCooldown; }
+  set loanCooldown(v: World['loanCooldown']) { this.w.loanCooldown = v; }
+  get globalCategoryPriorities() { return this.w.globalCategoryPriorities; }
+  set globalCategoryPriorities(v: World['globalCategoryPriorities']) { this.w.globalCategoryPriorities = v; }
+  get logisticsCategoryWeights() { return this.w.logisticsCategoryWeights; }
+  set logisticsCategoryWeights(v: World['logisticsCategoryWeights']) { this.w.logisticsCategoryWeights = v; }
+  get emergencyFuelAutoBuy() { return this.w.emergencyFuelAutoBuy; }
+  set emergencyFuelAutoBuy(v: boolean) { this.w.emergencyFuelAutoBuy = v; }
 
   // The calendar, the weather and the republic's measured condition are World
   // state — every derivation writes them, so they belong where the systems can
@@ -231,71 +277,10 @@ export class GameEngine {
   set objectivesDone(v: string[]) { this.w.objectivesDone = v; }
   get alerts() { return this.w.alerts; }
   set alerts(v: Alert[]) { this.w.alerts = v; }
-  /** National auto-trade policy — mutate only via the setAutoTrade* methods. */
-  autoTrade = {
-    enabled: false,
-    reserveRubles: BALANCE.autoReserveRubles,
-    reserveDollars: BALANCE.autoReserveDollars,
-    rules: {} as Partial<Record<ResourceId, AutoTradeRule>>,
-  };
-  tradeLedger = { today: emptyLedger(), yesterday: emptyLedger() };
-  /** Global construction master switch. Off = all construction and material dispatches paused. */
-  globalConstructionEnabled = true;
-  /** Hire imported construction crews with ₽ for builders beyond your citizens.
-   *  Off = domestic builders only (construction stalls without staffed offices). */
-  foreignLaborEnabled = true;
-  foreignLaborCurrency: 'east' | 'west' = 'east';
-  /** Import machinery from the border (paid ₽/$) to repair a worn building when no
-   *  domestic machinery can reach it — a town with no Machine Works is then never
-   *  permanently stuck at half output. Off = domestic supply only. */
-  repairImportsEnabled = true;
-  repairImportCurrency: 'east' | 'west' = 'east';
-  /** Offers, active deals and recent history — mutate only via accept/declineContract. */
-  contracts: Contract[] = [];
-  /** 0..cap price malus per bloc from failed contracts; decays daily. */
-  relationsPenalty = { east: 0, west: 0 };
-  /** Active, repaid and recently-defaulted loans. */
-  loans: Loan[] = [];
-  /** Auto-repay: when treasury exceeds threshold, chip away at active loans. */
-  loanAutoRepay = {
-    enabled: false,
-    thresholdRubles: LOANS.autoRepayThresholdRubles,
-    thresholdDollars: LOANS.autoRepayThresholdDollars,
-  };
-  /** Per-bloc cooldown: absolute dayIndex when borrowing is allowed again. */
-  loanCooldown = { east: 0, west: 0 };
-
-  /** Global category construction priorities (Low -1 / Normal 0 / High 1).
-   *  Applies to all sites in that category unless overridden on the individual site. */
-  globalCategoryPriorities: Record<Category, -1 | 0 | 1> = {
-    infra: 0,
-    housing: 0,
-    industry: 0,
-    services: 0,
-    trade: 0,
-  };
-
-  /**
-   * What the republic values, per demand category. Dispatch rank is otherwise
-   * derived entirely from the sim (days of cover vs. delivery time), so these
-   * dials are the player's whole control surface: they scale consequence, they
-   * never override urgency. 1 = neutral.
-   */
-  logisticsCategoryWeights: Record<LogisticsCategory, number> = {
-    lifeline: 1, consumer: 1, industry: 1, construction: 1,
-  };
-  /** Enable automatic emergency fuel imports at Customs House when city fuel is dry. */
-  emergencyFuelAutoBuy = true;
-
   get powerSectorOrder() { return this.w.powerSectorOrder; }
   set powerSectorOrder(v: Category[]) { this.w.powerSectorOrder = v; }
 
 
-  private nextTruckId = 1;
-  private nextBoatId = 1;
-  private nextContractId = 1;
-  private nextLoanId = 1;
-  private boatOrders: BoatOrder[] = [];
   private acc = 0;
   private listeners = new Set<() => void>();
   private version = 0;
@@ -320,14 +305,14 @@ export class GameEngine {
     this.climate = opts.climate ?? DEFAULT_CLIMATE;
     this.difficulty = opts.difficulty ?? DEFAULT_DIFFICULTY;
     this.name = opts.name ?? 'Red Republic';
-    this.rubles = DIFFICULTIES[this.difficulty].startRubles;
-    this.dollars = DIFFICULTIES[this.difficulty].startDollars;
     const map = opts.map ?? generateMap(seed, opts.mapW, opts.mapH);
     // World owns the map, the buildings on it, the topology over both, the
-    // calendar/weather and the republic's measured condition. Its RNG and
-    // weather timeline are decorrelated from map generation, so constructing it
-    // after generateMap cannot perturb either stream.
+    // calendar/weather, the republic's condition, its fleet and its ledger. Its
+    // RNG and weather timeline are decorrelated from map generation, so
+    // constructing it after generateMap cannot perturb either stream.
     this.w = new World(map.tiles, map.border ?? null, seed, this.climate, opts.weatherScript);
+    this.rubles = DIFFICULTIES[this.difficulty].startRubles;
+    this.dollars = DIFFICULTIES[this.difficulty].startDollars;
     if (!opts.skipStartingBase) this.setupStartingBase(map);
   }
 
