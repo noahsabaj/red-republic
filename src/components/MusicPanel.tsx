@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { GameIcon } from '@/ui/GameIcon';
 import { RangeSlider, ToggleButton } from '@/components/menu/controls';
 import { audio, PLAYLIST } from '@/audio';
@@ -23,13 +23,30 @@ export default function MusicPanel() {
   // stays event-only). 4 Hz while playing for a smooth thumb glide, 1 Hz when paused
   // or under reducedMotion (the M:SS text only changes per second anyway). A no-op
   // setState (same value while paused) is cheaply skipped by React.
+  //
+  // While the thumb is held the poll is SUSPENDED and the seek is withheld: a
+  // seek is a real transport action (retire the gain generation, re-point the
+  // scheduler), and range inputs fire onChange per input event, so committing
+  // each one turned a single drag into ~176 of them. The two halves are one
+  // fix — debouncing the seek without freezing the poll would let the audio
+  // clock yank the thumb back out from under the pointer.
+  const dragging = useRef(false);
   const [elapsed, setElapsed] = useState(() => audio.musicProgress().elapsedS);
   useEffect(() => {
     const ms = m.playing && !s.reducedMotion ? 250 : 1000;
-    const id = setInterval(() => setElapsed(audio.musicProgress().elapsedS), ms);
+    const id = setInterval(() => {
+      if (!dragging.current) setElapsed(audio.musicProgress().elapsedS);
+    }, ms);
     return () => clearInterval(id);
   }, [m.playing, s.reducedMotion]);
   const fillPct = m.durationS > 0 ? Math.min(100, (elapsed / m.durationS) * 100) : 0;
+
+  /** Release the thumb: commit the one seek this gesture earned. */
+  const commitSeek = (el: EventTarget | null) => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    audio.seek(Number((el as HTMLInputElement).value));
+  };
 
   return (
     <div className="space-y-3">
@@ -41,7 +58,8 @@ export default function MusicPanel() {
         </div>
       </div>
 
-      {/* scrubber — elapsed / total, drag to seek (snaps to the nearest chord block) */}
+      {/* scrubber — elapsed / total; the thumb follows the pointer live, the
+          seek lands on release (snapped to the nearest chord block) */}
       <div className="space-y-1">
         <input
           type="range"
@@ -49,7 +67,11 @@ export default function MusicPanel() {
           aria-label="Seek"
           min={0} max={Math.max(1, m.durationS)} step={Math.max(1, m.durationS / 200)}
           value={Math.min(elapsed, m.durationS)}
-          onChange={e => { const v = Number(e.target.value); setElapsed(v); audio.seek(v); }}
+          onChange={e => { dragging.current = true; setElapsed(Number(e.target.value)); }}
+          onPointerUp={e => commitSeek(e.target)}
+          onPointerCancel={e => commitSeek(e.target)}
+          onKeyUp={e => commitSeek(e.target)}
+          onBlur={e => commitSeek(e.target)}
           style={{ background: `linear-gradient(to right, #eab308 0 ${fillPct}%, rgba(10,5,4,0.7) ${fillPct}% 100%)` }}
         />
         <div className="flex justify-between text-[0.625rem] font-bold tabular-nums text-yellow-200/60">
