@@ -51,6 +51,21 @@ export interface MusicState {
   durationS: number; // exact length of the current song (changes on track change)
 }
 
+/**
+ * How the system obtains its AudioContext. Returns null where WebAudio is
+ * absent (the node test harness), which is what keeps `unlock()` a no-op
+ * there instead of a throw. Tests inject a recording fake through this seam —
+ * the transport state machine below is ordinary logic and deserves the same
+ * coverage as the pure modules, but it can only be reached with a context.
+ */
+export type AudioContextFactory = () => AudioContext | null;
+
+const browserContext: AudioContextFactory = () =>
+  'AudioContext' in globalThis ? new AudioContext() : null;
+
+/** DOM-free reads, so the system constructs and runs under node. */
+const docHidden = (): boolean => typeof document !== 'undefined' && document.hidden;
+
 /** Pre-unlock snapshot from persisted prefs, so the panel reads correctly
  *  even before the first gesture starts the audio. */
 function initialMusicState(): MusicState {
@@ -65,6 +80,9 @@ function initialMusicState(): MusicState {
 }
 
 export class AudioSystem {
+  // Assigned in the body, not as a parameter property: tsconfig runs
+  // `erasableSyntaxOnly`, under which `constructor(private x)` is TS1294.
+  private makeCtx: AudioContextFactory;
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private musicGain: GainNode | null = null;
@@ -85,15 +103,20 @@ export class AudioSystem {
   private musicSnap: MusicState = initialMusicState();
   private musicListeners = new Set<() => void>();
 
+  constructor(makeCtx: AudioContextFactory = browserContext) {
+    this.makeCtx = makeCtx;
+  }
+
   /**
    * Create (or resume) the AudioContext. Must be reachable from a user
    * gesture; safe to call redundantly — every click goes through sfx(),
    * which calls this first.
    */
   unlock() {
-    if (!('AudioContext' in globalThis)) return;
     if (!this.ctx) {
-      this.ctx = new AudioContext();
+      const ctx = this.makeCtx();
+      if (!ctx) return;
+      this.ctx = ctx;
       const compressor = this.ctx.createDynamicsCompressor();
       compressor.threshold.value = -18;
       compressor.ratio.value = 4;
@@ -108,10 +131,12 @@ export class AudioSystem {
       this.interfaceGain.connect(this.masterGain);
       this.applyVolumes(true);
       subscribeSettings(() => this.applyVolumes());
-      document.addEventListener('visibilitychange', () => this.onVisibility());
+      if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', () => this.onVisibility());
+      }
       this.startMusic();
     }
-    if (this.ctx.state === 'suspended' && !document.hidden) {
+    if (this.ctx.state === 'suspended' && !docHidden()) {
       void this.ctx.resume();
       this.autoSuspended = false;
     }
@@ -344,7 +369,7 @@ export class AudioSystem {
 
   private onVisibility() {
     if (!this.ctx) return;
-    if (document.hidden) {
+    if (docHidden()) {
       if (getSettings().muteWhenHidden && this.ctx.state === 'running') {
         this.autoSuspended = true;
         void this.ctx.suspend();
