@@ -281,7 +281,8 @@ export default function App() {
 
   const hotkeysEnabled =
     screen.phase === 'playing' && screen.overlay === null && !showHelp && !briefingVisible;
-  const canQuit = isTauri(); // desktop: main-menu Exit Game + pause Exit-to-Desktop; web has neither
+  // desktop-only surfaces: main-menu Exit Game, pause Exit-to-Desktop, window mode
+  const isDesktop = isTauri();
 
   const saveLoadShared = {
     unsavedDays,
@@ -371,7 +372,7 @@ export default function App() {
               onLoad={() => dispatch({ type: 'MENU_GOTO', sub: 'load' })}
               onOptions={() => dispatch({ type: 'MENU_GOTO', sub: 'options' })}
               onManual={() => setShowHelp(true)}
-              onExit={canQuit ? () => void quitApp() : undefined}
+              onExit={isDesktop ? () => void quitApp() : undefined}
             />
           )}
           {screen.sub === 'new-game' && (
@@ -380,7 +381,7 @@ export default function App() {
           {screen.sub === 'load' && (
             <SaveLoadScreen mode="load" engine={null} onBack={back} {...saveLoadShared} />
           )}
-          {screen.sub === 'options' && <OptionsScreen onBack={back} escDisabled={showHelp} />}
+          {screen.sub === 'options' && <OptionsScreen onBack={back} escDisabled={showHelp} canSetWindowMode={isDesktop} />}
         </>
       )}
 
@@ -390,7 +391,7 @@ export default function App() {
         ) : screen.overlay === 'load' ? (
           <SaveLoadScreen mode="load" engine={session.engine} onBack={back} {...saveLoadShared} />
         ) : screen.overlay === 'options' ? (
-          <OptionsScreen onBack={back} escDisabled={showHelp} />
+          <OptionsScreen onBack={back} escDisabled={showHelp} canSetWindowMode={isDesktop} />
         ) : (
           <PauseMenu
             overlay={screen.overlay}
@@ -404,7 +405,7 @@ export default function App() {
             onManual={() => setShowHelp(true)}
             onRestartRequest={() => dispatch({ type: 'PAUSE_GOTO', sub: 'confirm-restart' })}
             onRestartConfirm={restart}
-            canQuit={canQuit}
+            canQuit={isDesktop}
             onExitChooser={() => dispatch({ type: 'PAUSE_GOTO', sub: 'exit' })}
             onExitRequest={() => {
               if (unsavedDays > 0) dispatch({ type: 'PAUSE_GOTO', sub: 'confirm-exit' });
