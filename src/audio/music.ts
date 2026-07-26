@@ -29,8 +29,8 @@ import { PLAYLIST } from './tracks';
 import type { ArpLayer, BassLayer, Envelope, LeadLayer, PadLayer, PercLayer, PercVoice, SubLayer, Track } from './tracks';
 import { blockIndexAtTime, buildSongPlan, mix, seedOf } from './arrange';
 import type { PlanBlock, SongPlan } from './arrange';
-import { mulberry32 } from '../game/mapgen';
-import type { SeededRng } from '../game/mapgen';
+import { mulberry32 } from '@/lib/rng';
+import type { SeededRng } from '@/lib/rng';
 
 export interface EngineMood {
   season: 'winter' | 'spring' | 'summer' | 'autumn';

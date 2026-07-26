@@ -7,7 +7,8 @@ import {
   DEFAULT_CLIMATE, DIFFICULTIES, DEFAULT_DIFFICULTY, POWER_SECTORS,
 } from './config';
 import type { Category, ClimateId, DepositType, DifficultyId, ResourceId } from './config';
-import { generateMap, mulberry32 } from './mapgen';
+import { generateMap } from './mapgen';
+import { mulberry32 } from '@/lib/rng';
 import type { BorderEdge, MapData, Tile } from './mapgen';
 import { SAVE_FORMAT_VERSION, packTiles, unpackTiles, validateSave } from './save-format';
 import type { SaveGameV1 } from './save-format';

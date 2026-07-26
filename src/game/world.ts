@@ -13,8 +13,9 @@ import {
   LOANS, POWER_SECTORS, RESOURCES, WEATHER,
 } from './config';
 import type { Category, ClimateId, DepositType, DifficultyId, ResourceId } from './config';
-import { mulberry32 } from './mapgen';
-import type { BorderEdge, SeededRng, Tile } from './mapgen';
+import { mulberry32 } from '@/lib/rng';
+import type { BorderEdge, Tile } from './mapgen';
+import type { SeededRng } from '@/lib/rng';
 import { FloodResult, floodCost, shortestPathToAny } from './pathfind';
 import type { NearestPath, RankedGoal } from './pathfind';
 import { TopologyIndex } from './topology';

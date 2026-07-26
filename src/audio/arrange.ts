@@ -12,8 +12,8 @@
 //     per-block stream mix(seed, blockIndex) — decorrelated per block, so
 //     seeking to block K needs no replay of the blocks before it.
 // ============================================================
-import { mulberry32 } from '../game/mapgen';
-import type { SeededRng } from '../game/mapgen';
+import { mulberry32 } from '@/lib/rng';
+import type { SeededRng } from '@/lib/rng';
 import { nextChord } from './music-theory';
 import type { Track } from './tracks';
 

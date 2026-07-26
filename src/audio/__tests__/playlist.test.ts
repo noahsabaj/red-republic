@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mulberry32 } from '../../game/mapgen';
+import { mulberry32 } from '@/lib/rng';
 import { autoAdvance, naturalOrder, orderPos, shuffledOrder, stepPos } from '../playlist';
 
 describe('playlist ordering', () => {
