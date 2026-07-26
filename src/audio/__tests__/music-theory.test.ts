@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mulberry32 } from '../../game/mapgen';
+import { mulberry32 } from '@/lib/rng';
 import {
   CHORD_MARKOV, CHORD_TONES, PENTATONIC, ROOT_MIDI, clickHz, midiToHz, nextChord, phrase,
 } from '../music-theory';

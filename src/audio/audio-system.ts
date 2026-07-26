@@ -51,6 +51,21 @@ export interface MusicState {
   durationS: number; // exact length of the current song (changes on track change)
 }
 
+/**
+ * How the system obtains its AudioContext. Returns null where WebAudio is
+ * absent (the node test harness), which is what keeps `unlock()` a no-op
+ * there instead of a throw. Tests inject a recording fake through this seam —
+ * the transport state machine below is ordinary logic and deserves the same
+ * coverage as the pure modules, but it can only be reached with a context.
+ */
+export type AudioContextFactory = () => AudioContext | null;
+
+const browserContext: AudioContextFactory = () =>
+  'AudioContext' in globalThis ? new AudioContext() : null;
+
+/** DOM-free reads, so the system constructs and runs under node. */
+const docHidden = (): boolean => typeof document !== 'undefined' && document.hidden;
+
 /** Pre-unlock snapshot from persisted prefs, so the panel reads correctly
  *  even before the first gesture starts the audio. */
 function initialMusicState(): MusicState {
@@ -65,6 +80,9 @@ function initialMusicState(): MusicState {
 }
 
 export class AudioSystem {
+  // Assigned in the body, not as a parameter property: tsconfig runs
+  // `erasableSyntaxOnly`, under which `constructor(private x)` is TS1294.
+  private makeCtx: AudioContextFactory;
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private musicGain: GainNode | null = null;
@@ -84,6 +102,26 @@ export class AudioSystem {
   private repeat: RepeatMode = 'all';
   private musicSnap: MusicState = initialMusicState();
   private musicListeners = new Set<() => void>();
+  /** Undo for everything unlock() subscribes to — see dispose(). */
+  private teardown: (() => void)[] = [];
+
+  constructor(makeCtx: AudioContextFactory = browserContext) {
+    this.makeCtx = makeCtx;
+  }
+
+  /**
+   * Release the engine, the timers and the subscriptions. The app singleton
+   * never calls this — it lives as long as the page — but the moment
+   * AudioSystem became constructible for tests, "subscribes on unlock, never
+   * unsubscribes" turned into a per-instance leak: each test's system stayed
+   * live on the settings bus, reacting to every later test's writes.
+   */
+  dispose() {
+    for (const undo of this.teardown) undo();
+    this.teardown = [];
+    this.music?.dispose();
+    this.music = null;
+  }
 
   /**
    * Create (or resume) the AudioContext. Must be reachable from a user
@@ -91,9 +129,10 @@ export class AudioSystem {
    * which calls this first.
    */
   unlock() {
-    if (!('AudioContext' in globalThis)) return;
     if (!this.ctx) {
-      this.ctx = new AudioContext();
+      const ctx = this.makeCtx();
+      if (!ctx) return;
+      this.ctx = ctx;
       const compressor = this.ctx.createDynamicsCompressor();
       compressor.threshold.value = -18;
       compressor.ratio.value = 4;
@@ -107,11 +146,15 @@ export class AudioSystem {
       this.interfaceGain = this.ctx.createGain();
       this.interfaceGain.connect(this.masterGain);
       this.applyVolumes(true);
-      subscribeSettings(() => this.applyVolumes());
-      document.addEventListener('visibilitychange', () => this.onVisibility());
+      this.teardown.push(subscribeSettings(() => this.applyVolumes()));
+      if (typeof document !== 'undefined') {
+        const onVis = () => this.onVisibility();
+        document.addEventListener('visibilitychange', onVis);
+        this.teardown.push(() => document.removeEventListener('visibilitychange', onVis));
+      }
       this.startMusic();
     }
-    if (this.ctx.state === 'suspended' && !document.hidden) {
+    if (this.ctx.state === 'suspended' && !docHidden()) {
       void this.ctx.resume();
       this.autoSuspended = false;
     }
@@ -293,7 +336,13 @@ export class AudioSystem {
 
   private startCurrent(crossfadeS: number) {
     if (!this.music) return;
+    // Browsing the programme while the radio is paused must not switch it back
+    // on. playTrack() always begins playing (it is the "a song is now running"
+    // verb), so a paused transport re-pauses immediately — at the top of the
+    // newly selected track, which is where a resume should then start.
+    const wasPlaying = this.music.isPlaying();
     this.music.playTrack(this.currentTrack(), { crossfadeS });
+    if (!wasPlaying) this.music.setPlaying(false);
     this.notifyMusic(this.snapshot());
   }
 
@@ -344,7 +393,7 @@ export class AudioSystem {
 
   private onVisibility() {
     if (!this.ctx) return;
-    if (document.hidden) {
+    if (docHidden()) {
       if (getSettings().muteWhenHidden && this.ctx.state === 'running') {
         this.autoSuspended = true;
         void this.ctx.suspend();

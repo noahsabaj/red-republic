@@ -15,6 +15,7 @@
 // Ordering is load-bearing. Systems emit in source order and the day loop
 // applies in emission order, so float accumulation and event ids stay
 // bit-identical to the hand-written code these replace.
+import type { GameIconName } from '@/ui/icons';
 import { BALANCE } from './config';
 import type { ResourceId } from './config';
 import { emptyLedger } from './world';
@@ -172,7 +173,7 @@ export type Mutation =
   // ---- the notice board ----
   /** A message for the player. Queued, not state — but it is an effect, so it
    *  is declared like one; that is what keeps a system from needing the engine. */
-  | { k: 'event'; text: string; kind: GameEvent['kind']; icon?: string };
+  | { k: 'event'; text: string; kind: GameEvent['kind']; icon?: GameIconName };
 
 export type MutationKind = Mutation['k'];
 

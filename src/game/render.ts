@@ -3,6 +3,7 @@
 // ============================================================
 import { BALANCE, BUILDINGS, RESOURCES } from './config';
 import { drawIcon } from '@/ui/icons';
+import type { GameIconName } from '@/ui/icons';
 import { buildingWorn, truckWorldPos } from './engine';
 import type { GameEngine, BuildingInst, Season, Mover, Vehicle } from './engine';
 import type { WeatherCondition } from './weather';
@@ -1073,7 +1074,7 @@ function drawBuilding(ctx: CanvasRenderingContext2D, b: BuildingInst, cam: Camer
   drawIcon(ctx, def.icon, mid.x, mid.y, 14 * cam.z);
 
   // status badges above the roof
-  const badges: { icon: string; color: string }[] = [];
+  const badges: { icon: GameIconName; color: string }[] = [];
   if (unpowered) badges.push({ icon: 'power', color: frame.palette.badgePower });
   if (!b.connected) badges.push({ icon: 'ban', color: '#ff6b5e' });
   else if (b.constructed && !b.roadConnected) badges.push({ icon: 'road', color: '#e0a94a' }); // off-road only — slow

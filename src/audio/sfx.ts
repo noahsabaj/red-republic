@@ -5,6 +5,7 @@
 // up via osc.stop()/source.stop().
 // ============================================================
 import { clickHz } from './music-theory';
+import { noiseBuffer } from './noise';
 import type { UiFamily } from './ui-catalog';
 
 // Outcome effects — a *result* rang out (build finished, trade cleared,
@@ -24,19 +25,6 @@ export interface VoiceCtx { chord: readonly number[]; jitter: number; root: numb
 
 /** ±`cents` detune from a jitter value. */
 const jit = (hz: number, j: number, cents = 15): number => hz * 2 ** (((j * 2 - 1) * cents) / 1200);
-
-// one cached second of white noise per AudioContext
-const noiseBuffers = new WeakMap<BaseAudioContext, AudioBuffer>();
-function noiseBuffer(ctx: BaseAudioContext): AudioBuffer {
-  let buf = noiseBuffers.get(ctx);
-  if (!buf) {
-    buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-    noiseBuffers.set(ctx, buf);
-  }
-  return buf;
-}
 
 interface Env { attack?: number; peak: number; duration: number }
 

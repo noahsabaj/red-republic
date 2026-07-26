@@ -58,10 +58,27 @@ export function ToggleButton({ on, onChange, icon, label, title, disabled, class
   );
 }
 
-export function RangeSlider({ value, min, max, step, onChange, label, format }: {
+/**
+ * A slider with an explicit PREVIEW/COMMIT split.
+ *
+ * `onChange` fires continuously — React maps a range input's onChange to the
+ * native `input` event, so a drag emits one per step crossed, not one on
+ * release. That is right for a cheap write (a settings field) and wrong for
+ * anything with a cost: the music scrubber committed a transport action per
+ * event and turned one drag into ~200 track restarts.
+ *
+ * So: put cheap live updates in `onChange`, and anything expensive or
+ * irreversible in `onCommit`, which fires once when the thumb is released
+ * (pointer, keyboard, or focus loss). Omitting `onCommit` is a no-op rather
+ * than a second `onChange` — by release, onChange has already delivered the
+ * final value — so every existing call site behaves exactly as before.
+ */
+export function RangeSlider({ value, min, max, step, onChange, onCommit, label, format }: {
   value: number; min: number; max: number; step: number;
-  onChange: (v: number) => void; label: string; format?: (v: number) => string;
+  onChange: (v: number) => void; onCommit?: (v: number) => void;
+  label: string; format?: (v: number) => string;
 }) {
+  const commit = (el: EventTarget | null) => onCommit?.(Number((el as HTMLInputElement).value));
   return (
     <div className="flex items-center gap-2">
       <input
@@ -70,6 +87,10 @@ export function RangeSlider({ value, min, max, step, onChange, label, format }: 
         aria-label={label}
         min={min} max={max} step={step} value={value}
         onChange={e => onChange(Number(e.target.value))}
+        onPointerUp={e => commit(e.target)}
+        onPointerCancel={e => commit(e.target)}
+        onKeyUp={e => commit(e.target)}
+        onBlur={e => commit(e.target)}
       />
       <span className="w-12 text-right text-[0.6875rem] font-bold text-yellow-200/80 tabular-nums">
         {format ? format(value) : value}

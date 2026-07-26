@@ -11,7 +11,7 @@
 // table in config.ts. The default preset reproduces the historical
 // continental values exactly (climate.test.ts pins the stream).
 // ============================================================
-import { mulberry32 } from './mapgen';
+import { mulberry32 } from '@/lib/rng';
 import { CLIMATES } from './config';
 import type { ClimateDef } from './config';
 

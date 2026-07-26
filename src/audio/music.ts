@@ -11,6 +11,15 @@
 // independent per-block stream mix(seed, blockIndex), so playback is
 // bit-identical every play and seeking to any block needs no dry-run.
 //
+// What "bit-identical" is scoped to. The note stream is a function of
+// (track, mood) and NOTHING else — in particular `intensity` is a MIX
+// control (levels, filter cutoff) and must never reach a note-selection
+// decision, or the same song plays differently on the menu (0.35) than in
+// the field (0.55). Mood is the deliberate exception: winter drops the pad's
+// third and halves the lead's chance, because a cold nocturne being sparser
+// is an authored feature, not drift. So: same track + same weather => same
+// notes, wherever you are in the game.
+//
 // Layers: pad/sub/lead reproduce the old ambient voice; bass/arp/perc add a
 // rhythm section on the track's beat grid. Track switching crossfades via a
 // per-track gain node UNDER the caller's dest (musicGain).
@@ -20,8 +29,8 @@ import { PLAYLIST } from './tracks';
 import type { ArpLayer, BassLayer, Envelope, LeadLayer, PadLayer, PercLayer, PercVoice, SubLayer, Track } from './tracks';
 import { blockIndexAtTime, buildSongPlan, mix, seedOf } from './arrange';
 import type { PlanBlock, SongPlan } from './arrange';
-import { mulberry32 } from '../game/mapgen';
-import type { SeededRng } from '../game/mapgen';
+import { noiseBuffer } from './noise';
+import type { SeededRng } from '@/lib/rng';
 
 export interface EngineMood {
   season: 'winter' | 'spring' | 'summer' | 'autumn';
@@ -43,7 +52,6 @@ export class MusicEngine {
   private trackGain: GainNode | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private tailTimers = new Set<ReturnType<typeof setTimeout>>();
-  private noiseCache: AudioBuffer | null = null;
   private playing = false;
   private blockIndex = 0;
   private songStartTime = 0;      // ctx.currentTime of song bar 0 (shifts across pause)
@@ -106,12 +114,32 @@ export class MusicEngine {
    * each block's voicing rng is indexed, no replay of earlier blocks is needed.
    */
   playTrack(track: Track, opts?: { crossfadeS?: number; fromBlock?: number; startElapsedS?: number }) {
-    const xf = opts?.crossfadeS ?? 1.2;
+    this.track = track;
+    this.plan = buildSongPlan(track);
+    this.engage(opts?.fromBlock ?? 0, opts?.startElapsedS ?? 0, opts?.crossfadeS ?? 1.2);
+  }
+
+  /**
+   * Move the playhead WITHIN the current track: same song, same plan, so the
+   * plan rebuild playTrack() does is skipped. The gain-node swap stays —
+   * retiring the outgoing node is what silences the voices already scheduled
+   * ahead of the old playhead, and it does that without the engine having to
+   * hold a reference to every source it ever started in order to stop them.
+   */
+  private repositionTo(blockIndex: number, crossfadeS: number) {
+    const k = clamp(blockIndex, 0, this.plan.blocks.length - 1);
+    this.engage(k, this.plan.blocks[k].startBar * this.plan.secondsPerBar, crossfadeS);
+  }
+
+  /** Bring a fresh gain generation online and point the scheduler at
+   *  `blockIndex` — the shared body of playTrack/repositionTo, i.e. everything
+   *  except deciding which plan is in force. */
+  private engage(blockIndex: number, startElapsedS: number, xf: number) {
     const now = this.ctx.currentTime;
     const old = this.trackGain;
     if (old) {
-      // Fade the outgoing track to silence over `xf`, then drop the node. The
-      // fade is short so switching songs doesn't stack them — once the gain
+      // Fade the outgoing generation to silence over `xf`, then drop the node.
+      // The fade is short so switching songs doesn't stack them — once the gain
       // hits ~0 every already-scheduled voice on this node is silent, however
       // long its own envelope still had to run.
       old.gain.cancelScheduledValues(now);
@@ -128,13 +156,10 @@ export class MusicEngine {
     if (old) g.gain.linearRampToValueAtTime(1, now + xf);
     g.connect(this.dest);
     this.trackGain = g;
-    this.track = track;
-    this.plan = buildSongPlan(track);
-    this.blockIndex = clamp(opts?.fromBlock ?? 0, 0, this.plan.blocks.length - 1);
-    this.degree = this.plan.blocks[this.blockIndex]?.degree ?? track.chords.start;
+    this.blockIndex = clamp(blockIndex, 0, this.plan.blocks.length - 1);
+    this.degree = this.plan.blocks[this.blockIndex]?.degree ?? this.track.chords.start;
     this.snapFirst = this.blockIndex > 0; // entered mid-song (seek/resume) → snap the first chord in
-    const startElapsed = opts?.startElapsedS ?? 0;
-    this.songStartTime = now - startElapsed;
+    this.songStartTime = now - startElapsedS;
     this.songEndTime = this.songStartTime + this.plan.durationS;
     this.ended = false;
     this.paused = false;
@@ -150,25 +175,31 @@ export class MusicEngine {
     let k = blockIndexAtTime(plan, clamp(t, 0, plan.durationS));
     const next = plan.blocks[k + 1]; // round up to the next boundary if it's closer
     if (next && Math.abs(t - next.startBar * spb) < Math.abs(t - plan.blocks[k].startBar * spb)) k += 1;
-    this.playTrack(this.track, { crossfadeS: 0.06, fromBlock: k, startElapsedS: plan.blocks[k].startBar * spb });
+    this.repositionTo(k, 0.06);
   }
 
   /** Play/pause without tearing down the engine (clicks stay in-key). Resume
-   *  re-enters at the paused block so elapsed and audio stay in lockstep. */
+   *  re-enters at the paused block so elapsed and audio stay in lockstep —
+   *  except for a song that already FINISHED, which starts over. */
   setPlaying(on: boolean) {
     if (on === this.playing) return;
     if (on) {
-      const k = blockIndexAtTime(this.plan, this.elapsedAtPause);
-      this.playTrack(this.track, {
-        crossfadeS: 0.3,
-        fromBlock: k,
-        startElapsedS: this.plan.blocks[k].startBar * this.plan.secondsPerBar,
-      });
+      // "Paused" and "finished" both leave an elapsed value behind, and at the
+      // end of a song that value is durationS — which resolves to the LAST
+      // block. Resuming there would play the closing few seconds, hit
+      // songEndTime, and stop again, repeatably. `ended` is the flag that
+      // tells the two states apart, so a finished song restarts from the top.
+      this.repositionTo(this.ended ? 0 : blockIndexAtTime(this.plan, this.elapsedAtPause), 0.3);
       return;
     }
     this.elapsedAtPause = this.elapsedS();
     this.paused = true;
     this.playing = false;
+    // Stop scheduling. pump() early-returns while paused, so leaving the
+    // interval up was harmless per tick and unbounded in time: it was started
+    // by the first playTrack() and only dispose() cleared it, and dispose()
+    // has no production caller. engage() brings it back on resume.
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
     const g = this.trackGain;
     if (!g) return;
     const now = this.ctx.currentTime;
@@ -319,7 +350,7 @@ export class MusicEngine {
     const level = l.level * this.intensity;
     const step = beat / l.subdivision;
     const steps = bars * beatsPerBar * l.subdivision;
-    const prob = l.density * Math.min(1, this.intensity * 1.8);
+    const prob = l.density; // authored per track — scene intensity must not thin the notes out
     const noteLen = step * l.gate;
     for (let s = 0; s < steps; s++) {
       if (vrng() >= prob) continue;
@@ -340,7 +371,9 @@ export class MusicEngine {
   }
 
   private scheduleLead(dest: AudioNode, l: LeadLayer, t0: number, dur: number, degree: string, cold: boolean, vrng: SeededRng) {
-    const chance = (cold ? l.chance * 0.5 : l.chance) * this.intensity * 2;
+    // Weather may still thin the melody (a cold nocturne is sparser by design);
+    // the menu/game scene may not — that is a mix concern, not a score one.
+    const chance = cold ? l.chance * 0.5 : l.chance;
     if (vrng() >= chance) return;
     const notes = phrase(degree, vrng, this.track.chords.tones, l.scale);
     const octave = l.octaves[Math.floor(vrng() * l.octaves.length)];
@@ -381,7 +414,7 @@ export class MusicEngine {
 
   private noiseHit(dest: AudioNode, voice: PercVoice, t: number, level: number, offset: number) {
     const src = this.ctx.createBufferSource();
-    src.buffer = this.noiseBuffer();
+    src.buffer = noiseBuffer(this.ctx);
     src.loop = true;
     const filter = this.ctx.createBiquadFilter();
     filter.type = voice.filter;
@@ -397,13 +430,4 @@ export class MusicEngine {
     src.stop(t + voice.decay + 0.05);
   }
 
-  private noiseBuffer(): AudioBuffer {
-    if (this.noiseCache) return this.noiseCache;
-    const buf = this.ctx.createBuffer(1, this.ctx.sampleRate, this.ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    const rng = mulberry32(0x51ed); // fixed so the noise bed is deterministic too
-    for (let i = 0; i < data.length; i++) data[i] = rng() * 2 - 1;
-    this.noiseCache = buf;
-    return buf;
-  }
 }

@@ -13,8 +13,10 @@ import {
   LOANS, POWER_SECTORS, RESOURCES, WEATHER,
 } from './config';
 import type { Category, ClimateId, DepositType, DifficultyId, ResourceId } from './config';
-import { mulberry32 } from './mapgen';
-import type { BorderEdge, SeededRng, Tile } from './mapgen';
+import { mulberry32 } from '@/lib/rng';
+import type { BorderEdge, Tile } from './mapgen';
+import type { GameIconName } from '@/ui/icons';
+import type { SeededRng } from '@/lib/rng';
 import { FloodResult, floodCost, shortestPathToAny } from './pathfind';
 import type { NearestPath, RankedGoal } from './pathfind';
 import { TopologyIndex } from './topology';
@@ -150,7 +152,7 @@ export interface BuildingInst {
 export interface HappinessFactor {
   id: string;
   label: string;
-  icon: string;
+  icon: GameIconName;
   satPct: number;       // 0..100%
   weightPct: number;    // e.g. 30 for food
   effectivePct: number; // satPct * (weightPct / 100)
@@ -280,7 +282,7 @@ export interface BoatOrder { srcId: number; destId: number; r: ResourceId; amt: 
 
 export interface Alert {
   id: string;
-  icon: string;
+  icon: GameIconName;
   text: string;
   level: 'warn' | 'bad';
 }
@@ -289,7 +291,7 @@ export interface GameEvent {
   id: number;
   text: string;
   kind: 'good' | 'bad' | 'info';
-  icon?: string; // game icon name (see src/ui/icons)
+  icon?: GameIconName;
 }
 
 export type Season = 'winter' | 'spring' | 'summer' | 'autumn';
@@ -544,7 +546,7 @@ export class World {
    *  `GameEngine.drainEvents()` is the single (destructive) consumer. */
   events: GameEvent[] = [];
   private nextEventId = 1;
-  pushEvent(text: string, kind: GameEvent['kind'], icon?: string): void {
+  pushEvent(text: string, kind: GameEvent['kind'], icon?: GameIconName): void {
     this.events.push({ id: this.nextEventId++, text, kind, icon });
   }
 
