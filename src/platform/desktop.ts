@@ -168,7 +168,15 @@ function syncWindowMode(mode: WindowMode): void {
   if (mode === appliedMode) return;
   appliedMode = mode;
   if (mode !== 'fullscreen') lastFramedMode = mode;
-  void applyWindowMode(mode);
+  void applyWindowMode(mode).catch((e: unknown) => {
+    // applyWindowMode drives several window calls in sequence, so a rejection
+    // can leave the real window between two modes. Forget which mode is
+    // applied rather than rolling back to the previous one: the guard above
+    // compares against this, and claiming EITHER mode would let it swallow
+    // the retry that would put the window right. null re-applies anything.
+    appliedMode = null;
+    console.error(`[window] could not apply "${mode}" — the window may not match the setting.`, e);
+  });
 }
 
 // ---------- init ----------
