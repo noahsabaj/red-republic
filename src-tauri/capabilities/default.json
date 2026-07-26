@@ -1,13 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: appdata storage, save/open dialogs, updater, fullscreen toggle, quit",
+  "description": "Main window: appdata storage, save/open dialogs, updater, window mode, quit",
   "windows": ["main"],
   "permissions": [
     "core:default",
 
     "core:window:allow-set-fullscreen",
-    "core:window:allow-is-fullscreen",
+    "core:window:allow-set-decorations",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
     "core:window:allow-destroy",
 
     "fs:allow-appdata-read-recursive",
