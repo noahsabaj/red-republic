@@ -29,13 +29,20 @@ describe('icon registry coverage', () => {
     }
   });
 
-  it("covers every icon name the engine's alerts and events use", () => {
-    const src = allSources['../game/engine.ts'];
+  it("covers every icon name the sim's alerts and events use", () => {
+    // Scans the WHOLE simulation, not just engine.ts. This guard was written
+    // when engine.ts was the only place events came from; v1.9.1 moved most
+    // emission into systems/, and port/rain/star/summer quietly fell outside
+    // it. A guard that keeps passing while the code it watches moves away is
+    // worse than no guard, because it still reads as coverage.
     const names = new Set<string>();
-    for (const m of src.matchAll(/icon: '([A-Za-z-]+)'/g)) names.add(m[1]);
-    for (const m of src.matchAll(/pushEvent\([^)]*, '(?:good|bad|info)', '([A-Za-z-]+)'\)/g)) names.add(m[1]);
-    expect(names.size).toBeGreaterThanOrEqual(9);
-    for (const n of names) expect(isGameIcon(n), `engine icon '${n}'`).toBe(true);
+    for (const [path, src] of Object.entries(allSources)) {
+      if (!path.startsWith('../game/') || path.includes('/__tests__/')) continue;
+      for (const m of src.matchAll(/icon: '([A-Za-z-]+)'/g)) names.add(m[1]);
+      for (const m of src.matchAll(/pushEvent\([^)]*, '(?:good|bad|info)', '([A-Za-z-]+)'\)/g)) names.add(m[1]);
+    }
+    expect(names.size).toBeGreaterThanOrEqual(20);
+    for (const n of names) expect(isGameIcon(n), `sim icon '${n}'`).toBe(true);
   });
 });
 
