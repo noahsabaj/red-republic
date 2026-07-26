@@ -17,10 +17,11 @@ const TABS: { id: Tab; label: string; icon: string }[] = [
 interface Props {
   onBack: () => void;
   escDisabled: boolean;
+  canSetWindowMode?: boolean;   // desktop only; the browser owns its own chrome
 }
 
 /** Every control live-applies through the settings store — no OK/Apply. */
-export function OptionsScreen({ onBack, escDisabled }: Props) {
+export function OptionsScreen({ onBack, escDisabled, canSetWindowMode = false }: Props) {
   const s = useSettings();
   const [tab, setTab] = useState<Tab>('gameplay');
   const pct = (v: number) => `${Math.round(v * 100)}%`;
@@ -81,6 +82,20 @@ export function OptionsScreen({ onBack, escDisabled }: Props) {
 
           {tab === 'display' && (
             <>
+              {canSetWindowMode && (
+                <SettingRow label="Window mode" description="Borderless keeps the taskbar reachable — F11 toggles fullscreen">
+                  <Segmented
+                    label="Window mode"
+                    options={[
+                      { value: 'windowed', label: 'Windowed' },
+                      { value: 'borderless', label: 'Borderless' },
+                      { value: 'fullscreen', label: 'Fullscreen' },
+                    ]}
+                    value={s.windowMode}
+                    onChange={v => updateSettings({ windowMode: v })}
+                  />
+                </SettingRow>
+              )}
               <SettingRow label="Interface scale" description="Size of the HUD and panels (the map is unaffected)">
                 <RangeSlider label="Interface scale" min={0.85} max={1.3} step={0.05} value={s.uiScale} format={pct} onChange={v => updateSettings({ uiScale: v })} />
               </SettingRow>
