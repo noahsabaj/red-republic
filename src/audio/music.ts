@@ -29,7 +29,7 @@ import { PLAYLIST } from './tracks';
 import type { ArpLayer, BassLayer, Envelope, LeadLayer, PadLayer, PercLayer, PercVoice, SubLayer, Track } from './tracks';
 import { blockIndexAtTime, buildSongPlan, mix, seedOf } from './arrange';
 import type { PlanBlock, SongPlan } from './arrange';
-import { mulberry32 } from '@/lib/rng';
+import { noiseBuffer } from './noise';
 import type { SeededRng } from '@/lib/rng';
 
 export interface EngineMood {
@@ -52,7 +52,6 @@ export class MusicEngine {
   private trackGain: GainNode | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private tailTimers = new Set<ReturnType<typeof setTimeout>>();
-  private noiseCache: AudioBuffer | null = null;
   private playing = false;
   private blockIndex = 0;
   private songStartTime = 0;      // ctx.currentTime of song bar 0 (shifts across pause)
@@ -415,7 +414,7 @@ export class MusicEngine {
 
   private noiseHit(dest: AudioNode, voice: PercVoice, t: number, level: number, offset: number) {
     const src = this.ctx.createBufferSource();
-    src.buffer = this.noiseBuffer();
+    src.buffer = noiseBuffer(this.ctx);
     src.loop = true;
     const filter = this.ctx.createBiquadFilter();
     filter.type = voice.filter;
@@ -431,13 +430,4 @@ export class MusicEngine {
     src.stop(t + voice.decay + 0.05);
   }
 
-  private noiseBuffer(): AudioBuffer {
-    if (this.noiseCache) return this.noiseCache;
-    const buf = this.ctx.createBuffer(1, this.ctx.sampleRate, this.ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    const rng = mulberry32(0x51ed); // fixed so the noise bed is deterministic too
-    for (let i = 0; i < data.length; i++) data[i] = rng() * 2 - 1;
-    this.noiseCache = buf;
-    return buf;
-  }
 }
