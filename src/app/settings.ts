@@ -12,6 +12,15 @@
 // ============================================================
 import { storage } from '@/platform/storage';
 
+/**
+ * Desktop window framing. `borderless` drops the title bar but stays a normal
+ * maximized window, so the taskbar remains on top and reachable; `fullscreen`
+ * covers the entire display. Web ignores this entirely — the browser owns its
+ * own chrome and the Options row is hidden there.
+ */
+export type WindowMode = 'windowed' | 'borderless' | 'fullscreen';
+export const WINDOW_MODES = ['windowed', 'borderless', 'fullscreen'] as const;
+
 export interface Settings {
   // gameplay & UI
   autosaveIntervalDays: 0 | 10 | 30 | 90; // 0 = off
@@ -24,6 +33,7 @@ export interface Settings {
   uiScale: number;            // 0.85..1.3 root font-size multiplier
   dprCap: 1 | 1.5 | 2;        // canvas devicePixelRatio ceiling
   showGrid: boolean;          // tile-grid overlay on terrain
+  windowMode: WindowMode;     // desktop window framing; ignored in the browser
   // audio
   musicVolume: number;        // 0..1
   sfxVolume: number;          // 0..1 — construction & world sounds
@@ -60,6 +70,7 @@ export function defaultSettings(): Settings {
     uiScale: 1,
     dprCap: 2,
     showGrid: false,
+    windowMode: 'fullscreen',
     musicVolume: 0.6,
     sfxVolume: 0.8,
     interfaceVolume: 0.65,
@@ -97,6 +108,7 @@ function sanitize(raw: unknown): Settings {
     uiScale: numIn(r.uiScale, 0.85, 1.3, d.uiScale),
     dprCap: oneOf(r.dprCap, [1, 1.5, 2] as const, d.dprCap),
     showGrid: bool(r.showGrid, d.showGrid),
+    windowMode: oneOf(r.windowMode, WINDOW_MODES, d.windowMode),
     musicVolume: numIn(r.musicVolume, 0, 1, d.musicVolume),
     sfxVolume: numIn(r.sfxVolume, 0, 1, d.sfxVolume),
     interfaceVolume: numIn(r.interfaceVolume, 0, 1, d.interfaceVolume),
@@ -143,8 +155,13 @@ export function updateSettings(patch: Partial<Settings>): void {
   listeners.forEach(fn => fn());
 }
 
+/**
+ * Reset every game preference — but NOT `windowMode`. That one is a display
+ * choice about the player's monitor, not a game preference, and relaying out
+ * their screen as a side effect of fixing an HUD scale would be a surprise.
+ */
 export function resetSettings(): void {
-  current = Object.freeze(defaultSettings());
+  current = Object.freeze({ ...defaultSettings(), windowMode: current.windowMode });
   persist();
   listeners.forEach(fn => fn());
 }
