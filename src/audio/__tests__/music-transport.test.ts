@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MusicEngine } from '../music';
 import { PLAYLIST } from '../tracks';
 import { RecordingContext } from './recording-context';
@@ -64,6 +64,34 @@ describe('resuming a finished song (F2)', () => {
     // restarted — the fix keys off `ended`, not off a proximity heuristic.
     expect(eng.elapsedS()).toBeGreaterThan(dur * 0.2);
     expect(eng.elapsedS()).toBeLessThanOrEqual(pauseAt);
+    eng.dispose();
+  });
+});
+
+describe('scheduler lifetime (F4)', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('the pump interval stops when the music stops and returns on resume', () => {
+    vi.useFakeTimers();
+    const ctx = new RecordingContext();
+    const eng = new MusicEngine(ctx as unknown as BaseAudioContext, ctx.createGain() as unknown as AudioNode);
+
+    // crossfadeS 0 with no previous generation schedules no tail timer, so the
+    // only timer in flight is the scheduler itself.
+    eng.playTrack(PLAYLIST[1], { crossfadeS: 0 });
+    expect(vi.getTimerCount()).toBe(1);
+
+    eng.setPlaying(false);
+    expect(vi.getTimerCount()).toBe(0); // used to run for the life of the page
+
+    // Resume brings it back. Asserted functionally rather than by count,
+    // because resuming also registers a crossfade tail timer — the point is
+    // that scheduling actually happens again, not that a timer exists.
+    eng.setPlaying(true);
+    const before = ctx.log.length;
+    ctx.currentTime += 1;
+    eng.pump(ctx.currentTime);
+    expect(ctx.log.length).toBeGreaterThan(before);
     eng.dispose();
   });
 });

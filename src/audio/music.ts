@@ -196,6 +196,11 @@ export class MusicEngine {
     this.elapsedAtPause = this.elapsedS();
     this.paused = true;
     this.playing = false;
+    // Stop scheduling. pump() early-returns while paused, so leaving the
+    // interval up was harmless per tick and unbounded in time: it was started
+    // by the first playTrack() and only dispose() cleared it, and dispose()
+    // has no production caller. engage() brings it back on resume.
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
     const g = this.trackGain;
     if (!g) return;
     const now = this.ctx.currentTime;
