@@ -160,4 +160,15 @@ describe('AudioSystem transport', () => {
     expect(() => { audio.unlock(); audio.nextTrack(); audio.setMusicPlaying(true); }).not.toThrow();
     expect(audio.musicProgress().elapsedS).toBe(0);
   });
+
+  it('dispose releases the settings subscription and the engine (G6)', () => {
+    const { audio } = systemOn(idAt(0));
+    expect(vi.getTimerCount()).toBeGreaterThan(0); // the scheduler is running
+    audio.dispose();
+    // A disposed system must not react to settings any more — before G6 the
+    // subscription was never released, so every instance a test built stayed
+    // live on the bus for the rest of the run.
+    expect(() => updateSettings({ musicVolume: 0.3 })).not.toThrow();
+    expect(audio.musicProgress().elapsedS).toBe(0);
+  });
 });

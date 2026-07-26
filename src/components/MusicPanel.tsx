@@ -39,6 +39,19 @@ export default function MusicPanel() {
     }, ms);
     return () => clearInterval(id);
   }, [m.playing, s.reducedMotion]);
+  // Snap the playhead when the track changes, rather than waiting for the next
+  // poll to notice — that showed the OLD track's position against the new
+  // track's duration for up to a second, and the paused case (poll drops to
+  // 1 Hz) is exactly when a player is most likely to be browsing the
+  // programme. Adjusted during render, not in an effect: this is derived
+  // state, and an effect here cascades a second render. Zero rather than a
+  // reading off the engine, because selecting a track always starts it at
+  // its top — and a render must not depend on an external mutable source.
+  const [shownTrackId, setShownTrackId] = useState(m.trackId);
+  if (shownTrackId !== m.trackId) {
+    setShownTrackId(m.trackId);
+    setElapsed(0);
+  }
   const fillPct = m.durationS > 0 ? Math.min(100, (elapsed / m.durationS) * 100) : 0;
 
   /** Release the thumb: commit the one seek this gesture earned. */

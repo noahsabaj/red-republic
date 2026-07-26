@@ -102,9 +102,25 @@ export class AudioSystem {
   private repeat: RepeatMode = 'all';
   private musicSnap: MusicState = initialMusicState();
   private musicListeners = new Set<() => void>();
+  /** Undo for everything unlock() subscribes to — see dispose(). */
+  private teardown: (() => void)[] = [];
 
   constructor(makeCtx: AudioContextFactory = browserContext) {
     this.makeCtx = makeCtx;
+  }
+
+  /**
+   * Release the engine, the timers and the subscriptions. The app singleton
+   * never calls this — it lives as long as the page — but the moment
+   * AudioSystem became constructible for tests, "subscribes on unlock, never
+   * unsubscribes" turned into a per-instance leak: each test's system stayed
+   * live on the settings bus, reacting to every later test's writes.
+   */
+  dispose() {
+    for (const undo of this.teardown) undo();
+    this.teardown = [];
+    this.music?.dispose();
+    this.music = null;
   }
 
   /**
@@ -130,9 +146,11 @@ export class AudioSystem {
       this.interfaceGain = this.ctx.createGain();
       this.interfaceGain.connect(this.masterGain);
       this.applyVolumes(true);
-      subscribeSettings(() => this.applyVolumes());
+      this.teardown.push(subscribeSettings(() => this.applyVolumes()));
       if (typeof document !== 'undefined') {
-        document.addEventListener('visibilitychange', () => this.onVisibility());
+        const onVis = () => this.onVisibility();
+        document.addEventListener('visibilitychange', onVis);
+        this.teardown.push(() => document.removeEventListener('visibilitychange', onVis));
       }
       this.startMusic();
     }
