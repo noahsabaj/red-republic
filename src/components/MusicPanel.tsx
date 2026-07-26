@@ -125,7 +125,7 @@ export default function MusicPanel() {
       </div>
 
       <p className="text-[0.625rem] leading-snug text-yellow-200/50">
-        The People's approved repertoire — six fixed works, synthesized live from a seeded score: the same performance, note for note, every broadcast.
+        The People's approved repertoire — six fixed works, synthesized live from a seeded score: the same performance note for note every broadcast, save for the colder voicing winter imposes.
       </p>
     </div>
   );

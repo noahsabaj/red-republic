@@ -7,10 +7,15 @@ import { RecordingContext } from './recording-context';
 import type { Ev } from './recording-context';
 
 /**
- * The tracks are now FIXED songs — the same seed produces the same note stream
+ * The tracks are FIXED songs — the same seed produces the same note stream
  * every play. These tests are the "deaf author's" proof of that: they capture
  * every scheduled note (freq/start/stop) through a recording fake AudioContext
  * and assert the stream is bit-identical across plays, seeks, and pauses.
+ *
+ * The recording context logs pitch and timing but not gain or filter cutoff,
+ * which makes the captured stream exactly the SCORE with the MIX excluded —
+ * so it is also the right instrument for asserting that a mix control (scene
+ * intensity) cannot reach a note-selection decision.
  */
 function engineFor(track: Track) {
   const ctx = new RecordingContext();
@@ -82,5 +87,25 @@ describe('music determinism', () => {
   it('pause/resume is deterministic', () => {
     const t = PLAYLIST[3]; // Tempo of the Five-Year Plan — arp + perc voicing rng
     expect(capturePause(t)).toEqual(capturePause(t));
+  });
+
+  // `intensity` is the menu/game mix scalar (0.35 vs 0.55). It belongs to
+  // levels and filter cutoffs; it must never gate a NOTE. It used to scale the
+  // arp's density and the lead's chance, so the same track played 1113 notes on
+  // the menu and 1341 in the field — while the panel told the player it was the
+  // same performance note for note.
+  it('scene intensity changes the mix, never the notes', () => {
+    const captureAt = (track: Track, intensity: number): Ev[] => {
+      const ctx = new RecordingContext();
+      const eng = new MusicEngine(ctx as unknown as BaseAudioContext, ctx.createGain() as unknown as AudioNode);
+      eng.setIntensity(intensity);
+      eng.playTrack(track, { crossfadeS: 0 });
+      pumpTo(ctx, eng, 0, eng.durationS() + 1);
+      eng.dispose();
+      return ctx.log;
+    };
+    for (const t of PLAYLIST) {
+      expect(captureAt(t, 0.35), `${t.id} menu vs field`).toEqual(captureAt(t, 0.55));
+    }
   });
 });

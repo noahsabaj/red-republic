@@ -11,6 +11,15 @@
 // independent per-block stream mix(seed, blockIndex), so playback is
 // bit-identical every play and seeking to any block needs no dry-run.
 //
+// What "bit-identical" is scoped to. The note stream is a function of
+// (track, mood) and NOTHING else — in particular `intensity` is a MIX
+// control (levels, filter cutoff) and must never reach a note-selection
+// decision, or the same song plays differently on the menu (0.35) than in
+// the field (0.55). Mood is the deliberate exception: winter drops the pad's
+// third and halves the lead's chance, because a cold nocturne being sparser
+// is an authored feature, not drift. So: same track + same weather => same
+// notes, wherever you are in the game.
+//
 // Layers: pad/sub/lead reproduce the old ambient voice; bass/arp/perc add a
 // rhythm section on the track's beat grid. Track switching crossfades via a
 // per-track gain node UNDER the caller's dest (musicGain).
@@ -337,7 +346,7 @@ export class MusicEngine {
     const level = l.level * this.intensity;
     const step = beat / l.subdivision;
     const steps = bars * beatsPerBar * l.subdivision;
-    const prob = l.density * Math.min(1, this.intensity * 1.8);
+    const prob = l.density; // authored per track — scene intensity must not thin the notes out
     const noteLen = step * l.gate;
     for (let s = 0; s < steps; s++) {
       if (vrng() >= prob) continue;
@@ -358,7 +367,9 @@ export class MusicEngine {
   }
 
   private scheduleLead(dest: AudioNode, l: LeadLayer, t0: number, dur: number, degree: string, cold: boolean, vrng: SeededRng) {
-    const chance = (cold ? l.chance * 0.5 : l.chance) * this.intensity * 2;
+    // Weather may still thin the melody (a cold nocturne is sparser by design);
+    // the menu/game scene may not — that is a mix concern, not a score one.
+    const chance = cold ? l.chance * 0.5 : l.chance;
     if (vrng() >= chance) return;
     const notes = phrase(degree, vrng, this.track.chords.tones, l.scale);
     const octave = l.octaves[Math.floor(vrng() * l.octaves.length)];
