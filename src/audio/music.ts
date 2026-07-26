@@ -171,11 +171,17 @@ export class MusicEngine {
   }
 
   /** Play/pause without tearing down the engine (clicks stay in-key). Resume
-   *  re-enters at the paused block so elapsed and audio stay in lockstep. */
+   *  re-enters at the paused block so elapsed and audio stay in lockstep —
+   *  except for a song that already FINISHED, which starts over. */
   setPlaying(on: boolean) {
     if (on === this.playing) return;
     if (on) {
-      this.repositionTo(blockIndexAtTime(this.plan, this.elapsedAtPause), 0.3);
+      // "Paused" and "finished" both leave an elapsed value behind, and at the
+      // end of a song that value is durationS — which resolves to the LAST
+      // block. Resuming there would play the closing few seconds, hit
+      // songEndTime, and stop again, repeatably. `ended` is the flag that
+      // tells the two states apart, so a finished song restarts from the top.
+      this.repositionTo(this.ended ? 0 : blockIndexAtTime(this.plan, this.elapsedAtPause), 0.3);
       return;
     }
     this.elapsedAtPause = this.elapsedS();
