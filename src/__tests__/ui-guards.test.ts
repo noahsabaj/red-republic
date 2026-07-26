@@ -1,50 +1,28 @@
 // ============================================================
 // Guards for silent UI-breakage classes:
-// 1. every icon NAME referenced by config/engine must exist in the registry
-//    (config/engine stay UI-free, so this is the type-safety substitute)
-// 2. no emoji in first-party sources — the game uses the icon system
-// 3. Tailwind color-opacity modifiers must be real opacity steps —
+// 1. no emoji in first-party sources — the game uses the icon system
+// 2. Tailwind color-opacity modifiers must be real opacity steps —
 //    an invalid step (e.g. bg-red-950/97) silently generates NO css
-// 4. full-viewport stacking layers must be modals or pointer-transparent —
+// 3. full-viewport stacking layers must be modals or pointer-transparent —
 //    a transparent inset-0 z-layer silently eats clicks for overlays below
-// 5. resource quantities in engine event strings must go through the format
+// 4. resource quantities in sim event strings must go through the format
 //    vocabulary — a raw `${amount - delivered}` beside a resource name was the
 //    float-tail bug (`42.1423… coal undelivered`) this whole effort started from
+//
+// A guard ON these guards lives in guard-hygiene.test.ts — it cannot live
+// here, because import.meta.glob always excludes its own importer.
+//
+// Icon-name coverage used to live here as a source scan. It is carried by the
+// TYPE system now — GameIconName on every icon field — after the scan was
+// caught having lost sight of four icons when v1.9.1 moved event emission into
+// systems/. A type cannot be moved away from.
 // ============================================================
 import { describe, expect, it } from 'vitest';
-import { BUILDINGS, RESOURCES } from '@/game/config';
-import { isGameIcon } from '@/ui/icons';
+import { BUILDINGS } from '@/game/config';
 
 const allSources = import.meta.glob<string>('../**/*.{ts,tsx,css}', { query: '?raw', import: 'default', eager: true });
 const firstParty = Object.entries(allSources).filter(([path]) =>
   !path.includes('/components/ui/') && !path.includes('/__tests__/') && !path.endsWith('use-mobile.ts'));
-
-describe('icon registry coverage', () => {
-  it('covers every building and resource icon in config', () => {
-    for (const def of Object.values(BUILDINGS)) {
-      expect(isGameIcon(def.icon), `building ${def.id} icon '${def.icon}'`).toBe(true);
-    }
-    for (const res of Object.values(RESOURCES)) {
-      expect(isGameIcon(res.icon), `resource ${res.id} icon '${res.icon}'`).toBe(true);
-    }
-  });
-
-  it("covers every icon name the sim's alerts and events use", () => {
-    // Scans the WHOLE simulation, not just engine.ts. This guard was written
-    // when engine.ts was the only place events came from; v1.9.1 moved most
-    // emission into systems/, and port/rain/star/summer quietly fell outside
-    // it. A guard that keeps passing while the code it watches moves away is
-    // worse than no guard, because it still reads as coverage.
-    const names = new Set<string>();
-    for (const [path, src] of Object.entries(allSources)) {
-      if (!path.startsWith('../game/') || path.includes('/__tests__/')) continue;
-      for (const m of src.matchAll(/icon: '([A-Za-z-]+)'/g)) names.add(m[1]);
-      for (const m of src.matchAll(/pushEvent\([^)]*, '(?:good|bad|info)', '([A-Za-z-]+)'\)/g)) names.add(m[1]);
-    }
-    expect(names.size).toBeGreaterThanOrEqual(20);
-    for (const n of names) expect(isGameIcon(n), `sim icon '${n}'`).toBe(true);
-  });
-});
 
 describe('allocationPriority covers everything that competes for it', () => {
   // This replaced JOB_PRIORITY, an ordered list of building ids in engine.ts.
@@ -143,22 +121,38 @@ describe('tailwind color-opacity steps', () => {
   });
 });
 
-describe('resource quantities in engine events use the format vocabulary', () => {
+describe('resource quantities in sim events use the format vocabulary', () => {
+  /** Every first-party simulation source — NOT just engine.ts. This guard was
+   *  written against engine.ts when that was the only place events came from.
+   *  v1.9.1 moved emission into systems/, taking the very line the guard exists
+   *  for with it: contracts.ts now holds the `c.amount - c.delivered` slot, and
+   *  the guard could not see it. Unlike the icon scan it did not even have a
+   *  floor, so finding nothing in the wrong file was indistinguishable from
+   *  passing. */
+  const simSources = firstParty.filter(([path]) => path.startsWith('../game/'));
+
   it('never interpolates a raw arithmetic quantity beside a resource name', () => {
     // The bug this whole effort started from: a contract-failure toast printed
     // `${c.amount - c.delivered}` raw, leaking a float tail. Any number shown
     // next to a resource name must route through the format.ts vocabulary
     // (fmtQty / fmtOwed / …). A bare field like `${c.amount}` (integer by
     // construction) is fine; raw arithmetic in the slot is not.
-    const src = allSources['../game/engine.ts'];
     const offenders: string[] = [];
-    for (const m of src.matchAll(/\$\{([^{}]+)\}\s+\$\{RESOURCES\[/g)) {
-      const expr = m[1].trim();
-      if (/[-+*/]/.test(expr) && !expr.startsWith('fmt')) {
-        const line = src.slice(0, m.index).split('\n').length;
-        offenders.push(`engine.ts:${line}  \${${expr}}  — wrap in a format.ts helper (fmtQty/fmtOwed/…)`);
+    let slots = 0;
+    for (const [path, src] of simSources) {
+      for (const m of src.matchAll(/\$\{([^{}]+)\}\s+\$\{RESOURCES\[/g)) {
+        slots++;
+        const expr = m[1].trim();
+        if (/[-+*/]/.test(expr) && !expr.startsWith('fmt')) {
+          const line = src.slice(0, m.index).split('\n').length;
+          offenders.push(`${path}:${line}  \${${expr}}  — wrap in a format.ts helper (fmtQty/fmtOwed/…)`);
+        }
       }
     }
+    // A floor tied to what the scan actually finds. Without it, the regex
+    // ceasing to match — because the code moved, or the interpolation shape
+    // changed — reads exactly like a clean pass.
+    expect(slots, 'the quantity-beside-resource pattern matched nothing; has the event shape changed?').toBeGreaterThanOrEqual(6);
     expect(offenders, offenders.join('\n')).toEqual([]);
   });
 });

@@ -1,9 +1,13 @@
 // ============================================================
 // The game's single icon source: Lucide vector data, rendered as
 // inline SVG by <GameIcon> (see GameIcon.tsx) and stroked onto the
-// canvas by drawIcon(). config/engine refer to icons by NAME (plain
-// strings) so the simulation stays UI-free; a test asserts every
-// referenced name exists here.
+// canvas by drawIcon(). config/engine refer to icons by NAME, typed as
+// GameIconName — imported with `import type`, which is ERASED at build,
+// so the simulation carries no runtime dependency on the UI and the
+// bundle graph is unchanged. This replaced a source-scanning guard that
+// could only check the files someone remembered to point it at: when
+// v1.9.1 moved event emission into systems/, four icons silently fell
+// outside it while the test kept passing. tsc cannot be moved away from.
 // ============================================================
 import type { IconNode } from 'lucide';
 import {

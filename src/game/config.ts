@@ -2,6 +2,7 @@
 // Red Republic — Planned Economy Builder
 // Game configuration: resources, buildings, prices, objectives
 // ============================================================
+import type { GameIconName } from '@/ui/icons';
 import type { CondDist, WeatherCondition } from './weather';
 
 export type ResourceId =
@@ -21,7 +22,7 @@ export const ALL_RESOURCES: ResourceId[] = [
 export interface ResourceDef {
   id: ResourceId;
   name: string;
-  icon: string;
+  icon: GameIconName;
   color: string;
   priceEast: number; // sell price in rubles
   priceWest: number; // sell price in dollars
@@ -80,7 +81,7 @@ export type DepositType = 'coal' | 'ironOre' | 'oil' | 'gravel';
 export interface BuildingDef {
   id: string;
   name: string;
-  icon: string;
+  icon: GameIconName;
   category: Category;
   size: [number, number]; // w x h in tiles
   // construction — the ONLY cost: nothing domestic costs money in a planned economy
@@ -459,7 +460,7 @@ export const SUBCATEGORIES: Record<Category, SubCategory[]> = {
 
 /** Ordered top-level categories for the bottom build bar: label, icon, and a
  *  Soviet-muted accent tint that groups each cluster visually over the red base. */
-export const CATEGORIES: { id: Category; name: string; icon: string; accent: string }[] = [
+export const CATEGORIES: { id: Category; name: string; icon: GameIconName; accent: string }[] = [
   { id: 'infra',    name: CATEGORY_NAMES.infra,    icon: 'cat-infra',    accent: '#8ca0b3' },
   { id: 'housing',  name: CATEGORY_NAMES.housing,  icon: 'cat-housing',  accent: '#e0a83e' },
   { id: 'industry', name: CATEGORY_NAMES.industry, icon: 'cat-industry', accent: '#d97a34' },
@@ -623,7 +624,7 @@ export const FARM_SEASON: Record<number, number> = {
 
 export interface WeatherFx {
   label: string;
-  icon: string;       // GameIcon name
+  icon: GameIconName;
   truckMult: number;  // road speed multiplier
   boatMult: number;   // barge speed multiplier; 0 also grounds new sailings
   buildMult: number;  // construction crew effectiveness
@@ -651,7 +652,7 @@ export interface ClimateDef {
   id: ClimateId;
   label: string;
   description: string; // new-game card blurb
-  icon: string;        // GameIcon name
+  icon: GameIconName;
   tempMean: number;    // annual mean, °C
   tempAmp: number;     // seasonal sinusoid amplitude
   peakDoy: number;     // warmest day-of-year (194 = mid-July)
@@ -738,7 +739,7 @@ export interface DifficultyDef {
   id: DifficultyId;
   label: string;
   blurb: string;
-  icon: string; // GameIcon name
+  icon: GameIconName;
   startRubles: number;    // Moscow's hard-currency grant — pure trade capital
   startDollars: number;
   depotStockMult: number; // scales the starting depot stock

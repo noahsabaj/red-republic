@@ -1,6 +1,7 @@
 // ============================================================
 // Red Republic — game engine & simulation
 // ============================================================
+import type { GameIconName } from '@/ui/icons';
 import {
   BUILDINGS, RESOURCES, ALL_RESOURCES, BALANCE, CONTRACTS, LOANS, WEATHER,
   INSTANT_BUILD, IMPORT_MARKUP,
@@ -2162,7 +2163,7 @@ export class GameEngine {
 
   // ---------------- events / subscription ----------------
 
-  private pushEvent(text: string, kind: GameEvent['kind'], icon?: string) {
+  private pushEvent(text: string, kind: GameEvent['kind'], icon?: GameIconName) {
     this.w.pushEvent(text, kind, icon);
   }
 
