@@ -106,12 +106,32 @@ export class MusicEngine {
    * each block's voicing rng is indexed, no replay of earlier blocks is needed.
    */
   playTrack(track: Track, opts?: { crossfadeS?: number; fromBlock?: number; startElapsedS?: number }) {
-    const xf = opts?.crossfadeS ?? 1.2;
+    this.track = track;
+    this.plan = buildSongPlan(track);
+    this.engage(opts?.fromBlock ?? 0, opts?.startElapsedS ?? 0, opts?.crossfadeS ?? 1.2);
+  }
+
+  /**
+   * Move the playhead WITHIN the current track: same song, same plan, so the
+   * plan rebuild playTrack() does is skipped. The gain-node swap stays —
+   * retiring the outgoing node is what silences the voices already scheduled
+   * ahead of the old playhead, and it does that without the engine having to
+   * hold a reference to every source it ever started in order to stop them.
+   */
+  private repositionTo(blockIndex: number, crossfadeS: number) {
+    const k = clamp(blockIndex, 0, this.plan.blocks.length - 1);
+    this.engage(k, this.plan.blocks[k].startBar * this.plan.secondsPerBar, crossfadeS);
+  }
+
+  /** Bring a fresh gain generation online and point the scheduler at
+   *  `blockIndex` — the shared body of playTrack/repositionTo, i.e. everything
+   *  except deciding which plan is in force. */
+  private engage(blockIndex: number, startElapsedS: number, xf: number) {
     const now = this.ctx.currentTime;
     const old = this.trackGain;
     if (old) {
-      // Fade the outgoing track to silence over `xf`, then drop the node. The
-      // fade is short so switching songs doesn't stack them — once the gain
+      // Fade the outgoing generation to silence over `xf`, then drop the node.
+      // The fade is short so switching songs doesn't stack them — once the gain
       // hits ~0 every already-scheduled voice on this node is silent, however
       // long its own envelope still had to run.
       old.gain.cancelScheduledValues(now);
@@ -128,13 +148,10 @@ export class MusicEngine {
     if (old) g.gain.linearRampToValueAtTime(1, now + xf);
     g.connect(this.dest);
     this.trackGain = g;
-    this.track = track;
-    this.plan = buildSongPlan(track);
-    this.blockIndex = clamp(opts?.fromBlock ?? 0, 0, this.plan.blocks.length - 1);
-    this.degree = this.plan.blocks[this.blockIndex]?.degree ?? track.chords.start;
+    this.blockIndex = clamp(blockIndex, 0, this.plan.blocks.length - 1);
+    this.degree = this.plan.blocks[this.blockIndex]?.degree ?? this.track.chords.start;
     this.snapFirst = this.blockIndex > 0; // entered mid-song (seek/resume) → snap the first chord in
-    const startElapsed = opts?.startElapsedS ?? 0;
-    this.songStartTime = now - startElapsed;
+    this.songStartTime = now - startElapsedS;
     this.songEndTime = this.songStartTime + this.plan.durationS;
     this.ended = false;
     this.paused = false;
@@ -150,7 +167,7 @@ export class MusicEngine {
     let k = blockIndexAtTime(plan, clamp(t, 0, plan.durationS));
     const next = plan.blocks[k + 1]; // round up to the next boundary if it's closer
     if (next && Math.abs(t - next.startBar * spb) < Math.abs(t - plan.blocks[k].startBar * spb)) k += 1;
-    this.playTrack(this.track, { crossfadeS: 0.06, fromBlock: k, startElapsedS: plan.blocks[k].startBar * spb });
+    this.repositionTo(k, 0.06);
   }
 
   /** Play/pause without tearing down the engine (clicks stay in-key). Resume
@@ -158,12 +175,7 @@ export class MusicEngine {
   setPlaying(on: boolean) {
     if (on === this.playing) return;
     if (on) {
-      const k = blockIndexAtTime(this.plan, this.elapsedAtPause);
-      this.playTrack(this.track, {
-        crossfadeS: 0.3,
-        fromBlock: k,
-        startElapsedS: this.plan.blocks[k].startBar * this.plan.secondsPerBar,
-      });
+      this.repositionTo(blockIndexAtTime(this.plan, this.elapsedAtPause), 0.3);
       return;
     }
     this.elapsedAtPause = this.elapsedS();
