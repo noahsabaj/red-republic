@@ -318,7 +318,13 @@ export class AudioSystem {
 
   private startCurrent(crossfadeS: number) {
     if (!this.music) return;
+    // Browsing the programme while the radio is paused must not switch it back
+    // on. playTrack() always begins playing (it is the "a song is now running"
+    // verb), so a paused transport re-pauses immediately — at the top of the
+    // newly selected track, which is where a resume should then start.
+    const wasPlaying = this.music.isPlaying();
     this.music.playTrack(this.currentTrack(), { crossfadeS });
+    if (!wasPlaying) this.music.setPlaying(false);
     this.notifyMusic(this.snapshot());
   }
 

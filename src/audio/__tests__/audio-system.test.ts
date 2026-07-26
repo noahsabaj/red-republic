@@ -105,6 +105,25 @@ describe('AudioSystem transport', () => {
     expect(audio.musicProgress().elapsedS).toBeLessThan(1);
   });
 
+  it('browsing the programme while paused leaves it paused (O7)', () => {
+    const { audio } = systemOn(idAt(0));
+    audio.setMusicPlaying(false);
+    expect(audio.musicState().playing).toBe(false);
+
+    audio.nextTrack();
+    expect(audio.musicState().trackId).toBe(idAt(1));
+    expect(audio.musicState().playing).toBe(false); // used to resume itself
+
+    audio.selectTrack(idAt(4));
+    expect(audio.musicState().playing).toBe(false);
+
+    // ...and resuming then starts the newly chosen track from its top.
+    audio.setMusicPlaying(true);
+    expect(audio.musicState().playing).toBe(true);
+    expect(audio.musicState().trackId).toBe(idAt(4));
+    expect(audio.musicProgress().elapsedS).toBeLessThan(1);
+  });
+
   it('toggling shuffle keeps the current track under the cursor', () => {
     const { audio } = systemOn(idAt(3));
     audio.setShuffle(true);
