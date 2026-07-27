@@ -29,6 +29,7 @@ pub mod mapgen;
 pub mod resource;
 pub mod rng;
 pub mod road;
+pub mod scenario;
 pub mod systems;
 pub mod terrain;
 pub mod time;

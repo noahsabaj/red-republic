@@ -429,9 +429,16 @@ fn serve(
 pub fn run_tick(world: &mut World) -> Vec<Mutation> {
     let mut all = Vec::new();
 
-    let mutations = labour(world);
-    apply(world, &mutations);
-    all.extend(mutations);
+    // Labour is a DAILY system, not a per-tick one. People do not change jobs
+    // every minute, and running it per tick made a simulated day cost 656 ms at
+    // only 4,000 citizens — measured, not guessed. Moving it to the day
+    // boundary is the difference between a model that scales to a republic and
+    // one that does not.
+    if world.clock.is_day_boundary() {
+        let mutations = labour(world);
+        apply(world, &mutations);
+        all.extend(mutations);
+    }
 
     for system in [power, production, logistics] {
         let mutations = system(world);
@@ -807,12 +814,37 @@ mod tests {
             "lit with no crew"
         );
 
+        // Labour runs at the day boundary — people start work tomorrow, not the
+        // minute their housing goes up — so a full day has to pass.
         staff_up(&mut w, at(1_180.0, 1_000.0), 30);
-        w.tick();
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
         assert!(
             w.buildings.get(factory).unwrap().powered,
             "a staffed, fuelled plant should carry a 4 MW load"
         );
+    }
+
+    /// The consequence of making labour daily, stated so it is a decision
+    /// rather than a surprise: housing built at noon does not staff anything
+    /// until the next morning.
+    #[test]
+    fn people_start_work_the_day_after_they_arrive() {
+        let mut w = bare();
+        let mill = place(&mut w, BuildingKind::Sawmill, at(1_000.0, 1_000.0));
+        w.tick(); // tick 0 is a day boundary; nobody lives here yet
+
+        staff_up(&mut w, at(1_100.0, 1_000.0), 10);
+        for _ in 0..10 {
+            w.tick();
+        }
+        assert_eq!(w.buildings.get(mill).unwrap().staff, 0, "hired mid-shift");
+
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        assert!(w.buildings.get(mill).unwrap().staff > 0, "never hired");
     }
 
     /// A plant with a crew but no fuel is the other half of that: generation

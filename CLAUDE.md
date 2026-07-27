@@ -35,6 +35,8 @@ The 1.x build (TypeScript + React + canvas 2D) is **frozen at v1.10.0** and live
 
 - **Citizens are individuals who live somewhere.** ECS entities with a home, a workplace, and a real journey. **Work has to be reachable**: roughly 2 km on foot, further only with transport. v1's labour model had no geography at all — a citizen in the far south staffed a mine in the far north for free — and fixing that is what lets a mining town exist, and later die when its deposit runs out. That scenario, depletion plus commute together, is the acceptance test for the whole labour model.
 
+- **Not every system runs every tick.** Labour is daily — people do not change jobs every minute — and running it per tick cost 656 ms per simulated day at only 4,000 citizens, against 1 ms once moved to the day boundary. That was found by `tests/baselines.rs`, not by reasoning, which is the argument for having it. When adding a system, the first question is what cadence it actually needs; the consequence is real and belongs in a test (people start work the day *after* they arrive).
+
 - **Measure, never estimate.** Performance claims get a recorded baseline before any optimisation: agent counts, pathing cost per simulated day, geology query cost. v1's habit of pinning real measurements in tests (`mapgen-save-performance`, `logistics-routing-performance`) is why its performance conversations were about facts.
 
 - **Balance lives in data, behaviour lives in systems.** A list of entity ids inside simulation logic is a smell: a list is a thing you must remember to edit, and whatever you forget lands silently in a fallback. Author the property next to the fields it relates to, and add a guard test so an unauthored case fails the build instead of defaulting quietly.
