@@ -61,7 +61,30 @@ The sim-side half is built (`founding.rs`): `Shelf::derive` gives six candidates
 
 **Terrain grid resolution is 10 m, and that was decided by measurement.** The sweep (`cell_size_sweep`) found a clean quadratic with no cliff anywhere, so performance does not choose a resolution — the correctness floor does. 10 m is the coarsest size at which the smallest building in the table still covers a cell in both axes; below it a house and a shop become the same rounded square, which is the grid artefact this build exists to remove. The price is 4.8 MB and 36 ms per 10 km map. Resolution is carried on the `Terrain`, not in a constant, so re-measuring stays a one-line experiment and a save always knows what it was written at.
 
+## The shell: Godot 4.6 driving a Rust simulation
+
+**Decided 2026-07-27**, at the decision point the plan named and on the evidence it asked for. The simulation stays exactly as it is; Godot renders it and takes input.
+
+- `crates/sim/` — unchanged. **Zero engine dependencies, still a rule.**
+- `crates/shell/` — a `cdylib` holding the `gdext` bindings. **The only Rust that knows Godot exists.**
+- `godot/` — the Godot project: scenes, Control layouts, themes, materials.
+
+**Why, in one line: the deciding axis was UI, and it was never close.** This game is roughly half UI — stockpile tables, per-building detail, delivery-priority panels, the founding shelf — and dense, themed, data-heavy UI is precisely what Godot's Control nodes are good at and precisely what every Rust option is weakest at.
+
+What the re-check found, against what was recorded before it:
+
+- **`bevy_feathers` is explicitly editor and inspector tooling, deliberately not for game UI.** The plan had recorded it as evidence Bevy's UI was maturing. It is not evidence of that, and removing it takes most of the case with it. Independent 2026 assessments still say Bevy is hard to recommend for UI-heavy games and that no crate has proven out a high-level API for declaring UI trees.
+- **The flagship evidence collapses on inspection.** Tiny Glade is cited as Bevy's shipped game; it uses `bevy_ecs` and **its own renderer**. So it is not evidence for Bevy's renderer or UI — it is evidence for the architecture this project already has. There is still no large simulation game on Bevy's full stack.
+- **Bevy's churn is acknowledged upstream**, including by the project lead. Quarterly breaking changes are a recurring tax; levied on the weakest part of the stack, in the half of the game that is that part, it compounds.
+- **egui is not the escape hatch.** Single-pass immediate-mode layout makes dynamically-sized and responsive layouts hard or impossible, and it is best suited to overlays rather than dense data UI.
+- **A hand-written wgpu shell founders on the same rock.** Total control over the simulation is what matters and this project already has it; control over a UI toolkit buys nothing this game needs. Writing a themed widget system from scratch is the most expensive and least differentiated work available.
+
+**Determinism is better under this split, not worse.** The engine never touches simulation state — Godot calls `tick()` and reads. Under Bevy there would be standing temptation to put simulation components in the engine's `World` and let a plugin write them, which is the CS2 failure mode in miniature.
+
+**The cost, stated plainly:** a marshalling boundary, and this UI reads a lot. It is survivable because the heavy transfers are one-off or event-driven (terrain mesh at load, buildings as a MultiMesh updated on change) while per-frame traffic is a camera and a few panels — and because the sim already exposes coarse engine-owned views (`Geology::survey`, `stall_reason`, `cover_days`, `Shelf`) built so the UI never recomputes anything. **Those views are the marshalling surface. Keep them coarse; that discipline is now load-bearing for performance as well as for correctness.**
+
+**What would reverse this:** the first vertical slice — the founding shelf and one world view, driven by the real sim — showing either a fat per-frame marshalling surface or Godot handling a million-cell heightmap badly. Build that before building anything else. The sim is untouched either way, which is what the zero-dependency rule bought.
+
 ## Open decisions, with their decision points
 
-- **Renderer and shell** — Bevy, custom wgpu, or another. **The stated decision point has now been reached**: the sim runs headless and its costs are recorded in `tests/baselines.rs`. Evidence so far: Workers & Resources runs on a proprietary engine 3Division wrote themselves (one programmer at launch, not Unity); Cities: Skylines II is the cautionary Unity-DOTS case in this exact genre; Bevy matured considerably in 2026 (0.18 editor preview, 0.19 BSN and `bevy_feathers`) but has shipped no large simulation game and takes breaking changes roughly quarterly. Re-check Bevy's UI maturity at decision time — it is the weakest part of that stack and this game is roughly half UI.
-- **Which ECS** — `bevy_ecs` standalone is the default because it keeps the Bevy door open at zero cost, but the simulation must not expose engine-specific types at its boundaries. Holding so far: `CitizenRecord` is the serialization boundary and no `Entity` crosses the crate's public surface.
+- **Which ECS** — `bevy_ecs` standalone stays. It is a storage library for the sim's citizens and is unaffected by the shell decision; the simulation must not expose engine-specific types at its boundaries. Holding so far: `CitizenRecord` is the serialization boundary and no `Entity` crosses the crate's public surface. Re-examine only if `bevy_ecs` alone starts costing more than a plain `Vec` would.
