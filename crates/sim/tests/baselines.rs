@@ -273,6 +273,46 @@ fn founding_shelf_cost() {
     }
 }
 
+/// A simulated day against a growing **building** count.
+///
+/// `simulated_day_cost` scales citizens and holds buildings at the fifteen a
+/// founding puts down, which is a village. A real republic is hundreds of
+/// buildings, and this is the axis nothing was watching — it was found by
+/// accident while measuring something else entirely, which is the argument for
+/// having a baseline per axis rather than per feature.
+#[test]
+fn building_scaling() {
+    for &extra in &[0usize, 200, 600] {
+        let mut world = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(10_000.0),
+            climate: ClimateId::Plains,
+        });
+        scenario::found(&mut world, 400);
+        let mut placed = 0;
+        for i in 0..extra {
+            let p = at(
+                300.0 + (i % 60) as f64 * 90.0,
+                300.0 + (i / 60) as f64 * 90.0,
+            );
+            if world.place_built(BuildingKind::House, p).is_ok() {
+                placed += 1;
+            }
+        }
+
+        let start = Instant::now();
+        for _ in 0..TICKS_PER_DAY {
+            world.tick();
+        }
+        let day = start.elapsed().as_secs_f64() * 1000.0;
+        println!(
+            "[BASELINE buildings] {} buildings ({placed} extra): {day:.0} ms per simulated day",
+            world.buildings.all().len()
+        );
+        assert!(day < 120_000.0, "a simulated day took {day:.0} ms");
+    }
+}
+
 /// Placement gets slower as the republic fills up, because every candidate is
 /// tested against every standing building.
 #[test]
