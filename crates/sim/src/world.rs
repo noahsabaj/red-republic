@@ -159,7 +159,7 @@ impl World {
     /// in source order, draw from `rng` in that order, and changing the order
     /// changes the world. For now it only moves the clock.
     pub fn tick(&mut self) {
-        self.clock.advance();
+        crate::systems::run_tick(self);
     }
 
     /// A generator derived from the founding seed, independent of how far the

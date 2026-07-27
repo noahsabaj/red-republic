@@ -202,6 +202,8 @@ pub struct Building {
     pub stock: Stock,
     /// People actually turning up — set by the labour system, never authored.
     pub staff: u32,
+    /// Whether the grid is feeding it — set by the power system, never authored.
+    pub powered: bool,
     /// The body this building works, once sited.
     pub tapped: Option<crate::geology::DepositId>,
 }
@@ -319,6 +321,7 @@ impl Buildings {
             centre,
             stock: Stock::EMPTY,
             staff: 0,
+            powered: false,
             tapped: None,
         };
         if self.list.iter().any(|b| b.overlaps(&candidate)) {
@@ -353,6 +356,7 @@ impl Buildings {
             centre,
             stock: Stock::EMPTY,
             staff: 0,
+            powered: false,
             tapped,
         });
         Ok(id)
