@@ -23,8 +23,12 @@
 #![forbid(unsafe_code)]
 
 pub mod rng;
+pub mod time;
+pub mod units;
 
 pub use rng::{Rng, RngState};
+pub use time::{Date, Season, SimClock};
+pub use units::{Metres, Point, Seconds, Speed};
 
 #[cfg(test)]
 mod tests {
