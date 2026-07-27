@@ -22,6 +22,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod rng;
+
+pub use rng::{Rng, RngState};
+
 #[cfg(test)]
 mod tests {
     /// Guards the float half of the determinism claim above.
