@@ -20,6 +20,7 @@
 //! instead of testing for it. What the round-trip test still earns is proof
 //! that reloading resumes the *same future*, which no derive can give you.
 
+use crate::building::Buildings;
 use crate::geology::Geology;
 use crate::mapgen;
 use crate::rng::{Rng, RngState};
@@ -103,6 +104,8 @@ pub struct World {
     pub terrain: Terrain,
     /// What is under the ground, and how much of it is left.
     pub geology: Geology,
+    /// What stands on it.
+    pub buildings: Buildings,
     /// The founding seed, kept so derived substreams can be recomputed from
     /// it at any time without disturbing `rng`.
     seed: u64,
@@ -132,6 +135,7 @@ impl World {
             rng: Rng::from_seed(spec.seed),
             terrain,
             geology,
+            buildings: Buildings::new(),
             seed: spec.seed,
         }
     }

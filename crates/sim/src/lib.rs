@@ -22,15 +22,19 @@
 
 #![forbid(unsafe_code)]
 
+pub mod building;
 pub mod geology;
 pub mod mapgen;
+pub mod resource;
 pub mod rng;
 pub mod terrain;
 pub mod time;
 pub mod units;
 pub mod world;
 
+pub use building::{Building, BuildingId, BuildingKind, Buildings, PlacementError};
 pub use geology::{Deposit, DepositId, Geology, Layer, Mineral, SurveyReading};
+pub use resource::{Resource, Stock};
 pub use rng::{Rng, RngState};
 pub use terrain::{Surface, Terrain};
 pub use time::{Date, Season, SimClock};
