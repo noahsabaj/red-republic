@@ -15,22 +15,90 @@
 //! [`Speed`] can only be constructed by dividing a [`Metres`] by a [`Seconds`],
 //! which means every speed in the game is a real quantity by construction.
 
+use serde::{Deserialize, Serialize};
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 
 /// A distance or a coordinate, in metres.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default, Serialize, Deserialize)]
 pub struct Metres(pub f64);
 
 /// A duration, in seconds.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default, Serialize, Deserialize)]
 pub struct Seconds(pub f64);
+
+/// A mass, in tonnes.
+///
+/// The economy is bulk and continuous — a fractional tonne of coal is a real
+/// quantity, not a rounding artefact. Wholeness is a property of the *edges*
+/// (what crosses the border, what a contract owes, what the player is shown),
+/// never of the simulation, and that was true in the archived build for the
+/// same reason: production, wear and consumption are all rates.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default, Serialize, Deserialize)]
+pub struct Tonnes(pub f64);
+
+impl Tonnes {
+    pub const ZERO: Self = Self(0.0);
+
+    pub fn is_positive(self) -> bool {
+        self.0 > 0.0
+    }
+
+    /// Clamped at zero: a negative remainder is a float artefact, never a
+    /// meaningful quantity of ore.
+    pub fn saturating_sub(self, rhs: Self) -> Self {
+        Self((self.0 - rhs.0).max(0.0))
+    }
+
+    pub fn min(self, other: Self) -> Self {
+        Self(self.0.min(other.0))
+    }
+}
+
+impl Add for Tonnes {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        Self(self.0 + rhs.0)
+    }
+}
+
+impl Sub for Tonnes {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self {
+        Self(self.0 - rhs.0)
+    }
+}
+
+impl Mul<f64> for Tonnes {
+    type Output = Self;
+    fn mul(self, rhs: f64) -> Self {
+        Self(self.0 * rhs)
+    }
+}
+
+impl AddAssign for Tonnes {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0;
+    }
+}
+
+impl SubAssign for Tonnes {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 -= rhs.0;
+    }
+}
+
+impl std::iter::Sum for Tonnes {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        Self(iter.map(|t| t.0).sum())
+    }
+}
 
 /// A speed, in metres per second.
 ///
 /// Deliberately has no public tuple constructor: the only ways to make one are
 /// [`Speed::from_kph`] and dividing a distance by a duration. A number cannot
 /// become a speed just by being called one.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default, Serialize, Deserialize)]
 pub struct Speed(f64);
 
 impl Metres {
@@ -214,7 +282,7 @@ impl Mul<Speed> for Seconds {
 /// Space is continuous. There is no cell index here and there must never be
 /// one: buildings sit at real positions with real footprints, and the terrain
 /// grid is a description of the ground, not the unit things are made of.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct Point {
     pub x: Metres,
     pub y: Metres,

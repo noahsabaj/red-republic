@@ -20,6 +20,7 @@
 //! instead of testing for it. What the round-trip test still earns is proof
 //! that reloading resumes the *same future*, which no derive can give you.
 
+use crate::geology::Geology;
 use crate::rng::{Rng, RngState};
 use crate::time::SimClock;
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,8 @@ pub struct World {
     /// The sequential simulation stream. Systems draw from this in a fixed
     /// order, which is why the order systems run in is load-bearing.
     pub rng: Rng,
+    /// What is under the ground, and how much of it is left.
+    pub geology: Geology,
     /// The founding seed, kept so derived substreams can be recomputed from
     /// it at any time without disturbing `rng`.
     seed: u64,
@@ -73,6 +76,7 @@ impl World {
         Self {
             clock: SimClock::new(),
             rng: Rng::from_seed(seed),
+            geology: Geology::new(),
             seed,
         }
     }
@@ -209,6 +213,73 @@ mod tests {
             fingerprint(&live),
             fingerprint(&reloaded),
             "the reloaded world diverged — some state did not survive the save"
+        );
+    }
+
+    /// Proof that the fingerprint grows with the world rather than checking a
+    /// frozen subset: geology was added to `World` after the tripwire existed,
+    /// and depleting a seam has to move the fingerprint without anyone having
+    /// updated the hash.
+    #[test]
+    fn state_added_to_the_world_enters_the_fingerprint_automatically() {
+        use crate::geology::{Deposit, DepositId, Layer, Mineral};
+        use crate::units::{Metres, Point, Tonnes};
+
+        let mut world = World::new(1961);
+        world.geology.insert(Deposit::new(
+            DepositId(1),
+            Mineral::Coal,
+            Point::ORIGIN,
+            Metres(300.0),
+            Metres(40.0),
+            vec![Layer::new(Metres(20.0), Tonnes(1_000.0))],
+        ));
+        let before = fingerprint(&world);
+
+        world
+            .geology
+            .get_mut(DepositId(1))
+            .expect("the seam is there")
+            .extract(Tonnes(100.0));
+
+        assert_ne!(
+            before,
+            fingerprint(&world),
+            "working a seam left the fingerprint unchanged — it is not covering geology"
+        );
+    }
+
+    /// Geology is simulation state, so it has to survive a save like anything
+    /// else. Extraction depletes it, and a reload that forgot would hand the
+    /// player back a full seam.
+    #[test]
+    fn a_worked_seam_survives_the_save() {
+        use crate::geology::{Deposit, DepositId, Layer, Mineral};
+        use crate::units::{Metres, Point, Tonnes};
+
+        let mut world = World::new(3);
+        world.geology.insert(Deposit::new(
+            DepositId(1),
+            Mineral::Coal,
+            Point::ORIGIN,
+            Metres(300.0),
+            Metres(40.0),
+            vec![Layer::new(Metres(20.0), Tonnes(1_000.0))],
+        ));
+        world
+            .geology
+            .get_mut(DepositId(1))
+            .expect("the seam is there")
+            .extract(Tonnes(250.0));
+
+        let wire = serde_json::to_string(&world.to_save()).expect("save must serialize");
+        let reloaded =
+            World::from_save(serde_json::from_str(&wire).expect("save must parse")).expect("loads");
+
+        assert_eq!(
+            reloaded.geology.remaining_of(Mineral::Coal),
+            Tonnes(750.0),
+            "the reload refilled a seam the republic had already worked"
         );
     }
 
