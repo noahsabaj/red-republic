@@ -29,9 +29,11 @@ use crate::building::{BuildingId, BuildingKind};
 use crate::citizen::assign_labour;
 use crate::geology::DepositId;
 use crate::resource::Resource;
+use crate::resource::Stock;
 use crate::time::TICK;
-use crate::units::{Seconds, Tonnes};
+use crate::units::{Metres, Seconds, Tonnes};
 use crate::world::World;
+use std::collections::BTreeMap;
 
 /// Everything a system is allowed to change.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -68,6 +70,8 @@ pub enum Mutation {
         resource: Resource,
         tonnes: Tonnes,
     },
+    /// How much of a household's needs the shops actually met, 0..=1.
+    Provision { building: BuildingId, fraction: f64 },
     /// Builder-days worked on a site, and the materials that went into them.
     /// One kind: work and materials are the same transaction, and a site that
     /// advanced without consuming would be building itself out of nothing.
@@ -121,6 +125,11 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                 if let Some(b) = world.buildings.get_mut(building) {
                     let room = b.storage_cap().saturating_sub(b.stock.get(resource));
                     b.stock.add(resource, tonnes.min(room));
+                }
+            }
+            Mutation::Provision { building, fraction } => {
+                if let Some(b) = world.buildings.get_mut(building) {
+                    b.provisioned = fraction.clamp(0.0, 1.0);
                 }
             }
             Mutation::Build { site, builder_days } => {
@@ -286,6 +295,115 @@ pub fn construction(world: &World) -> Vec<Mutation> {
     out
 }
 
+/// What one citizen eats in a day. Ported from the archived balance.
+pub const FOOD_PER_CITIZEN: f64 = 0.015;
+
+/// And wears out in a day.
+pub const CLOTHES_PER_CITIZEN: f64 = 0.004;
+
+/// How far people will go to a shop.
+///
+/// Shorter than the commute they will accept for work, deliberately: you walk
+/// further for a job than for a loaf.
+pub const SERVICE_RADIUS: Metres = Metres(800.0);
+
+/// Households: what people take off the shelves.
+///
+/// Citizens do not consume from thin air. They draw from a State Store within
+/// reach of where they live, which is what makes siting shops a real decision
+/// and what makes a distant housing estate a supply problem rather than a
+/// cosmetic one.
+///
+/// The allocation runs against a **scratch ledger** of what each store has
+/// left, decremented as it serves. Two estates sharing one shop must not both
+/// be told they were fed from the same tonne — that is the same reasoning the
+/// archived build used its staged mutations for, and getting it wrong would
+/// report a well-fed republic that is quietly starving.
+pub fn households(world: &World) -> Vec<Mutation> {
+    let day = tick_days();
+    let mut out = Vec::new();
+
+    // What each store has, as this pass sees it.
+    let mut shelves: BTreeMap<BuildingId, Stock> = world
+        .buildings
+        .all()
+        .iter()
+        .filter(|b| b.is_built() && !b.def().sells.is_empty())
+        .map(|b| (b.id, b.stock))
+        .collect();
+
+    let mut homes: Vec<_> = world
+        .buildings
+        .all()
+        .iter()
+        .filter(|b| b.is_built() && b.def().residents > 0)
+        .collect();
+    homes.sort_by_key(|b| b.id);
+
+    for home in homes {
+        let residents = world.population.residents_of(home.id).len();
+        if residents == 0 {
+            continue;
+        }
+
+        // Shops in reach, nearest first.
+        let mut reachable: Vec<(f64, BuildingId)> = shelves
+            .keys()
+            .copied()
+            .filter_map(|id| {
+                let shop = world.buildings.get(id)?;
+                let distance = shop.centre.distance_to(home.centre).0;
+                (distance <= SERVICE_RADIUS.0).then_some((distance, id))
+            })
+            .collect();
+        // Nearest shop first, ties on id so the answer is reproducible.
+        reachable.sort_by(|(da, ia), (db, ib)| da.total_cmp(db).then_with(|| ia.cmp(ib)));
+        let reachable: Vec<BuildingId> = reachable.into_iter().map(|(_, id)| id).collect();
+
+        let mut met = 0.0;
+        let mut wanted = 0.0;
+        for (resource, per_head) in [
+            (Resource::Food, FOOD_PER_CITIZEN),
+            (Resource::Clothes, CLOTHES_PER_CITIZEN),
+        ] {
+            let need = Tonnes(residents as f64 * per_head * day);
+            wanted += need.0;
+            let mut outstanding = need;
+
+            for shop in &reachable {
+                if !outstanding.is_positive() {
+                    break;
+                }
+                let Some(stock) = shelves.get_mut(shop) else {
+                    continue;
+                };
+                let taken = stock.take(resource, outstanding);
+                if taken.is_positive() {
+                    outstanding = outstanding.saturating_sub(taken);
+                    met += taken.0;
+                    out.push(Mutation::Consume {
+                        building: *shop,
+                        resource,
+                        tonnes: taken,
+                    });
+                }
+            }
+        }
+
+        let fraction = if wanted > 0.0 {
+            (met / wanted).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        out.push(Mutation::Provision {
+            building: home.id,
+            fraction,
+        });
+    }
+
+    out
+}
+
 /// Where people work.
 pub fn labour(world: &mut World) -> Vec<Mutation> {
     let staffing = assign_labour(&mut world.population, &world.buildings, &world.roads);
@@ -442,6 +560,37 @@ pub fn logistics(world: &World) -> Vec<Mutation> {
         serve(world, destination, resource, &mut budget, &mut out);
     }
 
+    // Shops, ranked emptiest first. This sits in the urgent pass because a
+    // shop running dry is a republic that stops eating, which outranks any
+    // factory stalling.
+    let mut shops: Vec<(f64, BuildingId, Resource)> = Vec::new();
+    for b in world.buildings.all() {
+        if !b.is_built() {
+            continue;
+        }
+        for &resource in b.def().sells {
+            let fill = if b.storage_cap().0 > 0.0 {
+                b.stock.get(resource).0 / b.storage_cap().0
+            } else {
+                1.0
+            };
+            if fill < 1.0 {
+                shops.push((fill, b.id, resource));
+            }
+        }
+    }
+    shops.sort_by(|(fa, ia, ra), (fb, ib, rb)| {
+        fa.total_cmp(fb)
+            .then_with(|| ia.cmp(ib))
+            .then_with(|| ra.cmp(rb))
+    });
+    for (_, destination, resource) in shops {
+        if !budget.is_positive() {
+            break;
+        }
+        serve(world, destination, resource, &mut budget, &mut out);
+    }
+
     // Pass one and a half: sites waiting on materials. A site with nothing
     // arriving is a crew standing idle, so this sits above comfortable
     // top-ups but below a running building about to stall.
@@ -515,6 +664,7 @@ fn serve(
         .filter(|b| b.id != destination)
         .filter(|b| b.stock.get(resource).is_positive())
         .filter(|b| !b.def().inputs.iter().any(|(r, _)| *r == resource))
+        .filter(|b| !b.def().sells.contains(&resource))
         .map(|b| {
             (
                 b.centre.distance_to(to.centre).0,
@@ -560,7 +710,7 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
         all.extend(mutations);
     }
 
-    for system in [power, construction, production, logistics] {
+    for system in [power, construction, production, households, logistics] {
         let mutations = system(world);
         apply(world, &mutations);
         all.extend(mutations);
@@ -1171,6 +1321,158 @@ mod tests {
         let b = w.buildings.get(site).unwrap();
         assert_eq!(b.work_done, BuildingKind::Woodcutter.def().labour);
         assert_eq!(b.progress(), 1.0);
+    }
+
+    /// Citizens eat from a shop they can walk to, and the shop's shelves go
+    /// down by what they took.
+    #[test]
+    fn people_eat_from_the_shop_and_the_shelves_empty() {
+        let mut w = bare();
+        let home = staff_up(&mut w, at(1_000.0, 1_000.0), 48);
+        let shop = place(&mut w, BuildingKind::Store, at(1_300.0, 1_000.0));
+        w.buildings
+            .get_mut(shop)
+            .unwrap()
+            .stock
+            .add(Resource::Food, Tonnes(20.0));
+        w.buildings
+            .get_mut(shop)
+            .unwrap()
+            .stock
+            .add(Resource::Clothes, Tonnes(20.0));
+
+        let before = w.buildings.get(shop).unwrap().stock.get(Resource::Food);
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        let after = w.buildings.get(shop).unwrap().stock.get(Resource::Food);
+
+        // 48 people at 0.015 t a day is 0.72 t.
+        assert!(
+            ((before - after).0 - 0.72).abs() < 0.05,
+            "ate {:.3} t, expected about 0.72",
+            (before - after).0
+        );
+        assert!((w.buildings.get(home).unwrap().provisioned - 1.0).abs() < 1e-6);
+    }
+
+    /// A shop out of walking range is no shop at all. This is what makes
+    /// siting retail a decision rather than decoration.
+    #[test]
+    fn an_estate_with_no_shop_in_reach_goes_unprovisioned() {
+        let mut w = bare();
+        let home = staff_up(&mut w, at(1_000.0, 1_000.0), 48);
+        let shop = place(&mut w, BuildingKind::Store, at(3_500.0, 1_000.0));
+        w.buildings
+            .get_mut(shop)
+            .unwrap()
+            .stock
+            .add(Resource::Food, Tonnes(20.0));
+
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        assert_eq!(
+            w.buildings.get(home).unwrap().provisioned,
+            0.0,
+            "fed from a shop 2.5 km away"
+        );
+        // And the shop still has its stock — nobody could reach it.
+        assert_eq!(
+            w.buildings.get(shop).unwrap().stock.get(Resource::Food),
+            Tonnes(20.0)
+        );
+    }
+
+    /// An empty shop feeds nobody, and the estate reports it rather than
+    /// quietly consuming from nothing.
+    #[test]
+    fn an_empty_shop_leaves_the_estate_hungry() {
+        let mut w = bare();
+        let home = staff_up(&mut w, at(1_000.0, 1_000.0), 48);
+        place(&mut w, BuildingKind::Store, at(1_300.0, 1_000.0));
+
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        assert_eq!(w.buildings.get(home).unwrap().provisioned, 0.0);
+    }
+
+    /// Two estates sharing one shop must not both be told they were fed from
+    /// the same tonne. Without a scratch ledger the second estate reads a full
+    /// belly from stock that had already gone.
+    #[test]
+    fn two_estates_cannot_eat_the_same_food() {
+        let mut w = bare();
+        let a = staff_up(&mut w, at(1_000.0, 1_000.0), 48);
+        let b = staff_up(&mut w, at(1_000.0, 1_200.0), 48);
+        let shop = place(&mut w, BuildingKind::Store, at(1_100.0, 1_100.0));
+        // Households run per tick, so scarcity has to be measured per tick:
+        // 48 people want 48 * 0.015 / 1440 t of food in one minute. Stock
+        // exactly one estate's worth, so the second must go without.
+        let one_estate_one_tick = 48.0 * FOOD_PER_CITIZEN / f64::from(TICKS_PER_DAY as u32);
+        w.buildings
+            .get_mut(shop)
+            .unwrap()
+            .stock
+            .add(Resource::Food, Tonnes(one_estate_one_tick));
+
+        let mutations = households(&w);
+        apply(&mut w, &mutations);
+
+        let fed = w.buildings.get(a).unwrap().provisioned;
+        let hungry = w.buildings.get(b).unwrap().provisioned;
+        assert!(
+            fed > hungry,
+            "both estates reported {fed} and {hungry} from one shop's stock"
+        );
+        assert_eq!(hungry, 0.0, "the second estate ate food that was gone");
+        assert!(
+            w.buildings.get(shop).unwrap().stock.get(Resource::Food).0 >= -1e-9,
+            "the shop went negative"
+        );
+    }
+
+    /// Freight puts food on the shelves, and it outranks a factory's inputs —
+    /// a republic that stops eating is worse than one whose sawmill idles.
+    #[test]
+    fn freight_stocks_the_shops_before_the_factories() {
+        let mut w = bare();
+        let depot = place(&mut w, BuildingKind::Depot, at(1_000.0, 1_000.0));
+        w.buildings
+            .get_mut(depot)
+            .unwrap()
+            .stock
+            .add(Resource::Food, Tonnes(100.0));
+        let shop = place(&mut w, BuildingKind::Store, at(1_200.0, 1_000.0));
+
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        assert!(
+            w.buildings
+                .get(shop)
+                .unwrap()
+                .stock
+                .get(Resource::Food)
+                .is_positive(),
+            "the shop was never stocked"
+        );
+    }
+
+    /// Only what a building is authored to sell reaches its shelves — the
+    /// property lives on the def, not in a list of kinds inside this module.
+    #[test]
+    fn only_authored_retail_sells_anything() {
+        assert_eq!(
+            BuildingKind::Store.def().sells,
+            &[Resource::Food, Resource::Clothes]
+        );
+        for def in crate::building::BUILDINGS {
+            if def.kind != BuildingKind::Store {
+                assert!(def.sells.is_empty(), "{} sells something", def.name);
+            }
+        }
     }
 
     #[test]
