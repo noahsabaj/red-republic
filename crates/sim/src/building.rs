@@ -350,6 +350,9 @@ pub enum PlacementError {
     Occupied,
     /// An extractor with no body of its mineral beneath.
     NothingToTap(Mineral),
+    /// A customs house away from the border. Trade is physical: a crossing has
+    /// to be at the crossing.
+    NotOnTheBorder,
 }
 
 /// Every building in the republic.

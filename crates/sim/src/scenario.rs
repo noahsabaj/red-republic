@@ -11,8 +11,10 @@
 use crate::building::{BuildingId, BuildingKind};
 use crate::citizen::MAX_WALK;
 use crate::geology::Mineral;
+use crate::resource::Resource;
 use crate::terrain::CELL_SIZE;
-use crate::units::{Metres, Point};
+use crate::trade::{BorderEdge, CUSTOMS_RANGE};
+use crate::units::{Metres, Point, Tonnes};
 use crate::world::World;
 
 /// What the founding managed to put down.
@@ -23,6 +25,14 @@ pub struct StartingBase {
     pub plant: Option<BuildingId>,
     pub woodcutter: Option<BuildingId>,
     pub sawmill: Option<BuildingId>,
+    pub store: Option<BuildingId>,
+    pub construction_office: Option<BuildingId>,
+    pub depot: Option<BuildingId>,
+    pub farm: Option<BuildingId>,
+    pub food_factory: Option<BuildingId>,
+    pub textile_mill: Option<BuildingId>,
+    /// `None` when the border could not take a crossing on this seed.
+    pub customs: Option<BuildingId>,
     /// Where the town centre ended up.
     pub centre: Point,
 }
@@ -60,6 +70,49 @@ pub fn find_site(world: &World, kind: BuildingKind, near: Point, within: Metres)
     None
 }
 
+/// Put a customs house on the border, walking along it for somewhere it will
+/// stand.
+///
+/// Returns `None` when the whole border is water or otherwise unbuildable. A
+/// republic that cannot trade is a legitimate hand to be dealt, and hiding it
+/// would make the founding screen's candidate cards a lie.
+fn found_crossing(world: &mut World, near: Point) -> Option<BuildingId> {
+    let extent = world.terrain.extent();
+    // A little inside the border, so the whole footprint is on home soil.
+    let inset = Metres(CUSTOMS_RANGE.0 / 2.0);
+    // Read the border once: the closure below cannot hold a borrow of `world`
+    // while the loop needs it mutably to place.
+    let border = world.border;
+    let along = move |t: f64| match border {
+        BorderEdge::North => Point::new(Metres(t), inset),
+        BorderEdge::South => Point::new(Metres(t), extent - inset),
+        BorderEdge::West => Point::new(inset, Metres(t)),
+        BorderEdge::East => Point::new(extent - inset, Metres(t)),
+    };
+    let anchor = match border {
+        BorderEdge::North | BorderEdge::South => near.x.0,
+        BorderEdge::West | BorderEdge::East => near.y.0,
+    };
+
+    // Search outward from the point on the border nearest the town, so the
+    // crossing lands as close to home as the ground allows.
+    let step = 100.0;
+    let steps = (extent.0 / step) as i64;
+    for i in 0..=steps {
+        for direction in [1.0, -1.0] {
+            let t = anchor + direction * f64::from(i as i32) * step;
+            if t < 0.0 || t > extent.0 {
+                continue;
+            }
+            let at = along(t);
+            if let Ok(id) = world.place_built(BuildingKind::Customs, at) {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
 /// Found a town: housing, a mine on the nearest coal, a plant to feed it, and
 /// the beginnings of a timber chain.
 ///
@@ -88,6 +141,13 @@ pub fn found(world: &mut World, citizens: usize) -> StartingBase {
         plant: None,
         woodcutter: None,
         sawmill: None,
+        store: None,
+        construction_office: None,
+        depot: None,
+        farm: None,
+        food_factory: None,
+        textile_mill: None,
+        customs: None,
         centre,
     };
 
@@ -131,14 +191,72 @@ pub fn found(world: &mut World, citizens: usize) -> StartingBase {
         Point::new(centre.x - Metres(400.0), centre.y),
         Metres(MAX_WALK.0 / 2.0),
     );
+    // A shop the estates can walk to, and the office that builds everything
+    // ordered after this.
+    base.store = put(
+        world,
+        BuildingKind::Store,
+        Point::new(centre.x + Metres(250.0), centre.y + Metres(150.0)),
+        Metres(400.0),
+    );
+    base.construction_office = put(
+        world,
+        BuildingKind::ConstructionOffice,
+        Point::new(centre.x, centre.y - Metres(300.0)),
+        Metres(600.0),
+    );
+    // A depot to hold the grant, so freight has somewhere to draw from.
+    base.depot = put(
+        world,
+        BuildingKind::Depot,
+        Point::new(centre.x + Metres(150.0), centre.y - Metres(200.0)),
+        Metres(600.0),
+    );
+    // The food chain. Without it the opening grant is eaten in two months and
+    // the republic starves for ever after — which is exactly what the
+    // trajectory runner showed before this was here, and the reason it exists.
+    base.farm = put(
+        world,
+        BuildingKind::Farm,
+        Point::new(centre.x, centre.y + Metres(900.0)),
+        Metres(MAX_WALK.0 / 2.0),
+    );
+    base.food_factory = put(
+        world,
+        BuildingKind::FoodFactory,
+        Point::new(centre.x + Metres(400.0), centre.y + Metres(400.0)),
+        Metres(MAX_WALK.0 / 2.0),
+    );
+    // And clothes. Without it the republic sits at 79% provisioned for ever —
+    // fed but never clothed — which the runner showed plainly enough that it
+    // is worth naming here.
+    base.textile_mill = put(
+        world,
+        BuildingKind::TextileMill,
+        Point::new(centre.x - Metres(200.0), centre.y + Metres(400.0)),
+        Metres(MAX_WALK.0 / 2.0),
+    );
 
-    // Moscow's opening grant: enough coal to light the plant before the mine
-    // produces anything.
+    // A crossing on whatever edge is foreign. Sited by walking the border, so
+    // a seed whose border is under water simply has no crossing — which the
+    // caller can see rather than have hidden.
+    base.customs = found_crossing(world, centre);
+
+    // Moscow's opening grant. Coal to light the plant before the mine
+    // produces, and food and clothes so the first winter is not immediate
+    // starvation. Everything domestic — no currency, per the border rule.
     if let Some(plant) = base.plant
         && let Some(b) = world.buildings.get_mut(plant)
     {
-        b.stock
-            .add(crate::resource::Resource::Coal, crate::units::Tonnes(60.0));
+        b.stock.add(Resource::Coal, Tonnes(60.0));
+    }
+    if let Some(depot) = base.depot
+        && let Some(b) = world.buildings.get_mut(depot)
+    {
+        b.stock.add(Resource::Food, Tonnes(120.0));
+        b.stock.add(Resource::Clothes, Tonnes(40.0));
+        b.stock.add(Resource::Planks, Tonnes(80.0));
+        b.stock.add(Resource::Bricks, Tonnes(80.0));
     }
 
     // Settlers, spread evenly over what housing exists.

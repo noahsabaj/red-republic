@@ -28,6 +28,7 @@ use crate::rng::{Rng, RngState};
 use crate::road::RoadNetwork;
 use crate::terrain::{self, Terrain};
 use crate::time::SimClock;
+use crate::trade::{BorderEdge, TradePolicy, Treasury};
 use crate::units::Metres;
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +39,9 @@ pub const SAVE_VERSION: u32 = 1;
 
 /// Substream identifier for terrain generation.
 pub const TERRAIN_STREAM: u64 = 2;
+
+/// Substream identifier for the border edge.
+pub const BORDER_STREAM: u64 = 3;
 
 /// Mix a seed with a stream identifier.
 ///
@@ -112,6 +116,14 @@ pub struct World {
     pub roads: RoadNetwork,
     /// The people.
     pub population: Population,
+    /// Which edge of the map is foreign soil. A customs house must stand near
+    /// it, and nothing else about the republic may depend on where it is.
+    pub border: BorderEdge,
+    /// Hard currency. Earned at the border, spent at the border, and never on
+    /// anything domestic.
+    pub treasury: Treasury,
+    /// Standing instructions to the customs house.
+    pub trade_policy: TradePolicy,
     /// The founding seed, kept so derived substreams can be recomputed from
     /// it at any time without disturbing `rng`.
     seed: u64,
@@ -144,12 +156,55 @@ impl World {
             buildings: Buildings::new(),
             roads: RoadNetwork::new(),
             population: Population::new(),
+            // One edge per seed, drawn from its own substream so the choice
+            // does not shift when terrain or geology generation changes.
+            border: BorderEdge::ALL
+                [(Rng::from_seed(derive(spec.seed, BORDER_STREAM)).next_bounded(4)) as usize],
+            treasury: Treasury::default(),
+            trade_policy: TradePolicy::new(),
             seed: spec.seed,
         }
     }
 
     pub fn seed(&self) -> u64 {
         self.seed
+    }
+
+    /// How far a point is from foreign soil.
+    pub fn distance_to_border(&self, at: crate::units::Point) -> Metres {
+        self.border.distance_from(at, self.terrain.extent())
+    }
+
+    /// Put a building up, applying every rule including the ones that need to
+    /// know where the border is.
+    ///
+    /// [`crate::building::Buildings::place`] cannot check the border itself —
+    /// it has no idea where the border is, and giving it one would mean handing
+    /// the whole world to every placement. This is the layer that knows.
+    pub fn place(
+        &mut self,
+        kind: crate::building::BuildingKind,
+        at: crate::units::Point,
+    ) -> Result<crate::building::BuildingId, crate::building::PlacementError> {
+        if kind == crate::building::BuildingKind::Customs
+            && self.distance_to_border(at).0 > crate::trade::CUSTOMS_RANGE.0
+        {
+            return Err(crate::building::PlacementError::NotOnTheBorder);
+        }
+        self.buildings.place(kind, at, &self.terrain, &self.geology)
+    }
+
+    /// The same, already finished — the founding grant.
+    pub fn place_built(
+        &mut self,
+        kind: crate::building::BuildingKind,
+        at: crate::units::Point,
+    ) -> Result<crate::building::BuildingId, crate::building::PlacementError> {
+        let id = self.place(kind, at)?;
+        if let Some(b) = self.buildings.get_mut(id) {
+            b.work_done = b.def().labour;
+        }
+        Ok(id)
     }
 
     /// Advance one fixed step.

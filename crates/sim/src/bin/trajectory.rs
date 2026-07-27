@@ -41,6 +41,19 @@ fn main() {
         if base.plant.is_some() { "yes" } else { "NO" },
     );
     println!(
+        "shop {} · office {} · crossing {}",
+        if base.store.is_some() { "yes" } else { "NO" },
+        if base.construction_office.is_some() {
+            "yes"
+        } else {
+            "NO"
+        },
+        if base.customs.is_some() { "yes" } else { "NO" },
+    );
+    // Sell surplus coal east; that is how a republic earns anything.
+    world.trade_policy = red_republic_sim::trade::TradePolicy::new()
+        .sell(Resource::Coal, red_republic_sim::trade::Market::East);
+    println!(
         "coal in the ground at founding: {:.0} t",
         world
             .geology
@@ -49,8 +62,8 @@ fn main() {
     );
     println!();
     println!(
-        "{:>10}  {:>4}  {:>5}  {:>9}  {:>9}  {:>9}  {:>7}",
-        "date", "pop", "empl", "coal held", "planks", "coal left", "dark"
+        "{:>10} {:>4} {:>5} {:>5} {:>8} {:>8} {:>10} {:>9} {:>4}",
+        "date", "pop", "empl", "fed%", "coal", "food", "coal left", "roubles", "dark"
     );
 
     let months = years * 12;
@@ -74,19 +87,36 @@ fn main() {
             .filter(|b| b.def().power_draw > 0.0 && !b.powered)
             .count();
 
+        // Average provisioning across the estates people actually live in.
+        let estates: Vec<f64> = world
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().residents > 0)
+            .filter(|b| !world.population.residents_of(b.id).is_empty())
+            .map(|b| b.provisioned)
+            .collect();
+        let fed = if estates.is_empty() {
+            0.0
+        } else {
+            estates.iter().sum::<f64>() / estates.len() as f64
+        };
+
         println!(
-            "{:>4}-{:02}-{:02}  {:>4}  {:>5}  {:>9.0}  {:>9.0}  {:>9.0}  {:>7}",
+            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>8.0} {:>8.1} {:>10.0} {:>9.0} {:>4}",
             date.year,
             date.month,
             date.day,
             world.population.count(),
             world.population.employed(),
+            fed * 100.0,
             held(Resource::Coal).0,
-            held(Resource::Planks).0,
+            held(Resource::Food).0,
             world
                 .geology
                 .remaining_of(red_republic_sim::geology::Mineral::Coal)
                 .0,
+            world.treasury.rubles,
             dark,
         );
     }

@@ -31,6 +31,7 @@ use crate::geology::DepositId;
 use crate::resource::Resource;
 use crate::resource::Stock;
 use crate::time::TICK;
+use crate::trade::{CUSTOMS_RANGE, CUSTOMS_THROUGHPUT_PER_DAY, Market, TradeAction};
 use crate::units::{Metres, Seconds, Tonnes};
 use crate::world::World;
 use std::collections::BTreeMap;
@@ -72,6 +73,24 @@ pub enum Mutation {
     },
     /// How much of a household's needs the shops actually met, 0..=1.
     Provision { building: BuildingId, fraction: f64 },
+    /// Goods leaving the republic and the currency that came back. One kind:
+    /// the stock and the payment are the same transaction, and a sale where
+    /// only one landed would either give goods away or mint money.
+    Export {
+        customs: BuildingId,
+        resource: Resource,
+        tonnes: Tonnes,
+        market: Market,
+        payment: f64,
+    },
+    /// Goods arriving and the currency that paid for them.
+    Import {
+        customs: BuildingId,
+        resource: Resource,
+        tonnes: Tonnes,
+        market: Market,
+        cost: f64,
+    },
     /// Builder-days worked on a site, and the materials that went into them.
     /// One kind: work and materials are the same transaction, and a site that
     /// advanced without consuming would be building itself out of nothing.
@@ -130,6 +149,44 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
             Mutation::Provision { building, fraction } => {
                 if let Some(b) = world.buildings.get_mut(building) {
                     b.provisioned = fraction.clamp(0.0, 1.0);
+                }
+            }
+            Mutation::Export {
+                customs,
+                resource,
+                tonnes,
+                market,
+                payment,
+            } => {
+                let sold = world
+                    .buildings
+                    .get_mut(customs)
+                    .map(|b| b.stock.take(resource, tonnes))
+                    .unwrap_or(Tonnes::ZERO);
+                // Pay for what actually crossed, not for what was hoped for.
+                if tonnes.is_positive() {
+                    world.treasury.credit(market, payment * (sold.0 / tonnes.0));
+                }
+            }
+            Mutation::Import {
+                customs,
+                resource,
+                tonnes,
+                market,
+                cost,
+            } => {
+                let spent = world.treasury.debit(market, cost);
+                // Deliver in proportion to what was actually paid.
+                let landed = if cost > 0.0 {
+                    Tonnes(tonnes.0 * (spent / cost))
+                } else {
+                    tonnes
+                };
+                if let Some(b) = world.buildings.get_mut(customs) {
+                    let room = b
+                        .intake_capacity(resource)
+                        .saturating_sub(b.stock.get(resource));
+                    b.stock.add(resource, landed.min(room));
                 }
             }
             Mutation::Build { site, builder_days } => {
@@ -404,6 +461,91 @@ pub fn households(world: &World) -> Vec<Mutation> {
     out
 }
 
+/// What crosses the border.
+///
+/// Every customs house near the border clears up to its staffed throughput a
+/// day, working the player's [`crate::trade::TradePolicy`] **in the order they
+/// wrote it**. When throughput or money runs short the first rule is served
+/// first, because which trade matters most is the player's judgement and not
+/// the simulation's.
+///
+/// Exports are whatever freight has already staged at the customs house —
+/// trade is physical, and a tonne that never got trucked to the border does not
+/// get sold. Imports land in the customs house and have to be trucked onward
+/// the same way.
+pub fn trade(world: &World) -> Vec<Mutation> {
+    let day = tick_days();
+    let extent = world.terrain.extent();
+    let mut out = Vec::new();
+    let mut purse = world.treasury;
+
+    let mut houses: Vec<_> = world
+        .buildings
+        .all()
+        .iter()
+        .filter(|b| b.is_built() && b.kind == BuildingKind::Customs)
+        .filter(|b| world.border.distance_from(b.centre, extent).0 <= CUSTOMS_RANGE.0)
+        .collect();
+    houses.sort_by_key(|b| b.id);
+
+    for house in houses {
+        let mut clearance = Tonnes(CUSTOMS_THROUGHPUT_PER_DAY * house.staffing() * day);
+        if !clearance.is_positive() {
+            continue;
+        }
+
+        for rule in &world.trade_policy.rules {
+            if !clearance.is_positive() {
+                break;
+            }
+            match rule.action {
+                TradeAction::Sell => {
+                    let held = house.stock.get(rule.resource);
+                    let sold = held.min(clearance);
+                    if !sold.is_positive() {
+                        continue;
+                    }
+                    clearance = clearance.saturating_sub(sold);
+                    purse.credit(rule.market, sold.0 * rule.market.sell_price(rule.resource));
+                    out.push(Mutation::Export {
+                        customs: house.id,
+                        resource: rule.resource,
+                        tonnes: sold,
+                        market: rule.market,
+                        payment: sold.0 * rule.market.sell_price(rule.resource),
+                    });
+                }
+                TradeAction::Buy { up_to } => {
+                    let shortfall = up_to.saturating_sub(house.stock.get(rule.resource));
+                    let wanted = shortfall.min(clearance);
+                    if !wanted.is_positive() {
+                        continue;
+                    }
+                    let unit = rule.market.buy_price(rule.resource);
+                    let affordable = if unit > 0.0 {
+                        Tonnes((purse.of(rule.market) / unit).min(wanted.0))
+                    } else {
+                        Tonnes::ZERO
+                    };
+                    if !affordable.is_positive() {
+                        continue;
+                    }
+                    clearance = clearance.saturating_sub(affordable);
+                    let cost = purse.debit(rule.market, affordable.0 * unit);
+                    out.push(Mutation::Import {
+                        customs: house.id,
+                        resource: rule.resource,
+                        tonnes: affordable,
+                        market: rule.market,
+                        cost,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Where people work.
 pub fn labour(world: &mut World) -> Vec<Mutation> {
     let staffing = assign_labour(&mut world.population, &world.buildings, &world.roads);
@@ -613,6 +755,37 @@ pub fn logistics(world: &World) -> Vec<Mutation> {
         serve(world, destination, resource, &mut budget, &mut out);
     }
 
+    // Export staging: getting goods to the border prevents no downtime at all,
+    // so it runs on whatever the urgent passes left. That is the archived
+    // build's rule — housekeeping never preempts a real need.
+    let sells: Vec<Resource> = world
+        .trade_policy
+        .rules
+        .iter()
+        .filter(|r| matches!(r.action, TradeAction::Sell))
+        .map(|r| r.resource)
+        .collect();
+    if !sells.is_empty() {
+        let extent = world.terrain.extent();
+        let mut houses: Vec<BuildingId> = world
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.kind == BuildingKind::Customs)
+            .filter(|b| world.border.distance_from(b.centre, extent).0 <= CUSTOMS_RANGE.0)
+            .map(|b| b.id)
+            .collect();
+        houses.sort();
+        for house in houses {
+            for &resource in &sells {
+                if !budget.is_positive() {
+                    break;
+                }
+                serve(world, house, resource, &mut budget, &mut out);
+            }
+        }
+    }
+
     // Pass two: comfortable top-ups, on what the first pass left.
     let mut comfortable: Vec<(BuildingId, Resource)> = Vec::new();
     for b in world.buildings.all() {
@@ -710,7 +883,14 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
         all.extend(mutations);
     }
 
-    for system in [power, construction, production, households, logistics] {
+    for system in [
+        power,
+        construction,
+        production,
+        households,
+        trade,
+        logistics,
+    ] {
         let mutations = system(world);
         apply(world, &mutations);
         all.extend(mutations);
@@ -1473,6 +1653,197 @@ mod tests {
                 assert!(def.sells.is_empty(), "{} sells something", def.name);
             }
         }
+    }
+
+    /// A customs house on the border, stocked with coal, sells it and the
+    /// treasury fills. This is the only way money enters the republic.
+    #[test]
+    fn exports_earn_currency_at_the_border() {
+        let mut w = bare();
+        // bare() uses a 4 km map; put the house on whichever edge is foreign.
+        let extent = w.terrain.extent();
+        let on_border = match w.border {
+            crate::trade::BorderEdge::North => at(2_000.0, 200.0),
+            crate::trade::BorderEdge::South => at(2_000.0, extent.0 - 200.0),
+            crate::trade::BorderEdge::West => at(200.0, 2_000.0),
+            crate::trade::BorderEdge::East => at(extent.0 - 200.0, 2_000.0),
+        };
+        let customs = w
+            .place_built(BuildingKind::Customs, on_border)
+            .expect("on the border");
+        staff_up(&mut w, at(2_000.0, 2_000.0), 20);
+        w.buildings
+            .get_mut(customs)
+            .unwrap()
+            .stock
+            .add(Resource::Coal, Tonnes(100.0));
+        w.trade_policy = crate::trade::TradePolicy::new().sell(Resource::Coal, Market::East);
+
+        assert_eq!(w.treasury.rubles, 0.0);
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+
+        assert!(w.treasury.rubles > 0.0, "nothing was earned");
+        assert!(
+            w.buildings.get(customs).unwrap().stock.get(Resource::Coal) < Tonnes(100.0),
+            "the coal never left"
+        );
+        // A staffed house clears 30 t a day; coal sells at 2.5 x 0.8 roubles.
+        assert!(
+            (w.treasury.rubles - 30.0 * 2.5 * 0.8).abs() < 1.0,
+            "earned {:.2} roubles",
+            w.treasury.rubles
+        );
+    }
+
+    /// A customs house away from the border is not a crossing. Trade is
+    /// physical, and this is where that is enforced.
+    #[test]
+    fn a_customs_house_must_stand_on_the_border() {
+        let mut w = bare();
+        let middle = at(2_000.0, 2_000.0);
+        assert_eq!(
+            w.place_built(BuildingKind::Customs, middle),
+            Err(crate::building::PlacementError::NotOnTheBorder)
+        );
+    }
+
+    /// Imports cost money, and a republic with none gets nothing. No overdraft.
+    #[test]
+    fn imports_stop_when_the_money_runs_out() {
+        let mut w = bare();
+        let extent = w.terrain.extent();
+        let on_border = match w.border {
+            crate::trade::BorderEdge::North => at(2_000.0, 200.0),
+            crate::trade::BorderEdge::South => at(2_000.0, extent.0 - 200.0),
+            crate::trade::BorderEdge::West => at(200.0, 2_000.0),
+            crate::trade::BorderEdge::East => at(extent.0 - 200.0, 2_000.0),
+        };
+        let customs = w.place_built(BuildingKind::Customs, on_border).unwrap();
+        staff_up(&mut w, at(2_000.0, 2_000.0), 20);
+        w.trade_policy =
+            crate::trade::TradePolicy::new().buy(Resource::Machinery, Market::West, Tonnes(10.0));
+
+        // Penniless: nothing arrives.
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        assert_eq!(
+            w.buildings
+                .get(customs)
+                .unwrap()
+                .stock
+                .get(Resource::Machinery),
+            Tonnes::ZERO
+        );
+
+        // Machinery is $50/t; $100 buys two tonnes and no more.
+        w.treasury.dollars = 100.0;
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        let got = w
+            .buildings
+            .get(customs)
+            .unwrap()
+            .stock
+            .get(Resource::Machinery);
+        assert!(
+            (got.0 - 2.0).abs() < 0.01,
+            "bought {got:?} on a hundred dollars"
+        );
+        assert!(w.treasury.dollars < 0.01, "money was left unspent");
+        assert!(w.treasury.dollars >= 0.0, "the republic went overdrawn");
+    }
+
+    /// Roubles cannot buy from the west. Which market you trade with is a
+    /// decision, not a detail.
+    #[test]
+    fn the_wrong_currency_buys_nothing() {
+        let mut w = bare();
+        let extent = w.terrain.extent();
+        let on_border = match w.border {
+            crate::trade::BorderEdge::North => at(2_000.0, 200.0),
+            crate::trade::BorderEdge::South => at(2_000.0, extent.0 - 200.0),
+            crate::trade::BorderEdge::West => at(200.0, 2_000.0),
+            crate::trade::BorderEdge::East => at(extent.0 - 200.0, 2_000.0),
+        };
+        let customs = w.place_built(BuildingKind::Customs, on_border).unwrap();
+        staff_up(&mut w, at(2_000.0, 2_000.0), 20);
+        w.treasury.rubles = 10_000.0;
+        w.trade_policy =
+            crate::trade::TradePolicy::new().buy(Resource::Machinery, Market::West, Tonnes(10.0));
+
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        assert_eq!(
+            w.buildings
+                .get(customs)
+                .unwrap()
+                .stock
+                .get(Resource::Machinery),
+            Tonnes::ZERO,
+            "roubles bought western machinery"
+        );
+        assert_eq!(w.treasury.rubles, 10_000.0);
+    }
+
+    /// An unstaffed customs house clears nothing, however good the policy.
+    #[test]
+    fn an_unstaffed_crossing_clears_nothing() {
+        let mut w = bare();
+        let extent = w.terrain.extent();
+        let on_border = match w.border {
+            crate::trade::BorderEdge::North => at(2_000.0, 200.0),
+            crate::trade::BorderEdge::South => at(2_000.0, extent.0 - 200.0),
+            crate::trade::BorderEdge::West => at(200.0, 2_000.0),
+            crate::trade::BorderEdge::East => at(extent.0 - 200.0, 2_000.0),
+        };
+        let customs = w.place_built(BuildingKind::Customs, on_border).unwrap();
+        w.buildings
+            .get_mut(customs)
+            .unwrap()
+            .stock
+            .add(Resource::Coal, Tonnes(100.0));
+        w.trade_policy = crate::trade::TradePolicy::new().sell(Resource::Coal, Market::East);
+
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        assert_eq!(w.treasury.rubles, 0.0);
+        assert_eq!(
+            w.buildings.get(customs).unwrap().stock.get(Resource::Coal),
+            Tonnes(100.0)
+        );
+    }
+
+    /// Money is foreign currency only: it buys nothing domestic. A republic
+    /// with a full treasury and no materials still cannot build.
+    #[test]
+    fn a_full_treasury_builds_nothing_on_its_own() {
+        let mut w = bare();
+        w.treasury.rubles = 1_000_000.0;
+        w.treasury.dollars = 1_000_000.0;
+        place(
+            &mut w,
+            BuildingKind::ConstructionOffice,
+            at(1_000.0, 1_000.0),
+        );
+        staff_up(&mut w, at(1_150.0, 1_000.0), 20);
+        let site = w
+            .place(BuildingKind::Woodcutter, at(1_700.0, 1_000.0))
+            .unwrap();
+
+        for _ in 0..TICKS_PER_DAY * 10 {
+            w.tick();
+        }
+        assert_eq!(
+            w.buildings.get(site).unwrap().work_done,
+            0.0,
+            "currency bought domestic construction"
+        );
     }
 
     #[test]

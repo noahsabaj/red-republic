@@ -33,6 +33,7 @@ pub mod scenario;
 pub mod systems;
 pub mod terrain;
 pub mod time;
+pub mod trade;
 pub mod units;
 pub mod world;
 
@@ -45,6 +46,7 @@ pub use road::{NodeId, RoadNetwork, Route};
 pub use systems::{Mutation, Stall};
 pub use terrain::{Surface, Terrain};
 pub use time::{Date, Season, SimClock};
+pub use trade::{BorderEdge, Market, TradePolicy, Treasury};
 pub use units::{Metres, Point, Seconds, Speed, Tonnes};
 pub use world::{SAVE_VERSION, Save, SaveError, World};
 
