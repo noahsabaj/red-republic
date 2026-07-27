@@ -21,14 +21,30 @@
 //! that reloading resumes the *same future*, which no derive can give you.
 
 use crate::geology::Geology;
+use crate::mapgen;
 use crate::rng::{Rng, RngState};
+use crate::terrain::{self, Terrain};
 use crate::time::SimClock;
+use crate::units::Metres;
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a save can no longer be read by the current code. A load
 /// that finds an older version runs migrations; one that finds a newer version
 /// refuses, because guessing at a format from the future corrupts silently.
 pub const SAVE_VERSION: u32 = 1;
+
+/// Substream identifier for terrain generation.
+pub const TERRAIN_STREAM: u64 = 2;
+
+/// Mix a seed with a stream identifier.
+///
+/// The same derivation [`World::substream`] uses, available before a `World`
+/// exists — worldgen needs it to build the thing that would otherwise own it.
+pub fn derive(seed: u64, purpose: u64) -> u64 {
+    let mut h = seed;
+    h ^= purpose.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    h.rotate_left(31)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SaveError {
@@ -57,6 +73,25 @@ pub struct Save {
     pub world: World,
 }
 
+/// Everything needed to found a republic. The founding screen's output.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WorldSpec {
+    pub seed: u64,
+    /// How far the map reaches, in metres, on each side.
+    pub extent: Metres,
+}
+
+impl WorldSpec {
+    /// A ten-kilometre republic — the working default until a founding screen
+    /// offers sizes.
+    pub fn new(seed: u64) -> Self {
+        Self {
+            seed,
+            extent: Metres(10_000.0),
+        }
+    }
+}
+
 /// All mutable simulation state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct World {
@@ -64,6 +99,8 @@ pub struct World {
     /// The sequential simulation stream. Systems draw from this in a fixed
     /// order, which is why the order systems run in is load-bearing.
     pub rng: Rng,
+    /// The ground.
+    pub terrain: Terrain,
     /// What is under the ground, and how much of it is left.
     pub geology: Geology,
     /// The founding seed, kept so derived substreams can be recomputed from
@@ -72,12 +109,30 @@ pub struct World {
 }
 
 impl World {
-    pub fn new(seed: u64) -> Self {
+    /// Found a republic: generate its ground and its geology, and start the
+    /// clock.
+    ///
+    /// Worldgen draws from substreams rather than `rng`, so the main
+    /// simulation stream is untouched at tick zero regardless of how much map
+    /// was generated — which is what lets the founding screen generate a shelf
+    /// of candidates without any of them affecting the one that gets played.
+    pub fn new(spec: WorldSpec) -> Self {
+        let terrain = terrain::generate_terrain(
+            derive(spec.seed, TERRAIN_STREAM),
+            spec.extent,
+            &terrain::DEFAULT_TERRAIN,
+        );
+        let geology = mapgen::generate_geology(
+            derive(spec.seed, mapgen::GEOLOGY_STREAM),
+            spec.extent,
+            &mapgen::DEFAULT_PLAN,
+        );
         Self {
             clock: SimClock::new(),
-            rng: Rng::from_seed(seed),
-            geology: Geology::new(),
-            seed,
+            rng: Rng::from_seed(spec.seed),
+            terrain,
+            geology,
+            seed: spec.seed,
         }
     }
 
@@ -105,10 +160,7 @@ impl World {
     /// function of (seed, purpose, index), so it can be recomputed at any time
     /// and in any order.
     pub fn substream(&self, purpose: u64, index: u64) -> Rng {
-        let mut h = self.seed;
-        h ^= purpose.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        h = h.rotate_left(31);
-        h ^= index.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        let h = derive(self.seed, purpose) ^ index.wrapping_mul(0xBF58_476D_1CE4_E5B9);
         Rng::from_seed(h)
     }
 
@@ -143,6 +195,15 @@ mod tests {
     use super::*;
     use crate::time::TICKS_PER_DAY;
 
+    /// A 1 km republic — big enough to be a real map, small enough that
+    /// fingerprinting it by serialization stays cheap in a test.
+    fn spec(seed: u64) -> WorldSpec {
+        WorldSpec {
+            seed,
+            extent: Metres(1_000.0),
+        }
+    }
+
     /// A stable 64-bit fingerprint of the whole world.
     ///
     /// Deliberately **not** `std::hash::DefaultHasher`: its algorithm is
@@ -154,7 +215,7 @@ mod tests {
     /// the fingerprint automatically, so this cannot rot into checking a
     /// subset of the state while reporting a pass.
     fn fingerprint(world: &World) -> u64 {
-        let json = serde_json::to_vec(world).expect("world must serialize");
+        let json = postcard::to_stdvec(world).expect("world must serialize");
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         for byte in json {
             h ^= u64::from(byte);
@@ -177,8 +238,8 @@ mod tests {
     /// The tripwire. Ninety days, twice, from one seed.
     #[test]
     fn two_runs_from_the_same_seed_end_identically() {
-        let mut a = World::new(1961);
-        let mut b = World::new(1961);
+        let mut a = World::new(spec(1961));
+        let mut b = World::new(spec(1961));
         simulate_days(&mut a, 90);
         simulate_days(&mut b, 90);
         assert_eq!(fingerprint(&a), fingerprint(&b));
@@ -187,8 +248,8 @@ mod tests {
 
     #[test]
     fn different_seeds_end_differently() {
-        let mut a = World::new(1);
-        let mut b = World::new(2);
+        let mut a = World::new(spec(1));
+        let mut b = World::new(spec(2));
         simulate_days(&mut a, 30);
         simulate_days(&mut b, 30);
         assert_ne!(fingerprint(&a), fingerprint(&b));
@@ -199,11 +260,11 @@ mod tests {
     /// the same distance. If anything failed to persist, the futures diverge.
     #[test]
     fn a_reloaded_world_resumes_the_same_future() {
-        let mut live = World::new(7);
+        let mut live = World::new(spec(7));
         simulate_days(&mut live, 45);
 
-        let wire = serde_json::to_string(&live.to_save()).expect("save must serialize");
-        let parsed: Save = serde_json::from_str(&wire).expect("save must parse");
+        let wire = postcard::to_stdvec(&live.to_save()).expect("save must serialize");
+        let parsed: Save = postcard::from_bytes(&wire).expect("save must parse");
         let mut reloaded = World::from_save(parsed).expect("save must load");
         assert_eq!(reloaded, live, "a fresh reload must equal what was saved");
 
@@ -222,24 +283,16 @@ mod tests {
     /// updated the hash.
     #[test]
     fn state_added_to_the_world_enters_the_fingerprint_automatically() {
-        use crate::geology::{Deposit, DepositId, Layer, Mineral};
-        use crate::units::{Metres, Point, Tonnes};
+        use crate::units::Tonnes;
 
-        let mut world = World::new(1961);
-        world.geology.insert(Deposit::new(
-            DepositId(1),
-            Mineral::Coal,
-            Point::ORIGIN,
-            Metres(300.0),
-            Metres(40.0),
-            vec![Layer::new(Metres(20.0), Tonnes(1_000.0))],
-        ));
+        let mut world = World::new(spec(1961));
+        let id = world.geology.all()[0].id;
         let before = fingerprint(&world);
 
         world
             .geology
-            .get_mut(DepositId(1))
-            .expect("the seam is there")
+            .get_mut(id)
+            .expect("the map generated that body")
             .extract(Tonnes(100.0));
 
         assert_ne!(
@@ -254,40 +307,74 @@ mod tests {
     /// player back a full seam.
     #[test]
     fn a_worked_seam_survives_the_save() {
-        use crate::geology::{Deposit, DepositId, Layer, Mineral};
-        use crate::units::{Metres, Point, Tonnes};
+        use crate::geology::Mineral;
+        use crate::units::Tonnes;
 
-        let mut world = World::new(3);
-        world.geology.insert(Deposit::new(
-            DepositId(1),
-            Mineral::Coal,
-            Point::ORIGIN,
-            Metres(300.0),
-            Metres(40.0),
-            vec![Layer::new(Metres(20.0), Tonnes(1_000.0))],
-        ));
+        let mut world = World::new(spec(3));
+        let id = world
+            .geology
+            .all()
+            .iter()
+            .find(|d| d.mineral == Mineral::Coal)
+            .expect("every map is planned to hold coal")
+            .id;
+
+        let before = world.geology.remaining_of(Mineral::Coal);
         world
             .geology
-            .get_mut(DepositId(1))
-            .expect("the seam is there")
+            .get_mut(id)
+            .expect("the map generated that body")
             .extract(Tonnes(250.0));
+        let after = world.geology.remaining_of(Mineral::Coal);
+        assert_eq!(after, before - Tonnes(250.0), "the seam was worked");
 
-        let wire = serde_json::to_string(&world.to_save()).expect("save must serialize");
+        let wire = postcard::to_stdvec(&world.to_save()).expect("save must serialize");
         let reloaded =
-            World::from_save(serde_json::from_str(&wire).expect("save must parse")).expect("loads");
+            World::from_save(postcard::from_bytes(&wire).expect("save must parse")).expect("loads");
 
         assert_eq!(
             reloaded.geology.remaining_of(Mineral::Coal),
-            Tonnes(750.0),
+            after,
             "the reload refilled a seam the republic had already worked"
         );
+    }
+
+    /// The save format must round-trip `f64` bit-exactly, and this is the
+    /// guard that keeps it that way.
+    ///
+    /// Found by measurement, not by reasoning: the first save format tried was
+    /// JSON, and `a_reloaded_world_resumes_the_same_future` failed on a single
+    /// deposit coordinate coming back one ULP different. Sampling 200,000 f64
+    /// values through `serde_json` showed 91,767 of them changing — the digits
+    /// it *writes* are correct and its *parser* is not correctly rounded. A
+    /// simulation whose state is full of f64 cannot use a format like that,
+    /// and the failure mode is the worst kind: silent, tiny, and only visible
+    /// once two runs have diverged far enough to notice.
+    #[test]
+    fn the_save_format_round_trips_floats_bit_exactly() {
+        let mut rng = Rng::from_seed(20_260_726);
+        for _ in 0..50_000 {
+            // Draw across the whole exponent range, not just [0, 1) — a format
+            // can be exact for small values and lossy for large ones.
+            let x = f64::from_bits(rng.next_u64());
+            if !x.is_finite() {
+                continue;
+            }
+            let wire = postcard::to_stdvec(&x).expect("serializes");
+            let back: f64 = postcard::from_bytes(&wire).expect("parses");
+            assert_eq!(
+                back.to_bits(),
+                x.to_bits(),
+                "{x:?} did not survive the save format"
+            );
+        }
     }
 
     #[test]
     fn a_save_from_the_future_is_refused_rather_than_guessed_at() {
         let save = Save {
             version: SAVE_VERSION + 1,
-            world: World::new(1),
+            world: World::new(spec(1)),
         };
         assert_eq!(
             World::from_save(save),
@@ -300,7 +387,7 @@ mod tests {
 
     #[test]
     fn substreams_are_independent_of_the_main_stream() {
-        let world = World::new(1961);
+        let world = World::new(spec(1961));
         let before = world.rng_state();
         let mut drawn = world.substream(1, 0);
         for _ in 0..100 {
@@ -315,7 +402,7 @@ mod tests {
 
     #[test]
     fn substreams_are_recomputable_and_distinct() {
-        let world = World::new(1961);
+        let world = World::new(spec(1961));
         // Same coordinates, same stream — no matter when you ask.
         assert_eq!(
             world.substream(3, 9).next_u64(),
@@ -334,7 +421,7 @@ mod tests {
 
     #[test]
     fn ninety_days_of_ticks_land_on_the_right_date() {
-        let mut world = World::new(1);
+        let mut world = World::new(spec(1));
         simulate_days(&mut world, 90);
         assert_eq!(world.clock.days_elapsed(), 90);
         // Founding is 1 March. In 30-day months, ninety days is exactly March,

@@ -300,10 +300,16 @@ impl Point {
 
     /// Straight-line distance. Not a travel distance — routing is a graph
     /// problem and this is the geometry underneath it.
+    ///
+    /// Deliberately `sqrt` and not `hypot`. `hypot` is a libm compound
+    /// function and is permitted to differ in its last bit between platforms
+    /// and library versions; `sqrt` is exactly rounded by IEEE-754 everywhere.
+    /// At map scales `dx * dx` is nowhere near overflow, so the only thing
+    /// `hypot` would buy is the non-determinism.
     pub fn distance_to(self, other: Self) -> Metres {
         let dx = (self.x - other.x).0;
         let dy = (self.y - other.y).0;
-        Metres(dx.hypot(dy))
+        Metres((dx * dx + dy * dy).sqrt())
     }
 }
 

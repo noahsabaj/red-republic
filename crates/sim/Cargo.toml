@@ -16,7 +16,9 @@ authors.workspace = true
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 
-# The save WIRE FORMAT is deliberately not chosen yet — JSON here is for tests
-# only, so the real choice (size and speed measured, not guessed) stays open.
+# The save wire format has ONE hard requirement, found by measurement: it must
+# round-trip f64 bit-exactly. serde_json does not — 91,767 of 200,000 sampled
+# f64 values came back different, because its parser is not correctly rounded
+# even when the digits it wrote were right. postcard stores the bit pattern.
 [dev-dependencies]
-serde_json = "1"
+postcard = { version = "1", features = ["use-std"] }

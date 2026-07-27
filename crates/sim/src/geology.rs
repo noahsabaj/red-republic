@@ -314,7 +314,18 @@ impl Geology {
         Self::default()
     }
 
+    /// Add a body.
+    ///
+    /// # Panics
+    /// In debug builds, if the id is already taken. `get`/`get_mut` return the
+    /// first match, so a duplicate id silently makes one of the two bodies
+    /// unreachable and the other one edited by accident.
     pub fn insert(&mut self, deposit: Deposit) {
+        debug_assert!(
+            self.get(deposit.id).is_none(),
+            "deposit id {:?} is already taken",
+            deposit.id
+        );
         self.deposits.push(deposit);
     }
 

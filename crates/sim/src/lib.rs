@@ -25,12 +25,14 @@
 pub mod geology;
 pub mod mapgen;
 pub mod rng;
+pub mod terrain;
 pub mod time;
 pub mod units;
 pub mod world;
 
 pub use geology::{Deposit, DepositId, Geology, Layer, Mineral, SurveyReading};
 pub use rng::{Rng, RngState};
+pub use terrain::{Surface, Terrain};
 pub use time::{Date, Season, SimClock};
 pub use units::{Metres, Point, Seconds, Speed, Tonnes};
 pub use world::{SAVE_VERSION, Save, SaveError, World};
