@@ -1,4 +1,20 @@
-# Logs
+# ---- Rust: the live project ----
+/target
+**/*.rs.bk
+*.pdb
+
+# Scratch runners write here — trajectories, baselines, profiling output.
+/scratch
+
+# ---- archive/: the frozen 1.x TypeScript build ----
+archive/node_modules
+archive/dist
+archive/dist-ssr
+archive/src-tauri/target
+archive/src-tauri/gen
+*.local
+
+# ---- Logs ----
 logs
 *.log
 npm-debug.log*
@@ -7,12 +23,7 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
+# ---- Editor / OS ----
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -23,10 +34,5 @@ dist-ssr
 *.sln
 *.sw?
 
-# Tauri
-src-tauri/target
-src-tauri/gen
-
 # Agent scratchpad
 .agents/
-

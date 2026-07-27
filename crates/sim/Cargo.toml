@@ -1,0 +1,15 @@
+[package]
+name = "red-republic-sim"
+description = "The Red Republic simulation — headless, deterministic, engine-independent."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# Deliberately empty. This crate must build with no renderer, no windowing, and
+# no engine — that independence is what lets the shell (Bevy / wgpu / other) be
+# chosen later on measured evidence rather than guessed at now.
+[dependencies]
+
+[dev-dependencies]

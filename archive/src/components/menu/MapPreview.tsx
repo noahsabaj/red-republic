@@ -1,14 +1,21 @@
 import { useDeferredValue, useEffect, useRef } from 'react';
 import { generateMap } from '@/game/mapgen';
+import type { Tile } from '@/game/mapgen';
+import type { DepositType } from '@/game/config';
 
-const TERRAIN_COLORS: Record<string, string> = {
+// Keyed by the terrain/deposit unions, never `Record<string, string>`: an
+// unauthored key would look up `undefined`, and the canvas fillStyle setter
+// ignores an unparseable value — so a new terrain would silently paint in the
+// PREVIOUS tile's colour, with no error and no failing test. Typed, it fails
+// the build instead.
+const TERRAIN_COLORS: Record<Tile['terrain'], string> = {
   grass: '#5a7d3a',
   forest: '#3d5c2a',
   water: '#3a6ea5',
   rock: '#8b8b8b',
 };
 
-const DEPOSIT_COLORS: Record<string, string> = {
+const DEPOSIT_COLORS: Record<DepositType, string> = {
   coal: '#1c1c1c',
   ironOre: '#8a4b2f',
   oil: '#2a2337',

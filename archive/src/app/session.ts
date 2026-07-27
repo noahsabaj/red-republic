@@ -71,7 +71,7 @@ export function bootFromUrl(): GameSession | null {
   const climate: ClimateId = climateParam !== null && climateParam in CLIMATES ? climateParam as ClimateId : DEFAULT_CLIMATE;
   const cfg: NewGameConfig = {
     name: demo ? 'Demo Republic' : 'Red Republic',
-    seed: demo ? 1961 : Number(seedParam) >>> 0,
+    seed: demo ? 1961 : parseSeed(seedParam ?? ''),
     mapSize: 'medium',
     climate,
     difficulty: DEFAULT_DIFFICULTY,
@@ -100,4 +100,20 @@ export function randomRepublicName(): string {
 
 export function randomSeed(): number {
   return Math.floor(Math.random() * 2 ** 31);
+}
+
+/** Largest seed the engine's uint32 rng can hold — the ceiling, not a wrap point. */
+export const MAX_SEED = 0xffffffff;
+
+/**
+ * Text (a typed field, a `?seed=` param) to the uint32 the engine takes.
+ * CLAMPS at MAX_SEED rather than truncating with `>>> 0`, which is the whole
+ * point: a wrap turns a too-large seed into an unrelated *valid* one, so the
+ * player gets a different map than the digits they entered and nothing says so.
+ * Non-digits and an empty string mean seed 0.
+ */
+export function parseSeed(text: string): number {
+  const digits = text.replace(/\D/g, '');
+  if (digits === '') return 0;
+  return Math.min(Number(digits), MAX_SEED) >>> 0;
 }

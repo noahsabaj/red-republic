@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { bootFromUrl, createSession, randomRepublicName, randomSeed, sessionFromSave } from '../session';
+import { MAX_SEED, bootFromUrl, createSession, parseSeed, randomRepublicName, randomSeed, sessionFromSave } from '../session';
 import { MAP_SIZES } from '@/game/config';
 
 function stubSearch(search: string) {
@@ -58,6 +58,33 @@ describe('sessions', () => {
     expect(b.isNew).toBe(false);
     expect(b.config).toEqual(a.config);
     expect(b.engine.speed).toBe(0); // loads paused
+  });
+});
+
+describe('parseSeed', () => {
+  it('clamps past the uint32 ceiling instead of wrapping to an unrelated seed', () => {
+    // The bug: `Number(digits.slice(0, 10)) >>> 0` truncated, so a too-large
+    // seed silently became a DIFFERENT VALID one — 5000000000 -> 705032704 —
+    // and the player got a map the digits they typed never named.
+    expect(parseSeed('5000000000')).toBe(MAX_SEED);
+    expect(parseSeed('9999999999')).toBe(MAX_SEED);
+    expect(parseSeed('4294967296')).toBe(MAX_SEED);
+    expect(parseSeed(String(MAX_SEED))).toBe(MAX_SEED);
+  });
+
+  it('keeps every seed the game itself hands out, at any length', () => {
+    expect(parseSeed('1683406298')).toBe(1683406298);
+    expect(parseSeed('77')).toBe(77);
+    for (let i = 0; i < 20; i++) {
+      const s = randomSeed();
+      expect(parseSeed(String(s))).toBe(s);
+    }
+  });
+
+  it('reads empty and non-numeric text as seed 0 rather than NaN', () => {
+    expect(parseSeed('')).toBe(0);
+    expect(parseSeed('abc')).toBe(0);
+    expect(parseSeed('12a3')).toBe(123);
   });
 });
 

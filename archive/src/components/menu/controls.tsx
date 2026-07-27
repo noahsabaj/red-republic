@@ -118,13 +118,22 @@ export function Segmented<T extends string | number>({ options, value, onChange,
   );
 }
 
-/** Selectable card for map size / climate / difficulty choices. */
+/**
+ * Selectable card for map size / climate / difficulty choices. A card is one
+ * answer to an exclusive question, so it is a `radio` and not an `aria-pressed`
+ * toggle — and it only carries that meaning inside an OptionCardGroup, which
+ * supplies the question. Roving tabindex: only the chosen card is tabbable, so
+ * a group costs one Tab and the arrows move within it.
+ */
 export function OptionCard({ selected, icon, label, blurb, onClick }: {
   selected: boolean; icon?: string; label: string; blurb: string; onClick: () => void;
 }) {
   return (
     <button
-      aria-pressed={selected}
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      tabIndex={selected ? 0 : -1}
       onClick={onClick}
       className={`flex-1 min-w-0 rounded border-2 p-2 text-left transition-colors ${
         selected ? 'border-yellow-500 bg-red-900/80' : 'border-yellow-600/30 bg-red-950/60 hover:bg-red-900/50'}`}
@@ -134,6 +143,48 @@ export function OptionCard({ selected, icon, label, blurb, onClick }: {
       </div>
       <div className="mt-0.5 text-[0.625rem] leading-snug text-yellow-200/60">{blurb}</div>
     </button>
+  );
+}
+
+/**
+ * One exclusive question rendered as OptionCards. The group owns what a lone
+ * card cannot say: the question's name (`aria-label`, the same idiom Segmented
+ * uses) and that the answers are mutually exclusive (`radiogroup`). Arrows move
+ * the selection and carry focus with it — a radiogroup is one stop, not one per
+ * option, so without this the roving tabindex would strand the keyboard user on
+ * the selected card.
+ */
+export function OptionCardGroup<T extends string>({ label, value, onChange, options, className }: {
+  label: string;
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; icon?: string; label: string; blurb: string }[];
+  className?: string;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label={label}
+      className={className}
+      onKeyDown={e => {
+        const dir = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1
+          : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+        if (dir === 0) return;
+        e.preventDefault();
+        const from = options.findIndex(o => o.value === value);
+        const next = (from + dir + options.length) % options.length;
+        onChange(options[next].value);
+        // Focus follows selection, per the radiogroup pattern. Read in the
+        // handler (never during render) and by position — the card order is the
+        // options order, so this holds before React has re-rendered.
+        e.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]')[next]?.focus();
+      }}
+    >
+      {options.map(o => (
+        <OptionCard key={o.value} selected={o.value === value} icon={o.icon}
+          label={o.label} blurb={o.blurb} onClick={() => onChange(o.value)} />
+      ))}
+    </div>
   );
 }
 
