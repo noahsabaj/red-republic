@@ -27,6 +27,7 @@ pub mod geology;
 pub mod mapgen;
 pub mod resource;
 pub mod rng;
+pub mod road;
 pub mod terrain;
 pub mod time;
 pub mod units;
@@ -36,6 +37,7 @@ pub use building::{Building, BuildingId, BuildingKind, Buildings, PlacementError
 pub use geology::{Deposit, DepositId, Geology, Layer, Mineral, SurveyReading};
 pub use resource::{Resource, Stock};
 pub use rng::{Rng, RngState};
+pub use road::{NodeId, RoadNetwork, Route};
 pub use terrain::{Surface, Terrain};
 pub use time::{Date, Season, SimClock};
 pub use units::{Metres, Point, Seconds, Speed, Tonnes};

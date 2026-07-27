@@ -24,6 +24,7 @@ use crate::building::Buildings;
 use crate::geology::Geology;
 use crate::mapgen;
 use crate::rng::{Rng, RngState};
+use crate::road::RoadNetwork;
 use crate::terrain::{self, Terrain};
 use crate::time::SimClock;
 use crate::units::Metres;
@@ -106,6 +107,8 @@ pub struct World {
     pub geology: Geology,
     /// What stands on it.
     pub buildings: Buildings,
+    /// The roads between them.
+    pub roads: RoadNetwork,
     /// The founding seed, kept so derived substreams can be recomputed from
     /// it at any time without disturbing `rng`.
     seed: u64,
@@ -136,6 +139,7 @@ impl World {
             terrain,
             geology,
             buildings: Buildings::new(),
+            roads: RoadNetwork::new(),
             seed: spec.seed,
         }
     }
