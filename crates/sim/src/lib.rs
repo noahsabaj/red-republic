@@ -25,10 +25,12 @@
 pub mod rng;
 pub mod time;
 pub mod units;
+pub mod world;
 
 pub use rng::{Rng, RngState};
 pub use time::{Date, Season, SimClock};
 pub use units::{Metres, Point, Seconds, Speed};
+pub use world::{SAVE_VERSION, Save, SaveError, World};
 
 #[cfg(test)]
 mod tests {

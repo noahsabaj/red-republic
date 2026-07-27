@@ -96,7 +96,7 @@ impl Date {
 
 /// The simulation's clock. Monotonic, tick-counted, and the single source of
 /// "when it is" — nothing else may keep its own notion of elapsed time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct SimClock {
     /// Ticks elapsed since founding.
     ticks: u64,

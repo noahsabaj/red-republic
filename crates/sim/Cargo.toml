@@ -7,9 +7,16 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
-# Deliberately empty. This crate must build with no renderer, no windowing, and
-# no engine — that independence is what lets the shell (Bevy / wgpu / other) be
-# chosen later on measured evidence rather than guessed at now.
+# No renderer, no windowing, no engine — that independence is what lets the
+# shell (Bevy / wgpu / other) be chosen later on measured evidence rather than
+# guessed at now. serde is not an engine, and deriving serialization is
+# strictly better than hand-writing it: the archived build's save round-trip
+# test existed to catch fields someone forgot to persist, and a derive removes
+# that class of bug rather than testing for it.
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 
+# The save WIRE FORMAT is deliberately not chosen yet — JSON here is for tests
+# only, so the real choice (size and speed measured, not guessed) stays open.
 [dev-dependencies]
+serde_json = "1"

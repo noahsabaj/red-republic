@@ -34,11 +34,11 @@
 //! two, with no rounding to disagree about.
 
 /// The full internal state of an [`Rng`] — enough to resume a stream exactly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RngState([u64; 4]);
 
 /// A seeded, resumable pseudo-random generator. See the module docs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Rng {
     s: [u64; 4],
 }
