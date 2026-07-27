@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 pub mod geology;
+pub mod mapgen;
 pub mod rng;
 pub mod time;
 pub mod units;
