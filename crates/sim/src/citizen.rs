@@ -32,16 +32,18 @@
 
 use crate::building::{BuildingId, Buildings};
 use crate::road::RoadNetwork;
+use crate::transport::{self, Commute, Mode};
 use crate::units::{Metres, Point, Speed};
 use bevy_ecs::prelude::*;
 use bevy_ecs::query::QueryState;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::BTreeMap;
 
 /// How far someone will walk to work, each way.
 ///
 /// Soviet citizens walked a long way to work; this is a forgiving figure.
-/// Beyond it a job is simply not reachable. Transport that extends this is a
-/// later mechanic, and until it exists the constraint is the entire point.
+/// Beyond it a job is out of reach **on foot** — [`crate::transport`] is what
+/// extends it, and it does so by being built rather than by relaxing this.
 pub const MAX_WALK: Metres = Metres(2_000.0);
 
 /// How far a junction can be from a building and still serve it.
@@ -72,17 +74,26 @@ pub struct Workplace(pub Option<BuildingId>);
 pub struct Age(pub u32);
 
 /// One citizen, flattened — the save representation and the ordered view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CitizenRecord {
     pub id: CitizenId,
     pub home: Home,
     pub workplace: Workplace,
     pub age: Age,
+    /// The journey they actually make. Written by the labour pass alongside the
+    /// workplace, because the two are one decision: a job is only a job if
+    /// there is a way to get to it.
+    pub commute: Commute,
 }
 
 impl CitizenRecord {
     pub fn can_work(&self) -> bool {
         WORKING_AGE.contains(&self.age.0)
+    }
+
+    /// Whether this person needs a seat on a bus to hold their job.
+    pub fn rides(&self) -> bool {
+        self.commute.mode == Mode::Bus
     }
 }
 
@@ -91,6 +102,7 @@ type CitizenQuery = (
     &'static Home,
     &'static Workplace,
     &'static Age,
+    &'static Commute,
 );
 
 /// Everyone in the republic.
@@ -118,7 +130,7 @@ impl Population {
         let id = CitizenId(self.next_id);
         self.next_id += 1;
         self.world
-            .spawn((id, Home(home), Workplace(None), Age(age)));
+            .spawn((id, Home(home), Workplace(None), Age(age), Commute::NONE));
         // The cached query must learn about the archetype the first spawn
         // creates, or `iter_manual` sees nothing at all.
         self.query.update_archetypes(&self.world);
@@ -146,11 +158,12 @@ impl Population {
         let mut out: Vec<CitizenRecord> = self
             .query
             .iter_manual(&self.world)
-            .map(|(&id, &home, &workplace, &age)| CitizenRecord {
+            .map(|(&id, &home, &workplace, &age, &commute)| CitizenRecord {
                 id,
                 home,
                 workplace,
                 age,
+                commute,
             })
             .collect();
         out.sort_by_key(|c| c.id);
@@ -175,6 +188,21 @@ impl Population {
             .collect()
     }
 
+    /// How many people live in each building, in one pass.
+    ///
+    /// Exists because [`Population::residents_of`] is the wrong tool inside a
+    /// loop over buildings and the baselines proved it: the households system
+    /// called it once per home per tick, and each call built and sorted the
+    /// entire population. At 4,000 citizens that was most of the cost of a
+    /// simulated day. This walks the ECS once and counts.
+    pub fn residents_by_home(&self) -> BTreeMap<BuildingId, u32> {
+        let mut counts = BTreeMap::new();
+        for (_, home, _, _, _) in self.query.iter_manual(&self.world) {
+            *counts.entry(home.0).or_insert(0) += 1;
+        }
+        counts
+    }
+
     pub fn staff_of(&self, building: BuildingId) -> u32 {
         self.records()
             .iter()
@@ -182,12 +210,24 @@ impl Population {
             .count() as u32
     }
 
-    /// Apply a set of workplace assignments, keyed by citizen id.
-    fn apply_workplaces(&mut self, assignment: &[(CitizenId, Option<BuildingId>)]) {
-        let mut query = self.world.query::<(&CitizenId, &mut Workplace)>();
-        for (id, mut workplace) in query.iter_mut(&mut self.world) {
-            if let Ok(index) = assignment.binary_search_by_key(id, |(i, _)| *i) {
+    /// How many people currently hold a job they can only reach by bus.
+    pub fn riders(&self) -> u32 {
+        self.records().iter().filter(|c| c.rides()).count() as u32
+    }
+
+    /// Apply a set of workplace assignments and the journeys they imply.
+    ///
+    /// Both together, never separately: a workplace without its journey would
+    /// leave a citizen holding a job with a stale commute attached, and the
+    /// commute is what says whether that job is reachable at all.
+    fn apply_workplaces(&mut self, assignment: &[(CitizenId, Option<BuildingId>, Commute)]) {
+        let mut query = self
+            .world
+            .query::<(&CitizenId, &mut Workplace, &mut Commute)>();
+        for (id, mut workplace, mut commute) in query.iter_mut(&mut self.world) {
+            if let Ok(index) = assignment.binary_search_by_key(id, |(i, _, _)| *i) {
                 workplace.0 = assignment[index].1;
+                *commute = assignment[index].2;
             }
         }
     }
@@ -195,9 +235,13 @@ impl Population {
     fn from_records(records: &[CitizenRecord], next_id: u32) -> Self {
         let mut population = Self::new();
         for record in records {
-            population
-                .world
-                .spawn((record.id, record.home, record.workplace, record.age));
+            population.world.spawn((
+                record.id,
+                record.home,
+                record.workplace,
+                record.age,
+                record.commute,
+            ));
         }
         population.query.update_archetypes(&population.world);
         population.next_id = next_id;
@@ -281,25 +325,47 @@ pub fn commute_distance(home: Point, work: Point, roads: &RoadNetwork) -> Metres
     }
 }
 
-/// Whether someone living at `home` could hold a job at `work`.
+/// Whether someone living at `home` could walk to a job at `work`.
+///
+/// On foot only. Whether they could get there *at all* is
+/// [`crate::transport::reach`], which also knows about buses.
 pub fn is_reachable(home: Point, work: Point, roads: &RoadNetwork) -> bool {
     commute_distance(home, work, roads).0 <= MAX_WALK.0
+}
+
+/// What one labour pass decided.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Labour {
+    /// Who turned up where.
+    pub staffing: Vec<(BuildingId, u32)>,
+    /// Seats spent carrying people who could not have walked. What the depots
+    /// burn fuel for.
+    pub seats_used: u32,
 }
 
 /// Match people to jobs they can reach, and report the staffing that results.
 ///
 /// Buildings are filled in id order — commissioning order, the same tie-break
-/// the archived build used — and each takes the nearest available workers
-/// first. Ties break on citizen id so the assignment is reproducible.
+/// the archived build used — and each takes the workers with the shortest
+/// journey first. Ties break on citizen id so the assignment is reproducible.
 ///
 /// Deliberately **not** a global pool. A job nobody can reach goes unfilled,
 /// however many unemployed people the republic has, and that is the entire
 /// behavioural difference from the model this replaces.
+///
+/// # Seats are spent last
+///
+/// Candidates who can walk are hired before candidates who would need a seat,
+/// whatever their journey times. A seat given to someone who could have walked
+/// is a seat denied to someone who could not, and the republic has a finite
+/// number of them — so the ordering is not a preference about journey length,
+/// it is what stops the bus network being consumed by people who never needed
+/// it.
 pub fn assign_labour(
     population: &mut Population,
     buildings: &Buildings,
     roads: &RoadNetwork,
-) -> Vec<(BuildingId, u32)> {
+) -> Labour {
     let people = population.records();
     let home_of = |record: &CitizenRecord| {
         buildings
@@ -315,9 +381,15 @@ pub fn assign_labour(
         .filter_map(|c| home_of(c).map(|p| (c.id, p)))
         .collect();
 
-    let mut assignment: Vec<(CitizenId, Option<BuildingId>)> =
-        people.iter().map(|c| (c.id, None)).collect();
+    let mut assignment: Vec<(CitizenId, Option<BuildingId>, Commute)> =
+        people.iter().map(|c| (c.id, None, Commute::NONE)).collect();
     let mut staffing = Vec::new();
+
+    // What the depots can carry today. Fixed for the whole pass rather than
+    // recomputed per workplace, because it is one fleet serving the republic
+    // and not a fresh allowance for every factory.
+    let mut seats_left = transport::seats(buildings);
+    let mut seats_used = 0u32;
 
     // Only finished buildings employ anyone. A site is worked by builders, who
     // are staff of a Construction Office, not of the thing being built.
@@ -331,29 +403,57 @@ pub fn assign_labour(
     for workplace in workplaces {
         let jobs = workplace.def().workers as usize;
 
-        let mut candidates: Vec<(Metres, CitizenId)> = available
+        // Rank: walkers first, then by journey time, then by id.
+        let mut candidates: Vec<(u8, f64, CitizenId, Commute)> = available
             .iter()
-            .map(|&(id, home)| (commute_distance(home, workplace.centre, roads), id))
-            .filter(|(distance, _)| distance.0 <= MAX_WALK.0)
+            .filter_map(|&(id, home)| {
+                let commute = transport::reach(home, workplace.centre, roads)?;
+                let rank = match commute.mode {
+                    Mode::Foot => 0,
+                    Mode::Bus => 1,
+                    Mode::None => return None,
+                };
+                Some((rank, commute.time.0, id, commute))
+            })
             .collect();
-        candidates.sort_by(|(da, ia), (db, ib)| da.0.total_cmp(&db.0).then_with(|| ia.cmp(ib)));
+        candidates.sort_by(|(ra, ta, ia, _), (rb, tb, ib, _)| {
+            ra.cmp(rb)
+                .then_with(|| ta.total_cmp(tb))
+                .then_with(|| ia.cmp(ib))
+        });
 
-        let hired: Vec<CitizenId> = candidates
-            .into_iter()
-            .take(jobs)
-            .map(|(_, id)| id)
-            .collect();
-        for id in &hired {
-            if let Ok(index) = assignment.binary_search_by_key(id, |(i, _)| *i) {
-                assignment[index].1 = Some(workplace.id);
+        let mut hired: Vec<CitizenId> = Vec::with_capacity(jobs);
+        for (_, _, id, commute) in candidates {
+            if hired.len() == jobs {
+                break;
             }
+            if commute.mode == Mode::Bus {
+                if seats_left == 0 {
+                    // The bus is full. Everyone behind this candidate is either
+                    // also a rider or ranked worse, so keep scanning rather than
+                    // stopping — a nearer rider might still be a walker for a
+                    // later workplace.
+                    continue;
+                }
+                seats_left -= 1;
+                seats_used += 1;
+            }
+            if let Ok(index) = assignment.binary_search_by_key(&id, |(i, _, _)| *i) {
+                assignment[index].1 = Some(workplace.id);
+                assignment[index].2 = commute;
+            }
+            hired.push(id);
         }
+
         available.retain(|(id, _)| !hired.contains(id));
         staffing.push((workplace.id, hired.len() as u32));
     }
 
     population.apply_workplaces(&assignment);
-    staffing
+    Labour {
+        staffing,
+        seats_used,
+    }
 }
 
 #[cfg(test)]
@@ -455,8 +555,8 @@ mod tests {
             p.spawn_citizen(home, 30);
         }
 
-        let staffing = assign_labour(&mut p, &b, &RoadNetwork::new());
-        assert_eq!(staffing, vec![(mill, 4)]);
+        let labour = assign_labour(&mut p, &b, &RoadNetwork::new());
+        assert_eq!(labour.staffing, vec![(mill, 4)]);
         assert_eq!(p.employed(), 4);
     }
 
@@ -479,9 +579,9 @@ mod tests {
             p.spawn_citizen(home, 30);
         }
 
-        let staffing = assign_labour(&mut p, &b, &RoadNetwork::new());
+        let labour = assign_labour(&mut p, &b, &RoadNetwork::new());
         assert_eq!(
-            staffing,
+            labour.staffing,
             vec![(mine, 0)],
             "the old model would have staffed it"
         );
@@ -504,8 +604,12 @@ mod tests {
             p.spawn_citizen(camp, 30);
         }
 
-        let staffing = assign_labour(&mut p, &b, &RoadNetwork::new());
-        assert_eq!(staffing, vec![(mine, 14)], "a mining town staffs its mine");
+        let labour = assign_labour(&mut p, &b, &RoadNetwork::new());
+        assert_eq!(
+            labour.staffing,
+            vec![(mine, 14)],
+            "a mining town staffs its mine"
+        );
     }
 
     /// The acceptance scenario for the whole module: build a town around a

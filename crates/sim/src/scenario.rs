@@ -12,7 +12,6 @@ use crate::building::{BuildingId, BuildingKind};
 use crate::citizen::MAX_WALK;
 use crate::geology::Mineral;
 use crate::resource::Resource;
-use crate::terrain::CELL_SIZE;
 use crate::trade::{BorderEdge, CUSTOMS_RANGE};
 use crate::units::{Metres, Point, Tonnes};
 use crate::world::World;
@@ -31,6 +30,7 @@ pub struct StartingBase {
     pub farm: Option<BuildingId>,
     pub food_factory: Option<BuildingId>,
     pub textile_mill: Option<BuildingId>,
+    pub boiler: Option<BuildingId>,
     /// `None` when the border could not take a crossing on this seed.
     pub customs: Option<BuildingId>,
     /// Where the town centre ended up.
@@ -43,7 +43,9 @@ pub struct StartingBase {
 /// nearest workable site rather than the first one a random search stumbles
 /// into.
 pub fn find_site(world: &World, kind: BuildingKind, near: Point, within: Metres) -> Option<Point> {
-    let step = CELL_SIZE.0 * 2.0;
+    // Two cells at whatever resolution this map was generated at, so the
+    // search stays proportionate to the ground it is searching.
+    let step = world.terrain.cell_size().0 * 2.0;
     let rings = (within.0 / step).ceil() as i64;
     for ring in 0..=rings {
         for dy in -ring..=ring {
@@ -118,6 +120,13 @@ fn found_crossing(world: &mut World, near: Point) -> Option<BuildingId> {
 ///
 /// Everything is sited within walking distance of the housing, because a job
 /// nobody can reach is not a job — see [`crate::citizen`].
+///
+/// **The order below is a priority order.** Labour fills workplaces in
+/// commissioning order, so whatever is founded last is what goes unmanned when
+/// the republic is short of people. `citizens` is worth checking against
+/// [`crate::building::Buildings::jobs`] afterwards: a founding with fewer
+/// settlers than jobs is a legitimate hand, but it will be the tail of this
+/// list that stands idle.
 pub fn found(world: &mut World, citizens: usize) -> StartingBase {
     // Site the town on the shallowest coal body, since that is what a republic
     // would actually do.
@@ -147,6 +156,7 @@ pub fn found(world: &mut World, citizens: usize) -> StartingBase {
         farm: None,
         food_factory: None,
         textile_mill: None,
+        boiler: None,
         customs: None,
         centre,
     };
@@ -178,6 +188,19 @@ pub fn found(world: &mut World, citizens: usize) -> StartingBase {
         BuildingKind::PowerPlant,
         Point::new(centre.x, centre.y + Metres(500.0)),
         Metres(800.0),
+    );
+    // The boiler house goes up with the power station, not after the shops.
+    //
+    // **The order things are founded in IS their staffing priority**, because
+    // labour fills workplaces in commissioning order — so a boiler sited last
+    // is the first thing to go unmanned when a republic is short of people, and
+    // an under-populated founding then freezes while its textile mill runs. Heat
+    // and power are the two life-support systems and they are placed together.
+    base.boiler = put(
+        world,
+        BuildingKind::HeatingPlant,
+        Point::new(centre.x + Metres(200.0), centre.y - Metres(450.0)),
+        Metres(MAX_WALK.0 / 2.0),
     );
     base.woodcutter = put(
         world,
@@ -276,12 +299,14 @@ pub fn found(world: &mut World, citizens: usize) -> StartingBase {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::climate::ClimateId;
     use crate::world::WorldSpec;
 
     fn founded(seed: u64) -> (World, StartingBase) {
         let mut w = World::new(WorldSpec {
             seed,
             extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
         });
         let base = found(&mut w, 60);
         (w, base)
@@ -341,6 +366,46 @@ mod tests {
                 "the mine never got a crew"
             );
         }
+    }
+
+    /// The gap the trajectory runner found, closed and guarded.
+    ///
+    /// A founded republic was fed and clothed and sat at **0% warm housing**
+    /// from its first October onward, every winter, for ever — because nobody
+    /// had thought to give it a boiler house. The same class of gap as the
+    /// missing farm and the missing textile mill, and found the same way:
+    /// by reading a trajectory rather than by reasoning about the founding.
+    #[test]
+    fn a_founded_republic_survives_its_first_winter_warm() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        // Enough settlers to man the town it is given. A short-staffed founding
+        // is a legitimate hand, but it is not what this test is about.
+        let base = found(&mut w, 120);
+        assert!(base.boiler.is_some(), "no boiler house was founded");
+
+        // Straight to deep winter, then a fortnight of it.
+        let to_january = 306 - w.clock.days_elapsed();
+        w.clock.advance_by(to_january * crate::time::TICKS_PER_DAY);
+        for _ in 0..crate::time::TICKS_PER_DAY * 14 {
+            w.tick();
+        }
+
+        assert!(
+            crate::climate::heating_required(w.temperature()),
+            "January was not cold enough to be a test of anything"
+        );
+        let cold: Vec<_> = w
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().heat > 0.0 && !b.heated)
+            .map(|b| b.def().name)
+            .collect();
+        assert!(cold.is_empty(), "these went cold in January: {cold:?}");
     }
 
     #[test]

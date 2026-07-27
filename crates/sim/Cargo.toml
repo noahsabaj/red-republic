@@ -25,5 +25,10 @@ bevy_ecs = { version = "0.19", default-features = false }
 # round-trip f64 bit-exactly. serde_json does not — 91,767 of 200,000 sampled
 # f64 values came back different, because its parser is not correctly rounded
 # even when the digits it wrote were right. postcard stores the bit pattern.
-[dev-dependencies]
+#
+# This is a real dependency, not a dev one, because the crate has to OWN the
+# format. A `Save` handed out as a serde value is a format the caller picks,
+# and a shell that reached for JSON would silently reintroduce exactly the
+# corruption this requirement exists to prevent — with the guard test still
+# passing, because the guard would be testing a format nothing uses.
 postcard = { version = "1", features = ["use-std"] }

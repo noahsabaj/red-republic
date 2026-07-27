@@ -143,6 +143,12 @@ impl SimClock {
         Date::from_day_index(self.day_index())
     }
 
+    /// Days since 1 January of the current year — what the climate curve is a
+    /// function of.
+    pub fn day_of_year(self) -> u32 {
+        (self.day_index() % u64::from(DAYS_PER_YEAR)) as u32
+    }
+
     pub fn season(self) -> Season {
         self.date().season()
     }

@@ -22,6 +22,8 @@
 
 use crate::building::Buildings;
 use crate::citizen::Population;
+use crate::climate::{self, ClimateId};
+use crate::contract::Contracts;
 use crate::geology::Geology;
 use crate::mapgen;
 use crate::rng::{Rng, RngState};
@@ -43,6 +45,14 @@ pub const TERRAIN_STREAM: u64 = 2;
 /// Substream identifier for the border edge.
 pub const BORDER_STREAM: u64 = 3;
 
+/// Substream identifier for the weather. Its own stream so that reading a
+/// forecast never perturbs the economy — the archived build's rule, learned
+/// from contract offers.
+pub const WEATHER_STREAM: u64 = 4;
+
+/// Substream identifier for foreign trade tenders.
+pub const CONTRACT_STREAM: u64 = 5;
+
 /// Mix a seed with a stream identifier.
 ///
 /// The same derivation [`World::substream`] uses, available before a `World`
@@ -57,6 +67,8 @@ pub fn derive(seed: u64, purpose: u64) -> u64 {
 pub enum SaveError {
     /// The save was written by a newer build than this one.
     FromTheFuture { found: u32, supported: u32 },
+    /// The bytes are not a save this build can read.
+    Corrupt(String),
 }
 
 impl std::fmt::Display for SaveError {
@@ -66,6 +78,7 @@ impl std::fmt::Display for SaveError {
                 f,
                 "save format {found} is newer than this build understands ({supported})"
             ),
+            SaveError::Corrupt(why) => write!(f, "save could not be read: {why}"),
         }
     }
 }
@@ -86,15 +99,18 @@ pub struct WorldSpec {
     pub seed: u64,
     /// How far the map reaches, in metres, on each side.
     pub extent: Metres,
+    /// Which posting this is. A filter on the founding shelf, and the reason
+    /// two candidates from the same seed can be different places to live.
+    pub climate: ClimateId,
 }
 
 impl WorldSpec {
-    /// A ten-kilometre republic — the working default until a founding screen
-    /// offers sizes.
+    /// A ten-kilometre republic on the plains — the working default.
     pub fn new(seed: u64) -> Self {
         Self {
             seed,
             extent: Metres(10_000.0),
+            climate: ClimateId::Plains,
         }
     }
 }
@@ -124,6 +140,11 @@ pub struct World {
     pub treasury: Treasury,
     /// Standing instructions to the customs house.
     pub trade_policy: TradePolicy,
+    /// Tenders from the two blocs: offers, live deals and recent history.
+    pub contracts: Contracts,
+    /// The posting's climate. Fixed at founding — you do not get a milder
+    /// winter by asking for one.
+    pub climate: ClimateId,
     /// The founding seed, kept so derived substreams can be recomputed from
     /// it at any time without disturbing `rng`.
     seed: u64,
@@ -162,12 +183,31 @@ impl World {
                 [(Rng::from_seed(derive(spec.seed, BORDER_STREAM)).next_bounded(4)) as usize],
             treasury: Treasury::default(),
             trade_policy: TradePolicy::new(),
+            contracts: Contracts::default(),
+            climate: spec.climate,
             seed: spec.seed,
         }
     }
 
     pub fn seed(&self) -> u64 {
         self.seed
+    }
+
+    /// Today's outdoor temperature, in degrees Celsius.
+    ///
+    /// A pure function of `(seed, climate, day)` drawn from the weather
+    /// substream, so it is the same every time it is asked and asking never
+    /// moves the simulation's own generator. That also means a forecast is just
+    /// this function called with a later day.
+    pub fn temperature(&self) -> f64 {
+        self.temperature_on_day(self.clock.day_index())
+    }
+
+    /// The same for any day, past or future — which is what a forecast is.
+    pub fn temperature_on_day(&self, day_index: u64) -> f64 {
+        let deviation = self.substream(WEATHER_STREAM, day_index).next_f64();
+        let day_of_year = (day_index % u64::from(crate::time::DAYS_PER_YEAR)) as u32;
+        climate::temperature_on(self.climate.def(), day_of_year, deviation)
     }
 
     /// How far a point is from foreign soil.
@@ -255,6 +295,44 @@ impl World {
         // There are none yet because there is only one version.
         Ok(save.world)
     }
+
+    /// Write a save, in the crate's own wire format.
+    ///
+    /// **The format is not the caller's choice**, and that is the whole reason
+    /// this method exists rather than the crate handing out a serde value and
+    /// letting a shell pick. The requirement is bit-exact `f64` round-tripping,
+    /// found by measurement — `serde_json` changed 91,767 of 200,000 sampled
+    /// values because its *parser* is not correctly rounded — and a requirement
+    /// a caller can opt out of is not a requirement. `postcard` stores bit
+    /// patterns rather than digits, and
+    /// [`crate::world::tests::the_save_format_round_trips_floats_bit_exactly`]
+    /// guards the format this function actually uses.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        postcard::to_stdvec(&self.to_save()).expect("a world is always serializable")
+    }
+
+    /// Read a save written by [`World::to_bytes`].
+    ///
+    /// The version is decoded **on its own, before the world is parsed**, which
+    /// is what makes "this save is newer than this build" a distinguishable
+    /// answer. A future format that changed the shape of [`World`] would fail
+    /// mid-parse if the whole blob were read first, and the player would be told
+    /// their save was corrupt when it is merely from a newer build. That is the
+    /// point of the version travelling outside the world, and reading it in one
+    /// pass with everything else would have quietly thrown it away.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, SaveError> {
+        let (version, _) = postcard::take_from_bytes::<u32>(bytes)
+            .map_err(|e| SaveError::Corrupt(e.to_string()))?;
+        if version > SAVE_VERSION {
+            return Err(SaveError::FromTheFuture {
+                found: version,
+                supported: SAVE_VERSION,
+            });
+        }
+        let save: Save =
+            postcard::from_bytes(bytes).map_err(|e| SaveError::Corrupt(e.to_string()))?;
+        Self::from_save(save)
+    }
 }
 
 #[cfg(test)]
@@ -268,6 +346,7 @@ mod tests {
         WorldSpec {
             seed,
             extent: Metres(1_000.0),
+            climate: ClimateId::Plains,
         }
     }
 
@@ -330,9 +409,10 @@ mod tests {
         let mut live = World::new(spec(7));
         simulate_days(&mut live, 45);
 
-        let wire = postcard::to_stdvec(&live.to_save()).expect("save must serialize");
-        let parsed: Save = postcard::from_bytes(&wire).expect("save must parse");
-        let mut reloaded = World::from_save(parsed).expect("save must load");
+        // Through the crate's own save API, so this exercises the format the
+        // simulation actually writes rather than one a test picked.
+        let wire = live.to_bytes();
+        let mut reloaded = World::from_bytes(&wire).expect("save must load");
         assert_eq!(reloaded, live, "a fresh reload must equal what was saved");
 
         simulate_days(&mut live, 45);
@@ -395,9 +475,7 @@ mod tests {
         let after = world.geology.remaining_of(Mineral::Coal);
         assert_eq!(after, before - Tonnes(250.0), "the seam was worked");
 
-        let wire = postcard::to_stdvec(&world.to_save()).expect("save must serialize");
-        let reloaded =
-            World::from_save(postcard::from_bytes(&wire).expect("save must parse")).expect("loads");
+        let reloaded = World::from_bytes(&world.to_bytes()).expect("loads");
 
         assert_eq!(
             reloaded.geology.remaining_of(Mineral::Coal),
@@ -450,6 +528,33 @@ mod tests {
                 supported: SAVE_VERSION,
             })
         );
+    }
+
+    /// The version has to be readable *without* the world parsing, or a save
+    /// from a future build reads as corrupt and the player is told the wrong
+    /// thing about their own file.
+    ///
+    /// Verified by sabotage: the bytes after the version are deliberate
+    /// rubbish, so this can only pass if the version was read first.
+    #[test]
+    fn a_future_version_is_recognised_before_the_world_is_parsed() {
+        let mut bytes = postcard::to_stdvec(&(SAVE_VERSION + 1)).expect("a u32 serializes");
+        bytes.extend_from_slice(b"not a world at all");
+        assert_eq!(
+            World::from_bytes(&bytes),
+            Err(SaveError::FromTheFuture {
+                found: SAVE_VERSION + 1,
+                supported: SAVE_VERSION,
+            })
+        );
+    }
+
+    #[test]
+    fn rubbish_bytes_are_refused_rather_than_half_loaded() {
+        assert!(matches!(
+            World::from_bytes(&[0u8; 3]),
+            Err(SaveError::Corrupt(_))
+        ));
     }
 
     #[test]

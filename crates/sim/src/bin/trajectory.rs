@@ -10,9 +10,14 @@
 //! something, and no threshold in a test would have said it as clearly.
 //!
 //! ```text
-//! cargo run --release --bin trajectory -- [seed] [years]
+//! cargo run --release --bin trajectory -- [seed] [years] [climate]
 //! ```
+//!
+//! `climate` is `plains`, `taiga`, `steppe` or `maritime` — the fastest way to
+//! see what a winter costs, because the same republic on the taiga burns a
+//! different amount of coal for the same output.
 
+use red_republic_sim::climate::ClimateId;
 use red_republic_sim::resource::Resource;
 use red_republic_sim::scenario;
 use red_republic_sim::time::TICKS_PER_DAY;
@@ -23,15 +28,25 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let seed: u64 = args.next().and_then(|a| a.parse().ok()).unwrap_or(1961);
     let years: u32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(3);
+    let climate = match args.next().as_deref() {
+        Some("taiga") => ClimateId::Taiga,
+        Some("steppe") => ClimateId::Steppe,
+        Some("maritime") => ClimateId::Maritime,
+        _ => ClimateId::Plains,
+    };
 
     let mut world = World::new(WorldSpec {
         seed,
         extent: Metres(6_000.0),
+        climate,
     });
     let base = scenario::found(&mut world, 120);
 
     println!("Red Republic — trajectory");
-    println!("seed {seed} · {years} years · 6 km republic");
+    println!(
+        "seed {seed} · {years} years · 6 km republic · {}",
+        climate.def().name
+    );
     println!(
         "founded at ({:.0} m, {:.0} m) · {} housing · mine {} · plant {}",
         base.centre.x.0,
@@ -62,14 +77,35 @@ fn main() {
     );
     println!();
     println!(
-        "{:>10} {:>4} {:>5} {:>5} {:>8} {:>8} {:>10} {:>9} {:>4}",
-        "date", "pop", "empl", "fed%", "coal", "food", "coal left", "roubles", "dark"
+        "{:>10} {:>4} {:>5} {:>5} {:>6} {:>5} {:>8} {:>8} {:>10} {:>9} {:>4}",
+        "date",
+        "pop",
+        "empl",
+        "fed%",
+        "degC",
+        "warm%",
+        "coal",
+        "food",
+        "coal left",
+        "roubles",
+        "dark"
     );
 
     let months = years * 12;
+    let mut taken = 0usize;
     for _ in 0..months {
         for _ in 0..TICKS_PER_DAY * 30 {
             world.tick();
+        }
+        // Take every tender offered. The runner plays nothing else, but an
+        // obligation it never accepts is a mechanism it never exercises — and
+        // accepting everything is the stress case worth watching, because it is
+        // where a plan that quietly stopped working shows up as a fine.
+        let offers: Vec<_> = world.contracts.offers().map(|c| c.id).collect();
+        for id in offers {
+            if world.contracts.accept(id) {
+                taken += 1;
+            }
         }
         let date = world.clock.date();
         let held = |r: Resource| -> Tonnes {
@@ -102,14 +138,33 @@ fn main() {
             estates.iter().sum::<f64>() / estates.len() as f64
         };
 
+        // How many of the people who need warming are getting it. The column
+        // that says whether a winter is being survived or merely endured.
+        let (housed, warm) = world
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().heat > 0.0)
+            .filter(|b| !world.population.residents_of(b.id).is_empty())
+            .fold((0u32, 0u32), |(total, ok), b| {
+                (total + 1, ok + u32::from(b.heated))
+            });
+        let warm_share = if housed == 0 {
+            1.0
+        } else {
+            f64::from(warm) / f64::from(housed)
+        };
+
         println!(
-            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>8.0} {:>8.1} {:>10.0} {:>9.0} {:>4}",
+            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>6.1} {:>4.0}% {:>8.0} {:>8.1} {:>10.0} {:>9.0} {:>4}",
             date.year,
             date.month,
             date.day,
             world.population.count(),
             world.population.employed(),
             fed * 100.0,
+            world.temperature(),
+            warm_share * 100.0,
             held(Resource::Coal).0,
             held(Resource::Food).0,
             world
@@ -120,4 +175,33 @@ fn main() {
             dark,
         );
     }
+
+    let live = world.contracts.active().count();
+    let done = world
+        .contracts
+        .all()
+        .iter()
+        .filter(|c| c.state == red_republic_sim::contract::ContractState::Done)
+        .count();
+    let failed = world
+        .contracts
+        .all()
+        .iter()
+        .filter(|c| c.state == red_republic_sim::contract::ContractState::Failed)
+        .count();
+    println!();
+    println!(
+        "tenders: {taken} accepted · {live} running, {done} delivered, {failed} failed · relations east {:.2} west {:.2}",
+        world
+            .contracts
+            .penalty(red_republic_sim::trade::Market::East),
+        world
+            .contracts
+            .penalty(red_republic_sim::trade::Market::West),
+    );
+    println!(
+        "commuting: {} of {} workers ride a bus",
+        world.population.riders(),
+        world.population.employed()
+    );
 }

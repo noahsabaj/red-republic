@@ -14,11 +14,16 @@
 //! The numbers in the assertions are the ceilings, not the measurements. Read
 //! the printed output for what it actually costs today.
 
-use red_republic_sim::building::BuildingKind;
+use red_republic_sim::building::{BUILDINGS, BuildingKind};
 use red_republic_sim::citizen::assign_labour;
+use red_republic_sim::climate::ClimateId;
+use red_republic_sim::founding::{SIZES, Shelf, ShelfFilter};
 use red_republic_sim::geology::Mineral;
 use red_republic_sim::road::{RoadNetwork, default_road_speed};
 use red_republic_sim::scenario;
+use red_republic_sim::terrain::{
+    DEFAULT_CELL_SIZE, DEFAULT_TERRAIN, TerrainPlan, generate_terrain,
+};
 use red_republic_sim::time::TICKS_PER_DAY;
 use red_republic_sim::units::{Metres, Point};
 use red_republic_sim::world::{World, WorldSpec};
@@ -26,6 +31,62 @@ use std::time::Instant;
 
 fn at(x: f64, y: f64) -> Point {
     Point::new(Metres(x), Metres(y))
+}
+
+/// The measurement the plan required before terrain resolution could be
+/// chosen — "measure before choosing", and this is the measuring.
+///
+/// It sweeps rather than testing one value, because the *shape* of the response
+/// is what says whether you have the wrong tuning or the wrong lever. Here the
+/// shape is a clean quadratic in cells-per-side with no cliff anywhere, so
+/// resolution is a straight trade of memory and generation time against how
+/// finely a footprint can be resolved — which means the decision is made by the
+/// correctness floor, not by performance.
+///
+/// The floor: buildability samples the cell lattice, so a building smaller than
+/// one cell in an axis reads a single sample and stops being distinguishable
+/// from any other small building. The smallest in the table is a Small House at
+/// 12 x 10 m, so 10 m is the coarsest resolution that holds — and everything
+/// coarser is rejected however cheap it is.
+#[test]
+fn cell_size_sweep() {
+    const EXTENT: Metres = Metres(10_000.0);
+    let (min_w, min_d) = BUILDINGS.iter().fold((f64::MAX, f64::MAX), |(w, d), def| {
+        (w.min(def.width.0), d.min(def.depth.0))
+    });
+
+    println!("[BASELINE cells] smallest footprint in the table: {min_w} x {min_d} m");
+    for metres in [5.0, 10.0, 20.0, 40.0] {
+        let plan = TerrainPlan {
+            cell_size: Metres(metres),
+            ..DEFAULT_TERRAIN
+        };
+        let start = Instant::now();
+        let terrain = generate_terrain(1961, EXTENT, &plan);
+        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+
+        let cells = u64::from(terrain.cells());
+        let total = cells * cells;
+        // A height (f32) and a surface (one byte) per cell.
+        let bytes = total * 5;
+        let resolves = min_w >= metres && min_d >= metres;
+        println!(
+            "[BASELINE cells] {metres:>4} m: {cells} per side, {total} cells, {:.1} MB, {elapsed:.0} ms gen, smallest footprint {:.1} x {:.1} cells{}",
+            bytes as f64 / 1_048_576.0,
+            min_w / metres,
+            min_d / metres,
+            if resolves { "" } else { "  <- BELOW THE FLOOR" }
+        );
+    }
+
+    // What the sweep decided, pinned so a later change to the building table
+    // that breaks it fails here rather than silently making small buildings
+    // indistinguishable.
+    assert!(
+        min_w >= DEFAULT_CELL_SIZE.0 && min_d >= DEFAULT_CELL_SIZE.0,
+        "the smallest building ({min_w} x {min_d} m) no longer covers a {} m cell",
+        DEFAULT_CELL_SIZE.0
+    );
 }
 
 /// Generating a 10 km republic — the cost the founding screen's candidate
@@ -38,6 +99,7 @@ fn worldgen_cost() {
         let _ = World::new(WorldSpec {
             seed: u64::from(seed),
             extent: Metres(10_000.0),
+            climate: ClimateId::Plains,
         });
     }
     let each = start.elapsed().as_secs_f64() * 1000.0 / f64::from(RUNS);
@@ -51,6 +113,7 @@ fn geology_query_cost() {
     let world = World::new(WorldSpec {
         seed: 1961,
         extent: Metres(10_000.0),
+        climate: ClimateId::Plains,
     });
     let bodies = world.geology.all().len();
 
@@ -125,6 +188,7 @@ fn labour_scaling() {
         let mut world = World::new(WorldSpec {
             seed: 1961,
             extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
         });
         let base = scenario::found(&mut world, citizens);
         let jobs = world.buildings.jobs();
@@ -152,6 +216,7 @@ fn simulated_day_cost() {
         let mut world = World::new(WorldSpec {
             seed: 1961,
             extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
         });
         scenario::found(&mut world, citizens);
 
@@ -169,6 +234,45 @@ fn simulated_day_cost() {
     }
 }
 
+/// The founding shelf: six candidate maps, generated to be compared.
+///
+/// This is the one screen whose cost the player waits on, so it is worth a
+/// number rather than a shrug. During the design interview I told noahs the
+/// shelf was essentially free, reasoning from the archived build's tile
+/// generator — at metric scale it is not free, and this is what it actually
+/// costs.
+#[test]
+fn founding_shelf_cost() {
+    for &(label, extent) in &SIZES {
+        let start = Instant::now();
+        let shelf = Shelf::derive(
+            1961,
+            ShelfFilter {
+                extent,
+                climate: ClimateId::Plains,
+            },
+        );
+        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+
+        // Re-filtering regenerates, because a filter transforms the land. That
+        // is the interaction the player actually performs, so it is the one
+        // worth measuring — not the first paint.
+        let start = Instant::now();
+        let _ = shelf.refilter(ShelfFilter {
+            extent,
+            climate: ClimateId::Taiga,
+        });
+        let refilter = start.elapsed().as_secs_f64() * 1000.0;
+
+        println!(
+            "[BASELINE shelf] {label} ({:.0} km): {} candidates in {elapsed:.0} ms, refilter {refilter:.0} ms",
+            extent.as_km(),
+            shelf.candidates.len()
+        );
+        assert!(elapsed < 10_000.0, "a shelf took {elapsed:.0} ms");
+    }
+}
+
 /// Placement gets slower as the republic fills up, because every candidate is
 /// tested against every standing building.
 #[test]
@@ -176,6 +280,7 @@ fn placement_scaling() {
     let mut world = World::new(WorldSpec {
         seed: 7,
         extent: Metres(10_000.0),
+        climate: ClimateId::Plains,
     });
     let start = Instant::now();
     let mut placed = 0u32;

@@ -24,6 +24,9 @@
 
 pub mod building;
 pub mod citizen;
+pub mod climate;
+pub mod contract;
+pub mod founding;
 pub mod geology;
 pub mod mapgen;
 pub mod resource;
@@ -34,11 +37,15 @@ pub mod systems;
 pub mod terrain;
 pub mod time;
 pub mod trade;
+pub mod transport;
 pub mod units;
 pub mod world;
 
 pub use building::{Building, BuildingId, BuildingKind, Buildings, PlacementError};
 pub use citizen::{CitizenId, CitizenRecord, Population};
+pub use climate::{Climate, ClimateId};
+pub use contract::{Contract, ContractId, ContractState, Contracts};
+pub use founding::{Candidate, Shelf, ShelfFilter};
 pub use geology::{Deposit, DepositId, Geology, Layer, Mineral, SurveyReading};
 pub use resource::{Resource, Stock};
 pub use rng::{Rng, RngState};
@@ -47,6 +54,7 @@ pub use systems::{Mutation, Stall};
 pub use terrain::{Surface, Terrain};
 pub use time::{Date, Season, SimClock};
 pub use trade::{BorderEdge, Market, TradePolicy, Treasury};
+pub use transport::{Commute, Mode};
 pub use units::{Metres, Point, Seconds, Speed, Tonnes};
 pub use world::{SAVE_VERSION, Save, SaveError, World};
 
