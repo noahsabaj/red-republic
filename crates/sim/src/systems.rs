@@ -68,6 +68,10 @@ pub enum Mutation {
         resource: Resource,
         tonnes: Tonnes,
     },
+    /// Builder-days worked on a site, and the materials that went into them.
+    /// One kind: work and materials are the same transaction, and a site that
+    /// advanced without consuming would be building itself out of nothing.
+    Build { site: BuildingId, builder_days: f64 },
 }
 
 /// The single writer.
@@ -119,6 +123,29 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     b.stock.add(resource, tonnes.min(room));
                 }
             }
+            Mutation::Build { site, builder_days } => {
+                let Some(b) = world.buildings.get(site) else {
+                    continue;
+                };
+                let def = b.def();
+                if def.labour <= 0.0 {
+                    continue;
+                }
+                let remaining = (def.labour - b.work_done).max(0.0);
+                let worked = builder_days.min(remaining);
+                let share = worked / def.labour;
+                // Materials are consumed in step with the work, so a site
+                // half-built has half its materials in it and half in the
+                // fabric. Bulldozing one back returns what is left.
+                for &(resource, quantity) in def.materials {
+                    if let Some(b) = world.buildings.get_mut(site) {
+                        b.stock.take(resource, Tonnes(quantity * share));
+                    }
+                }
+                if let Some(b) = world.buildings.get_mut(site) {
+                    b.work_done += worked;
+                }
+            }
             Mutation::Deliver {
                 from,
                 to,
@@ -131,7 +158,9 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     .map(|b| b.stock.take(resource, tonnes))
                     .unwrap_or(Tonnes::ZERO);
                 if let Some(b) = world.buildings.get_mut(to) {
-                    let room = b.storage_cap().saturating_sub(b.stock.get(resource));
+                    let room = b
+                        .intake_capacity(resource)
+                        .saturating_sub(b.stock.get(resource));
                     let landed = taken.min(room);
                     b.stock.add(resource, landed);
                     // Whatever would not fit goes back where it came from
@@ -164,6 +193,9 @@ fn tick_days() -> f64 {
 pub fn power(world: &World) -> Vec<Mutation> {
     let mut available = 0.0;
     for b in world.buildings.all() {
+        if !b.is_built() {
+            continue; // a half-built plant generates nothing
+        }
         let def = b.def();
         if def.power_output > 0.0 && b.staffing() > 0.0 {
             let fuelled = def
@@ -182,7 +214,7 @@ pub fn power(world: &World) -> Vec<Mutation> {
         .buildings
         .all()
         .iter()
-        .filter(|b| b.def().power_draw > 0.0)
+        .filter(|b| b.is_built() && b.def().power_draw > 0.0)
         .collect();
     consumers.sort_by_key(|b| b.id);
 
@@ -193,6 +225,63 @@ pub fn power(world: &World) -> Vec<Mutation> {
             drawn += draw;
         }
         out.push(Mutation::Powered { building: b.id, on });
+    }
+    out
+}
+
+/// The most builders one site can absorb in a day. Ported from the archive:
+/// throwing the whole republic's crew at one foundation does not make it set
+/// faster.
+pub const BUILDERS_PER_SITE: f64 = 10.0;
+
+/// Putting up what has been ordered.
+///
+/// Builders are the staff of Construction Offices — a republic with no office
+/// builds nothing, however much material it has stockpiled. A site progresses
+/// only when **all** its materials are on hand: a half-delivered site waits,
+/// which is what makes freight priority matter during a build-out.
+///
+/// Sites are worked in commissioning order and finished one at a time rather
+/// than progressed evenly. That is the archived build's rule and it was learned
+/// the hard way — spreading crews across every site meant nothing opened, and
+/// ranking by nearness-to-completion starved new sites permanently.
+pub fn construction(world: &World) -> Vec<Mutation> {
+    let day = tick_days();
+    let mut crew = world
+        .buildings
+        .all()
+        .iter()
+        .filter(|b| b.is_built() && b.kind == BuildingKind::ConstructionOffice)
+        .map(|b| f64::from(b.staff))
+        .sum::<f64>()
+        * day;
+    if crew <= 0.0 {
+        return Vec::new();
+    }
+
+    let mut sites: Vec<_> = world
+        .buildings
+        .all()
+        .iter()
+        .filter(|b| !b.is_built() && b.has_materials())
+        .collect();
+    sites.sort_by_key(|b| b.id);
+
+    let mut out = Vec::new();
+    for site in sites {
+        if crew <= 0.0 {
+            break;
+        }
+        let wanted = (site.def().labour - site.work_done).max(0.0);
+        let days = crew.min(BUILDERS_PER_SITE * day).min(wanted);
+        if days <= 0.0 {
+            continue;
+        }
+        crew -= days;
+        out.push(Mutation::Build {
+            site: site.id,
+            builder_days: days,
+        });
     }
     out
 }
@@ -216,6 +305,9 @@ pub fn production(world: &World) -> Vec<Mutation> {
     let mut out = Vec::new();
 
     for b in world.buildings.all() {
+        if !b.is_built() {
+            continue; // a site produces nothing
+        }
         let def = b.def();
         let mut efficiency = b.staffing();
         if def.power_draw > 0.0 && !b.powered {
@@ -350,6 +442,28 @@ pub fn logistics(world: &World) -> Vec<Mutation> {
         serve(world, destination, resource, &mut budget, &mut out);
     }
 
+    // Pass one and a half: sites waiting on materials. A site with nothing
+    // arriving is a crew standing idle, so this sits above comfortable
+    // top-ups but below a running building about to stall.
+    let mut sites: Vec<(BuildingId, Resource)> = Vec::new();
+    for b in world.buildings.all() {
+        if b.is_built() {
+            continue;
+        }
+        for &(resource, quantity) in b.def().materials {
+            if b.stock.get(resource).0 < quantity {
+                sites.push((b.id, resource));
+            }
+        }
+    }
+    sites.sort();
+    for (destination, resource) in sites {
+        if !budget.is_positive() {
+            break;
+        }
+        serve(world, destination, resource, &mut budget, &mut out);
+    }
+
     // Pass two: comfortable top-ups, on what the first pass left.
     let mut comfortable: Vec<(BuildingId, Resource)> = Vec::new();
     for b in world.buildings.all() {
@@ -382,7 +496,13 @@ fn serve(
     let Some(to) = world.buildings.get(destination) else {
         return;
     };
-    let room = to.storage_cap().saturating_sub(to.stock.get(resource));
+    // A site's bill of materials can exceed its finished storage bin — a steel
+    // mill needs 30 t of brick to build and holds 40 t of anything once open,
+    // but a smaller building could easily need more than it will ever store.
+    // Capping a site by its bin would stall it forever.
+    let room = to
+        .intake_capacity(resource)
+        .saturating_sub(to.stock.get(resource));
     if !room.is_positive() {
         return;
     }
@@ -440,7 +560,7 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
         all.extend(mutations);
     }
 
-    for system in [power, production, logistics] {
+    for system in [power, construction, production, logistics] {
         let mutations = system(world);
         apply(world, &mutations);
         all.extend(mutations);
@@ -541,7 +661,7 @@ mod tests {
     fn staff_up(world: &mut World, beside: Point, count: usize) -> BuildingId {
         let home = world
             .buildings
-            .place(
+            .place_built(
                 BuildingKind::Apartment,
                 beside,
                 &world.terrain,
@@ -554,10 +674,12 @@ mod tests {
         home
     }
 
+    /// Most tests here are about running an economy, not about building one,
+    /// so they put finished buildings up. Construction has its own tests.
     fn place(world: &mut World, kind: BuildingKind, at: Point) -> BuildingId {
         world
             .buildings
-            .place(kind, at, &world.terrain, &world.geology)
+            .place_built(kind, at, &world.terrain, &world.geology)
             .expect("open ground")
     }
 
@@ -858,6 +980,197 @@ mod tests {
 
         w.tick();
         assert!(!w.buildings.get(factory).unwrap().powered);
+    }
+
+    /// The whole construction path: order a building, truck the materials in,
+    /// crews work it, and it opens.
+    #[test]
+    fn a_site_becomes_a_building_once_material_and_labour_arrive() {
+        let mut w = bare();
+        // A construction office and the people to staff it.
+        place(
+            &mut w,
+            BuildingKind::ConstructionOffice,
+            at(1_000.0, 1_000.0),
+        );
+        staff_up(&mut w, at(1_150.0, 1_000.0), 20);
+        // A depot holding the materials a woodcutter post needs.
+        let depot = place(&mut w, BuildingKind::Depot, at(1_400.0, 1_000.0));
+        w.buildings
+            .get_mut(depot)
+            .unwrap()
+            .stock
+            .add(Resource::Planks, Tonnes(50.0));
+
+        // Order the post. It is a site: no jobs, no output.
+        let site = w
+            .buildings
+            .place(
+                BuildingKind::Woodcutter,
+                at(1_700.0, 1_000.0),
+                &w.terrain,
+                &w.geology,
+            )
+            .expect("open ground");
+        assert!(!w.buildings.get(site).unwrap().is_built());
+        assert_eq!(
+            w.buildings.jobs(),
+            14,
+            "only the office and depot offer work"
+        );
+
+        for _ in 0..TICKS_PER_DAY * 20 {
+            w.tick();
+        }
+
+        let post = w.buildings.get(site).unwrap();
+        assert!(
+            post.is_built(),
+            "still {:.0}% built after twenty days",
+            post.progress() * 100.0
+        );
+        assert_eq!(
+            w.buildings.jobs(),
+            20,
+            "the finished post offers its six jobs"
+        );
+    }
+
+    /// A republic with no Construction Office builds nothing, however much
+    /// material it has stockpiled. Builders are people, not a global rate.
+    #[test]
+    fn nothing_is_built_without_a_construction_office() {
+        let mut w = bare();
+        staff_up(&mut w, at(1_150.0, 1_000.0), 20);
+        let site = w
+            .buildings
+            .place(
+                BuildingKind::Woodcutter,
+                at(1_700.0, 1_000.0),
+                &w.terrain,
+                &w.geology,
+            )
+            .unwrap();
+        w.buildings
+            .get_mut(site)
+            .unwrap()
+            .stock
+            .add(Resource::Planks, Tonnes(10.0));
+
+        for _ in 0..TICKS_PER_DAY * 30 {
+            w.tick();
+        }
+        assert!(!w.buildings.get(site).unwrap().is_built());
+        assert_eq!(w.buildings.get(site).unwrap().work_done, 0.0);
+    }
+
+    /// A half-delivered site waits. This is what makes freight priority matter
+    /// during a build-out: the crew is idle until the last tonne lands.
+    #[test]
+    fn a_site_short_of_materials_does_not_progress() {
+        let mut w = bare();
+        place(
+            &mut w,
+            BuildingKind::ConstructionOffice,
+            at(1_000.0, 1_000.0),
+        );
+        staff_up(&mut w, at(1_150.0, 1_000.0), 20);
+        let site = w
+            .buildings
+            .place(
+                BuildingKind::Woodcutter,
+                at(1_700.0, 1_000.0),
+                &w.terrain,
+                &w.geology,
+            )
+            .unwrap();
+        // Three of the four tonnes it needs.
+        w.buildings
+            .get_mut(site)
+            .unwrap()
+            .stock
+            .add(Resource::Planks, Tonnes(3.0));
+
+        for _ in 0..TICKS_PER_DAY * 5 {
+            w.tick();
+        }
+        assert_eq!(w.buildings.get(site).unwrap().work_done, 0.0);
+
+        w.buildings
+            .get_mut(site)
+            .unwrap()
+            .stock
+            .add(Resource::Planks, Tonnes(1.0));
+        for _ in 0..TICKS_PER_DAY * 5 {
+            w.tick();
+        }
+        assert!(w.buildings.get(site).unwrap().work_done > 0.0);
+    }
+
+    /// Materials are consumed in step with the work, not conjured at the end.
+    #[test]
+    fn building_consumes_its_materials_as_it_goes() {
+        let mut w = bare();
+        let site = w
+            .buildings
+            .place(
+                BuildingKind::Woodcutter,
+                at(1_700.0, 1_000.0),
+                &w.terrain,
+                &w.geology,
+            )
+            .unwrap();
+        w.buildings
+            .get_mut(site)
+            .unwrap()
+            .stock
+            .add(Resource::Planks, Tonnes(4.0));
+
+        let labour = BuildingKind::Woodcutter.def().labour;
+        apply(
+            &mut w,
+            &[Mutation::Build {
+                site,
+                builder_days: labour / 2.0,
+            }],
+        );
+        let b = w.buildings.get(site).unwrap();
+        assert!((b.progress() - 0.5).abs() < 1e-9);
+        assert!(
+            (b.stock.get(Resource::Planks).0 - 2.0).abs() < 1e-9,
+            "half the planks should be in the fabric"
+        );
+    }
+
+    /// Work cannot run past what the site needs, so a big crew on a small job
+    /// does not overshoot into a building that is 300% built.
+    #[test]
+    fn a_finished_site_absorbs_no_more_work() {
+        let mut w = bare();
+        let site = w
+            .buildings
+            .place(
+                BuildingKind::Woodcutter,
+                at(1_700.0, 1_000.0),
+                &w.terrain,
+                &w.geology,
+            )
+            .unwrap();
+        w.buildings
+            .get_mut(site)
+            .unwrap()
+            .stock
+            .add(Resource::Planks, Tonnes(4.0));
+        apply(
+            &mut w,
+            &[Mutation::Build {
+                site,
+                builder_days: 10_000.0,
+            }],
+        );
+        let b = w.buildings.get(site).unwrap();
+        assert_eq!(b.work_done, BuildingKind::Woodcutter.def().labour);
+        assert_eq!(b.progress(), 1.0);
     }
 
     #[test]

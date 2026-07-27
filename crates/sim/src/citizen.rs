@@ -301,7 +301,12 @@ pub fn assign_labour(
     roads: &RoadNetwork,
 ) -> Vec<(BuildingId, u32)> {
     let people = population.records();
-    let home_of = |record: &CitizenRecord| buildings.get(record.home.0).map(|b| b.centre);
+    let home_of = |record: &CitizenRecord| {
+        buildings
+            .get(record.home.0)
+            .filter(|b| b.is_built())
+            .map(|b| b.centre)
+    };
 
     // Everyone of working age whose home still stands.
     let mut available: Vec<(CitizenId, Point)> = people
@@ -314,10 +319,12 @@ pub fn assign_labour(
         people.iter().map(|c| (c.id, None)).collect();
     let mut staffing = Vec::new();
 
+    // Only finished buildings employ anyone. A site is worked by builders, who
+    // are staff of a Construction Office, not of the thing being built.
     let mut workplaces: Vec<_> = buildings
         .all()
         .iter()
-        .filter(|b| b.def().workers > 0)
+        .filter(|b| b.is_built() && b.def().workers > 0)
         .collect();
     workplaces.sort_by_key(|b| b.id);
 
@@ -435,10 +442,10 @@ mod tests {
         let g = Geology::new();
         let mut b = Buildings::new();
         let home = b
-            .place(BuildingKind::Apartment, at(1_000.0, 1_000.0), &t, &g)
+            .place_built(BuildingKind::Apartment, at(1_000.0, 1_000.0), &t, &g)
             .unwrap();
         let mill = b
-            .place(BuildingKind::Sawmill, at(1_100.0, 1_000.0), &t, &g)
+            .place_built(BuildingKind::Sawmill, at(1_100.0, 1_000.0), &t, &g)
             .unwrap();
 
         let mut p = Population::new();
@@ -463,9 +470,9 @@ mod tests {
         let g = coal_at(far);
         let mut b = Buildings::new();
         let home = b
-            .place(BuildingKind::Apartment, at(1_000.0, 1_000.0), &t, &g)
+            .place_built(BuildingKind::Apartment, at(1_000.0, 1_000.0), &t, &g)
             .unwrap();
-        let mine = b.place(BuildingKind::CoalMine, far, &t, &g).unwrap();
+        let mine = b.place_built(BuildingKind::CoalMine, far, &t, &g).unwrap();
 
         let mut p = Population::new();
         for _ in 0..48 {
@@ -487,9 +494,9 @@ mod tests {
         let far = at(9_000.0, 9_000.0);
         let g = coal_at(far);
         let mut b = Buildings::new();
-        let mine = b.place(BuildingKind::CoalMine, far, &t, &g).unwrap();
+        let mine = b.place_built(BuildingKind::CoalMine, far, &t, &g).unwrap();
         let camp = b
-            .place(BuildingKind::Apartment, at(9_300.0, 9_000.0), &t, &g)
+            .place_built(BuildingKind::Apartment, at(9_300.0, 9_000.0), &t, &g)
             .unwrap();
 
         let mut p = Population::new();
@@ -511,16 +518,16 @@ mod tests {
         let far = at(9_000.0, 9_000.0);
         let mut g = coal_at(far);
         let mut b = Buildings::new();
-        let mine = b.place(BuildingKind::CoalMine, far, &t, &g).unwrap();
+        let mine = b.place_built(BuildingKind::CoalMine, far, &t, &g).unwrap();
         let camp = b
-            .place(BuildingKind::Apartment, at(9_300.0, 9_000.0), &t, &g)
+            .place_built(BuildingKind::Apartment, at(9_300.0, 9_000.0), &t, &g)
             .unwrap();
         // A city far away, with work — but not work these people can reach.
         let city = b
-            .place(BuildingKind::Apartment, at(1_000.0, 1_000.0), &t, &g)
+            .place_built(BuildingKind::Apartment, at(1_000.0, 1_000.0), &t, &g)
             .unwrap();
         let city_mill = b
-            .place(BuildingKind::Sawmill, at(1_200.0, 1_000.0), &t, &g)
+            .place_built(BuildingKind::Sawmill, at(1_200.0, 1_000.0), &t, &g)
             .unwrap();
 
         let mut p = Population::new();
@@ -590,11 +597,11 @@ mod tests {
         let g = Geology::new();
         let mut b = Buildings::new();
         let home = b
-            .place(BuildingKind::Apartment, at(1_000.0, 1_000.0), &t, &g)
+            .place_built(BuildingKind::Apartment, at(1_000.0, 1_000.0), &t, &g)
             .unwrap();
-        b.place(BuildingKind::Sawmill, at(1_150.0, 1_000.0), &t, &g)
+        b.place_built(BuildingKind::Sawmill, at(1_150.0, 1_000.0), &t, &g)
             .unwrap();
-        b.place(BuildingKind::Brickworks, at(1_000.0, 1_150.0), &t, &g)
+        b.place_built(BuildingKind::Brickworks, at(1_000.0, 1_150.0), &t, &g)
             .unwrap();
 
         let build = || {
@@ -617,9 +624,9 @@ mod tests {
         let g = Geology::new();
         let mut b = Buildings::new();
         let home = b
-            .place(BuildingKind::Apartment, at(1_000.0, 1_000.0), &t, &g)
+            .place_built(BuildingKind::Apartment, at(1_000.0, 1_000.0), &t, &g)
             .unwrap();
-        b.place(BuildingKind::Sawmill, at(1_100.0, 1_000.0), &t, &g)
+        b.place_built(BuildingKind::Sawmill, at(1_100.0, 1_000.0), &t, &g)
             .unwrap();
 
         let mut p = Population::new();

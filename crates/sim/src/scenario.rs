@@ -95,7 +95,7 @@ pub fn found(world: &mut World, citizens: usize) -> StartingBase {
         find_site(world, kind, near, reach).and_then(|at| {
             world
                 .buildings
-                .place(kind, at, &world.terrain, &world.geology)
+                .place_built(kind, at, &world.terrain, &world.geology)
                 .ok()
         })
     };

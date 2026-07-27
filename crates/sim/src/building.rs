@@ -87,6 +87,10 @@ pub struct BuildingDef {
     pub inputs: &'static [(Resource, f64)],
     /// Tonnes produced per day at full efficiency.
     pub outputs: &'static [(Resource, f64)],
+    /// Tonnes of material the site consumes before it can open.
+    pub materials: &'static [(Resource, f64)],
+    /// Builder-days of work the site needs. Ported from the archived table.
+    pub labour: f64,
     /// The body this building works, if it is an extractor.
     pub taps: Option<Mineral>,
     /// How many people can live here.
@@ -101,6 +105,7 @@ macro_rules! def {
         workers: $workers:expr, draw: $draw:expr, out_mw: $out_mw:expr,
         in: [$(($ir:ident, $iq:expr)),* $(,)?],
         out: [$(($or:ident, $oq:expr)),* $(,)?],
+        cost: [$(($cr:ident, $cq:expr)),* $(,)?], labour: $labour:expr,
         taps: $taps:expr, residents: $residents:expr, storage: $storage:expr $(,)?
     ) => {
         BuildingDef {
@@ -113,6 +118,8 @@ macro_rules! def {
             power_output: $out_mw,
             inputs: &[$((Resource::$ir, $iq)),*],
             outputs: &[$((Resource::$or, $oq)),*],
+            materials: &[$((Resource::$cr, $cq)),*],
+            labour: $labour,
             taps: $taps,
             residents: $residents,
             storage: $storage,
@@ -124,59 +131,86 @@ macro_rules! def {
 /// footprints are real metric sizes the archived build could not express.
 pub const BUILDINGS: &[BuildingDef] = &[
     def!(House, "Small House", 12.0, 10.0, workers: 0, draw: 0.0, out_mw: 0.0,
-        in: [], out: [], taps: None, residents: 6, storage: 2.0),
+        in: [], out: [],
+        cost: [(Planks, 6.0), (Bricks, 4.0)], labour: 60.0, taps: None, residents: 6, storage: 2.0),
     def!(Apartment, "Apartment Block", 62.0, 14.0, workers: 0, draw: 3.0, out_mw: 0.0,
-        in: [], out: [], taps: None, residents: 48, storage: 8.0),
+        in: [], out: [],
+        cost: [(Planks, 10.0), (Bricks, 30.0), (Steel, 6.0), (Gravel, 8.0)], labour: 300.0, taps: None, residents: 48, storage: 8.0),
     def!(Woodcutter, "Woodcutter Post", 20.0, 16.0, workers: 6, draw: 0.0, out_mw: 0.0,
-        in: [], out: [(Wood, 4.0)], taps: None, residents: 0, storage: 30.0),
+        in: [], out: [(Wood, 4.0)],
+        cost: [(Planks, 4.0)], labour: 50.0, taps: None, residents: 0, storage: 30.0),
     def!(Sawmill, "Sawmill", 34.0, 22.0, workers: 6, draw: 0.0, out_mw: 0.0,
-        in: [(Wood, 2.0)], out: [(Planks, 3.0)], taps: None, residents: 0, storage: 40.0),
+        in: [(Wood, 2.0)], out: [(Planks, 3.0)],
+        cost: [(Bricks, 10.0), (Planks, 6.0), (Steel, 2.0)], labour: 120.0, taps: None, residents: 0, storage: 40.0),
     def!(GravelQuarry, "Gravel Quarry", 60.0, 60.0, workers: 8, draw: 0.0, out_mw: 0.0,
-        in: [], out: [(Gravel, 5.0)], taps: Some(Mineral::Gravel), residents: 0, storage: 60.0),
+        in: [], out: [(Gravel, 5.0)],
+        cost: [(Planks, 6.0), (Bricks, 4.0)], labour: 80.0, taps: Some(Mineral::Gravel), residents: 0, storage: 60.0),
     def!(Brickworks, "Brickworks", 40.0, 28.0, workers: 10, draw: 0.0, out_mw: 0.0,
-        in: [(Gravel, 3.0)], out: [(Bricks, 4.0)], taps: None, residents: 0, storage: 50.0),
+        in: [(Gravel, 3.0)], out: [(Bricks, 4.0)],
+        cost: [(Bricks, 12.0), (Steel, 4.0), (Planks, 4.0)], labour: 130.0, taps: None, residents: 0, storage: 50.0),
     def!(CoalMine, "Coal Mine", 55.0, 45.0, workers: 14, draw: 6.0, out_mw: 0.0,
-        in: [], out: [(Coal, 6.0)], taps: Some(Mineral::Coal), residents: 0, storage: 60.0),
+        in: [], out: [(Coal, 6.0)],
+        cost: [(Bricks, 15.0), (Steel, 6.0), (Planks, 4.0), (Machinery, 2.0)], labour: 200.0, taps: Some(Mineral::Coal), residents: 0, storage: 60.0),
     def!(IronMine, "Iron Ore Mine", 55.0, 45.0, workers: 14, draw: 6.0, out_mw: 0.0,
-        in: [], out: [(IronOre, 5.0)], taps: Some(Mineral::IronOre), residents: 0, storage: 60.0),
+        in: [], out: [(IronOre, 5.0)],
+        cost: [(Bricks, 15.0), (Steel, 6.0), (Planks, 4.0), (Machinery, 2.0)], labour: 200.0, taps: Some(Mineral::IronOre), residents: 0, storage: 60.0),
     def!(SteelMill, "Steel Mill", 180.0, 140.0, workers: 20, draw: 40.0, out_mw: 0.0,
-        in: [(IronOre, 2.0), (Coal, 1.0)], out: [(Steel, 1.5)], taps: None, residents: 0, storage: 40.0),
+        in: [(IronOre, 2.0), (Coal, 1.0)], out: [(Steel, 1.5)],
+        cost: [(Bricks, 30.0), (Steel, 15.0), (Planks, 8.0), (Gravel, 16.0), (Machinery, 8.0)], labour: 220.0, taps: None, residents: 0, storage: 40.0),
     def!(OilPump, "Oil Pump", 24.0, 24.0, workers: 10, draw: 1.0, out_mw: 0.0,
-        in: [], out: [(Oil, 4.0)], taps: Some(Mineral::Oil), residents: 0, storage: 40.0),
+        in: [], out: [(Oil, 4.0)],
+        cost: [(Bricks, 12.0), (Steel, 10.0), (Machinery, 3.0)], labour: 220.0, taps: Some(Mineral::Oil), residents: 0, storage: 40.0),
     def!(Refinery, "Oil Refinery", 160.0, 120.0, workers: 25, draw: 30.0, out_mw: 0.0,
-        in: [(Oil, 3.0)], out: [(Fuel, 2.0)], taps: None, residents: 0, storage: 60.0),
+        in: [(Oil, 3.0)], out: [(Fuel, 2.0)],
+        cost: [(Bricks, 30.0), (Steel, 18.0), (Planks, 6.0), (Gravel, 16.0), (Machinery, 6.0)], labour: 420.0, taps: None, residents: 0, storage: 60.0),
     def!(PowerPlant, "Coal Power Plant", 150.0, 110.0, workers: 15, draw: 0.0, out_mw: 60.0,
-        in: [(Coal, 4.0)], out: [], taps: None, residents: 0, storage: 80.0),
+        in: [(Coal, 4.0)], out: [],
+        cost: [(Bricks, 25.0), (Steel, 12.0), (Planks, 6.0), (Gravel, 12.0), (Machinery, 5.0)], labour: 200.0, taps: None, residents: 0, storage: 80.0),
     def!(OilPowerPlant, "Oil Power Plant", 140.0, 100.0, workers: 16, draw: 0.0, out_mw: 70.0,
-        in: [(Oil, 4.0)], out: [], taps: None, residents: 0, storage: 80.0),
+        in: [(Oil, 4.0)], out: [],
+        cost: [(Bricks, 30.0), (Steel, 18.0), (Planks, 6.0), (Gravel, 16.0), (Machinery, 8.0)], labour: 400.0, taps: None, residents: 0, storage: 80.0),
     def!(HeatingPlant, "Heating Plant", 45.0, 35.0, workers: 8, draw: 1.0, out_mw: 0.0,
-        in: [(Coal, 1.0)], out: [], taps: None, residents: 0, storage: 40.0),
+        in: [(Coal, 1.0)], out: [],
+        cost: [(Bricks, 18.0), (Steel, 8.0), (Planks, 4.0), (Machinery, 1.0)], labour: 180.0, taps: None, residents: 0, storage: 40.0),
     def!(Farm, "Collective Farm", 240.0, 240.0, workers: 10, draw: 0.0, out_mw: 0.0,
-        in: [], out: [(Crops, 6.0)], taps: None, residents: 0, storage: 60.0),
+        in: [], out: [(Crops, 6.0)],
+        cost: [(Planks, 12.0), (Bricks, 8.0)], labour: 150.0, taps: None, residents: 0, storage: 60.0),
     def!(FoodFactory, "Food Factory", 50.0, 35.0, workers: 12, draw: 4.0, out_mw: 0.0,
-        in: [(Crops, 2.5)], out: [(Food, 2.5)], taps: None, residents: 0, storage: 50.0),
+        in: [(Crops, 2.5)], out: [(Food, 2.5)],
+        cost: [(Bricks, 18.0), (Steel, 6.0), (Planks, 6.0), (Machinery, 1.0)], labour: 200.0, taps: None, residents: 0, storage: 50.0),
     def!(TextileMill, "Textile Mill", 55.0, 35.0, workers: 12, draw: 4.0, out_mw: 0.0,
-        in: [(Crops, 2.0)], out: [(Clothes, 1.2)], taps: None, residents: 0, storage: 50.0),
+        in: [(Crops, 2.0)], out: [(Clothes, 1.2)],
+        cost: [(Bricks, 16.0), (Steel, 5.0), (Planks, 6.0), (Machinery, 1.0)], labour: 180.0, taps: None, residents: 0, storage: 50.0),
     def!(MachineWorks, "Machine Works", 150.0, 110.0, workers: 22, draw: 20.0, out_mw: 0.0,
-        in: [(Steel, 3.0)], out: [(Machinery, 1.0)], taps: None, residents: 0, storage: 40.0),
+        in: [(Steel, 3.0)], out: [(Machinery, 1.0)],
+        cost: [(Bricks, 35.0), (Steel, 20.0), (Planks, 10.0), (Gravel, 16.0), (Machinery, 6.0)], labour: 250.0, taps: None, residents: 0, storage: 40.0),
     def!(Store, "State Store", 30.0, 20.0, workers: 3, draw: 1.0, out_mw: 0.0,
-        in: [], out: [], taps: None, residents: 0, storage: 30.0),
+        in: [], out: [],
+        cost: [(Planks, 6.0), (Bricks, 8.0)], labour: 80.0, taps: None, residents: 0, storage: 30.0),
     def!(Clinic, "Polyclinic", 45.0, 30.0, workers: 6, draw: 2.0, out_mw: 0.0,
-        in: [], out: [], taps: None, residents: 0, storage: 10.0),
+        in: [], out: [],
+        cost: [(Bricks, 14.0), (Steel, 4.0), (Planks, 6.0)], labour: 150.0, taps: None, residents: 0, storage: 10.0),
     def!(CultureClub, "Culture Club", 40.0, 30.0, workers: 4, draw: 1.0, out_mw: 0.0,
-        in: [], out: [], taps: None, residents: 0, storage: 10.0),
+        in: [], out: [],
+        cost: [(Planks, 8.0), (Bricks, 10.0)], labour: 100.0, taps: None, residents: 0, storage: 10.0),
     def!(Warehouse, "Warehouse", 60.0, 30.0, workers: 2, draw: 1.0, out_mw: 0.0,
-        in: [], out: [], taps: None, residents: 0, storage: 200.0),
+        in: [], out: [],
+        cost: [(Planks, 8.0), (Bricks, 10.0)], labour: 90.0, taps: None, residents: 0, storage: 200.0),
     def!(Depot, "Council Depot", 80.0, 60.0, workers: 4, draw: 1.0, out_mw: 0.0,
-        in: [], out: [], taps: None, residents: 0, storage: 300.0),
+        in: [], out: [],
+        cost: [(Bricks, 15.0), (Planks, 10.0)], labour: 120.0, taps: None, residents: 0, storage: 300.0),
     def!(ConstructionOffice, "Construction Office", 35.0, 25.0, workers: 10, draw: 0.0, out_mw: 0.0,
-        in: [], out: [], taps: None, residents: 0, storage: 40.0),
+        in: [], out: [],
+        cost: [(Bricks, 10.0), (Planks, 8.0)], labour: 110.0, taps: None, residents: 0, storage: 40.0),
     def!(MotorDepot, "Motor Depot", 90.0, 70.0, workers: 16, draw: 1.0, out_mw: 0.0,
-        in: [], out: [], taps: None, residents: 0, storage: 60.0),
+        in: [], out: [],
+        cost: [(Bricks, 18.0), (Planks, 12.0), (Steel, 6.0), (Gravel, 8.0)], labour: 150.0, taps: None, residents: 0, storage: 60.0),
     def!(GasStation, "Gas Station", 30.0, 20.0, workers: 4, draw: 1.0, out_mw: 0.0,
-        in: [], out: [], taps: None, residents: 0, storage: 40.0),
+        in: [], out: [],
+        cost: [(Bricks, 8.0), (Steel, 6.0), (Planks, 4.0)], labour: 90.0, taps: None, residents: 0, storage: 40.0),
     def!(Customs, "Customs House", 90.0, 60.0, workers: 8, draw: 2.0, out_mw: 0.0,
-        in: [], out: [], taps: None, residents: 0, storage: 200.0),
+        in: [], out: [],
+        cost: [(Bricks, 20.0), (Steel, 6.0), (Planks, 8.0), (Gravel, 10.0)], labour: 200.0, taps: None, residents: 0, storage: 200.0),
 ];
 
 impl BuildingKind {
@@ -204,6 +238,10 @@ pub struct Building {
     pub staff: u32,
     /// Whether the grid is feeding it — set by the power system, never authored.
     pub powered: bool,
+    /// Builder-days worked on this site so far. A building is a SITE until
+    /// this reaches its def's `labour`, and a site produces nothing, employs
+    /// nobody, and houses nobody.
+    pub work_done: f64,
     /// The body this building works, once sited.
     pub tapped: Option<crate::geology::DepositId>,
 }
@@ -211,6 +249,28 @@ pub struct Building {
 impl Building {
     pub fn def(&self) -> &'static BuildingDef {
         self.kind.def()
+    }
+
+    /// Whether the site is finished and open.
+    pub fn is_built(&self) -> bool {
+        self.work_done >= self.def().labour
+    }
+
+    /// How far along the site is, `0.0..=1.0`.
+    pub fn progress(&self) -> f64 {
+        if self.def().labour <= 0.0 {
+            1.0
+        } else {
+            (self.work_done / self.def().labour).clamp(0.0, 1.0)
+        }
+    }
+
+    /// Whether every material the site needs has been delivered.
+    pub fn has_materials(&self) -> bool {
+        self.def()
+            .materials
+            .iter()
+            .all(|&(r, q)| self.stock.get(r).0 >= q)
     }
 
     /// How much of its work it can do, `0.0..=1.0`, from staffing alone.
@@ -246,6 +306,26 @@ impl Building {
 
     pub fn storage_cap(&self) -> Tonnes {
         Tonnes(self.def().storage)
+    }
+
+    /// How much of a resource this building may hold.
+    ///
+    /// A SITE may hold at least its bill of materials for that resource, even
+    /// when that exceeds the bin it will have once open. Otherwise a building
+    /// whose construction needs more brick than it will ever store could never
+    /// be built at all.
+    pub fn intake_capacity(&self, resource: Resource) -> Tonnes {
+        if self.is_built() {
+            return self.storage_cap();
+        }
+        let needed = self
+            .def()
+            .materials
+            .iter()
+            .find(|(r, _)| *r == resource)
+            .map(|&(_, q)| Tonnes(q))
+            .unwrap_or(Tonnes::ZERO);
+        Tonnes(self.storage_cap().0.max(needed.0))
     }
 }
 
@@ -293,12 +373,20 @@ impl Buildings {
 
     /// Total housing capacity.
     pub fn housing(&self) -> u32 {
-        self.list.iter().map(|b| b.def().residents).sum()
+        self.list
+            .iter()
+            .filter(|b| b.is_built())
+            .map(|b| b.def().residents)
+            .sum()
     }
 
     /// Every job the republic offers, staffed or not.
     pub fn jobs(&self) -> u32 {
-        self.list.iter().map(|b| b.def().workers).sum()
+        self.list
+            .iter()
+            .filter(|b| b.is_built())
+            .map(|b| b.def().workers)
+            .sum()
     }
 
     /// Would this go here? The same checks [`Buildings::place`] makes, without
@@ -322,6 +410,7 @@ impl Buildings {
             stock: Stock::EMPTY,
             staff: 0,
             powered: false,
+            work_done: 0.0,
             tapped: None,
         };
         if self.list.iter().any(|b| b.overlaps(&candidate)) {
@@ -357,8 +446,25 @@ impl Buildings {
             stock: Stock::EMPTY,
             staff: 0,
             powered: false,
+            work_done: 0.0,
             tapped,
         });
+        Ok(id)
+    }
+
+    /// Put a building up already finished — the founding grant, and what tests
+    /// use when construction is not what they are testing.
+    pub fn place_built(
+        &mut self,
+        kind: BuildingKind,
+        centre: Point,
+        terrain: &crate::terrain::Terrain,
+        geology: &crate::geology::Geology,
+    ) -> Result<BuildingId, PlacementError> {
+        let id = self.place(kind, centre, terrain, geology)?;
+        if let Some(b) = self.get_mut(id) {
+            b.work_done = b.def().labour;
+        }
         Ok(id)
     }
 
@@ -545,7 +651,7 @@ mod tests {
     fn staffing_is_the_fraction_of_jobs_filled() {
         let mut b = Buildings::new();
         let id = b
-            .place(
+            .place_built(
                 BuildingKind::CoalMine,
                 Point::new(Metres(700.0), Metres(700.0)),
                 &flat(),
@@ -564,7 +670,7 @@ mod tests {
     fn a_building_with_no_jobs_is_always_fully_working() {
         let mut b = Buildings::new();
         let id = b
-            .place(
+            .place_built(
                 BuildingKind::House,
                 Point::new(Metres(500.0), Metres(500.0)),
                 &flat(),
@@ -595,21 +701,21 @@ mod tests {
         let t = flat();
         let g = Geology::new();
         let mut b = Buildings::new();
-        b.place(
+        b.place_built(
             BuildingKind::Apartment,
             Point::new(Metres(200.0), Metres(200.0)),
             &t,
             &g,
         )
         .unwrap();
-        b.place(
+        b.place_built(
             BuildingKind::House,
             Point::new(Metres(400.0), Metres(200.0)),
             &t,
             &g,
         )
         .unwrap();
-        b.place(
+        b.place_built(
             BuildingKind::Sawmill,
             Point::new(Metres(600.0), Metres(200.0)),
             &t,
@@ -618,5 +724,85 @@ mod tests {
         .unwrap();
         assert_eq!(b.housing(), 48 + 6);
         assert_eq!(b.jobs(), 6);
+    }
+
+    /// A site is not a building. It houses nobody and employs nobody until it
+    /// opens — otherwise a republic could staff a factory by ordering one.
+    #[test]
+    fn a_site_houses_and_employs_nobody_until_it_opens() {
+        let t = flat();
+        let g = Geology::new();
+        let mut b = Buildings::new();
+        let flats = b
+            .place(
+                BuildingKind::Apartment,
+                Point::new(Metres(200.0), Metres(200.0)),
+                &t,
+                &g,
+            )
+            .unwrap();
+        b.place(
+            BuildingKind::Sawmill,
+            Point::new(Metres(600.0), Metres(200.0)),
+            &t,
+            &g,
+        )
+        .unwrap();
+        assert_eq!(b.housing(), 0, "a site is not a home");
+        assert_eq!(b.jobs(), 0, "a site is not a workplace");
+        assert!(!b.get(flats).unwrap().is_built());
+        assert_eq!(b.get(flats).unwrap().progress(), 0.0);
+
+        b.get_mut(flats).unwrap().work_done = BuildingKind::Apartment.def().labour;
+        assert!(b.get(flats).unwrap().is_built());
+        assert_eq!(b.housing(), 48);
+    }
+
+    #[test]
+    fn a_site_knows_whether_its_materials_have_arrived() {
+        let t = flat();
+        let g = Geology::new();
+        let mut b = Buildings::new();
+        let id = b
+            .place(
+                BuildingKind::Woodcutter,
+                Point::new(Metres(200.0), Metres(200.0)),
+                &t,
+                &g,
+            )
+            .unwrap();
+        assert!(!b.get(id).unwrap().has_materials());
+        // A woodcutter post wants four tonnes of planks.
+        b.get_mut(id)
+            .unwrap()
+            .stock
+            .add(Resource::Planks, Tonnes(4.0));
+        assert!(b.get(id).unwrap().has_materials());
+    }
+
+    /// A site may need more of a material than it will ever store. Capping its
+    /// intake by its finished bin would make such a building unbuildable.
+    #[test]
+    fn a_site_may_take_in_more_than_it_will_hold_when_open() {
+        let t = flat();
+        let g = Geology::new();
+        let mut b = Buildings::new();
+        let id = b
+            .place(
+                BuildingKind::SteelMill,
+                Point::new(Metres(500.0), Metres(500.0)),
+                &t,
+                &g,
+            )
+            .unwrap();
+        let site = b.get(id).unwrap();
+        // 30 t of brick to build; 40 t of anything once open.
+        assert_eq!(site.intake_capacity(Resource::Bricks), Tonnes(40.0));
+        // And once open it is bounded by the bin again.
+        b.get_mut(id).unwrap().work_done = BuildingKind::SteelMill.def().labour;
+        assert_eq!(
+            b.get(id).unwrap().intake_capacity(Resource::Bricks),
+            Tonnes(40.0)
+        );
     }
 }
