@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 pub mod building;
+pub mod citizen;
 pub mod geology;
 pub mod mapgen;
 pub mod resource;
@@ -34,6 +35,7 @@ pub mod units;
 pub mod world;
 
 pub use building::{Building, BuildingId, BuildingKind, Buildings, PlacementError};
+pub use citizen::{CitizenId, CitizenRecord, Population};
 pub use geology::{Deposit, DepositId, Geology, Layer, Mineral, SurveyReading};
 pub use resource::{Resource, Stock};
 pub use rng::{Rng, RngState};

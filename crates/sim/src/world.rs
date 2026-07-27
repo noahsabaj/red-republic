@@ -21,6 +21,7 @@
 //! that reloading resumes the *same future*, which no derive can give you.
 
 use crate::building::Buildings;
+use crate::citizen::Population;
 use crate::geology::Geology;
 use crate::mapgen;
 use crate::rng::{Rng, RngState};
@@ -109,6 +110,8 @@ pub struct World {
     pub buildings: Buildings,
     /// The roads between them.
     pub roads: RoadNetwork,
+    /// The people.
+    pub population: Population,
     /// The founding seed, kept so derived substreams can be recomputed from
     /// it at any time without disturbing `rng`.
     seed: u64,
@@ -140,6 +143,7 @@ impl World {
             geology,
             buildings: Buildings::new(),
             roads: RoadNetwork::new(),
+            population: Population::new(),
             seed: spec.seed,
         }
     }
