@@ -383,6 +383,78 @@ fn fleet_scaling() {
     }
 }
 
+/// Routing across country over the traversal lattice.
+///
+/// **The assumption the plan named as most likely to be false.** Freight prices
+/// a round trip with three route plans per candidate lorry, and each one may
+/// run A* over ten thousand cells — so if this is dear, physical freight is
+/// dear everywhere. Measured across the two cases that differ most: a straight
+/// crossing of open ground, where the answer is a straight line, and a route
+/// that has to find its way round water.
+#[test]
+fn cross_country_routing_cost() {
+    use red_republic_sim::terrain::Surface;
+
+    for &extent in &[6_000.0, 10_000.0] {
+        let mut world = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(extent),
+            climate: ClimateId::Plains,
+        });
+        // Soaked, so every cell has a real cost and the search cannot shortcut
+        // on everything being equally free.
+        world.ground = red_republic_sim::ground::Ground {
+            moisture: 1.0,
+            snow: 0.0,
+            frost: 0.0,
+        };
+        let cells = world.lattice.cells();
+        let crossing = world.crossing();
+
+        const QUERIES: u32 = 400;
+        let start = Instant::now();
+        let mut found = 0;
+        for i in 0..QUERIES {
+            let a = at(
+                200.0 + f64::from(i % 17) * 111.0,
+                200.0 + f64::from(i % 23) * 97.0,
+            );
+            let b = at(extent - 400.0, extent - 400.0);
+            if crossing.route(a, b).is_some() {
+                found += 1;
+            }
+        }
+        let open = start.elapsed().as_secs_f64() * 1e6 / f64::from(QUERIES);
+
+        // The same map with a wall of water across it, so the straight line is
+        // never available and every query is a real search.
+        let mut walled = world.terrain.clone();
+        let mut x = 0.0;
+        while x < extent * 0.8 {
+            let mut y = extent * 0.45;
+            while y < extent * 0.55 {
+                walled.set_surface(at(x, y), Surface::Water);
+                y += 10.0;
+            }
+            x += 10.0;
+        }
+        world.set_terrain(walled);
+        let crossing = world.crossing();
+        let start = Instant::now();
+        for i in 0..QUERIES {
+            let a = at(200.0 + f64::from(i % 17) * 111.0, 200.0);
+            let _ = crossing.route(a, at(extent - 400.0, extent - 400.0));
+        }
+        let round = start.elapsed().as_secs_f64() * 1e6 / f64::from(QUERIES);
+
+        println!(
+            "[BASELINE ground] {extent:.0} m map, {cells}x{cells} lattice ({} cells): straight crossing {open:.0} us ({found}/{QUERIES} routable), round an obstacle {round:.0} us",
+            cells * cells
+        );
+        assert!(round < 100_000.0, "an off-road route took {round:.0} us");
+    }
+}
+
 /// Placement gets slower as the republic fills up, because every candidate is
 /// tested against every standing building.
 #[test]

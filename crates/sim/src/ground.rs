@@ -36,6 +36,7 @@
 //! produce.
 
 use crate::terrain::Surface;
+use crate::units::{Metres, Point};
 use serde::{Deserialize, Serialize};
 
 /// The temperature at which water freezes. Named rather than written as `0.0`
@@ -154,6 +155,461 @@ impl Ground {
             ahead.advance(temperature, rain);
         }
         ahead
+    }
+}
+
+/// The side of one traversal cell.
+///
+/// A hundred metres, which makes a ten-kilometre republic a 100 x 100 lattice —
+/// **ten thousand cells**, against the million the terrain grid holds. That
+/// two-orders-of-magnitude gap is what makes routing across country affordable
+/// at all, and it is why this is a lattice of its own rather than a field on
+/// the terrain: what varies at ten metres is where a building can stand, and
+/// what varies at a hundred is where a lorry would rather drive.
+pub const GROUND_CELL: Metres = Metres(100.0);
+
+/// How much longer fully soft ground takes to cross than firm ground.
+pub const MUD_DRAG: f64 = 2.0;
+
+/// How much of a cell has to be water before nothing can cross it.
+const DROWNED: f64 = 0.25;
+
+/// The lattice a vehicle crosses country over.
+///
+/// Carries the **static** part of the going — what the surface is — because
+/// that is what varies by place. How wet it is today is one number for the
+/// whole republic and lives on [`Ground`]. Phase five's wear rides here too,
+/// on the same cells, so the thing that records a corridor and the thing that
+/// routes over one are the same structure.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Lattice {
+    cells: u32,
+    /// Persisted rather than read from [`GROUND_CELL`], for the same reason the
+    /// terrain carries its own resolution: a save always knows what it was
+    /// written at, and re-measuring stays a one-line experiment.
+    cell_size: Metres,
+    /// Static going multiplier per cell, `f32::INFINITY` where nothing crosses.
+    surface: Vec<f32>,
+    /// How worn each cell is, `0.0` untouched to `1.0` a made track.
+    wear: Vec<f32>,
+}
+
+impl Lattice {
+    /// Build the lattice by sampling the terrain.
+    ///
+    /// Each cell reads a 5 x 5 grid of the ground under it, so a cell is a
+    /// summary of what is actually there rather than of whatever happened to
+    /// be at its centre. A cell that is a quarter water is water: you cannot
+    /// drive round the corner of a lake inside a hundred-metre square.
+    pub fn from_terrain(terrain: &crate::terrain::Terrain) -> Self {
+        let cell_size = GROUND_CELL;
+        let cells = (terrain.extent().0 / cell_size.0).ceil().max(1.0) as u32;
+        let total = (cells as usize) * (cells as usize);
+        let mut surface = vec![1.0f32; total];
+
+        const SAMPLES: u32 = 5;
+        for cy in 0..cells {
+            for cx in 0..cells {
+                let mut sum = 0.0;
+                let mut dry = 0u32;
+                let mut wet = 0u32;
+                for sy in 0..SAMPLES {
+                    for sx in 0..SAMPLES {
+                        let at = Point::new(
+                            Metres(
+                                (f64::from(cx) + (f64::from(sx) + 0.5) / f64::from(SAMPLES))
+                                    * cell_size.0,
+                            ),
+                            Metres(
+                                (f64::from(cy) + (f64::from(sy) + 0.5) / f64::from(SAMPLES))
+                                    * cell_size.0,
+                            ),
+                        );
+                        match terrain.surface_at(at) {
+                            Some(Surface::Water) | None => wet += 1,
+                            Some(other) => {
+                                sum += going(other);
+                                dry += 1;
+                            }
+                        }
+                    }
+                }
+                let seen = wet + dry;
+                let drowned = seen == 0 || f64::from(wet) / f64::from(seen) >= DROWNED;
+                surface[(cy as usize) * (cells as usize) + cx as usize] = if drowned {
+                    f32::INFINITY
+                } else {
+                    (sum / f64::from(dry)) as f32
+                };
+            }
+        }
+        Self {
+            cells,
+            cell_size,
+            surface,
+            wear: vec![0.0; total],
+        }
+    }
+
+    pub fn cells(&self) -> u32 {
+        self.cells
+    }
+
+    pub fn cell_size(&self) -> Metres {
+        self.cell_size
+    }
+
+    /// The cell a point falls in, or `None` off the map.
+    pub fn cell_of(&self, at: Point) -> Option<usize> {
+        if at.x.0 < 0.0 || at.y.0 < 0.0 {
+            return None;
+        }
+        let cx = (at.x.0 / self.cell_size.0) as u32;
+        let cy = (at.y.0 / self.cell_size.0) as u32;
+        if cx >= self.cells || cy >= self.cells {
+            return None;
+        }
+        Some((cy as usize) * (self.cells as usize) + cx as usize)
+    }
+
+    pub fn centre_of(&self, index: usize) -> Point {
+        let cx = (index % self.cells as usize) as f64;
+        let cy = (index / self.cells as usize) as f64;
+        Point::new(
+            Metres((cx + 0.5) * self.cell_size.0),
+            Metres((cy + 0.5) * self.cell_size.0),
+        )
+    }
+
+    pub fn wear_at(&self, index: usize) -> f64 {
+        f64::from(self.wear[index])
+    }
+
+    /// Wear a cell in, capped at a made track.
+    pub fn wear_in(&mut self, index: usize, by: f64) {
+        let worn = (f64::from(self.wear[index]) + by).clamp(0.0, 1.0);
+        self.wear[index] = worn as f32;
+    }
+
+    /// Let every cell recover a little. Without this, every route ever driven
+    /// is permanent.
+    pub fn fade(&mut self, by: f64) {
+        for cell in &mut self.wear {
+            *cell = (f64::from(*cell) - by).max(0.0) as f32;
+        }
+    }
+
+    /// Every cell worn beyond a threshold, in index order.
+    pub fn worn_beyond(&self, threshold: f64) -> Vec<usize> {
+        self.wear
+            .iter()
+            .enumerate()
+            .filter(|&(_, &w)| f64::from(w) >= threshold)
+            .map(|(i, _)| i)
+            .collect()
+    }
+}
+
+/// The lattice plus today's conditions: everything needed to cost a crossing.
+#[derive(Debug, Clone, Copy)]
+pub struct Crossing<'a> {
+    pub lattice: &'a Lattice,
+    /// Today's softness, from [`Ground::softness`].
+    pub softness: f64,
+}
+
+/// How much of the going a made track takes away.
+///
+/// A worn corridor is packed down and drains where a field does not, so the
+/// first thing traffic buys itself is firmer ground — which is what makes the
+/// feedback loop that grows a road.
+pub const WEAR_RELIEF: f64 = 0.8;
+
+impl Crossing<'_> {
+    /// How bad the going is in one cell today, `0.0` firm to `1.0` impassable.
+    pub fn going_in(&self, index: usize) -> f64 {
+        let surface = f64::from(self.lattice.surface[index]);
+        if !surface.is_finite() {
+            return f64::INFINITY;
+        }
+        let relief = 1.0 - WEAR_RELIEF * self.lattice.wear_at(index);
+        (self.softness * surface * relief).clamp(0.0, 1.0)
+    }
+
+    /// How much longer a cell takes to cross than firm open ground.
+    pub fn drag_in(&self, index: usize) -> f64 {
+        let going = self.going_in(index);
+        if !going.is_finite() {
+            return f64::INFINITY;
+        }
+        1.0 + MUD_DRAG * going
+    }
+
+    /// The going at a point, or `1.0` off the map.
+    pub fn going_at(&self, at: Point) -> f64 {
+        self.lattice
+            .cell_of(at)
+            .map_or(1.0, |cell| self.going_in(cell).min(1.0))
+    }
+
+    /// The mean drag over a straight run, sampled at cell resolution.
+    ///
+    /// What a leg is actually timed at. Sampled rather than integrated because
+    /// a leg is a straight line over a lattice and the answer only has to be
+    /// as good as the lattice is.
+    pub fn drag_along(&self, from: Point, to: Point) -> f64 {
+        let distance = from.distance_to(to).0;
+        let steps = ((distance / self.lattice.cell_size.0).ceil() as u32).clamp(1, 128);
+        let mut total = 0.0;
+        for step in 0..steps {
+            let t = (f64::from(step) + 0.5) / f64::from(steps);
+            let at = Point::new(
+                Metres(from.x.0 + (to.x.0 - from.x.0) * t),
+                Metres(from.y.0 + (to.y.0 - from.y.0) * t),
+            );
+            let drag = match self.lattice.cell_of(at) {
+                Some(cell) => self.drag_in(cell),
+                None => 1.0,
+            };
+            // An impassable sample is not infinitely slow, it is a route that
+            // should not have been planned. Priced high but finite, so the
+            // planner rejects it in favour of anything else rather than
+            // producing an arrival time of NaN.
+            total += if drag.is_finite() {
+                drag
+            } else {
+                1.0 + MUD_DRAG * 8.0
+            };
+        }
+        total / f64::from(steps)
+    }
+
+    /// The **worst** going anywhere along a straight run.
+    ///
+    /// Worst rather than mean, because a lorry does not average its way across
+    /// a field: it sticks in the one soft patch, and the rest of the crossing
+    /// being firm is no help at all once it has.
+    pub fn going_along(&self, from: Point, to: Point) -> f64 {
+        let distance = from.distance_to(to).0;
+        let steps = ((distance / (self.lattice.cell_size.0 * 0.5)).ceil() as u32).clamp(1, 256);
+        (0..=steps)
+            .map(|step| {
+                let t = f64::from(step) / f64::from(steps);
+                let at = Point::new(
+                    Metres(from.x.0 + (to.x.0 - from.x.0) * t),
+                    Metres(from.y.0 + (to.y.0 - from.y.0) * t),
+                );
+                self.going_at(at)
+            })
+            .fold(0.0, f64::max)
+    }
+
+    /// Whether a straight run between two points crosses anything impassable.
+    pub fn is_clear(&self, from: Point, to: Point) -> bool {
+        let distance = from.distance_to(to).0;
+        // Half-cell steps, so a lake cannot be stepped over.
+        let steps = ((distance / (self.lattice.cell_size.0 * 0.5)).ceil() as u32).clamp(1, 256);
+        (0..=steps).all(|step| {
+            let t = f64::from(step) / f64::from(steps);
+            let at = Point::new(
+                Metres(from.x.0 + (to.x.0 - from.x.0) * t),
+                Metres(from.y.0 + (to.y.0 - from.y.0) * t),
+            );
+            match self.lattice.cell_of(at) {
+                Some(cell) => self.drag_in(cell).is_finite(),
+                // Off the map is not something to route through, but the ends
+                // of a journey may legitimately sit on the boundary.
+                None => true,
+            }
+        })
+    }
+
+    /// The best, worst and mean drag along a straight run, in one pass.
+    ///
+    /// `None` if anything on the way is impassable.
+    pub fn profile_along(&self, from: Point, to: Point) -> Option<(f64, f64, f64)> {
+        let distance = from.distance_to(to).0;
+        let steps = ((distance / (self.lattice.cell_size.0 * 0.5)).ceil() as u32).clamp(1, 256);
+        let (mut best, mut worst, mut total) = (f64::INFINITY, 0.0f64, 0.0);
+        for step in 0..=steps {
+            let t = f64::from(step) / f64::from(steps);
+            let at = Point::new(
+                Metres(from.x.0 + (to.x.0 - from.x.0) * t),
+                Metres(from.y.0 + (to.y.0 - from.y.0) * t),
+            );
+            let drag = match self.lattice.cell_of(at) {
+                Some(cell) => self.drag_in(cell),
+                // The ends of a journey may legitimately sit on the boundary.
+                None => 1.0,
+            };
+            if !drag.is_finite() {
+                return None;
+            }
+            best = best.min(drag);
+            worst = worst.max(drag);
+            total += drag;
+        }
+        Some((best, worst, total / f64::from(steps + 1)))
+    }
+
+    /// A way across country, as waypoints.
+    ///
+    /// A* over the lattice, costed in metres-times-drag with straight-line
+    /// distance as the heuristic — admissible because drag is never below one.
+    /// Ties break on the lower cell index, so two equally good ways across a
+    /// field always resolve the same way.
+    ///
+    /// `None` when there is no way through at all, which is the honest answer
+    /// for a building on the far side of a lake.
+    pub fn route(&self, from: Point, to: Point) -> Option<Vec<Point>> {
+        let start = self.lattice.cell_of(from)?;
+        let goal = self.lattice.cell_of(to)?;
+        if !self.drag_in(start).is_finite() || !self.drag_in(goal).is_finite() {
+            return None;
+        }
+        if start == goal {
+            return Some(vec![from, to]);
+        }
+
+        // Uniform ground: the straight line is exactly optimal and no search can
+        // do better, so do not run one. Most of a map is one kind of ground and
+        // most crossings are short, which makes this the common case rather than
+        // the lucky one — and it is the difference between cross-country routing
+        // being affordable and not.
+        if let Some((best, worst, _)) = self.profile_along(from, to)
+            && worst <= best * 1.02
+        {
+            return Some(vec![from, to]);
+        }
+
+        let side = self.lattice.cells as usize;
+        let total = side * side;
+        let goal_at = self.lattice.centre_of(goal);
+        let mut best = vec![f64::INFINITY; total];
+        let mut came_from = vec![usize::MAX; total];
+        let mut settled = vec![false; total];
+        let mut heap = std::collections::BinaryHeap::new();
+
+        best[start] = 0.0;
+        heap.push(Step {
+            estimate: self.lattice.centre_of(start).distance_to(goal_at).0 * HURRY,
+            cost: 0.0,
+            cell: start,
+        });
+
+        while let Some(Step { cost, cell, .. }) = heap.pop() {
+            if settled[cell] {
+                continue;
+            }
+            settled[cell] = true;
+            if cell == goal {
+                break;
+            }
+            let (cx, cy) = ((cell % side) as i64, (cell / side) as i64);
+            let here = self.lattice.centre_of(cell);
+            for dy in -1i64..=1 {
+                for dx in -1i64..=1 {
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if nx < 0 || ny < 0 || nx >= side as i64 || ny >= side as i64 {
+                        continue;
+                    }
+                    let next = (ny as usize) * side + nx as usize;
+                    if settled[next] {
+                        continue;
+                    }
+                    let drag = self.drag_in(next);
+                    if !drag.is_finite() {
+                        continue;
+                    }
+                    let there = self.lattice.centre_of(next);
+                    let candidate = cost + here.distance_to(there).0 * drag;
+                    if candidate < best[next] {
+                        best[next] = candidate;
+                        came_from[next] = cell;
+                        heap.push(Step {
+                            estimate: candidate + there.distance_to(goal_at).0 * HURRY,
+                            cost: candidate,
+                            cell: next,
+                        });
+                    }
+                }
+            }
+        }
+
+        if !settled[goal] {
+            return None;
+        }
+
+        // A* answers "which way round", and on open ground the answer is
+        // "straight". Snapping a straight crossing to cell centres would make a
+        // lorry zigzag between hundred-metre squares for no reason, so the
+        // direct line wins whenever it is clear and not materially dearer. The
+        // slack absorbs the difference between measuring centre-to-centre and
+        // measuring door-to-door.
+        let straight = from.distance_to(to).0 * self.drag_along(from, to);
+        if self.is_clear(from, to) && straight <= best[goal] * 1.1 + self.lattice.cell_size.0 {
+            return Some(vec![from, to]);
+        }
+
+        let mut cells = vec![goal];
+        let mut cursor = goal;
+        while came_from[cursor] != usize::MAX {
+            cursor = came_from[cursor];
+            cells.push(cursor);
+        }
+        cells.reverse();
+
+        let mut path = vec![from];
+        // The first and last cell centres are detours away from the real ends.
+        for &cell in &cells[1..cells.len().saturating_sub(1)] {
+            path.push(self.lattice.centre_of(cell));
+        }
+        path.push(to);
+        Some(path)
+    }
+}
+
+/// How hard the search is pushed towards the goal.
+///
+/// A* with an admissible heuristic — plain distance — is exact, and on soaked
+/// ground it is also nearly Dijkstra: the true cost of a cell is distance times
+/// drag, so a heuristic that assumes drag of one underestimates threefold and
+/// prunes almost nothing. Measured at 745 us for one crossing of a ten-kilometre
+/// map, against a freight system that prices three routes per candidate lorry.
+///
+/// Weighting the heuristic gives that back. The route may be up to this much
+/// longer than the true best in the worst case; in practice it is the same route
+/// found far sooner, and a lorry taking a slightly wider line round a bog is not
+/// a thing anybody can see. Exactness was never the requirement — a plausible
+/// way across was.
+const HURRY: f64 = 1.6;
+
+/// A* frontier entry: a min-heap on the estimate, then on the cell, both
+/// totally ordered so two equally good ways resolve the same way every run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Step {
+    estimate: f64,
+    cost: f64,
+    cell: usize,
+}
+
+impl Eq for Step {}
+
+impl Ord for Step {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .estimate
+            .total_cmp(&self.estimate)
+            .then_with(|| other.cell.cmp(&self.cell))
+    }
+}
+
+impl PartialOrd for Step {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 

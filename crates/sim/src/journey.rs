@@ -40,6 +40,7 @@
 //! is measured at.
 
 use crate::citizen::ROAD_ACCESS;
+use crate::ground::Crossing;
 use crate::road::RoadNetwork;
 use crate::time::TICK;
 use crate::units::{Metres, Point, Speed};
@@ -133,16 +134,21 @@ impl Journey {
     /// The cap is the whole reason a grade is a decision. Without it a road is
     /// worth exactly what any other road is worth, and there is nothing to
     /// choose between a dirt track and tarmac.
-    pub fn speed_on(&self, leg: u32, on_road: Speed, cross_country: Speed) -> Speed {
+    /// `drag` is what the going costs off road — one on firm ground, more in
+    /// mud. It is passed in rather than looked up because it is a property of
+    /// *today*, not of the plan: a leg planned in August is timed in April at
+    /// April's drag, which is what lets the weather turn under a lorry that is
+    /// already out.
+    pub fn speed_on(&self, leg: u32, on_road: Speed, cross_country: Speed, drag: f64) -> Speed {
         match self.limit[leg as usize] {
             Some(limit) => on_road.min(limit),
-            None => cross_country,
+            None => cross_country / drag.max(1.0),
         }
     }
 
     /// [`Journey::speed_on`] for the leg under way.
-    pub fn leg_speed(&self, on_road: Speed, cross_country: Speed) -> Speed {
-        self.speed_on(self.leg, on_road, cross_country)
+    pub fn leg_speed(&self, on_road: Speed, cross_country: Speed, drag: f64) -> Speed {
+        self.speed_on(self.leg, on_road, cross_country, drag)
     }
 
     pub fn leg_distance(&self) -> Metres {
@@ -181,13 +187,17 @@ impl Journey {
     ///
     /// # Panics
     /// If there is no next leg. Callers check [`Journey::on_last_leg`] first.
-    pub fn next_leg(&self, on_road: Speed, cross_country: Speed) -> (u32, f64, f64) {
+    pub fn next_leg(&self, speed: Speed) -> (u32, f64, f64) {
         assert!(!self.on_last_leg(), "there is no leg after the last one");
         let leg = self.leg + 1;
         let start = self.leg_end;
         let distance = self.path[leg as usize].distance_to(self.path[leg as usize + 1]);
-        let speed = self.speed_on(leg, on_road, cross_country);
         (leg, start, start + leg_ticks(distance, speed))
+    }
+
+    /// The two ends of a leg, whichever leg is asked for.
+    pub fn leg_ends(&self, leg: u32) -> (Point, Point) {
+        (self.path[leg as usize], self.path[leg as usize + 1])
     }
 
     /// Where the traveller is at `now`, an absolute fractional tick.
@@ -292,13 +302,28 @@ pub fn plan(
     from: Point,
     to: Point,
     roads: &RoadNetwork,
+    crossing: &Crossing,
     on_road: Speed,
     cross_country: Speed,
     now: f64,
 ) -> Journey {
+    // Across country, the way the lattice says is quickest — round the bog
+    // rather than through it, and (once there is wear on the ground) along
+    // whatever line other lorries have already packed down.
     let direct = {
         let mut b = PathBuilder::from(from);
-        b.step(to, None);
+        match crossing.route(from, to) {
+            Some(way) => {
+                for step in way.into_iter().skip(1) {
+                    b.step(step, None);
+                }
+            }
+            // No way across at all. Return something rather than nothing —
+            // the caller decides whether to send anybody, and a straight line
+            // priced through impassable ground is expensive enough that the
+            // road candidate wins whenever there is one.
+            None => b.step(to, None),
+        }
         b
     };
 
@@ -317,7 +342,7 @@ pub fn plan(
             .map(|(pair, &limit)| {
                 let speed = match limit {
                     Some(limit) => on_road.min(limit),
-                    None => cross_country,
+                    None => cross_country / crossing.drag_along(pair[0], pair[1]),
                 };
                 leg_ticks(pair[0].distance_to(pair[1]), speed)
             })
@@ -344,7 +369,7 @@ pub fn plan(
         path[0].distance_to(path[1]),
         match limit[0] {
             Some(limit) => on_road.min(limit),
-            None => cross_country,
+            None => cross_country / crossing.drag_along(path[0], path[1]),
         },
     );
     Journey::begin(path, limit, now, first)
@@ -375,7 +400,15 @@ fn by_road(from: Point, to: Point, roads: &RoadNetwork) -> Option<PathBuilder> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ground::Lattice;
     use crate::road::default_road_speed;
+    use crate::terrain::Terrain;
+
+    /// Flat, dry, open ground with nothing in the way: the crossing these tests
+    /// are not about.
+    fn firm() -> Lattice {
+        Lattice::from_terrain(&Terrain::flat(Metres(24_000.0)))
+    }
 
     fn at(x: f64, y: f64) -> Point {
         Point::new(Metres(x), Metres(y))
@@ -468,7 +501,7 @@ mod tests {
         );
         let one = leg_ticks(Metres(1_000.0), lorry());
         while !j.on_last_leg() {
-            let (leg, start, end) = j.next_leg(default_road_speed(), lorry());
+            let (leg, start, end) = j.next_leg(lorry());
             j.leg = leg;
             j.leg_start = start;
             j.leg_end = end;
@@ -482,10 +515,16 @@ mod tests {
     /// gets there — slowly, in a straight line.
     #[test]
     fn open_ground_is_crossed_when_there_is_no_road() {
+        let lattice = firm();
+        let crossing = Crossing {
+            lattice: &lattice,
+            softness: 0.0,
+        };
         let j = plan(
             at(0.0, 0.0),
             at(3_000.0, 0.0),
             &RoadNetwork::new(),
+            &crossing,
             default_road_speed(),
             lorry(),
             0.0,
@@ -502,22 +541,36 @@ mod tests {
     fn a_road_beats_open_ground_over_the_same_ground() {
         let from = at(0.0, 100.0);
         let to = at(5_000.0, 100.0);
+        let lattice = firm();
+        let crossing = Crossing {
+            lattice: &lattice,
+            softness: 0.0,
+        };
         let cross_country = plan(
             from,
             to,
             &RoadNetwork::new(),
+            &crossing,
             default_road_speed(),
             lorry(),
             0.0,
         );
         let roads = highway(6_000.0);
-        let driven = plan(from, to, &roads, default_road_speed(), lorry(), 0.0);
+        let driven = plan(
+            from,
+            to,
+            &roads,
+            &crossing,
+            default_road_speed(),
+            lorry(),
+            0.0,
+        );
 
         let total = |j: &Journey| -> f64 {
             (0..j.legs())
                 .map(|leg| {
                     let hop = j.path[leg as usize].distance_to(j.path[leg as usize + 1]);
-                    leg_ticks(hop, j.speed_on(leg, default_road_speed(), lorry()))
+                    leg_ticks(hop, j.speed_on(leg, default_road_speed(), lorry(), 1.0))
                 })
                 .sum()
         };
@@ -558,8 +611,29 @@ mod tests {
         }
 
         let ends = (at(0.0, 100.0), at(5_000.0, 100.0));
-        let a = plan(ends.0, ends.1, &sparse, fast_lorry(), lorry(), 0.0);
-        let b = plan(ends.0, ends.1, &dense, fast_lorry(), lorry(), 0.0);
+        let lattice = firm();
+        let crossing = Crossing {
+            lattice: &lattice,
+            softness: 0.0,
+        };
+        let a = plan(
+            ends.0,
+            ends.1,
+            &sparse,
+            &crossing,
+            fast_lorry(),
+            lorry(),
+            0.0,
+        );
+        let b = plan(
+            ends.0,
+            ends.1,
+            &dense,
+            &crossing,
+            fast_lorry(),
+            lorry(),
+            0.0,
+        );
         assert_eq!(
             a.legs(),
             b.legs(),
@@ -572,6 +646,7 @@ mod tests {
             ends.0,
             ends.1,
             &RoadNetwork::new(),
+            &crossing,
             fast_lorry(),
             lorry(),
             0.0,
@@ -583,7 +658,7 @@ mod tests {
         let by_road: f64 = (0..b.legs())
             .map(|leg| {
                 let hop = b.path[leg as usize].distance_to(b.path[leg as usize + 1]);
-                leg_ticks(hop, b.speed_on(leg, fast_lorry(), lorry()))
+                leg_ticks(hop, b.speed_on(leg, fast_lorry(), lorry(), 1.0))
             })
             .sum();
         assert!(
@@ -603,10 +678,16 @@ mod tests {
         roads.connect(a, corner, default_road_speed());
         roads.connect(corner, b, default_road_speed());
 
+        let lattice = firm();
+        let crossing = Crossing {
+            lattice: &lattice,
+            softness: 0.0,
+        };
         let j = plan(
             at(0.0, 0.0),
             at(2_000.0, 2_000.0),
             &roads,
+            &crossing,
             fast_lorry(),
             lorry(),
             0.0,
@@ -633,10 +714,14 @@ mod tests {
             0.0,
             1.0,
         );
-        assert_eq!(j.speed_on(0, fast, lorry()), track, "the track should bind");
-        assert_eq!(j.speed_on(1, fast, lorry()), fast, "tarmac should not");
+        assert_eq!(
+            j.speed_on(0, fast, lorry(), 1.0),
+            track,
+            "the track should bind"
+        );
+        assert_eq!(j.speed_on(1, fast, lorry(), 1.0), fast, "tarmac should not");
         // And a lorry slower than the road is still the slower of the two.
-        assert_eq!(j.speed_on(1, lorry(), lorry()), lorry());
+        assert_eq!(j.speed_on(1, lorry(), lorry(), 1.0), lorry());
     }
 
     /// Two roads, same length, different surface: the better one is chosen and
@@ -652,10 +737,16 @@ mod tests {
         roads.connect(a, track, Speed::from_kph(60.0));
         roads.connect(track, b, Speed::from_kph(60.0));
 
+        let lattice = firm();
+        let crossing = Crossing {
+            lattice: &lattice,
+            softness: 0.0,
+        };
         let j = plan(
             at(0.0, 0.0),
             at(4_000.0, 0.0),
             &roads,
+            &crossing,
             fast_lorry(),
             lorry(),
             0.0,
@@ -681,10 +772,16 @@ mod tests {
         roads.connect(c, d, default_road_speed());
 
         // Two hundred metres apart, with 40 km of road joining them the long way.
+        let lattice = firm();
+        let crossing = Crossing {
+            lattice: &lattice,
+            softness: 0.0,
+        };
         let j = plan(
             at(0.0, 0.0),
             at(200.0, 0.0),
             &roads,
+            &crossing,
             default_road_speed(),
             lorry(),
             0.0,
@@ -696,10 +793,16 @@ mod tests {
     fn a_waypoint_the_lorry_is_already_standing_on_is_dropped() {
         // Home sits exactly on the first junction.
         let roads = highway(6_000.0);
+        let lattice = firm();
+        let crossing = Crossing {
+            lattice: &lattice,
+            softness: 0.0,
+        };
         let j = plan(
             at(0.0, 0.0),
             at(5_000.0, 0.0),
             &roads,
+            &crossing,
             default_road_speed(),
             lorry(),
             0.0,
@@ -713,10 +816,16 @@ mod tests {
     /// from the yard it is parked in never arrives.
     #[test]
     fn a_journey_to_where_you_already_stand_still_finishes() {
+        let lattice = firm();
+        let crossing = Crossing {
+            lattice: &lattice,
+            softness: 0.0,
+        };
         let j = plan(
             at(500.0, 500.0),
             at(500.0, 500.0),
             &RoadNetwork::new(),
+            &crossing,
             default_road_speed(),
             lorry(),
             42.0,

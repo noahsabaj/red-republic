@@ -27,7 +27,7 @@ use crate::contract::Contracts;
 use crate::fleet::Destination;
 use crate::fleet::Fleet;
 use crate::geology::Geology;
-use crate::ground::Ground;
+use crate::ground::{Crossing, Ground, Lattice};
 use crate::mapgen;
 use crate::resource::Resource;
 use crate::rng::{Rng, RngState};
@@ -52,7 +52,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// 4: the state of the ground. Soil moisture and lying snow accumulate, so
 /// they are state rather than a function of the date.
-pub const SAVE_VERSION: u32 = 4;
+///
+/// 5: the traversal lattice, and vehicles that can be stuck in it.
+pub const SAVE_VERSION: u32 = 5;
 
 /// Substream identifier for terrain generation.
 pub const TERRAIN_STREAM: u64 = 2;
@@ -67,6 +69,16 @@ pub const WEATHER_STREAM: u64 = 4;
 
 /// Substream identifier for foreign trade tenders.
 pub const CONTRACT_STREAM: u64 = 5;
+
+/// Substream identifier for whether a crossing goes wrong.
+///
+/// Its own stream, keyed by vehicle, leg and day, so that a bogging is a pure
+/// function of who tried what and when. Two consequences worth having: the same
+/// run always sticks the same lorry in the same field, and the **odds are
+/// showable** — a panel can say how a crossing sits before the player commits
+/// to it, which is most of the explicability a probability model normally
+/// costs.
+pub const BOG_STREAM: u64 = 6;
 
 /// Mix a seed with a stream identifier.
 ///
@@ -167,6 +179,9 @@ pub struct World {
     pub roadworks: RoadWorks,
     /// How wet and how frozen the open ground is today.
     pub ground: Ground,
+    /// The coarse lattice vehicles cross country over, and where the ground has
+    /// been worn into tracks.
+    pub lattice: Lattice,
     /// The lorries that move everything, and where each of them is.
     pub fleet: Fleet,
     /// The people.
@@ -208,6 +223,7 @@ impl World {
             spec.extent,
             &mapgen::DEFAULT_PLAN,
         );
+        let lattice = Lattice::from_terrain(&terrain);
         Self {
             clock: SimClock::new(),
             rng: Rng::from_seed(spec.seed),
@@ -217,6 +233,7 @@ impl World {
             roads: RoadNetwork::new(),
             roadworks: RoadWorks::new(),
             ground: Ground::default(),
+            lattice,
             fleet: Fleet::new(),
             population: Population::new(),
             // One edge per seed, drawn from its own substream so the choice
@@ -274,13 +291,50 @@ impl World {
         )
     }
 
+    /// Lay different ground.
+    ///
+    /// The **only** way the terrain should be replaced, because the traversal
+    /// lattice is a summary of it: setting one without the other leaves
+    /// vehicles routing over a map that is no longer there, and the symptom is
+    /// a republic where nothing can get anywhere for no visible reason.
+    pub fn set_terrain(&mut self, terrain: Terrain) {
+        self.lattice = Lattice::from_terrain(&terrain);
+        self.terrain = terrain;
+    }
+
+    /// The lattice and today's conditions together: what it costs to cross
+    /// country right now.
+    pub fn crossing(&self) -> Crossing<'_> {
+        Crossing {
+            lattice: &self.lattice,
+            softness: self.ground.softness(),
+        }
+    }
+
     /// How badly the open ground would bog a vehicle today, at a given place.
     pub fn going_at(&self, at: Point) -> f64 {
-        match self.terrain.surface_at(at) {
-            Some(surface) => self.ground.going_on(surface),
-            // Off the map is not ground at all.
-            None => 1.0,
+        self.crossing().going_at(at)
+    }
+
+    /// The odds against a vehicle on the crossing it is about to make, as a
+    /// share `0.0..=1.0`.
+    ///
+    /// The showable half of the bogging model. A panel can put this in front of
+    /// the player *before* the lorry sets out — "this crossing is thirty per
+    /// cent against you, loaded twelve tonnes on going of point eight" — which
+    /// is what a probability model owes back for the explicability it takes.
+    pub fn bog_chance(&self, vehicle: crate::fleet::VehicleId, leg: u32) -> f64 {
+        let Some(v) = self.fleet.get(vehicle) else {
+            return 0.0;
+        };
+        let Some(journey) = v.journey.as_ref() else {
+            return 0.0;
+        };
+        if leg >= journey.legs() || journey.limit[leg as usize].is_some() {
+            return 0.0;
         }
+        let (from, to) = journey.leg_ends(leg);
+        crate::systems::bog_chance(self.crossing().going_along(from, to), v.capability())
     }
 
     /// How far a point is from foreign soil.

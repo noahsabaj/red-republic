@@ -51,6 +51,7 @@ pub struct VehicleId(pub u32);
 pub enum VehicleKind {
     Lorry,
     HeavyLorry,
+    RecoveryVehicle,
 }
 
 /// What a vehicle is and what it can do.
@@ -80,6 +81,16 @@ pub struct VehicleDef {
     pub fuel_per_km: f64,
     /// Tonnes of fuel the tank holds.
     pub tank: Tonnes,
+    /// The worst going it can cross empty, on the same `0.0` firm to `1.0`
+    /// impassable scale the ground uses. Above `1.0` is a vehicle that
+    /// crosses anything.
+    pub ground: f64,
+    /// How much of that capability a full load costs it. A laden lorry sits
+    /// deeper and pulls worse, and a heavy one much more so — which is the
+    /// whole reason the big lorry is a road vehicle.
+    pub load_penalty: f64,
+    /// Whether it can pull another vehicle out.
+    pub recovers: bool,
 }
 
 /// The vehicle table. First-pass balance, meant to be felt out against the
@@ -98,6 +109,9 @@ pub const VEHICLES: &[VehicleDef] = &[
         // 0.3 kg/km — about 36 litres of diesel per hundred kilometres.
         fuel_per_km: 0.0003,
         tank: Tonnes(0.15),
+        ground: 0.75,
+        load_penalty: 0.35,
+        recovers: false,
     },
     VehicleDef {
         kind: VehicleKind::HeavyLorry,
@@ -107,6 +121,25 @@ pub const VEHICLES: &[VehicleDef] = &[
         cross_country: Speed::from_kph(8.0),
         fuel_per_km: 0.0006,
         tank: Tonnes(0.30),
+        ground: 0.55,
+        load_penalty: 0.40,
+        recovers: false,
+    },
+    // Carries nothing and goes everywhere. Its capability is deliberately
+    // above one: a recovery vehicle that could itself get stuck would need
+    // recovering, and a republic would spend its afternoon sending a second
+    // one after the first.
+    VehicleDef {
+        kind: VehicleKind::RecoveryVehicle,
+        name: "Recovery Vehicle",
+        capacity: Tonnes::ZERO,
+        on_road: Speed::from_kph(55.0),
+        cross_country: Speed::from_kph(20.0),
+        fuel_per_km: 0.0004,
+        tank: Tonnes(0.20),
+        ground: 1.2,
+        load_penalty: 0.0,
+        recovers: true,
     },
 ];
 
@@ -133,12 +166,59 @@ impl VehicleKind {
 pub enum VehicleState {
     /// Parked at its garage, available for work.
     Idle,
-    /// Driving empty to the supplier.
+    /// Driving empty to the supplier, or out to a casualty.
     Fetching,
     /// Driving laden to the destination.
     Delivering,
     /// Driving back to its garage.
     Returning,
+    /// Stuck. It keeps its job and its plan and is going nowhere until the
+    /// ground firms up under it or something comes and pulls it out.
+    Bogged {
+        /// What it was doing when it stuck, so it can carry on doing it.
+        was: Doing,
+        /// The day it stuck. How long it has been there is what decides
+        /// whether a tow is sent — see [`HELP_AFTER`].
+        since_day: u64,
+    },
+}
+
+/// The three things a vehicle can be in the middle of, without the state of
+/// being stuck. Exists so [`VehicleState::Bogged`] can remember what to go
+/// back to without the type being able to represent bogged-inside-bogged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Doing {
+    Fetching,
+    Delivering,
+    Returning,
+}
+
+impl Doing {
+    pub fn state(self) -> VehicleState {
+        match self {
+            Doing::Fetching => VehicleState::Fetching,
+            Doing::Delivering => VehicleState::Delivering,
+            Doing::Returning => VehicleState::Returning,
+        }
+    }
+}
+
+impl VehicleState {
+    /// What it is in the middle of, if anything — the same answer whether or
+    /// not it is currently stuck in it.
+    pub fn doing(self) -> Option<Doing> {
+        match self {
+            VehicleState::Idle => None,
+            VehicleState::Fetching => Some(Doing::Fetching),
+            VehicleState::Delivering => Some(Doing::Delivering),
+            VehicleState::Returning => Some(Doing::Returning),
+            VehicleState::Bogged { was, .. } => Some(was),
+        }
+    }
+
+    pub fn is_bogged(self) -> bool {
+        matches!(self, VehicleState::Bogged { .. })
+    }
 }
 
 /// Somewhere goods can be delivered.
@@ -156,13 +236,44 @@ pub enum Destination {
     RoadSite(RoadSiteId),
 }
 
-/// A haul: take this much of this, from here to there.
+/// What a vehicle has been sent out to do.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct Job {
-    pub from: BuildingId,
-    pub to: Destination,
-    pub resource: Resource,
-    pub tonnes: Tonnes,
+pub enum Job {
+    /// Take this much of this, from here to there.
+    Haul {
+        from: BuildingId,
+        to: Destination,
+        resource: Resource,
+        tonnes: Tonnes,
+    },
+    /// Go and pull that one out.
+    ///
+    /// A separate kind rather than a haul with odd fields, because the
+    /// journey is to a *vehicle* rather than to a place, and the thing that
+    /// happens on arrival is nothing like unloading.
+    Recover { casualty: VehicleId },
+}
+
+impl Job {
+    /// The haul, if it is one.
+    pub fn haul(self) -> Option<(BuildingId, Destination, Resource, Tonnes)> {
+        match self {
+            Job::Haul {
+                from,
+                to,
+                resource,
+                tonnes,
+            } => Some((from, to, resource, tonnes)),
+            Job::Recover { .. } => None,
+        }
+    }
+
+    pub fn casualty(self) -> Option<VehicleId> {
+        match self {
+            Job::Recover { casualty } => Some(casualty),
+            Job::Haul { .. } => None,
+        }
+    }
 }
 
 /// A lorry.
@@ -203,13 +314,34 @@ impl Vehicle {
     }
 
     /// The speed it makes on the leg it is currently driving — its own pace,
-    /// capped by whatever the road under it allows.
-    pub fn leg_speed(&self) -> Speed {
+    /// capped by whatever the road under it allows and slowed by `drag`
+    /// wherever it is off road.
+    pub fn leg_speed(&self, drag: f64) -> Speed {
         let def = self.def();
         match &self.journey {
-            Some(j) => j.leg_speed(def.on_road, def.cross_country),
+            Some(j) => j.leg_speed(def.on_road, def.cross_country, drag),
             None => Speed::ZERO,
         }
+    }
+
+    /// How much of its bed is full, `0.0..=1.0`.
+    pub fn load_fraction(&self) -> f64 {
+        let capacity = self.def().capacity.0;
+        if capacity <= 0.0 {
+            0.0
+        } else {
+            (self.cargo.total().0 / capacity).clamp(0.0, 1.0)
+        }
+    }
+
+    /// How much going it can take as it stands, loaded as it is.
+    ///
+    /// The showable half of the bogging model: a panel can put this beside
+    /// the going on the crossing ahead and say plainly how the odds sit,
+    /// *before* the player commits to sending it.
+    pub fn capability(&self) -> f64 {
+        let def = self.def();
+        def.ground - self.load_fraction() * def.load_penalty
     }
 }
 
@@ -259,6 +391,11 @@ impl Fleet {
         self.list.iter().filter(|v| !v.is_idle()).count()
     }
 
+    /// How many are stuck.
+    pub fn bogged(&self) -> usize {
+        self.list.iter().filter(|v| v.state.is_bogged()).count()
+    }
+
     /// Put a new vehicle on the strength, parked at its garage with a full tank.
     ///
     /// It arrives fuelled because otherwise a republic's first lorry could never
@@ -298,6 +435,15 @@ impl Fleet {
         self.list.iter().map(|v| v.cargo.get(resource)).sum()
     }
 }
+
+/// How long a vehicle is left to get itself out before a tow is sent.
+///
+/// A day, because the ground is a daily quantity and a crew gets one go at
+/// driving out before anybody is sent after them. Measured rather than picked:
+/// longer delays were tried at two, three and five days and bought almost no
+/// extra self-releases while more than doubling the days a republic had a lorry
+/// standing in a field.
+pub const HELP_AFTER: u64 = 1;
 
 /// How many of a garage's establishment have drivers today.
 ///
@@ -340,7 +486,22 @@ mod tests {
     #[test]
     fn every_vehicle_is_fully_authored() {
         for def in VEHICLES {
-            assert!(def.capacity.is_positive(), "{} carries nothing", def.name);
+            // A recovery vehicle carries nothing on purpose; everything else
+            // that carries nothing is a lorry somebody forgot to author.
+            assert_eq!(
+                def.capacity.is_positive(),
+                !def.recovers,
+                "{} carries {:?} and recovers {}",
+                def.name,
+                def.capacity,
+                def.recovers
+            );
+            assert!(def.ground > 0.0, "{} cannot leave a road", def.name);
+            assert!(
+                def.load_penalty >= 0.0 && def.load_penalty < def.ground,
+                "{} cannot cross its own yard with a load on",
+                def.name
+            );
             assert!(def.on_road > Speed::ZERO, "{} cannot move", def.name);
             assert!(
                 def.cross_country > Speed::ZERO,
@@ -451,6 +612,8 @@ mod tests {
         let id = fleet.commission(VehicleKind::Lorry, BuildingId(1), at(500.0, 500.0));
         let v = fleet.get(id).expect("just commissioned");
         assert!(v.is_idle());
+        assert_eq!(v.load_fraction(), 0.0);
+        assert_eq!(v.capability(), VehicleKind::Lorry.def().ground);
         assert!(v.job.is_none() && v.journey.is_none());
         assert_eq!(v.fuel, VehicleKind::Lorry.def().tank);
         assert_eq!(v.spare_capacity(), VehicleKind::Lorry.def().capacity);

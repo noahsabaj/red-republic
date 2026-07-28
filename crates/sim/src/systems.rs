@@ -29,7 +29,7 @@ use crate::building::{BuildingId, BuildingKind};
 use crate::citizen::assign_labour;
 use crate::climate;
 use crate::contract::{self, Contract, ContractId, ContractState};
-use crate::fleet::{Destination, Job, VehicleId, VehicleKind, VehicleState, crewed};
+use crate::fleet::{Destination, Doing, Job, VehicleId, VehicleKind, VehicleState, crewed};
 use crate::geology::DepositId;
 use crate::journey::{self, Journey};
 use crate::resource::Resource;
@@ -39,7 +39,7 @@ use crate::time::TICK;
 use crate::trade::{CUSTOMS_RANGE, CUSTOMS_THROUGHPUT_PER_DAY, Market, TradeAction};
 use crate::transport;
 use crate::units::{Metres, Point, Seconds, Tonnes};
-use crate::world::World;
+use crate::world::{BOG_STREAM, World};
 use std::collections::BTreeMap;
 
 /// Everything a system is allowed to change.
@@ -140,6 +140,39 @@ pub enum Mutation {
     /// A vehicle got home: the job is done and anything still aboard is put
     /// into the garage.
     Park { vehicle: VehicleId, burn: Tonnes },
+    /// A vehicle stuck fast. It keeps its job, its load and its plan; what it
+    /// has lost is the ability to go anywhere.
+    ///
+    /// The day travels with it because how long it has been there is what
+    /// decides whether anybody is sent — see [`crate::fleet::HELP_AFTER`].
+    Bog { vehicle: VehicleId, day: u64 },
+    /// It got going again under its own power, because the ground came back to
+    /// it. Resumes the leg it stalled before, timed from now.
+    Free {
+        vehicle: VehicleId,
+        was: Doing,
+        leg: u32,
+        leg_start: f64,
+        leg_end: f64,
+    },
+    /// A recovery vehicle hooked on, pulled one out, and turned for home.
+    ///
+    /// One kind for both halves, because a tow that half happened would leave a
+    /// lorry in a field with a recovery vehicle standing beside it doing
+    /// nothing. The casualty is set down at the **far** end of the crossing
+    /// that beat it, not where it stuck: a rescue that puts it back in the same
+    /// mud is a rescue that has to happen again on the next tick.
+    Recover {
+        recovery: VehicleId,
+        casualty: VehicleId,
+        was: Doing,
+        casualty_leg: u32,
+        casualty_start: f64,
+        casualty_end: f64,
+        /// The recovery vehicle's way home.
+        journey: Journey,
+        burn: Tonnes,
+    },
     /// How much of a household's needs the shops actually met, 0..=1.
     Provision { building: BuildingId, fraction: f64 },
     /// Goods leaving the republic and the currency that came back. One kind:
@@ -217,6 +250,9 @@ pub enum MutationKind {
     Load,
     Unload,
     Park,
+    Bog,
+    Free,
+    Recover,
     Provision,
     Export,
     Import,
@@ -245,6 +281,9 @@ impl Mutation {
             Mutation::Load { .. } => MutationKind::Load,
             Mutation::Unload { .. } => MutationKind::Unload,
             Mutation::Park { .. } => MutationKind::Park,
+            Mutation::Bog { .. } => MutationKind::Bog,
+            Mutation::Free { .. } => MutationKind::Free,
+            Mutation::Recover { .. } => MutationKind::Recover,
             Mutation::Provision { .. } => MutationKind::Provision,
             Mutation::Export { .. } => MutationKind::Export,
             Mutation::Import { .. } => MutationKind::Import,
@@ -287,7 +326,10 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
     ("trade", &[MutationKind::Export, MutationKind::Import]),
     ("weather", &[MutationKind::Weather]),
     ("commissioning", &[MutationKind::Commission]),
-    ("dispatch", &[MutationKind::Dispatch]),
+    // Dispatch emits `Bog` because a lorry can stick on the very first crossing
+    // out of the yard, and a single-leg journey has no leg boundary for the
+    // fleet system to catch it at.
+    ("dispatch", &[MutationKind::Dispatch, MutationKind::Bog]),
     (
         "fleet",
         &[
@@ -295,6 +337,9 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
             MutationKind::Load,
             MutationKind::Unload,
             MutationKind::Park,
+            MutationKind::Bog,
+            MutationKind::Free,
+            MutationKind::Recover,
         ],
     ),
     ("labour", &[MutationKind::Staff, MutationKind::Consume]),
@@ -603,6 +648,59 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     if let Some(bay) = bay {
                         v.at = bay;
                     }
+                    v.journey = Some(journey.clone());
+                    v.state = VehicleState::Returning;
+                }
+            }
+            &Mutation::Bog { vehicle, day } => {
+                if let Some(v) = world.fleet.get_mut(vehicle)
+                    && let Some(was) = v.state.doing()
+                {
+                    v.state = VehicleState::Bogged {
+                        was,
+                        since_day: day,
+                    };
+                }
+            }
+            &Mutation::Free {
+                vehicle,
+                was,
+                leg,
+                leg_start,
+                leg_end,
+            } => {
+                if let Some(v) = world.fleet.get_mut(vehicle) {
+                    v.state = was.state();
+                    if let Some(j) = v.journey.as_mut() {
+                        j.leg = leg;
+                        j.leg_start = leg_start;
+                        j.leg_end = leg_end;
+                    }
+                }
+            }
+            Mutation::Recover {
+                recovery,
+                casualty,
+                was,
+                casualty_leg,
+                casualty_start,
+                casualty_end,
+                journey,
+                burn,
+            } => {
+                if let Some(stuck) = world.fleet.get_mut(*casualty) {
+                    stuck.state = was.state();
+                    if let Some(j) = stuck.journey.as_mut() {
+                        j.leg = *casualty_leg;
+                        j.leg_start = *casualty_start;
+                        j.leg_end = *casualty_end;
+                        // Set down at the far side of what beat it.
+                        stuck.at = j.leg_to();
+                    }
+                }
+                if let Some(v) = world.fleet.get_mut(*recovery) {
+                    v.fuel = v.fuel.saturating_sub(*burn);
+                    v.at = journey.path.first().copied().unwrap_or(v.at);
                     v.journey = Some(journey.clone());
                     v.state = VehicleState::Returning;
                 }
@@ -1463,12 +1561,43 @@ pub const MIN_LOAD: Tonnes = Tonnes(2.0);
 /// longer a scalar but **the vehicles that have drivers today**, so a republic
 /// that wants to move more builds another depot and staffs it.
 pub fn dispatch(world: &World) -> Vec<Mutation> {
-    let mut idle = available(world);
-    if idle.is_empty() {
+    let mut idle = available(world, false);
+    let mut tows = available(world, true);
+    if idle.is_empty() && tows.is_empty() {
         return Vec::new();
     }
     let mut booked = Booked::from_fleet(world);
     let mut out = Vec::new();
+
+    // Recovery first. A stuck lorry is a job that has stopped with a load on
+    // it, and every tick it stays stuck is a tick that load is not arriving —
+    // which outranks any fresh haul, however urgent.
+    // **The driver tries first.** A tow is not sent to a lorry that stuck an
+    // hour ago: the ground is a daily quantity, so a vehicle gets its own
+    // chance to drive out when the day turns before the republic spends a
+    // recovery vehicle on it. That ordering is what makes self-release the
+    // first resort and a tow the answer when it fails.
+    let today = world.clock.day_index();
+    let casualties: Vec<VehicleId> = world
+        .fleet
+        .all()
+        .iter()
+        .filter(|v| match v.state {
+            VehicleState::Bogged { since_day, .. } => today >= since_day + crate::fleet::HELP_AFTER,
+            _ => false,
+        })
+        .filter(|v| !booked.rescuing.contains(&v.id))
+        .map(|v| v.id)
+        .collect();
+    for casualty in casualties {
+        if tows.is_empty() {
+            break;
+        }
+        send_help(world, casualty, &mut tows, &mut booked, &mut out);
+    }
+    if idle.is_empty() {
+        return out;
+    }
 
     // Pass one: needs that prevent real downtime, worst cover first.
     let mut urgent: Vec<(f64, Destination, Resource)> = Vec::new();
@@ -1649,7 +1778,7 @@ pub fn dispatch(world: &World) -> Vec<Mutation> {
 /// — [`crewed`] — so a shift that goes unstaffed shrinks what can leave the
 /// yard. It does **not** recall the lorries already out: a republic short of
 /// people does not abandon its vehicles in a field.
-fn available(world: &World) -> Vec<VehicleId> {
+fn available(world: &World, recovery: bool) -> Vec<VehicleId> {
     let mut out = Vec::new();
     // `Buildings::all` is in commissioning order, which is id order, which is
     // what makes the answer reproducible.
@@ -1670,11 +1799,89 @@ fn available(world: &World) -> Vec<VehicleId> {
             if !v.is_idle() {
                 continue;
             }
+            // A recovery vehicle does not haul and a lorry does not tow, so
+            // the two pools never compete for the same driver-slot twice.
+            if v.def().recovers != recovery {
+                continue;
+            }
             out.push(v.id);
             slots -= 1;
         }
     }
     out
+}
+
+/// Send the nearest tow to a stuck lorry.
+///
+/// Priced like any other job — the round trip has to be affordable and the
+/// tow has to be able to reach it — but with no load minimum and no supplier
+/// to find, because the casualty *is* the demand.
+fn send_help(
+    world: &World,
+    casualty: VehicleId,
+    tows: &mut Vec<VehicleId>,
+    booked: &mut Booked,
+    out: &mut Vec<Mutation>,
+) {
+    let Some(stuck_at) = world.fleet.get(casualty).map(|v| v.at) else {
+        return;
+    };
+    let now = world.clock.ticks() as f64;
+    let crossing = world.crossing();
+
+    let mut nearest: Vec<(f64, usize)> = tows
+        .iter()
+        .enumerate()
+        .filter_map(|(i, id)| {
+            world
+                .fleet
+                .get(*id)
+                .map(|v| (v.at.distance_to(stuck_at).0, i))
+        })
+        .collect();
+    nearest.sort_by(|(da, ia), (db, ib)| da.total_cmp(db).then_with(|| ia.cmp(ib)));
+
+    for (_, index) in nearest {
+        let id = tows[index];
+        let Some(v) = world.fleet.get(id) else {
+            continue;
+        };
+        let Some(yard) = world.buildings.get(v.home).map(|b| b.centre) else {
+            continue;
+        };
+        let def = v.def();
+        let leg = |a: Point, b: Point| {
+            journey::plan(
+                a,
+                b,
+                &world.roads,
+                &crossing,
+                def.on_road,
+                def.cross_country,
+                now,
+            )
+        };
+        let outbound = leg(v.at, stuck_at);
+        let round_trip = outbound.distance() + leg(stuck_at, yard).distance();
+        let top_up = def
+            .tank
+            .saturating_sub(v.fuel)
+            .min(booked.fuel_left(world, v.home));
+        if (v.fuel + top_up).0 < v.fuel_for(round_trip).0 {
+            continue;
+        }
+
+        out.push(Mutation::Dispatch {
+            vehicle: id,
+            job: Job::Recover { casualty },
+            journey: outbound,
+            refuel: top_up,
+        });
+        *booked.drawn.entry(v.home).or_default() += top_up;
+        booked.rescuing.push(casualty);
+        tows.remove(index);
+        return;
+    }
 }
 
 /// Tonnage and fuel that are already spoken for.
@@ -1692,6 +1899,8 @@ struct Booked {
     promised: BTreeMap<(BuildingId, Resource), Tonnes>,
     /// Fuel already drawn from each garage during this pass.
     drawn: BTreeMap<BuildingId, Tonnes>,
+    /// Casualties somebody is already on the way to.
+    rescuing: Vec<VehicleId>,
 }
 
 impl Booked {
@@ -1701,18 +1910,25 @@ impl Booked {
             let Some(job) = v.job else {
                 continue;
             };
-            match v.state {
+            if let Some(casualty) = job.casualty() {
+                booked.rescuing.push(casualty);
+                continue;
+            }
+            let Some((from, to, resource, tonnes)) = job.haul() else {
+                continue;
+            };
+            // A stuck lorry still owes both ends: its load is real and it is
+            // still going to arrive, just later than anybody hoped. Freeing
+            // the booking would send a second lorry after the same tonnage.
+            match v.state.doing() {
                 // Still on its way to collect, so it is owed at both ends.
-                VehicleState::Fetching => {
-                    booked.reserve(job.from, job.to, job.resource, job.tonnes);
-                }
+                Some(Doing::Fetching) => booked.reserve(from, to, resource, tonnes),
                 // Already collected: the supplier's books are settled and only
                 // the destination is still waiting.
-                VehicleState::Delivering => {
-                    *booked.incoming.entry((job.to, job.resource)).or_default() +=
-                        v.cargo.get(job.resource);
+                Some(Doing::Delivering) => {
+                    *booked.incoming.entry((to, resource)).or_default() += v.cargo.get(resource);
                 }
-                VehicleState::Idle | VehicleState::Returning => {}
+                Some(Doing::Returning) | None => {}
             }
         }
         booked
@@ -1901,8 +2117,17 @@ fn dispatch_one(
         // the same planner that will drive it, against the roads as they stand
         // — and a road laid while it is out can only make the trip shorter.
         let def = v.def();
+        let crossing = world.crossing();
         let leg = |a: Point, b: Point| {
-            journey::plan(a, b, &world.roads, def.on_road, def.cross_country, now)
+            journey::plan(
+                a,
+                b,
+                &world.roads,
+                &crossing,
+                def.on_road,
+                def.cross_country,
+                now,
+            )
         };
         let outbound = leg(v.at, load_at);
         let round_trip =
@@ -1915,9 +2140,19 @@ fn dispatch_one(
             continue;
         }
 
+        // It leaves empty, so the way out is rolled at its own capability.
+        let stuck = sticks(
+            world,
+            &crossing,
+            id,
+            def.ground,
+            &outbound,
+            0,
+            world.clock.day_index(),
+        );
         out.push(Mutation::Dispatch {
             vehicle: id,
-            job: Job {
+            job: Job::Haul {
                 from,
                 to: destination,
                 resource,
@@ -1926,6 +2161,12 @@ fn dispatch_one(
             journey: outbound,
             refuel: top_up,
         });
+        if stuck {
+            out.push(Mutation::Bog {
+                vehicle: id,
+                day: world.clock.day_index(),
+            });
+        }
         booked.reserve(from, destination, resource, tonnes);
         *booked.drawn.entry(v.home).or_default() += top_up;
         idle.remove(index);
@@ -1934,33 +2175,151 @@ fn dispatch_one(
     false
 }
 
+/// How likely a crossing is to go wrong, given the going and what the vehicle
+/// can take.
+///
+/// **Deterministic margin plus a probability roll**, which is the shape noahs
+/// chose over a fully deterministic model: vehicles get stuck in real life, and
+/// a model where the outcome is a foregone conclusion is a model where nobody
+/// ever has to decide anything. What the margin buys back is explicability —
+/// the odds are a function of two numbers the player can see, and
+/// [`crate::world::World::bog_chance`] shows them.
+///
+/// Inside its capability nothing happens at all. Beyond it the odds climb with
+/// how far beyond, and stop short of certain: a lorry with a bad crossing ahead
+/// is in trouble, not doomed.
+pub fn bog_chance(going: f64, capability: f64) -> f64 {
+    let margin = capability - going;
+    if margin >= 0.0 {
+        return 0.0;
+    }
+    (-margin / BOG_SPAN).clamp(0.0, WORST_ODDS)
+}
+
+/// How far past its capability a vehicle has to be pushed for the odds to reach
+/// [`WORST_ODDS`].
+pub const BOG_SPAN: f64 = 1.2;
+
+/// The worst the odds ever get. Never certain, because a crossing nobody could
+/// ever make is a route the planner should have refused, not a dice roll.
+pub const WORST_ODDS: f64 = 0.6;
+
+/// The best chance a crew has of driving out unaided in a day.
+pub const DIG_OUT: f64 = 0.35;
+
+/// The chance a stuck vehicle gets itself out today.
+///
+/// Certain once the ground has genuinely come back under it — that is the rule
+/// as designed, and it is kept. What is added is the case in between, and it
+/// was added on measurement: over a simulated year *every single* casualty was
+/// waiting for a tow, because a vehicle bogs precisely when the going is bad
+/// and the going stays bad for weeks afterwards. The deterministic rule alone
+/// made half the mechanic unreachable.
+///
+/// So a marginal bogging is treated as what it is — bad luck rather than bad
+/// ground — and the crew digs it out in a few days. One that went well past
+/// what the vehicle could take does not come out without help, which is what
+/// keeps a recovery vehicle worth having.
+pub fn dig_out_chance(going: f64, capability: f64) -> f64 {
+    if going <= capability {
+        return 1.0;
+    }
+    let how_badly = bog_chance(going, capability) / WORST_ODDS;
+    ((1.0 - how_badly) * DIG_OUT).clamp(0.0, 1.0)
+}
+
 /// Move the fleet.
 ///
 /// The entire per-tick cost of freight is here, and for most vehicles it is one
 /// float comparison: has this leg finished yet. Only the handful whose leg has
-/// actually ended do real work — arrive, load, re-plan, turn for home. That is
-/// what [`crate::journey`] buys, and it is why freight can be physical at all
-/// at the speeds this game runs.
+/// actually ended do real work — arrive, load, re-plan, turn for home, or stick
+/// fast. That is what [`crate::journey`] buys, and it is why freight can be
+/// physical at all at the speeds this game runs.
 ///
 /// A vehicle finishes **at most one leg per tick**, which is not a rule imposed
 /// here but a consequence of [`crate::journey::MIN_LEG_TICKS`]: the next leg
 /// always ends at least a tick after the one that just did.
 pub fn fleet(world: &World) -> Vec<Mutation> {
     let now = world.clock.ticks() as f64;
+    let day = world.clock.day_index();
+    let new_day = world.clock.is_day_boundary();
+    let crossing = world.crossing();
     let mut out = Vec::new();
 
     for v in world.fleet.all() {
         let Some(journey) = v.journey.as_ref() else {
             continue;
         };
-        if !journey.leg_done_by(now) {
+        let def = v.def();
+
+        // A stuck lorry is not driving anywhere, so it burns nothing and its leg
+        // does not end. The only question asked of it is whether the ground has
+        // come back to it — and it is asked **before** anything about arrival
+        // times, because a vehicle that stuck in the middle of a crossing has a
+        // leg that is still notionally running and would otherwise never be
+        // looked at again.
+        if let VehicleState::Bogged { was, .. } = v.state {
+            let leg = journey.leg;
+            let (from, to) = journey.leg_ends(leg);
+            let odds = dig_out_chance(crossing.going_along(from, to), v.capability());
+            let out_by_itself = odds >= 1.0
+                || (new_day
+                    && odds > 0.0
+                    && world
+                        .substream(BOG_STREAM, free_key(v.id, leg, day))
+                        .next_f64()
+                        < odds);
+            if out_by_itself {
+                let drag = crossing.drag_along(from, to);
+                let speed = journey.speed_on(leg, def.on_road, def.cross_country, drag);
+                // It starts the crossing again rather than picking up where it
+                // stopped: it is at a standstill in a field, not idling at a
+                // waypoint.
+                out.push(Mutation::Free {
+                    vehicle: v.id,
+                    was,
+                    leg,
+                    leg_start: now,
+                    leg_end: now + journey::leg_ticks(from.distance_to(to), speed),
+                });
+            }
             continue;
         }
-        let def = v.def();
+
+        if !journey.leg_done_by(now) {
+            // Still on its way. The only thing that can happen to it before it
+            // arrives is the ground turning underneath it, and the ground only
+            // turns once a day — which is exactly the case the mechanic exists
+            // for: dispatched in weather that was fine, stuck in weather that
+            // is not.
+            if new_day
+                && sticks(
+                    world,
+                    &crossing,
+                    v.id,
+                    v.capability(),
+                    journey,
+                    journey.leg,
+                    day,
+                )
+            {
+                out.push(Mutation::Bog { vehicle: v.id, day });
+            }
+            continue;
+        }
+
         let burn = v.fuel_for(journey.leg_distance());
 
         if !journey.on_last_leg() {
-            let (leg, leg_start, leg_end) = journey.next_leg(def.on_road, def.cross_country);
+            let ahead = journey.leg + 1;
+            let (from, to) = journey.leg_ends(ahead);
+            let drag = crossing.drag_along(from, to);
+            let speed = journey.speed_on(ahead, def.on_road, def.cross_country, drag);
+            let (leg, leg_start, leg_end) = journey.next_leg(speed);
+            // The leg just finished did happen, so it moved the lorry and burnt
+            // its diesel either way. What the roll decides is whether the *next*
+            // one starts — and the plan has to move on to that leg first, or a
+            // freed vehicle would be told to re-drive the one behind it.
             out.push(Mutation::Advance {
                 vehicle: v.id,
                 leg,
@@ -1968,6 +2327,11 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                 leg_end,
                 burn,
             });
+            // The crossing about to be attempted, evaluated against the ground
+            // as it is *now* rather than as it was when the plan was made.
+            if sticks(world, &crossing, v.id, v.capability(), journey, ahead, day) {
+                out.push(Mutation::Bog { vehicle: v.id, day });
+            }
             continue;
         }
 
@@ -1985,6 +2349,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                 arrived,
                 target,
                 &world.roads,
+                &crossing,
                 def.on_road,
                 def.cross_country,
                 depart,
@@ -1996,56 +2361,171 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                 vehicle: v.id,
                 burn,
             }),
-            VehicleState::Fetching => {
-                let Some(job) = v.job else {
-                    continue;
-                };
-                let held = world
-                    .buildings
-                    .get(job.from)
-                    .map(|b| b.stock.get(job.resource))
-                    .unwrap_or(Tonnes::ZERO);
-                let tonnes = job.tonnes.min(held).min(v.spare_capacity());
-                // A yard emptied since the job was booked sends the lorry home
-                // rather than on to a destination it has nothing for.
-                let onto = world.consignee(job.to, job.resource).map(|c| c.at);
-                let (state, next) = match (tonnes.is_positive(), onto) {
-                    (true, Some(target)) => (VehicleState::Delivering, target),
-                    _ => (VehicleState::Returning, yard),
-                };
-                out.push(Mutation::Load {
-                    vehicle: v.id,
-                    from: job.from,
-                    resource: job.resource,
-                    tonnes,
-                    journey: onward(next),
-                    state,
-                    burn,
-                });
-            }
+            VehicleState::Fetching => match v.job {
+                // Arrived at the casualty. Hooking on, pulling it out and
+                // turning for home is one act, so it is one mutation — a tow
+                // that half happened would leave a lorry in a field with a
+                // recovery vehicle standing next to it doing nothing.
+                Some(Job::Recover { casualty }) => {
+                    let Some(stuck) = world.fleet.get(casualty) else {
+                        // It freed itself while help was on the way. Go home.
+                        out.push(Mutation::Load {
+                            vehicle: v.id,
+                            from: v.home,
+                            resource: Resource::Fuel,
+                            tonnes: Tonnes::ZERO,
+                            journey: onward(yard),
+                            state: VehicleState::Returning,
+                            burn,
+                        });
+                        continue;
+                    };
+                    let Some(was) = stuck.state.doing() else {
+                        continue;
+                    };
+                    let Some(plan) = stuck.journey.as_ref() else {
+                        continue;
+                    };
+                    // The tow drags it through the bad patch rather than
+                    // setting it down in the same one — otherwise the recovery
+                    // is a coin flip away from being needed again immediately,
+                    // and a mechanic whose answer is "try again" is not one.
+                    let leg = plan.leg;
+                    let (a, b) = plan.leg_ends(leg);
+                    let stuck_def = stuck.def();
+                    let drag = crossing.drag_along(a, b);
+                    let speed =
+                        plan.speed_on(leg, stuck_def.on_road, stuck_def.cross_country, drag);
+                    out.push(Mutation::Recover {
+                        recovery: v.id,
+                        casualty,
+                        was,
+                        casualty_leg: leg,
+                        casualty_start: now,
+                        casualty_end: now + journey::leg_ticks(a.distance_to(b), speed),
+                        journey: onward(yard),
+                        burn,
+                    });
+                }
+                Some(Job::Haul {
+                    from,
+                    to,
+                    resource,
+                    tonnes: wanted,
+                }) => {
+                    let held = world
+                        .buildings
+                        .get(from)
+                        .map(|b| b.stock.get(resource))
+                        .unwrap_or(Tonnes::ZERO);
+                    let tonnes = wanted.min(held).min(v.spare_capacity());
+                    // A yard emptied since the job was booked sends the lorry
+                    // home rather than on to a destination it has nothing for.
+                    let onto = world.consignee(to, resource).map(|c| c.at);
+                    let (state, next) = match (tonnes.is_positive(), onto) {
+                        (true, Some(target)) => (VehicleState::Delivering, target),
+                        _ => (VehicleState::Returning, yard),
+                    };
+                    // Loaded, and the first crossing of the way out is rolled
+                    // against what it now weighs. A single-leg journey has no
+                    // leg boundary to be caught at, so this is where a short
+                    // haul across a wet field goes wrong.
+                    let plan = onward(next);
+                    let laden = def.ground
+                        - (tonnes.0 / def.capacity.0.max(f64::MIN_POSITIVE)).clamp(0.0, 1.0)
+                            * def.load_penalty;
+                    let stuck = sticks(world, &crossing, v.id, laden, &plan, 0, day);
+                    out.push(Mutation::Load {
+                        vehicle: v.id,
+                        from,
+                        resource,
+                        tonnes,
+                        journey: plan,
+                        state,
+                        burn,
+                    });
+                    if stuck {
+                        out.push(Mutation::Bog { vehicle: v.id, day });
+                    }
+                }
+                None => {}
+            },
             VehicleState::Delivering => {
-                let Some(job) = v.job else {
+                let Some((_, to, resource, _)) = v.job.and_then(Job::haul) else {
                     continue;
                 };
                 let room = world
-                    .consignee(job.to, job.resource)
+                    .consignee(to, resource)
                     .map(|c| c.capacity.saturating_sub(c.held))
                     .unwrap_or(Tonnes::ZERO);
+                let plan = onward(yard);
+                // Empty now, so the way home is rolled at the vehicle's own
+                // capability rather than at a laden one.
+                let stuck = sticks(world, &crossing, v.id, def.ground, &plan, 0, day);
                 out.push(Mutation::Unload {
                     vehicle: v.id,
-                    to: job.to,
-                    resource: job.resource,
-                    tonnes: v.cargo.get(job.resource).min(room),
-                    journey: onward(yard),
+                    to,
+                    resource,
+                    tonnes: v.cargo.get(resource).min(room),
+                    journey: plan,
                     burn,
                 });
+                if stuck {
+                    out.push(Mutation::Bog { vehicle: v.id, day });
+                }
             }
-            // A parked vehicle has no journey, so this is unreachable; leaving
-            // it alone is the harmless answer if it ever stops being so.
-            VehicleState::Idle => {}
+            // A parked vehicle has no journey and a bogged one was handled
+            // above, so neither is reachable here.
+            VehicleState::Idle | VehicleState::Bogged { .. } => {}
         }
     }
     out
+}
+
+/// Whether a vehicle sticks setting out on a given leg today.
+///
+/// A pure function of who, which leg, and what day, so it gives the same
+/// answer however many times it is asked — which is what lets the roll be
+/// made at every point a leg can begin without a vehicle getting several
+/// bites at the same crossing.
+///
+/// Roads never bog. That is the whole argument for building one.
+pub fn sticks(
+    world: &World,
+    crossing: &crate::ground::Crossing,
+    vehicle: VehicleId,
+    capability: f64,
+    journey: &Journey,
+    leg: u32,
+    day: u64,
+) -> bool {
+    if leg >= journey.legs() || journey.limit[leg as usize].is_some() {
+        return false;
+    }
+    let (from, to) = journey.leg_ends(leg);
+    let odds = bog_chance(crossing.going_along(from, to), capability);
+    odds > 0.0
+        && world
+            .substream(BOG_STREAM, bog_key(vehicle, leg, day))
+            .next_f64()
+            < odds
+}
+
+/// The same key for the digging-out roll, salted so that a crew's chance of
+/// getting out is not the same draw that put them there.
+fn free_key(vehicle: VehicleId, leg: u32, day: u64) -> u64 {
+    bog_key(vehicle, leg, day) ^ 0x94D0_49BB_1331_11EB
+}
+
+/// Key the bogging roll by who, where in the journey, and when.
+///
+/// Mixed rather than xor-ed so that a low vehicle id on a low leg does not
+/// collide with the day beside it — the same draw twice would make two
+/// crossings share a fate for no reason anybody could see.
+fn bog_key(vehicle: VehicleId, leg: u32, day: u64) -> u64 {
+    u64::from(vehicle.0).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ u64::from(leg).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+        ^ day.wrapping_mul(0xBF58_476D_1CE4_E5B9)
 }
 
 /// The day's weather, worked through the ground.
@@ -2216,7 +2696,16 @@ mod tests {
             extent: Metres(4_000.0),
             climate: ClimateId::Plains,
         });
-        w.terrain = Terrain::flat(Metres(4_000.0));
+        w.set_terrain(Terrain::flat(Metres(4_000.0)));
+        // Bone dry. Most tests here are about an economy rather than about mud,
+        // and a fixture founded in a wet March would quietly turn half of them
+        // into bogging tests. The ones that *are* about the ground wet it back
+        // down on purpose.
+        w.ground = crate::ground::Ground {
+            moisture: 0.0,
+            snow: 0.0,
+            frost: 0.0,
+        };
         w.geology = Geology::new();
         w.buildings = Buildings::new();
         w.roads = RoadNetwork::new();
@@ -2456,13 +2945,14 @@ mod tests {
         let jobs = dispatch(&w);
         match jobs.first().expect("something should be dispatched") {
             Mutation::Dispatch { job, .. } => {
+                let (from, to, resource, _) = job.haul().expect("a haul, not a rescue");
                 assert_eq!(
-                    job.to,
+                    to,
                     Destination::Building(starving),
                     "the empty mill should be served first"
                 );
-                assert_eq!(job.resource, Resource::Wood);
-                assert_eq!(job.from, store, "the wood should come from the warehouse");
+                assert_eq!(resource, Resource::Wood);
+                assert_eq!(from, store, "the wood should come from the warehouse");
             }
             other => panic!("expected a dispatch, got {other:?}"),
         }
@@ -2648,6 +3138,7 @@ mod tests {
             at(0.0, 0.0),
             at(1.0, 0.0),
             &w.roads,
+            &w.crossing(),
             crate::road::default_road_speed(),
             crate::road::default_road_speed(),
             0.0,
@@ -3258,7 +3749,9 @@ mod tests {
         for _ in 0..TICKS_PER_DAY {
             for m in w.tick() {
                 if let Mutation::Dispatch { job, .. } = &m
-                    && job.to == Destination::Building(mill)
+                    && job
+                        .haul()
+                        .is_some_and(|(_, to, _, _)| to == Destination::Building(mill))
                 {
                     sent += 1;
                 }
@@ -3314,7 +3807,7 @@ mod tests {
             dispatch(&w)
                 .iter()
                 .any(|m| matches!(m, Mutation::Dispatch { job, .. }
-                    if job.resource == Resource::Machinery)),
+                    if job.haul().is_some_and(|(_, _, r, _)| r == Resource::Machinery))),
             "a site waiting on a small part was left waiting"
         );
     }
@@ -3348,14 +3841,272 @@ mod tests {
         let jobs = dispatch(&w);
         match jobs.first() {
             Some(Mutation::Dispatch { job, .. }) => {
-                assert_eq!(job.to, Destination::Building(mill));
+                let (from, to, _, _) = job.haul().expect("a haul, not a rescue");
+                assert_eq!(to, Destination::Building(mill));
                 assert_eq!(
-                    job.from, further_off,
+                    from, further_off,
                     "the dispatcher stopped at the yard that could not fill a lorry"
                 );
             }
             other => panic!("the mill was left short of wood: {other:?}"),
         }
+    }
+
+    // ---- Ground and bogging ----
+
+    /// Turn the ground to mud and keep it there, whatever the calendar says.
+    fn soak(w: &mut World) {
+        w.ground = crate::ground::Ground {
+            moisture: 1.0,
+            snow: 0.0,
+            frost: 0.0,
+        };
+    }
+
+    /// The odds are a function of two numbers a player can be shown, and they
+    /// behave the way a player would expect: nothing inside capability, worse
+    /// the further past it, and never a certainty.
+    #[test]
+    fn the_odds_against_a_crossing_are_showable_and_sane() {
+        assert_eq!(bog_chance(0.2, 0.75), 0.0, "well inside its capability");
+        assert_eq!(bog_chance(0.75, 0.75), 0.0, "exactly at it");
+        let a_little = bog_chance(0.85, 0.75);
+        let a_lot = bog_chance(1.0, 0.75);
+        assert!(a_little > 0.0 && a_little < a_lot);
+        assert!(a_lot <= WORST_ODDS, "a crossing is never a certainty");
+        assert_eq!(bog_chance(1.0, -5.0), WORST_ODDS, "and it is capped");
+    }
+
+    /// A loaded lorry crosses less than an empty one, and a heavy lorry loaded
+    /// crosses less than a light one loaded. That ordering is the whole reason
+    /// the big lorry is a road vehicle.
+    #[test]
+    fn a_load_costs_a_vehicle_its_footing() {
+        let mut fleet = crate::fleet::Fleet::new();
+        let light = fleet.commission(VehicleKind::Lorry, BuildingId(1), at(0.0, 0.0));
+        let heavy = fleet.commission(VehicleKind::HeavyLorry, BuildingId(1), at(0.0, 0.0));
+        let empty = fleet.get(light).unwrap().capability();
+        for (id, load) in [(light, 8.0), (heavy, 20.0)] {
+            fleet
+                .get_mut(id)
+                .unwrap()
+                .cargo
+                .add(Resource::Coal, Tonnes(load));
+        }
+        let laden = fleet.get(light).unwrap().capability();
+        assert!(
+            laden < empty,
+            "a full lorry crosses as much as an empty one"
+        );
+        assert!(
+            fleet.get(heavy).unwrap().capability() < laden,
+            "the heavy lorry is no worse off road with a load on"
+        );
+        assert!(
+            VehicleKind::RecoveryVehicle.def().ground > 1.0,
+            "the thing sent to rescue people must not need rescuing"
+        );
+    }
+
+    /// The whole mechanic end to end: a lorry sent across a soaked field sticks,
+    /// and the same lorry sent across the same field frozen does not.
+    #[test]
+    fn a_lorry_sticks_in_the_thaw_and_crosses_the_same_field_frozen() {
+        let stuck_in = |ground: crate::ground::Ground| -> usize {
+            let mut w = bare();
+            w.ground = ground;
+            haulage(&mut w, at(600.0, 600.0));
+            let store = place(&mut w, BuildingKind::Warehouse, at(900.0, 900.0));
+            w.buildings
+                .get_mut(store)
+                .unwrap()
+                .stock
+                .add(Resource::Wood, Tonnes(400.0));
+            for i in 0..3 {
+                place(
+                    &mut w,
+                    BuildingKind::Sawmill,
+                    at(2_600.0 + f64::from(i) * 300.0, 2_600.0),
+                );
+            }
+            let mut bogs = 0;
+            for _ in 0..TICKS_PER_DAY {
+                // Hold the weather still: this is a test about the ground, not
+                // about how quickly a plains April dries out.
+                w.ground = ground;
+                for m in w.tick() {
+                    if matches!(m, Mutation::Bog { .. }) {
+                        bogs += 1;
+                    }
+                }
+            }
+            bogs
+        };
+
+        let thaw = stuck_in(crate::ground::Ground {
+            moisture: 1.0,
+            snow: 0.0,
+            frost: 0.0,
+        });
+        let midwinter = stuck_in(crate::ground::Ground {
+            moisture: 1.0,
+            snow: 60.0,
+            frost: 1.0,
+        });
+        assert!(thaw > 0, "nothing stuck in a soaked field");
+        assert_eq!(
+            midwinter, 0,
+            "something stuck crossing ground frozen solid — a frozen bog is a road"
+        );
+    }
+
+    /// Both ways out, and neither of them a button.
+    #[test]
+    fn a_stuck_lorry_is_dug_out_or_towed_out_and_never_simply_forgiven() {
+        let mut w = bare();
+        soak(&mut w);
+        haulage(&mut w, at(600.0, 600.0));
+        let store = place(&mut w, BuildingKind::Warehouse, at(900.0, 900.0));
+        w.buildings
+            .get_mut(store)
+            .unwrap()
+            .stock
+            .add(Resource::Wood, Tonnes(400.0));
+        for i in 0..3 {
+            place(
+                &mut w,
+                BuildingKind::Sawmill,
+                at(2_600.0 + f64::from(i) * 300.0, 2_600.0),
+            );
+        }
+
+        let (mut bogged, mut dug_out, mut towed) = (0, 0, 0);
+        for _ in 0..TICKS_PER_DAY * 20 {
+            soak(&mut w);
+            for m in w.tick() {
+                match m {
+                    Mutation::Bog { .. } => bogged += 1,
+                    Mutation::Free { .. } => dug_out += 1,
+                    Mutation::Recover { .. } => towed += 1,
+                    _ => {}
+                }
+            }
+        }
+        assert!(bogged > 0, "nothing ever stuck in twenty days of mud");
+        assert!(
+            dug_out + towed > 0,
+            "{bogged} lorries stuck and not one of them ever got out"
+        );
+        assert!(
+            towed > 0,
+            "nothing was ever towed, so the recovery vehicle is decoration"
+        );
+        // And a tow is a real journey by a real machine, not a button: the
+        // recovery vehicle burns diesel getting there.
+        let tow = w
+            .fleet
+            .all()
+            .iter()
+            .find(|v| v.def().recovers)
+            .expect("the garage keeps one");
+        assert!(
+            tow.fuel < tow.def().tank,
+            "the recovery vehicle never left the yard"
+        );
+    }
+
+    /// One bad crossing must not dam a supply chain: everybody else routes past
+    /// the casualty as if it were not there.
+    #[test]
+    fn a_bogged_lorry_does_not_stop_the_ones_behind_it() {
+        let mut w = bare();
+        soak(&mut w);
+        haulage(&mut w, at(600.0, 600.0));
+        let store = place(&mut w, BuildingKind::Warehouse, at(900.0, 900.0));
+        w.buildings
+            .get_mut(store)
+            .unwrap()
+            .stock
+            .add(Resource::Wood, Tonnes(400.0));
+        let mills: Vec<_> = (0..3)
+            .map(|i| {
+                place(
+                    &mut w,
+                    BuildingKind::Sawmill,
+                    at(2_600.0 + f64::from(i) * 300.0, 2_600.0),
+                )
+            })
+            .collect();
+
+        let mut ever_stuck = false;
+        for _ in 0..TICKS_PER_DAY * 20 {
+            soak(&mut w);
+            w.tick();
+            ever_stuck |= w.fleet.bogged() > 0;
+        }
+        assert!(
+            ever_stuck,
+            "nothing ever stuck, so nothing was routed round"
+        );
+        let delivered: Tonnes = mills
+            .iter()
+            .map(|&id| w.buildings.get(id).unwrap().stock.get(Resource::Wood))
+            .sum();
+        assert!(
+            delivered.is_positive(),
+            "a stuck lorry stopped the whole republic"
+        );
+    }
+
+    /// Off-road routing goes round what it cannot cross, and says so honestly
+    /// when there is no way round.
+    #[test]
+    fn a_lorry_drives_round_a_lake_and_gives_up_on_an_island() {
+        use crate::terrain::Surface;
+        let mut terrain = Terrain::flat(Metres(3_000.0));
+        // A wall of water across the middle, with a gap at the top.
+        let mut x = 0.0;
+        while x < 2_400.0 {
+            let mut y = 1_200.0;
+            while y < 1_800.0 {
+                terrain.set_surface(at(x, y), Surface::Water);
+                y += 10.0;
+            }
+            x += 10.0;
+        }
+        let mut w = bare();
+        w.set_terrain(terrain);
+        soak(&mut w);
+        let crossing = w.crossing();
+
+        let way = crossing
+            .route(at(500.0, 500.0), at(500.0, 2_500.0))
+            .expect("there is a gap to go round by");
+        assert!(way.len() > 2, "it went straight through the lake");
+        assert!(
+            way.iter().any(|p| p.x.0 > 2_400.0),
+            "it did not use the gap: {way:?}"
+        );
+
+        // Now wall it off completely, and the honest answer is that there is
+        // no way — not a route straight across the water.
+        let mut sealed = w.terrain.clone();
+        let mut y = 1_200.0;
+        while y < 1_800.0 {
+            let mut x = 2_400.0;
+            while x < 3_000.0 {
+                sealed.set_surface(at(x, y), Surface::Water);
+                x += 10.0;
+            }
+            y += 10.0;
+        }
+        w.set_terrain(sealed);
+        assert!(
+            w.crossing()
+                .route(at(500.0, 500.0), at(500.0, 2_500.0))
+                .is_none(),
+            "it found a way across a lake with no gap in it"
+        );
     }
 
     // ---- Roads ----
@@ -4233,7 +4984,7 @@ mod tests {
 
         let build = |with_transport: bool| {
             let mut w = bare();
-            w.terrain = Terrain::flat(Metres(12_000.0));
+            w.set_terrain(Terrain::flat(Metres(12_000.0)));
 
             // A remote camp with a mine, and a city eight kilometres away with
             // work but nobody living in it.
@@ -4314,7 +5065,7 @@ mod tests {
     fn carrying_commuters_burns_the_depots_fuel() {
         use crate::road::default_road_speed;
         let mut w = bare();
-        w.terrain = Terrain::flat(Metres(12_000.0));
+        w.set_terrain(Terrain::flat(Metres(12_000.0)));
 
         let mut previous = w.roads.add_node(at(1_000.0, 1_000.0));
         for i in 1..=12 {

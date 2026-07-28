@@ -100,7 +100,7 @@ fn main() {
     );
     println!();
     println!(
-        "{:>10} {:>4} {:>5} {:>5} {:>6} {:>6} {:>5} {:>8} {:>8} {:>6} {:>8} {:>7} {:>8} {:>10} {:>9} {:>4}",
+        "{:>10} {:>4} {:>5} {:>5} {:>6} {:>6} {:>5} {:>8} {:>8} {:>6} {:>8} {:>7} {:>5} {:>8} {:>10} {:>9} {:>4}",
         "date",
         "pop",
         "empl",
@@ -113,6 +113,7 @@ fn main() {
         "fuel",
         "moved",
         "lorries",
+        "stuck",
         "road km",
         "coal left",
         "roubles",
@@ -126,10 +127,13 @@ fn main() {
         // the scalar could never have: it is what the lorries delivered, not
         // what a budget allowed.
         let mut moved = Tonnes::ZERO;
+        let mut stuck = 0usize;
         for _ in 0..TICKS_PER_DAY * 30 {
             for m in world.tick() {
-                if let red_republic_sim::systems::Mutation::Unload { tonnes, .. } = m {
-                    moved += tonnes;
+                match m {
+                    red_republic_sim::systems::Mutation::Unload { tonnes, .. } => moved += tonnes,
+                    red_republic_sim::systems::Mutation::Bog { .. } => stuck += 1,
+                    _ => {}
                 }
             }
         }
@@ -192,7 +196,7 @@ fn main() {
         };
 
         println!(
-            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>6.1} {:>5.0}% {:>4.0}% {:>8.0} {:>8.1} {:>6.2} {:>8.0} {:>3}/{:<3} {:>8} {:>10.0} {:>9.0} {:>4}",
+            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>6.1} {:>5.0}% {:>4.0}% {:>8.0} {:>8.1} {:>6.2} {:>8.0} {:>3}/{:<3} {:>5} {:>8} {:>10.0} {:>9.0} {:>4}",
             date.year,
             date.month,
             date.day,
@@ -208,6 +212,7 @@ fn main() {
             moved.0,
             world.fleet.running(),
             world.fleet.len(),
+            stuck,
             if world.roadworks.is_empty() {
                 format!("{:.1}", world.roads.total_length().as_km())
             } else {

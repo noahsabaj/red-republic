@@ -242,7 +242,7 @@ pub const BUILDINGS: &[BuildingDef] = &[
     // themselves, per kilometre driven, so the rate declared here is only the
     // appetite the resupply ranking reads.
     def!(MotorDepot, "Motor Depot", 90.0, 70.0, workers: 16, draw: 1.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0,
-        keeps: [(Lorry, 4), (HeavyLorry, 2)],
+        keeps: [(Lorry, 4), (HeavyLorry, 2), (RecoveryVehicle, 1)],
         in: [(Fuel, 0.2)], out: [],
         cost: [(Bricks, 18.0), (Planks, 12.0), (Steel, 6.0), (Gravel, 8.0)], labour: 150.0, sells: [], taps: None, residents: 0, storage: 60.0),
     def!(GasStation, "Gas Station", 30.0, 20.0, workers: 4, draw: 1.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],

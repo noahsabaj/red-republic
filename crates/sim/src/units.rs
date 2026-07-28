@@ -272,6 +272,18 @@ impl AddAssign for Seconds {
     }
 }
 
+/// A speed slowed by a factor — bad going, a load, a limit.
+impl Div<f64> for Speed {
+    type Output = Speed;
+    fn div(self, rhs: f64) -> Speed {
+        assert!(
+            rhs > 0.0,
+            "a speed cannot be slowed by a non-positive factor"
+        );
+        Speed(self.0 / rhs)
+    }
+}
+
 /// Speed over duration is a distance — how far something got.
 impl Mul<Seconds> for Speed {
     type Output = Metres;
