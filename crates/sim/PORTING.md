@@ -29,9 +29,10 @@ Counts: **19 ported, 12 superseded, 10 n/a, 9 not yet.**
 | `climate.test.ts` | `climate.rs`. The four postings are carried over, re-expressed as monthly means; `each_climate_has_a_winter_and_a_summer` and `mid_month_reads_back_the_authored_mean` pin them. |
 | `construction-fairness.test.ts` | `systems::construction`. Sites are worked in commissioning order and finished one at a time — the rule the archive learned the hard way. |
 | `contracts.test.ts` | `contract.rs` and `systems::contracts`. Offers expire, deadlines fail with a fine, relations sour and decay. |
-| `delivery-priority.test.ts` | `systems::logistics`. Urgency is downtime averted, drain is intent (`cover_days`), two passes with housekeeping second. |
+| `delivery-priority.test.ts` | `systems::dispatch`. Urgency is downtime averted, drain is intent (`cover_days`), two passes with housekeeping second. The ranking survived the fleet unchanged; what changed is that a ranked demand now becomes a job for a lorry rather than an instant transfer. |
 | `integer-quantities.test.ts` | Enforced by construction rather than tested: `units::Tonnes` is continuous throughout, and wholeness is an edge property. |
-| `logistics.test.ts` | `systems::logistics`, `systems::serve`. |
+| `logistics.test.ts` | `systems::dispatch`, `systems::serve`. |
+| `fleet.test.ts` | `fleet.rs`, `journey.rs`, `systems::fleet`, `systems::commissioning`. Two 1.x rules carried and the rest re-derived: **garages own vehicles** (a Motor Depot's establishment is authored on `BuildingDef`, and `crewed` says how many have drivers) and **a vehicle never accepts a job it cannot finish** (the round trip is priced at dispatch, so running dry is a refusal in the yard). Speeds are real km/h rather than 1.x's road-tile-equivalents per day. |
 | `mapgen-sizes.test.ts` | `founding::SIZES`, now named in kilometres rather than tile counts. |
 | `mapgen-snapshot.test.ts` | `mapgen::tests::generated_geology_is_pinned_across_machines` and `terrain::tests::generated_ground_is_pinned_across_machines`. Same role, and the same rule: never re-pin to make a change pass. |
 | `mapgen.test.ts` | `mapgen.rs`, `terrain.rs`. |
@@ -75,7 +76,7 @@ keeps the shell decision open.
 
 | Missing | What it was in 1.x | What it needs here |
 |---|---|---|
-| **A physical fleet** (`fleet.test.ts`, `customs-refuel.test.ts`) | Lorries as persistent machines with fuel, positions and jobs. | `FREIGHT_TONNES_PER_DAY` is a scalar placeholder, and its doc comment says so. The *ranking* was the hard-won part and it is ported; the vehicles are not. |
+| **Refuelling away from home** (`customs-refuel.test.ts`) | Vehicles topping up at a filling point mid-route. | A vehicle tops up from its own garage at dispatch and the round trip is priced before it leaves, so it cannot strand itself — which makes this a *range* mechanic rather than a safety one. `GasStation` is already in the building table with nothing to do; it becomes real when hauls get long enough that a full tank is not a round trip. |
 | **Machinery wear** (`machinery.test.ts`) | Per-building machinery drained daily; a dry bin cut output. | A `wear` field on `BuildingDef` and a system. The physical dependency it creates — industry needs machinery to build *and* to run — is a good mechanic and worth having. |
 | **Foreign construction labour** (`foreign-labor.test.ts`) | Paid builders in roubles, per-site opt-in. | Needs per-site build policy first. |
 | **Auto-buy and bonded imports** (`auto-buy.test.ts`, `bulk-autobuy.test.ts`) | A site's import bill paid at the border, delivered as earmarked virtual imports. | Same: per-site build policy. |

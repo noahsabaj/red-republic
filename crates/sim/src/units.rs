@@ -151,7 +151,11 @@ impl Speed {
     /// Build a speed from kilometres per hour — the unit a human quotes a
     /// vehicle in. That this conversion is meaningful at all is the point of
     /// the module.
-    pub fn from_kph(kph: f64) -> Self {
+    ///
+    /// `const` so that an authored table — [`crate::fleet::VEHICLES`] — can
+    /// hold real [`Speed`] values rather than bare numbers waiting to be
+    /// converted by whoever remembers to.
+    pub const fn from_kph(kph: f64) -> Self {
         Self(kph / 3.6)
     }
 

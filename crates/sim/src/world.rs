@@ -24,6 +24,7 @@ use crate::building::Buildings;
 use crate::citizen::Population;
 use crate::climate::{self, ClimateId};
 use crate::contract::Contracts;
+use crate::fleet::Fleet;
 use crate::geology::Geology;
 use crate::mapgen;
 use crate::rng::{Rng, RngState};
@@ -37,7 +38,10 @@ use serde::{Deserialize, Serialize};
 /// Bumped whenever a save can no longer be read by the current code. A load
 /// that finds an older version runs migrations; one that finds a newer version
 /// refuses, because guessing at a format from the future corrupts silently.
-pub const SAVE_VERSION: u32 = 1;
+///
+/// 2: the physical fleet. Vehicles are persisted state, so a save written
+/// before they existed no longer describes a whole world.
+pub const SAVE_VERSION: u32 = 2;
 
 /// Substream identifier for terrain generation.
 pub const TERRAIN_STREAM: u64 = 2;
@@ -130,6 +134,8 @@ pub struct World {
     pub buildings: Buildings,
     /// The roads between them.
     pub roads: RoadNetwork,
+    /// The lorries that move everything, and where each of them is.
+    pub fleet: Fleet,
     /// The people.
     pub population: Population,
     /// Which edge of the map is foreign soil. A customs house must stand near
@@ -176,6 +182,7 @@ impl World {
             geology,
             buildings: Buildings::new(),
             roads: RoadNetwork::new(),
+            fleet: Fleet::new(),
             population: Population::new(),
             // One edge per seed, drawn from its own substream so the choice
             // does not shift when terrain or geology generation changes.
@@ -247,14 +254,19 @@ impl World {
         Ok(id)
     }
 
-    /// Advance one fixed step.
+    /// Advance one fixed step, returning everything that changed.
     ///
-    /// Systems will be sequenced here, in an order that is part of the
-    /// simulation's definition rather than an implementation detail: they run
-    /// in source order, draw from `rng` in that order, and changing the order
-    /// changes the world. For now it only moves the clock.
-    pub fn tick(&mut self) {
-        crate::systems::run_tick(self);
+    /// Systems are sequenced in [`crate::systems::run_tick`], in an order that
+    /// is part of the simulation's definition rather than an implementation
+    /// detail: they run in source order, draw from `rng` in that order, and
+    /// changing the order changes the world.
+    ///
+    /// The mutations come back because they are the only honest account of what
+    /// a tick did — the trajectory runner totals freight from them, and a shell
+    /// will read them for events rather than diffing the world against itself.
+    /// Ignoring the result is fine and costs nothing.
+    pub fn tick(&mut self) -> Vec<crate::systems::Mutation> {
+        crate::systems::run_tick(self)
     }
 
     /// A generator derived from the founding seed, independent of how far the

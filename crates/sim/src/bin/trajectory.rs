@@ -56,9 +56,14 @@ fn main() {
         if base.plant.is_some() { "yes" } else { "NO" },
     );
     println!(
-        "shop {} · office {} · crossing {}",
+        "shop {} · office {} · garage {} · crossing {}",
         if base.store.is_some() { "yes" } else { "NO" },
         if base.construction_office.is_some() {
+            "yes"
+        } else {
+            "NO"
+        },
+        if base.motor_depot.is_some() {
             "yes"
         } else {
             "NO"
@@ -77,7 +82,7 @@ fn main() {
     );
     println!();
     println!(
-        "{:>10} {:>4} {:>5} {:>5} {:>6} {:>5} {:>8} {:>8} {:>10} {:>9} {:>4}",
+        "{:>10} {:>4} {:>5} {:>5} {:>6} {:>5} {:>8} {:>8} {:>6} {:>8} {:>7} {:>10} {:>9} {:>4}",
         "date",
         "pop",
         "empl",
@@ -86,6 +91,9 @@ fn main() {
         "warm%",
         "coal",
         "food",
+        "fuel",
+        "moved",
+        "lorries",
         "coal left",
         "roubles",
         "dark"
@@ -94,8 +102,16 @@ fn main() {
     let months = years * 12;
     let mut taken = 0usize;
     for _ in 0..months {
+        // Tonnage the fleet actually put down this month. The freight column
+        // the scalar could never have: it is what the lorries delivered, not
+        // what a budget allowed.
+        let mut moved = Tonnes::ZERO;
         for _ in 0..TICKS_PER_DAY * 30 {
-            world.tick();
+            for m in world.tick() {
+                if let red_republic_sim::systems::Mutation::Unload { tonnes, .. } = m {
+                    moved += tonnes;
+                }
+            }
         }
         // Take every tender offered. The runner plays nothing else, but an
         // obligation it never accepts is a mechanism it never exercises — and
@@ -156,7 +172,7 @@ fn main() {
         };
 
         println!(
-            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>6.1} {:>4.0}% {:>8.0} {:>8.1} {:>10.0} {:>9.0} {:>4}",
+            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>6.1} {:>4.0}% {:>8.0} {:>8.1} {:>6.2} {:>8.0} {:>3}/{:<3} {:>10.0} {:>9.0} {:>4}",
             date.year,
             date.month,
             date.day,
@@ -167,6 +183,10 @@ fn main() {
             warm_share * 100.0,
             held(Resource::Coal).0,
             held(Resource::Food).0,
+            held(Resource::Fuel).0,
+            moved.0,
+            world.fleet.running(),
+            world.fleet.len(),
             world
                 .geology
                 .remaining_of(red_republic_sim::geology::Mineral::Coal)

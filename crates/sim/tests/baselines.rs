@@ -313,6 +313,76 @@ fn building_scaling() {
     }
 }
 
+/// The cost of a physical fleet, against how many vehicles there are.
+///
+/// Two numbers, because they answer different questions. The **leg scan** is
+/// what every vehicle costs every tick whether or not it is doing anything —
+/// the plan-based motion model's whole claim is that this is one float
+/// comparison, so it should be small and close to linear. **Dispatch** is the
+/// expensive half: it prices a round trip with the same planner that will drive
+/// it, which is three route plans per candidate lorry, and it was written that
+/// way deliberately rather than estimated. This is the number that says whether
+/// that was affordable.
+///
+/// The axis matters because `Vec` storage and an O(vehicles) scan both assume
+/// the fleet stays in the hundreds. If a republic ever runs thousands, the scan
+/// wants to become a queue keyed by arrival time — and this is what would say
+/// so.
+#[test]
+fn fleet_scaling() {
+    for &garages in &[1usize, 8, 24] {
+        let mut world = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(10_000.0),
+            climate: ClimateId::Plains,
+        });
+        scenario::found(&mut world, 1_500);
+        let centre = world.buildings.all()[0].centre;
+        for i in 0..garages.saturating_sub(1) {
+            let p = at(
+                centre.x.0 + 300.0 + (i % 6) as f64 * 200.0,
+                centre.y.0 + 600.0 + (i / 6) as f64 * 200.0,
+            );
+            let _ = world.place_built(BuildingKind::MotorDepot, p);
+        }
+        // Three days to commission the vehicles, staff the depots and get the
+        // fleet rolling, so what follows measures a working republic rather
+        // than an empty yard.
+        for _ in 0..TICKS_PER_DAY * 3 {
+            world.tick();
+        }
+
+        let start = Instant::now();
+        let mut busiest = 0;
+        for _ in 0..TICKS_PER_DAY {
+            world.tick();
+            busiest = busiest.max(world.fleet.running());
+        }
+        let day = start.elapsed().as_secs_f64() * 1000.0;
+
+        const PASSES: u32 = 500;
+        let start = Instant::now();
+        for _ in 0..PASSES {
+            let _ = red_republic_sim::systems::fleet(&world);
+        }
+        let scan = start.elapsed().as_secs_f64() * 1e9 / f64::from(PASSES);
+
+        let start = Instant::now();
+        for _ in 0..PASSES {
+            let _ = red_republic_sim::systems::dispatch(&world);
+        }
+        let dispatch = start.elapsed().as_secs_f64() * 1e6 / f64::from(PASSES);
+
+        println!(
+            "[BASELINE fleet] {} vehicles ({busiest} on the road at once), {} buildings: {day:.0} ms per simulated day · leg scan {scan:.0} ns/tick · dispatch {dispatch:.1} us/tick",
+            world.fleet.len(),
+            world.buildings.all().len(),
+        );
+        assert!(!world.fleet.is_empty(), "no vehicles were commissioned");
+        assert!(day < 120_000.0, "a simulated day took {day:.0} ms");
+    }
+}
+
 /// Placement gets slower as the republic fills up, because every candidate is
 /// tested against every standing building.
 #[test]

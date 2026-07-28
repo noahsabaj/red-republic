@@ -29,18 +29,24 @@ use crate::building::{BuildingId, BuildingKind};
 use crate::citizen::assign_labour;
 use crate::climate;
 use crate::contract::{self, Contract, ContractId, ContractState};
+use crate::fleet::{Job, VehicleId, VehicleKind, VehicleState, crewed};
 use crate::geology::DepositId;
+use crate::journey::{self, Journey};
 use crate::resource::Resource;
 use crate::resource::Stock;
 use crate::time::TICK;
 use crate::trade::{CUSTOMS_RANGE, CUSTOMS_THROUGHPUT_PER_DAY, Market, TradeAction};
 use crate::transport;
-use crate::units::{Metres, Seconds, Tonnes};
+use crate::units::{Metres, Point, Seconds, Tonnes};
 use crate::world::World;
 use std::collections::BTreeMap;
 
 /// Everything a system is allowed to change.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// Not `Copy`: a [`Mutation::Dispatch`] carries a whole [`Journey`], and a
+/// journey owns its waypoints. That is the price of freight being a plan rather
+/// than a number, and it is paid a few hundred times a simulated day.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Mutation {
     /// How many people turned up.
     Staff { building: BuildingId, count: u32 },
@@ -68,14 +74,63 @@ pub enum Mutation {
         resource: Resource,
         tonnes: Tonnes,
     },
-    /// Freight arriving. Again one kind: goods leave the supplier and reach the
-    /// destination together, or tonnage is invented or destroyed.
-    Deliver {
+    /// A garage takes delivery of a vehicle its establishment allows.
+    Commission {
+        garage: BuildingId,
+        kind: VehicleKind,
+    },
+    /// A vehicle takes a job, tops up from its garage's tank, and sets out for
+    /// the supplier. One kind: accepting the work, fuelling for it and setting
+    /// off are the same decision, and a lorry that took a job without the fuel
+    /// to finish it is the exact failure the dispatch-time check exists to
+    /// prevent.
+    Dispatch {
+        vehicle: VehicleId,
+        job: Job,
+        journey: Journey,
+        /// Tonnes drawn from the garage into the tank.
+        refuel: Tonnes,
+    },
+    /// A leg finished and the next one begins. One kind because a vehicle never
+    /// covers ground without burning fuel, nor burns fuel without covering
+    /// ground.
+    Advance {
+        vehicle: VehicleId,
+        leg: u32,
+        leg_start: f64,
+        leg_end: f64,
+        burn: Tonnes,
+    },
+    /// A vehicle reached its supplier, took on what was actually there, and set
+    /// out again.
+    ///
+    /// `state` is on the mutation because arriving at the supplier does not
+    /// always mean delivering: a yard that has been emptied since the job was
+    /// booked sends the lorry home rather than on to a destination it has
+    /// nothing for.
+    Load {
+        vehicle: VehicleId,
         from: BuildingId,
+        resource: Resource,
+        tonnes: Tonnes,
+        journey: Journey,
+        state: VehicleState,
+        burn: Tonnes,
+    },
+    /// A vehicle reached its destination, put down what would fit, and turned
+    /// for home. Whatever would not fit stays on the bed — freight is
+    /// conserved, and it comes off in the garage yard.
+    Unload {
+        vehicle: VehicleId,
         to: BuildingId,
         resource: Resource,
         tonnes: Tonnes,
+        journey: Journey,
+        burn: Tonnes,
     },
+    /// A vehicle got home: the job is done and anything still aboard is put
+    /// into the garage.
+    Park { vehicle: VehicleId, burn: Tonnes },
     /// How much of a household's needs the shops actually met, 0..=1.
     Provision { building: BuildingId, fraction: f64 },
     /// Goods leaving the republic and the currency that came back. One kind:
@@ -138,7 +193,12 @@ pub enum MutationKind {
     Extract,
     Consume,
     Produce,
-    Deliver,
+    Commission,
+    Dispatch,
+    Advance,
+    Load,
+    Unload,
+    Park,
     Provision,
     Export,
     Import,
@@ -159,7 +219,12 @@ impl Mutation {
             Mutation::Extract { .. } => MutationKind::Extract,
             Mutation::Consume { .. } => MutationKind::Consume,
             Mutation::Produce { .. } => MutationKind::Produce,
-            Mutation::Deliver { .. } => MutationKind::Deliver,
+            Mutation::Commission { .. } => MutationKind::Commission,
+            Mutation::Dispatch { .. } => MutationKind::Dispatch,
+            Mutation::Advance { .. } => MutationKind::Advance,
+            Mutation::Load { .. } => MutationKind::Load,
+            Mutation::Unload { .. } => MutationKind::Unload,
+            Mutation::Park { .. } => MutationKind::Park,
             Mutation::Provision { .. } => MutationKind::Provision,
             Mutation::Export { .. } => MutationKind::Export,
             Mutation::Import { .. } => MutationKind::Import,
@@ -198,7 +263,17 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
         &[MutationKind::Consume, MutationKind::Provision],
     ),
     ("trade", &[MutationKind::Export, MutationKind::Import]),
-    ("logistics", &[MutationKind::Deliver]),
+    ("commissioning", &[MutationKind::Commission]),
+    ("dispatch", &[MutationKind::Dispatch]),
+    (
+        "fleet",
+        &[
+            MutationKind::Advance,
+            MutationKind::Load,
+            MutationKind::Unload,
+            MutationKind::Park,
+        ],
+    ),
     ("labour", &[MutationKind::Staff, MutationKind::Consume]),
     (
         "contracts",
@@ -215,23 +290,23 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
 /// The single writer.
 pub fn apply(world: &mut World, mutations: &[Mutation]) {
     for mutation in mutations {
-        match *mutation {
-            Mutation::Staff { building, count } => {
+        match mutation {
+            &Mutation::Staff { building, count } => {
                 if let Some(b) = world.buildings.get_mut(building) {
                     b.staff = count;
                 }
             }
-            Mutation::Powered { building, on } => {
+            &Mutation::Powered { building, on } => {
                 if let Some(b) = world.buildings.get_mut(building) {
                     b.powered = on;
                 }
             }
-            Mutation::Heated { building, on } => {
+            &Mutation::Heated { building, on } => {
                 if let Some(b) = world.buildings.get_mut(building) {
                     b.heated = on;
                 }
             }
-            Mutation::Extract {
+            &Mutation::Extract {
                 deposit,
                 building,
                 resource,
@@ -247,7 +322,7 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     b.stock.add(resource, got.min(room));
                 }
             }
-            Mutation::Consume {
+            &Mutation::Consume {
                 building,
                 resource,
                 tonnes,
@@ -256,7 +331,7 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     b.stock.take(resource, tonnes);
                 }
             }
-            Mutation::Produce {
+            &Mutation::Produce {
                 building,
                 resource,
                 tonnes,
@@ -266,12 +341,12 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     b.stock.add(resource, tonnes.min(room));
                 }
             }
-            Mutation::Provision { building, fraction } => {
+            &Mutation::Provision { building, fraction } => {
                 if let Some(b) = world.buildings.get_mut(building) {
                     b.provisioned = fraction.clamp(0.0, 1.0);
                 }
             }
-            Mutation::Export {
+            &Mutation::Export {
                 customs,
                 resource,
                 tonnes,
@@ -301,28 +376,28 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     }
                 }
             }
-            Mutation::Offer(contract) => {
+            &Mutation::Offer(contract) => {
                 if world.contracts.get(contract.id).is_none() {
                     world.contracts.insert(contract);
                 }
             }
-            Mutation::CloseContract { contract, state } => {
+            &Mutation::CloseContract { contract, state } => {
                 let day = world.clock.day_index();
                 if let Some(c) = world.contracts.get_mut(contract) {
                     c.state = state;
                     c.closed_day = Some(day);
                 }
             }
-            Mutation::DropContract { contract } => {
+            &Mutation::DropContract { contract } => {
                 world.contracts.remove(contract);
             }
-            Mutation::Relations { market, penalty } => {
+            &Mutation::Relations { market, penalty } => {
                 world.contracts.set_penalty(market, penalty);
             }
-            Mutation::Fine { market, amount } => {
+            &Mutation::Fine { market, amount } => {
                 world.treasury.debit(market, amount);
             }
-            Mutation::Import {
+            &Mutation::Import {
                 customs,
                 resource,
                 tonnes,
@@ -343,7 +418,7 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     b.stock.add(resource, landed.min(room));
                 }
             }
-            Mutation::Build { site, builder_days } => {
+            &Mutation::Build { site, builder_days } => {
                 let Some(b) = world.buildings.get(site) else {
                     continue;
                 };
@@ -366,31 +441,146 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     b.work_done += worked;
                 }
             }
-            Mutation::Deliver {
+            &Mutation::Commission { garage, kind } => {
+                if let Some(yard) = world.buildings.get(garage).map(|b| b.centre) {
+                    world.fleet.commission(kind, garage, yard);
+                }
+            }
+            Mutation::Dispatch {
+                vehicle,
+                job,
+                journey,
+                refuel,
+            } => {
+                // Top up from the garage's tank on the way out. What is not
+                // there is not taken; dispatch has already checked that what is
+                // there covers the round trip.
+                let home = world.fleet.get(*vehicle).map(|v| v.home);
+                let drawn = home
+                    .and_then(|h| world.buildings.get_mut(h))
+                    .map(|b| b.stock.take(Resource::Fuel, *refuel))
+                    .unwrap_or(Tonnes::ZERO);
+                if let Some(v) = world.fleet.get_mut(*vehicle) {
+                    v.fuel = (v.fuel + drawn).min(v.def().tank);
+                    v.job = Some(*job);
+                    v.journey = Some(journey.clone());
+                    v.state = VehicleState::Fetching;
+                }
+            }
+            &Mutation::Advance {
+                vehicle,
+                leg,
+                leg_start,
+                leg_end,
+                burn,
+            } => {
+                if let Some(v) = world.fleet.get_mut(vehicle) {
+                    v.fuel = v.fuel.saturating_sub(burn);
+                    if let Some(j) = v.journey.as_mut() {
+                        j.leg = leg;
+                        j.leg_start = leg_start;
+                        j.leg_end = leg_end;
+                    }
+                    if let Some(here) = v.journey.as_ref().map(|j| j.leg_from()) {
+                        v.at = here;
+                    }
+                }
+            }
+            Mutation::Load {
+                vehicle,
                 from,
-                to,
                 resource,
                 tonnes,
+                journey,
+                state,
+                burn,
             } => {
                 let taken = world
                     .buildings
-                    .get_mut(from)
-                    .map(|b| b.stock.take(resource, tonnes))
+                    .get_mut(*from)
+                    .map(|b| b.stock.take(*resource, *tonnes))
                     .unwrap_or(Tonnes::ZERO);
-                if let Some(b) = world.buildings.get_mut(to) {
-                    let room = b
-                        .intake_capacity(resource)
-                        .saturating_sub(b.stock.get(resource));
-                    let landed = taken.min(room);
-                    b.stock.add(resource, landed);
-                    // Whatever would not fit goes back where it came from
-                    // rather than evaporating — freight is conserved.
-                    let rejected = taken.saturating_sub(landed);
-                    if rejected.is_positive()
-                        && let Some(source) = world.buildings.get_mut(from)
-                    {
-                        source.stock.add(resource, rejected);
+                let bay = world.buildings.get(*from).map(|b| b.centre);
+                if let Some(v) = world.fleet.get_mut(*vehicle) {
+                    v.fuel = v.fuel.saturating_sub(*burn);
+                    v.cargo.add(*resource, taken);
+                    if let Some(bay) = bay {
+                        v.at = bay;
                     }
+                    v.journey = Some(journey.clone());
+                    v.state = *state;
+                }
+            }
+            Mutation::Unload {
+                vehicle,
+                to,
+                resource,
+                tonnes,
+                journey,
+                burn,
+            } => {
+                // Only what the lorry actually has comes off, and only as much
+                // as the bin will take. The rest stays on the bed rather than
+                // evaporating — freight is conserved end to end.
+                let aboard = world
+                    .fleet
+                    .get(*vehicle)
+                    .map(|v| v.cargo.get(*resource))
+                    .unwrap_or(Tonnes::ZERO);
+                let landed = if let Some(b) = world.buildings.get_mut(*to) {
+                    let room = b
+                        .intake_capacity(*resource)
+                        .saturating_sub(b.stock.get(*resource));
+                    let landed = tonnes.min(aboard).min(room);
+                    b.stock.add(*resource, landed);
+                    landed
+                } else {
+                    Tonnes::ZERO
+                };
+                let bay = world.buildings.get(*to).map(|b| b.centre);
+                if let Some(v) = world.fleet.get_mut(*vehicle) {
+                    v.fuel = v.fuel.saturating_sub(*burn);
+                    v.cargo.take(*resource, landed);
+                    if let Some(bay) = bay {
+                        v.at = bay;
+                    }
+                    v.journey = Some(journey.clone());
+                    v.state = VehicleState::Returning;
+                }
+            }
+            &Mutation::Park { vehicle, burn } => {
+                let Some(v) = world.fleet.get(vehicle) else {
+                    continue;
+                };
+                let home = v.home;
+                let aboard: Vec<(Resource, Tonnes)> = v.cargo.iter().collect();
+                let yard = world.buildings.get(home).map(|b| b.centre);
+                // Anything the lorry came back with is tipped in the yard, so
+                // an undeliverable load is not carried around for ever.
+                let mut landed: Vec<(Resource, Tonnes)> = Vec::new();
+                if let Some(b) = world.buildings.get_mut(home) {
+                    for (resource, tonnes) in aboard {
+                        let room = b
+                            .intake_capacity(resource)
+                            .saturating_sub(b.stock.get(resource));
+                        let fits = tonnes.min(room);
+                        if fits.is_positive() {
+                            b.stock.add(resource, fits);
+                            landed.push((resource, fits));
+                        }
+                    }
+                }
+                if let Some(v) = world.fleet.get_mut(vehicle) {
+                    v.fuel = v.fuel.saturating_sub(burn);
+                    for (resource, tonnes) in landed {
+                        v.cargo.take(resource, tonnes);
+                    }
+                    if let Some(yard) = yard {
+                        v.at = yard;
+                    }
+                    v.state = VehicleState::Idle;
+                    v.job = None;
+                    v.journey = None;
                 }
             }
         }
@@ -1061,12 +1251,12 @@ pub fn production(world: &World) -> Vec<Mutation> {
             continue; // a site produces nothing
         }
         let def = b.def();
-        // Boilers and bus depots burn their fuel elsewhere — the heating system
-        // and the labour pass respectively — because both throttle to demand.
-        // Letting production burn it too would double-charge them, and burning
-        // it here at a flat rate would mean a boiler consumed a January's coal
-        // in July.
-        if def.heat_output > 0.0 || def.seats > 0 {
+        // Boilers, bus depots and garages burn their inputs elsewhere — the
+        // heating system, the labour pass and the fleet respectively — because
+        // all three throttle to demand. See
+        // [`crate::building::BuildingDef::burns_its_own_inputs`], which is where
+        // that property is stated rather than listed.
+        if def.burns_its_own_inputs() {
             continue;
         }
         let mut efficiency = b.staffing();
@@ -1152,17 +1342,32 @@ pub fn cover_days(world: &World, building: BuildingId, resource: Resource) -> Op
 /// Days of cover below which a building is worth a delivery.
 pub const RESUPPLY_AT_DAYS: f64 = 3.0;
 
-/// How much freight the republic can move in a day, in tonnes.
+/// The least a lorry will roll for.
 ///
-/// A placeholder standing in for a physical fleet. The archived build's lorries
-/// were real machines with fuel, positions and jobs, and that is the right
-/// model — this is a scalar so the *ranking* can be built and tested first,
-/// since the ranking is the part that was hard-won.
-pub const FREIGHT_TONNES_PER_DAY: f64 = 240.0;
+/// **Found by measurement, and it is the first thing a physical fleet needed
+/// that a scalar did not.** With freight as a number, serving a demand the
+/// instant it appeared was free. With lorries it is not: a farm producing six
+/// tonnes a day holds four *kilograms* a tick after the last collection, and
+/// dispatch cheerfully sent a lorry for it — every tick, with every lorry, for
+/// ever. Five simulated days of that burnt 3.2 t of diesel, drove 2,000 km, and
+/// starved a building site of the bricks standing in a depot nobody could spare
+/// a vehicle for.
+///
+/// The fix is the rule a real dispatcher works to: let it accumulate, then send
+/// one lorry. Two exceptions, both of which would otherwise deadlock:
+///
+/// - a **site** is served whatever the quantity, because its bill of materials
+///   is finite and one-off. A building that needs a single tonne of machinery
+///   to open would otherwise never open.
+/// - a **full yard** is cleared whatever the quantity, because a producer whose
+///   bin is full has stopped producing.
+pub const MIN_LOAD: Tonnes = Tonnes(2.0);
 
-/// Move goods to where their absence would cost the most.
+/// Send the republic's lorries where their absence would cost the most.
 ///
-/// Ported rules, not ported code. The ranking is the archived build's:
+/// This is the archived build's freight ranking, kept almost unchanged, with
+/// the thing it produces swapped out from under it. The ranking was the
+/// hard-won part and it survives:
 ///
 /// - urgency is **downtime averted**, not emptiness. A bin that was never going
 ///   to run dry averts nothing and scores nothing however empty it looks.
@@ -1171,11 +1376,19 @@ pub const FREIGHT_TONNES_PER_DAY: f64 = 240.0;
 ///   no downtime — topping up, stocking a shop nobody uses yet — runs on
 ///   whatever capacity the first pass left. Scarcity is the only regime in
 ///   which ranking bites at all.
-pub fn logistics(world: &World) -> Vec<Mutation> {
-    let mut budget = Tonnes(FREIGHT_TONNES_PER_DAY * tick_days());
-    if !budget.is_positive() {
+///
+/// What changed is the output. A ranked demand used to become a `Deliver`,
+/// which moved tonnage from one bin to another in the same instant however far
+/// apart they stood. It now becomes a [`Job`] handed to an idle lorry, which
+/// has to drive there. The budget changed with it: freight capacity is no
+/// longer a scalar but **the vehicles that have drivers today**, so a republic
+/// that wants to move more builds another depot and staffs it.
+pub fn dispatch(world: &World) -> Vec<Mutation> {
+    let mut idle = available(world);
+    if idle.is_empty() {
         return Vec::new();
     }
+    let mut booked = Booked::from_fleet(world);
     let mut out = Vec::new();
 
     // Pass one: needs that prevent real downtime, worst cover first.
@@ -1196,10 +1409,17 @@ pub fn logistics(world: &World) -> Vec<Mutation> {
     });
 
     for (_, destination, resource) in urgent {
-        if !budget.is_positive() {
+        if idle.is_empty() {
             break;
         }
-        serve(world, destination, resource, &mut budget, &mut out);
+        serve(
+            world,
+            destination,
+            resource,
+            &mut idle,
+            &mut booked,
+            &mut out,
+        );
     }
 
     // Shops, ranked emptiest first. This sits in the urgent pass because a
@@ -1227,10 +1447,17 @@ pub fn logistics(world: &World) -> Vec<Mutation> {
             .then_with(|| ra.cmp(rb))
     });
     for (_, destination, resource) in shops {
-        if !budget.is_positive() {
+        if idle.is_empty() {
             break;
         }
-        serve(world, destination, resource, &mut budget, &mut out);
+        serve(
+            world,
+            destination,
+            resource,
+            &mut idle,
+            &mut booked,
+            &mut out,
+        );
     }
 
     // Pass one and a half: sites waiting on materials. A site with nothing
@@ -1249,10 +1476,17 @@ pub fn logistics(world: &World) -> Vec<Mutation> {
     }
     sites.sort();
     for (destination, resource) in sites {
-        if !budget.is_positive() {
+        if idle.is_empty() {
             break;
         }
-        serve(world, destination, resource, &mut budget, &mut out);
+        serve(
+            world,
+            destination,
+            resource,
+            &mut idle,
+            &mut booked,
+            &mut out,
+        );
     }
 
     // Export staging: getting goods to the border prevents no downtime at all,
@@ -1278,10 +1512,10 @@ pub fn logistics(world: &World) -> Vec<Mutation> {
         houses.sort();
         for house in houses {
             for &resource in &sells {
-                if !budget.is_positive() {
+                if idle.is_empty() {
                     break;
                 }
-                serve(world, house, resource, &mut budget, &mut out);
+                serve(world, house, resource, &mut idle, &mut booked, &mut out);
             }
         }
     }
@@ -1298,21 +1532,134 @@ pub fn logistics(world: &World) -> Vec<Mutation> {
         }
     }
     for (destination, resource) in comfortable {
-        if !budget.is_positive() {
+        if idle.is_empty() {
             break;
         }
-        serve(world, destination, resource, &mut budget, &mut out);
+        serve(
+            world,
+            destination,
+            resource,
+            &mut idle,
+            &mut booked,
+            &mut out,
+        );
     }
 
     out
 }
 
-/// Find the nearest building with a surplus and book a delivery.
+/// Which vehicles could set out this tick, in commissioning order.
+///
+/// A garage may have no more vehicles in motion at once than it has drivers for
+/// — [`crewed`] — so a shift that goes unstaffed shrinks what can leave the
+/// yard. It does **not** recall the lorries already out: a republic short of
+/// people does not abandon its vehicles in a field.
+fn available(world: &World) -> Vec<VehicleId> {
+    let mut out = Vec::new();
+    // `Buildings::all` is in commissioning order, which is id order, which is
+    // what makes the answer reproducible.
+    for garage in world.buildings.all() {
+        if garage.def().vehicles.is_empty() {
+            continue;
+        }
+        let running = world
+            .fleet
+            .of_garage(garage.id)
+            .filter(|v| !v.is_idle())
+            .count() as u32;
+        let mut slots = crewed(garage).saturating_sub(running);
+        for v in world.fleet.of_garage(garage.id) {
+            if slots == 0 {
+                break;
+            }
+            if !v.is_idle() {
+                continue;
+            }
+            out.push(v.id);
+            slots -= 1;
+        }
+    }
+    out
+}
+
+/// Tonnage and fuel that are already spoken for.
+///
+/// Dispatch runs every tick and a haul takes many of them, so without this the
+/// same empty bin would be served again next tick, and again, until every lorry
+/// in the republic was carrying coal to a building that needed one load. The
+/// scalar this replaced had no such problem because its deliveries landed
+/// instantly; booking both ends of a job is what a fleet has to do instead.
+#[derive(Default)]
+struct Booked {
+    /// Promised to a destination but not yet delivered.
+    incoming: BTreeMap<(BuildingId, Resource), Tonnes>,
+    /// Spoken for at a supplier but not yet collected.
+    promised: BTreeMap<(BuildingId, Resource), Tonnes>,
+    /// Fuel already drawn from each garage during this pass.
+    drawn: BTreeMap<BuildingId, Tonnes>,
+}
+
+impl Booked {
+    fn from_fleet(world: &World) -> Self {
+        let mut booked = Self::default();
+        for v in world.fleet.all() {
+            let Some(job) = v.job else {
+                continue;
+            };
+            match v.state {
+                // Still on its way to collect, so it is owed at both ends.
+                VehicleState::Fetching => {
+                    booked.reserve(job.from, job.to, job.resource, job.tonnes);
+                }
+                // Already collected: the supplier's books are settled and only
+                // the destination is still waiting.
+                VehicleState::Delivering => {
+                    *booked.incoming.entry((job.to, job.resource)).or_default() +=
+                        v.cargo.get(job.resource);
+                }
+                VehicleState::Idle | VehicleState::Returning => {}
+            }
+        }
+        booked
+    }
+
+    fn reserve(&mut self, from: BuildingId, to: BuildingId, resource: Resource, tonnes: Tonnes) {
+        *self.incoming.entry((to, resource)).or_default() += tonnes;
+        *self.promised.entry((from, resource)).or_default() += tonnes;
+    }
+
+    fn incoming(&self, to: BuildingId, resource: Resource) -> Tonnes {
+        self.incoming
+            .get(&(to, resource))
+            .copied()
+            .unwrap_or(Tonnes::ZERO)
+    }
+
+    fn promised(&self, from: BuildingId, resource: Resource) -> Tonnes {
+        self.promised
+            .get(&(from, resource))
+            .copied()
+            .unwrap_or(Tonnes::ZERO)
+    }
+
+    /// Fuel a garage still has to give out, after what this pass has taken.
+    fn fuel_left(&self, world: &World, garage: BuildingId) -> Tonnes {
+        world
+            .buildings
+            .get(garage)
+            .map(|b| b.stock.get(Resource::Fuel))
+            .unwrap_or(Tonnes::ZERO)
+            .saturating_sub(self.drawn.get(&garage).copied().unwrap_or(Tonnes::ZERO))
+    }
+}
+
+/// Find the nearest surplus, and the nearest lorry that can fetch it.
 fn serve(
     world: &World,
     destination: BuildingId,
     resource: Resource,
-    budget: &mut Tonnes,
+    idle: &mut Vec<VehicleId>,
+    booked: &mut Booked,
     out: &mut Vec<Mutation>,
 ) {
     let Some(to) = world.buildings.get(destination) else {
@@ -1324,44 +1671,323 @@ fn serve(
     // Capping a site by its bin would stall it forever.
     let room = to
         .intake_capacity(resource)
-        .saturating_sub(to.stock.get(resource));
+        .saturating_sub(to.stock.get(resource))
+        .saturating_sub(booked.incoming(destination, resource));
     if !room.is_positive() {
         return;
     }
 
-    // A supplier is anyone holding this who does not consume it.
+    // A supplier is anyone holding this who does not consume it, less whatever
+    // another lorry is already on its way to collect.
     let mut suppliers: Vec<(f64, BuildingId, Tonnes)> = world
         .buildings
         .all()
         .iter()
         .filter(|b| b.id != destination)
-        .filter(|b| b.stock.get(resource).is_positive())
         .filter(|b| !b.def().inputs.iter().any(|(r, _)| *r == resource))
         .filter(|b| !b.def().sells.contains(&resource))
         .map(|b| {
             (
                 b.centre.distance_to(to.centre).0,
                 b.id,
-                b.stock.get(resource),
+                b.stock
+                    .get(resource)
+                    .saturating_sub(booked.promised(b.id, resource)),
             )
         })
+        .filter(|(_, _, spare)| spare.is_positive())
         .collect();
     suppliers.sort_by(|(da, ia, _), (db, ib, _)| da.total_cmp(db).then_with(|| ia.cmp(ib)));
 
-    let Some(&(_, from, held)) = suppliers.first() else {
-        return;
-    };
-    let tonnes = held.min(room).min(*budget);
-    if !tonnes.is_positive() {
-        return;
+    let drop_at = to.centre;
+    let now = world.clock.ticks() as f64;
+
+    // Nearest first, but **not nearest only**. A yard with a few kilograms left
+    // in it is not worth a trip, and treating the closest one as the only one
+    // meant the whole demand was refused rather than the next yard tried: the
+    // republic's clothes ran out with fifty tonnes of them standing five
+    // hundred metres further away, because the depot next door had 1.99 t left.
+    for &(_, from, spare) in &suppliers {
+        let Some(supplier) = world.buildings.get(from) else {
+            continue;
+        };
+        let load_at = supplier.centre;
+
+        // Let it accumulate rather than sending a lorry for four kilograms. See
+        // [`MIN_LOAD`] for what happened before this was here, and for why a
+        // site and a blocked yard are served whatever the quantity.
+        //
+        // The yard escape has to be narrow, and getting it wrong cost the
+        // republic its whole diesel reserve: waiving the minimum whenever the
+        // supplier's bin was full waived it *permanently*, because a producer
+        // feeding a consumer sits at its cap by definition. The trip has to
+        // actually clear the yard to count, which it only does when there is
+        // less than a load left in it.
+        let wanted = spare.min(room);
+        let yard_full = supplier.stock.get(resource).0 + 1e-9 >= supplier.storage_cap().0;
+        let clears_the_yard = yard_full && wanted.0 + 1e-9 >= spare.0;
+        if wanted.0 < MIN_LOAD.0 && to.is_built() && !clears_the_yard {
+            continue;
+        }
+
+        if dispatch_one(
+            world,
+            destination,
+            resource,
+            from,
+            load_at,
+            drop_at,
+            wanted,
+            now,
+            idle,
+            booked,
+            out,
+        ) {
+            return;
+        }
     }
-    *budget = budget.saturating_sub(tonnes);
-    out.push(Mutation::Deliver {
-        from,
-        to: destination,
-        resource,
-        tonnes,
+}
+
+/// Give one ranked demand to the best-placed lorry that can finish it.
+///
+/// Returns whether a lorry took it.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_one(
+    world: &World,
+    destination: BuildingId,
+    resource: Resource,
+    from: BuildingId,
+    load_at: Point,
+    drop_at: Point,
+    wanted: Tonnes,
+    now: f64,
+    idle: &mut Vec<VehicleId>,
+    booked: &mut Booked,
+    out: &mut Vec<Mutation>,
+) -> bool {
+    // The lorry that can be there soonest, and among those the one whose bed
+    // best fits the load — idle lorries are parked at their garages, so the
+    // distance decides which depot and the fit decides which vehicle.
+    let mut nearest: Vec<(f64, f64, usize)> = idle
+        .iter()
+        .enumerate()
+        .filter_map(|(i, id)| {
+            world.fleet.get(*id).map(|v| {
+                (
+                    v.at.distance_to(load_at).0,
+                    (v.def().capacity.0 - wanted.0).abs(),
+                    i,
+                )
+            })
+        })
+        .collect();
+    nearest.sort_by(|(da, wa, ia), (db, wb, ib)| {
+        da.total_cmp(db)
+            .then_with(|| wa.total_cmp(wb))
+            .then_with(|| ia.cmp(ib))
     });
+
+    for (_, _, index) in nearest {
+        let id = idle[index];
+        let Some(v) = world.fleet.get(id) else {
+            continue;
+        };
+        let tonnes = wanted.min(v.def().capacity);
+        if !tonnes.is_positive() {
+            return false;
+        }
+        let Some(yard) = world.buildings.get(v.home).map(|b| b.centre) else {
+            continue;
+        };
+
+        // **A vehicle never accepts a job it cannot finish.** The archived
+        // build's rule, and the reason running dry is a refusal here rather
+        // than a lorry stranded halfway. The whole round trip is priced with
+        // the same planner that will drive it, against the roads as they stand
+        // — and a road laid while it is out can only make the trip shorter.
+        let def = v.def();
+        let leg = |a: Point, b: Point| {
+            journey::plan(a, b, &world.roads, def.on_road, def.cross_country, now)
+        };
+        let outbound = leg(v.at, load_at);
+        let round_trip =
+            outbound.distance() + leg(load_at, drop_at).distance() + leg(drop_at, yard).distance();
+        let top_up = def
+            .tank
+            .saturating_sub(v.fuel)
+            .min(booked.fuel_left(world, v.home));
+        if (v.fuel + top_up).0 < v.fuel_for(round_trip).0 {
+            continue;
+        }
+
+        out.push(Mutation::Dispatch {
+            vehicle: id,
+            job: Job {
+                from,
+                to: destination,
+                resource,
+                tonnes,
+            },
+            journey: outbound,
+            refuel: top_up,
+        });
+        booked.reserve(from, destination, resource, tonnes);
+        *booked.drawn.entry(v.home).or_default() += top_up;
+        idle.remove(index);
+        return true;
+    }
+    false
+}
+
+/// Move the fleet.
+///
+/// The entire per-tick cost of freight is here, and for most vehicles it is one
+/// float comparison: has this leg finished yet. Only the handful whose leg has
+/// actually ended do real work — arrive, load, re-plan, turn for home. That is
+/// what [`crate::journey`] buys, and it is why freight can be physical at all
+/// at the speeds this game runs.
+///
+/// A vehicle finishes **at most one leg per tick**, which is not a rule imposed
+/// here but a consequence of [`crate::journey::MIN_LEG_TICKS`]: the next leg
+/// always ends at least a tick after the one that just did.
+pub fn fleet(world: &World) -> Vec<Mutation> {
+    let now = world.clock.ticks() as f64;
+    let mut out = Vec::new();
+
+    for v in world.fleet.all() {
+        let Some(journey) = v.journey.as_ref() else {
+            continue;
+        };
+        if !journey.leg_done_by(now) {
+            continue;
+        }
+        let def = v.def();
+        let burn = v.fuel_for(journey.leg_distance());
+
+        if !journey.on_last_leg() {
+            let speed = if journey.on_road[journey.leg as usize + 1] {
+                def.on_road
+            } else {
+                def.cross_country
+            };
+            let (leg, leg_start, leg_end) = journey.next_leg(speed);
+            out.push(Mutation::Advance {
+                vehicle: v.id,
+                leg,
+                leg_start,
+                leg_end,
+                burn,
+            });
+            continue;
+        }
+
+        // The journey is over, and what that means depends which way the lorry
+        // was pointed. The next one is timed from the *scheduled* arrival
+        // rather than the tick it was noticed on, which is what keeps a long
+        // haul from drifting a minute at every waypoint.
+        let arrived = journey.destination();
+        let depart = journey.leg_end;
+        let Some(yard) = world.buildings.get(v.home).map(|b| b.centre) else {
+            continue;
+        };
+        let onward = |target: Point| {
+            journey::plan(
+                arrived,
+                target,
+                &world.roads,
+                def.on_road,
+                def.cross_country,
+                depart,
+            )
+        };
+
+        match v.state {
+            VehicleState::Returning => out.push(Mutation::Park {
+                vehicle: v.id,
+                burn,
+            }),
+            VehicleState::Fetching => {
+                let Some(job) = v.job else {
+                    continue;
+                };
+                let held = world
+                    .buildings
+                    .get(job.from)
+                    .map(|b| b.stock.get(job.resource))
+                    .unwrap_or(Tonnes::ZERO);
+                let tonnes = job.tonnes.min(held).min(v.spare_capacity());
+                // A yard emptied since the job was booked sends the lorry home
+                // rather than on to a destination it has nothing for.
+                let onto = world.buildings.get(job.to).map(|b| b.centre);
+                let (state, next) = match (tonnes.is_positive(), onto) {
+                    (true, Some(target)) => (VehicleState::Delivering, target),
+                    _ => (VehicleState::Returning, yard),
+                };
+                out.push(Mutation::Load {
+                    vehicle: v.id,
+                    from: job.from,
+                    resource: job.resource,
+                    tonnes,
+                    journey: onward(next),
+                    state,
+                    burn,
+                });
+            }
+            VehicleState::Delivering => {
+                let Some(job) = v.job else {
+                    continue;
+                };
+                let room = world
+                    .buildings
+                    .get(job.to)
+                    .map(|b| {
+                        b.intake_capacity(job.resource)
+                            .saturating_sub(b.stock.get(job.resource))
+                    })
+                    .unwrap_or(Tonnes::ZERO);
+                out.push(Mutation::Unload {
+                    vehicle: v.id,
+                    to: job.to,
+                    resource: job.resource,
+                    tonnes: v.cargo.get(job.resource).min(room),
+                    journey: onward(yard),
+                    burn,
+                });
+            }
+            // A parked vehicle has no journey, so this is unreachable; leaving
+            // it alone is the harmless answer if it ever stops being so.
+            VehicleState::Idle => {}
+        }
+    }
+    out
+}
+
+/// Vehicles arriving on a garage's strength.
+///
+/// Daily, because a depot does not take delivery of a lorry between one minute
+/// and the next, and because reconciling every garage against its establishment
+/// has no business running 1,440 times a day.
+///
+/// Written as a **reconciliation** rather than as a hook on construction
+/// finishing: a depot that opened, a save that reloaded, and a future in which
+/// an establishment can be enlarged all land in the same code path, and none of
+/// them can be forgotten separately.
+pub fn commissioning(world: &World) -> Vec<Mutation> {
+    let mut out = Vec::new();
+    for garage in world.buildings.all() {
+        if !garage.is_built() {
+            continue;
+        }
+        for &(kind, establishment) in garage.def().vehicles {
+            for _ in world.fleet.count_of(garage.id, kind)..establishment {
+                out.push(Mutation::Commission {
+                    garage: garage.id,
+                    kind,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// One step of the simulation.
@@ -1369,6 +1995,11 @@ fn serve(
 /// The order below IS the simulation's definition. Labour first because
 /// staffing decides everything downstream; power next because it gates
 /// production; production; then freight, which moves what production made.
+///
+/// Freight itself runs **arrivals before departures**: a lorry that reaches its
+/// garage this tick is available for work on the same tick, rather than
+/// standing in the yard for a minute because the two systems happened to be
+/// listed the other way round.
 pub fn run_tick(world: &mut World) -> Vec<Mutation> {
     let mut all = Vec::new();
 
@@ -1382,7 +2013,11 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
     // are day indices and relations decay per day, so running the sweep per
     // tick would fine a republic 1,440 times for one missed delivery.
     if world.clock.is_day_boundary() {
-        for system in [labour, |w: &mut World| contracts(w)] {
+        for system in [
+            labour,
+            |w: &mut World| contracts(w),
+            |w: &mut World| commissioning(w),
+        ] {
             let mutations = system(world);
             apply(world, &mutations);
             all.extend(mutations);
@@ -1396,7 +2031,8 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
         production,
         households,
         trade,
-        logistics,
+        fleet,
+        dispatch,
     ] {
         let mutations = system(world);
         apply(world, &mutations);
@@ -1525,6 +2161,31 @@ mod tests {
             .buildings
             .place_built(kind, at, &world.terrain, &world.geology)
             .expect("open ground")
+    }
+
+    /// A staffed, fuelled garage with its lorries already on the strength.
+    ///
+    /// Freight needs a garage, drivers and diesel before it needs a plan, so
+    /// the tests that are about *ranking* rather than about haulage say so once
+    /// here instead of each rediscovering it.
+    fn haulage(world: &mut World, at: Point) -> BuildingId {
+        let garage = place(world, BuildingKind::MotorDepot, at);
+        let def = BuildingKind::MotorDepot.def();
+        // Drivers, housed beside the yard. Setting `staff` by hand is enough
+        // for a test that never ticks, but the labour pass empties it again at
+        // the first day boundary — so the people have to be real.
+        staff_up(
+            world,
+            Point::new(at.x, at.y - Metres(200.0)),
+            def.workers as usize,
+        );
+        if let Some(b) = world.buildings.get_mut(garage) {
+            b.staff = def.workers;
+            b.stock.add(Resource::Fuel, Tonnes(5.0));
+        }
+        let arrivals = commissioning(world);
+        apply(world, &arrivals);
+        garage
     }
 
     #[test]
@@ -1676,6 +2337,7 @@ mod tests {
     #[test]
     fn freight_reaches_the_hungriest_first() {
         let mut w = bare();
+        haulage(&mut w, at(1_000.0, 800.0));
         let store = place(&mut w, BuildingKind::Warehouse, at(1_000.0, 1_000.0));
         w.buildings
             .get_mut(store)
@@ -1691,21 +2353,177 @@ mod tests {
             .stock
             .add(Resource::Wood, Tonnes(30.0));
 
-        let moves = logistics(&w);
-        match *moves.first().expect("something should move") {
-            Mutation::Deliver { to, resource, .. } => {
-                assert_eq!(to, starving, "the empty mill should be served first");
-                assert_eq!(resource, Resource::Wood);
+        let jobs = dispatch(&w);
+        match jobs.first().expect("something should be dispatched") {
+            Mutation::Dispatch { job, .. } => {
+                assert_eq!(job.to, starving, "the empty mill should be served first");
+                assert_eq!(job.resource, Resource::Wood);
+                assert_eq!(job.from, store, "the wood should come from the warehouse");
             }
-            other => panic!("expected a delivery, got {other:?}"),
+            other => panic!("expected a dispatch, got {other:?}"),
         }
     }
 
-    /// Freight is conserved. Cargo that will not fit goes back where it came
-    /// from rather than evaporating in transit.
-    #[test]
-    fn cargo_that_does_not_fit_is_returned_not_destroyed() {
+    /// A garage and a day's worth of haulage to keep it busy: wood in a
+    /// warehouse at one end, mills wanting it at the other.
+    fn hauling_republic() -> World {
         let mut w = bare();
+        haulage(&mut w, at(400.0, 400.0));
+        let store = place(&mut w, BuildingKind::Warehouse, at(600.0, 600.0));
+        w.buildings
+            .get_mut(store)
+            .unwrap()
+            .stock
+            .add(Resource::Wood, Tonnes(400.0));
+        for i in 0..4 {
+            place(
+                &mut w,
+                BuildingKind::Sawmill,
+                at(2_600.0 + f64::from(i) * 300.0, 2_600.0),
+            );
+        }
+        w
+    }
+
+    /// Where the shell would draw the fleet at a given fractional tick.
+    fn drawn_at(w: &World, when: f64) -> Vec<Point> {
+        w.fleet
+            .all()
+            .iter()
+            .map(|v| v.journey.as_ref().map_or(v.at, |j| j.position_at(when)))
+            .collect()
+    }
+
+    /// The property the shell leans on at every speed: a vehicle's position is
+    /// a pure function of its plan and the time, so *when you look* cannot
+    /// change *what you see*.
+    ///
+    /// The six speed settings differ only in how much simulation passes between
+    /// two drawn frames — paused, real time (one real second is one simulated
+    /// second), then a real second worth one, two, four and eight in-game
+    /// hours. Every setting is compared against real time, which samples every
+    /// tick there is: wherever a faster speed looks, it must see exactly what
+    /// the slowest one saw, and must leave the same world behind.
+    #[test]
+    fn a_journey_is_the_same_wherever_you_sample_it() {
+        // Ticks of simulation per real second at each running speed.
+        const SPEEDS: [u64; 5] = [1, 60, 120, 240, 480];
+        // Quarter-tick offsets, standing in for the frames a renderer draws
+        // between two simulation steps.
+        const FRAMES: [f64; 4] = [0.0, 0.25, 0.5, 0.75];
+
+        let run = |stride: u64| {
+            let mut w = hauling_republic();
+            let mut track: BTreeMap<(u64, u32), Vec<Point>> = BTreeMap::new();
+            while w.clock.ticks() < TICKS_PER_DAY {
+                for _ in 0..stride {
+                    w.tick();
+                }
+                let tick = w.clock.ticks();
+                for (frame, offset) in FRAMES.iter().enumerate() {
+                    track.insert((tick, frame as u32), drawn_at(&w, tick as f64 + offset));
+                }
+            }
+            (track, w)
+        };
+
+        let (real_time, reference) = run(SPEEDS[0]);
+        assert!(
+            real_time.values().any(|p| p != &real_time[&(1, 0)]),
+            "nothing moved all day, so this compares nothing"
+        );
+
+        for stride in &SPEEDS[1..] {
+            let (track, world) = run(*stride);
+            for (key, seen) in &track {
+                assert_eq!(
+                    real_time.get(key),
+                    Some(seen),
+                    "at {stride} ticks a second the fleet was drawn somewhere else on tick {}",
+                    key.0
+                );
+            }
+            assert_eq!(
+                world, reference,
+                "the speed changed the world, not just the view of it"
+            );
+        }
+
+        // Paused is the sixth setting: no ticks pass, so nothing moves however
+        // long the shell keeps drawing. Sampling takes `&self`, so this holds
+        // by construction — stating it is what stops that quietly changing.
+        let paused = hauling_republic();
+        let first = drawn_at(&paused, 12.0);
+        for _ in 0..100 {
+            assert_eq!(drawn_at(&paused, 12.0), first);
+        }
+    }
+
+    /// The hazard the save fingerprint cannot catch on its own.
+    ///
+    /// Two lorries whose legs end on the same tick must be dealt with in the
+    /// same order every run. The fingerprint compares *states* long after the
+    /// fact; this compares the *sequence of decisions*, which is what would
+    /// change first if the fleet were ever walked in an unordered structure.
+    #[test]
+    fn leg_completions_are_processed_in_the_same_order_every_run() {
+        let record = || {
+            let mut w = hauling_republic();
+            let mut log: Vec<(u64, VehicleId, MutationKind)> = Vec::new();
+            for _ in 0..TICKS_PER_DAY {
+                for m in w.tick() {
+                    let vehicle = match &m {
+                        Mutation::Advance { vehicle, .. }
+                        | Mutation::Load { vehicle, .. }
+                        | Mutation::Unload { vehicle, .. }
+                        | Mutation::Park { vehicle, .. } => *vehicle,
+                        _ => continue,
+                    };
+                    log.push((w.clock.ticks(), vehicle, m.kind()));
+                }
+            }
+            log
+        };
+
+        let first = record();
+        assert!(
+            first.len() > 20,
+            "only {} leg events — this proves nothing about order",
+            first.len()
+        );
+        assert_eq!(first, record(), "two runs dealt with the fleet differently");
+
+        // And the order is the one that makes it reproducible: ascending by
+        // vehicle within a tick, because the fleet is walked in id order.
+        for pair in first.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                assert!(
+                    pair[0].1 <= pair[1].1,
+                    "vehicles were handled out of order within a tick: {pair:?}"
+                );
+            }
+        }
+    }
+
+    /// Every tonne in the republic, wherever it is standing — including the
+    /// tonnes currently on a lorry, which is the whole reason this helper
+    /// exists. Freight used to be conserved trivially because it never left a
+    /// bin; now there is a third place tonnage can be.
+    fn afloat_and_ashore(w: &World, resource: Resource) -> Tonnes {
+        w.buildings
+            .all()
+            .iter()
+            .map(|b| b.stock.get(resource))
+            .sum::<Tonnes>()
+            + w.fleet.cargo_afloat(resource)
+    }
+
+    /// Freight is conserved at the loading bay. What will not fit stays on the
+    /// bed rather than evaporating, and comes off in the garage yard.
+    #[test]
+    fn cargo_that_does_not_fit_stays_on_the_lorry() {
+        let mut w = bare();
+        let garage = haulage(&mut w, at(1_000.0, 800.0));
         let from = place(&mut w, BuildingKind::Warehouse, at(1_000.0, 1_000.0));
         let to = place(&mut w, BuildingKind::Sawmill, at(1_100.0, 1_000.0));
         w.buildings
@@ -1720,27 +2538,124 @@ mod tests {
             .stock
             .add(Resource::Wood, Tonnes(39.0));
 
-        let total = |w: &World| {
-            w.buildings.get(from).unwrap().stock.get(Resource::Wood)
-                + w.buildings.get(to).unwrap().stock.get(Resource::Wood)
-        };
-        let before = total(&w);
+        let lorry = w.fleet.all()[0].id;
+        let before = afloat_and_ashore(&w, Resource::Wood);
+        let nowhere = crate::journey::plan(
+            at(0.0, 0.0),
+            at(1.0, 0.0),
+            &w.roads,
+            crate::road::default_road_speed(),
+            crate::road::default_road_speed(),
+            0.0,
+        );
         apply(
             &mut w,
-            &[Mutation::Deliver {
-                from,
-                to,
-                resource: Resource::Wood,
-                tonnes: Tonnes(100.0),
-            }],
+            &[
+                Mutation::Load {
+                    vehicle: lorry,
+                    from,
+                    resource: Resource::Wood,
+                    tonnes: Tonnes(8.0),
+                    journey: nowhere.clone(),
+                    state: VehicleState::Delivering,
+                    burn: Tonnes::ZERO,
+                },
+                Mutation::Unload {
+                    vehicle: lorry,
+                    to,
+                    resource: Resource::Wood,
+                    tonnes: Tonnes(8.0),
+                    journey: nowhere,
+                    burn: Tonnes::ZERO,
+                },
+            ],
         );
-        assert!(
-            (before.0 - total(&w).0).abs() < 1e-9,
-            "freight was not conserved"
-        );
+
         assert_eq!(
             w.buildings.get(to).unwrap().stock.get(Resource::Wood),
-            Tonnes(40.0)
+            Tonnes(40.0),
+            "the mill takes only what its bin will hold"
+        );
+        assert_eq!(
+            w.fleet.get(lorry).unwrap().cargo.get(Resource::Wood),
+            Tonnes(7.0),
+            "the rest should still be on the bed"
+        );
+        assert!(
+            (before.0 - afloat_and_ashore(&w, Resource::Wood).0).abs() < 1e-9,
+            "freight was not conserved"
+        );
+
+        // And it is tipped in the yard rather than carried around for ever.
+        apply(
+            &mut w,
+            &[Mutation::Park {
+                vehicle: lorry,
+                burn: Tonnes::ZERO,
+            }],
+        );
+        assert_eq!(
+            w.buildings.get(garage).unwrap().stock.get(Resource::Wood),
+            Tonnes(7.0)
+        );
+        assert!(w.fleet.get(lorry).unwrap().cargo.is_empty());
+        assert!(
+            (before.0 - afloat_and_ashore(&w, Resource::Wood).0).abs() < 1e-9,
+            "freight was not conserved on the way home"
+        );
+    }
+
+    /// The whole loop, driven by the clock: a lorry leaves its garage, collects,
+    /// delivers and comes home — and the tonnage is conserved at every tick
+    /// along the way, including while it is on the road.
+    #[test]
+    fn a_lorry_fetches_loads_delivers_and_comes_home() {
+        let mut w = bare();
+        haulage(&mut w, at(1_000.0, 800.0));
+        let from = place(&mut w, BuildingKind::Warehouse, at(1_000.0, 1_000.0));
+        let to = place(&mut w, BuildingKind::Sawmill, at(1_400.0, 1_000.0));
+        w.buildings
+            .get_mut(from)
+            .unwrap()
+            .stock
+            .add(Resource::Wood, Tonnes(150.0));
+
+        let before = afloat_and_ashore(&w, Resource::Wood);
+        let mut seen_laden = false;
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+            assert!(
+                (before.0 - afloat_and_ashore(&w, Resource::Wood).0).abs() < 1e-9,
+                "freight was not conserved in transit"
+            );
+            seen_laden |= w.fleet.cargo_afloat(Resource::Wood).is_positive();
+        }
+
+        assert!(seen_laden, "no lorry was ever carrying anything");
+        assert_eq!(
+            w.buildings.get(to).unwrap().stock.get(Resource::Wood),
+            Tonnes(40.0),
+            "the mill should have been filled"
+        );
+        assert!(
+            w.fleet.all().iter().all(|v| v.is_idle()),
+            "a lorry never got home"
+        );
+        // Freight costs diesel now, and the garage is where it comes from. A
+        // day of haulage that burnt nothing would mean the tanks were decorative.
+        let left = w
+            .buildings
+            .all()
+            .iter()
+            .map(|b| b.stock.get(Resource::Fuel))
+            .sum::<Tonnes>()
+            + w.fleet.all().iter().map(|v| v.fuel).sum::<Tonnes>();
+        let started = Tonnes(5.0) + w.fleet.all().iter().map(|v| v.def().tank).sum::<Tonnes>();
+        assert!(
+            left < started,
+            "a day of haulage burnt no diesel at all: {:.4} of {:.4} t",
+            left.0,
+            started.0
         );
     }
 
@@ -1831,7 +2746,10 @@ mod tests {
     #[test]
     fn a_site_becomes_a_building_once_material_and_labour_arrive() {
         let mut w = bare();
-        // A construction office and the people to staff it.
+        // A construction office and the people to staff it — and a garage,
+        // because materials no longer teleport to a site: somebody has to
+        // drive them there.
+        haulage(&mut w, at(1_000.0, 600.0));
         place(
             &mut w,
             BuildingKind::ConstructionOffice,
@@ -1847,6 +2765,7 @@ mod tests {
             .add(Resource::Planks, Tonnes(50.0));
 
         // Order the post. It is a site: no jobs, no output.
+        let staffed_jobs = w.buildings.jobs();
         let site = w
             .buildings
             .place(
@@ -1859,8 +2778,8 @@ mod tests {
         assert!(!w.buildings.get(site).unwrap().is_built());
         assert_eq!(
             w.buildings.jobs(),
-            14,
-            "only the office and depot offer work"
+            staffed_jobs,
+            "a site offers no work until it opens"
         );
 
         for _ in 0..TICKS_PER_DAY * 20 {
@@ -1875,8 +2794,8 @@ mod tests {
         );
         assert_eq!(
             w.buildings.jobs(),
-            20,
-            "the finished post offers its six jobs"
+            staffed_jobs + BuildingKind::Woodcutter.def().workers,
+            "the finished post offers its six jobs on top of what was there"
         );
     }
 
@@ -2132,6 +3051,7 @@ mod tests {
     #[test]
     fn freight_stocks_the_shops_before_the_factories() {
         let mut w = bare();
+        haulage(&mut w, at(1_000.0, 700.0));
         let depot = place(&mut w, BuildingKind::Depot, at(1_000.0, 1_000.0));
         w.buildings
             .get_mut(depot)
@@ -2151,6 +3071,231 @@ mod tests {
                 .get(Resource::Food)
                 .is_positive(),
             "the shop was never stocked"
+        );
+    }
+
+    /// A garage takes delivery of its establishment, and only of that.
+    #[test]
+    fn a_garage_commissions_its_establishment_once() {
+        let mut w = bare();
+        let garage = haulage(&mut w, at(1_000.0, 1_000.0));
+        let establishment: u32 = BuildingKind::MotorDepot
+            .def()
+            .vehicles
+            .iter()
+            .map(|&(_, n)| n)
+            .sum();
+        assert_eq!(w.fleet.len(), establishment as usize);
+        assert!(w.fleet.all().iter().all(|v| v.home == garage));
+
+        // A second sweep on a garage already up to strength orders nothing.
+        assert!(commissioning(&w).is_empty());
+        for _ in 0..TICKS_PER_DAY * 5 {
+            w.tick();
+        }
+        assert_eq!(w.fleet.len(), establishment as usize, "the fleet bred");
+    }
+
+    /// **A vehicle never accepts a job it cannot finish.** Carried from the
+    /// archived build: running dry is a refusal in the yard, not a lorry
+    /// stranded in a field halfway to a mine.
+    #[test]
+    fn a_lorry_will_not_take_a_job_it_cannot_fuel() {
+        let mut w = bare();
+        let garage = haulage(&mut w, at(1_000.0, 1_000.0));
+        let store = place(&mut w, BuildingKind::Warehouse, at(1_400.0, 1_000.0));
+        w.buildings
+            .get_mut(store)
+            .unwrap()
+            .stock
+            .add(Resource::Wood, Tonnes(100.0));
+        place(&mut w, BuildingKind::Sawmill, at(1_800.0, 1_000.0));
+        assert!(!dispatch(&w).is_empty(), "a fuelled fleet should take work");
+
+        // Now dry: nothing in the tanks and nothing in the pump.
+        w.buildings
+            .get_mut(garage)
+            .unwrap()
+            .stock
+            .set(Resource::Fuel, Tonnes::ZERO);
+        let ids: Vec<_> = w.fleet.all().iter().map(|v| v.id).collect();
+        for id in ids {
+            w.fleet.get_mut(id).unwrap().fuel = Tonnes::ZERO;
+        }
+        assert!(
+            dispatch(&w).is_empty(),
+            "a dry fleet took a job it could not finish"
+        );
+
+        // And a day of it strands nobody: the lorries are all still in the yard.
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        assert!(w.fleet.all().iter().all(|v| v.is_idle()));
+    }
+
+    /// Freight is a plan, not a stampede. A need that one lorry is already on
+    /// its way to meet does not get served again on the next tick.
+    #[test]
+    fn one_need_gets_one_lorry() {
+        let mut w = bare();
+        haulage(&mut w, at(1_000.0, 1_000.0));
+        let store = place(&mut w, BuildingKind::Warehouse, at(1_400.0, 1_000.0));
+        w.buildings
+            .get_mut(store)
+            .unwrap()
+            .stock
+            .add(Resource::Wood, Tonnes(500.0));
+        let mill = place(&mut w, BuildingKind::Sawmill, at(1_800.0, 1_000.0));
+
+        // The mill holds 40 t and a lorry carries 20 at most, so its need is
+        // worth two loads and never three.
+        let mut sent = 0;
+        for _ in 0..TICKS_PER_DAY {
+            for m in w.tick() {
+                if let Mutation::Dispatch { job, .. } = &m
+                    && job.to == mill
+                {
+                    sent += 1;
+                }
+            }
+        }
+        assert_eq!(sent, 2, "the mill was served {sent} times for one bin");
+        assert_eq!(
+            w.buildings.get(mill).unwrap().stock.get(Resource::Wood),
+            Tonnes(40.0)
+        );
+    }
+
+    /// The rule a physical fleet needed and a scalar did not: let it build up
+    /// rather than sending a lorry for four kilograms — but a *site* is served
+    /// whatever the quantity, or a building needing one tonne of machinery
+    /// never opens.
+    #[test]
+    fn a_lorry_does_not_roll_for_a_trickle_but_a_site_is_always_served() {
+        let mut w = bare();
+        haulage(&mut w, at(1_000.0, 1_000.0));
+        let store = place(&mut w, BuildingKind::Warehouse, at(1_400.0, 1_000.0));
+        {
+            let stock = &mut w.buildings.get_mut(store).unwrap().stock;
+            stock.add(Resource::Wood, Tonnes(0.5));
+            stock.add(Resource::Machinery, Tonnes(0.5));
+        }
+        // A running mill with an empty bin wants that wood, and wants it
+        // urgently — but half a tonne is not worth a lorry, so it waits for
+        // more to pile up.
+        place(&mut w, BuildingKind::Sawmill, at(1_800.0, 1_000.0));
+        assert!(
+            cover_days(&w, w.buildings.all().last().unwrap().id, Resource::Wood)
+                .is_some_and(|d| d < RESUPPLY_AT_DAYS),
+            "the mill is not actually short of wood, so this tests nothing"
+        );
+        assert!(
+            dispatch(&w).is_empty(),
+            "a lorry rolled for half a tonne into a bin that can wait"
+        );
+
+        // The same half tonne, wanted by a site, goes at once: a bill of
+        // materials is finite and one-off, so waiting for it to grow is waiting
+        // for something that never happens.
+        w.buildings
+            .place(
+                BuildingKind::HeatingPlant,
+                at(1_000.0, 1_500.0),
+                &w.terrain,
+                &w.geology,
+            )
+            .expect("open ground");
+        assert!(
+            dispatch(&w)
+                .iter()
+                .any(|m| matches!(m, Mutation::Dispatch { job, .. }
+                    if job.resource == Resource::Machinery)),
+            "a site waiting on a small part was left waiting"
+        );
+    }
+
+    /// Nearest first, but not nearest only.
+    ///
+    /// Found by trajectory, not by reasoning: the republic's clothes ran out
+    /// with fifty tonnes of them standing five hundred metres further away,
+    /// because the depot next door had 1.99 t left — below the load minimum,
+    /// and treating the closest yard as the only yard turned that into a
+    /// refusal of the whole demand instead of a walk to the next one.
+    #[test]
+    fn a_nearly_empty_yard_next_door_does_not_block_the_full_one_further_off() {
+        let mut w = bare();
+        haulage(&mut w, at(1_000.0, 600.0));
+        let mill = place(&mut w, BuildingKind::Sawmill, at(1_000.0, 1_000.0));
+        let next_door = place(&mut w, BuildingKind::Depot, at(1_200.0, 1_000.0));
+        let further_off = place(&mut w, BuildingKind::Warehouse, at(1_800.0, 1_000.0));
+        // Below the minimum load next door; plenty a little way further on.
+        w.buildings
+            .get_mut(next_door)
+            .unwrap()
+            .stock
+            .add(Resource::Wood, Tonnes(1.0));
+        w.buildings
+            .get_mut(further_off)
+            .unwrap()
+            .stock
+            .add(Resource::Wood, Tonnes(50.0));
+
+        let jobs = dispatch(&w);
+        match jobs.first() {
+            Some(Mutation::Dispatch { job, .. }) => {
+                assert_eq!(job.to, mill);
+                assert_eq!(
+                    job.from, further_off,
+                    "the dispatcher stopped at the yard that could not fill a lorry"
+                );
+            }
+            other => panic!("the mill was left short of wood: {other:?}"),
+        }
+    }
+
+    /// The consequence the whole ground-movement model exists to create: the
+    /// same haul is quicker once there is road under it, and the difference is
+    /// measured in the simulation rather than asserted about it.
+    #[test]
+    fn a_road_gets_freight_there_faster_than_open_ground() {
+        let delivered_by = |roads: bool| -> u64 {
+            let mut w = bare();
+            haulage(&mut w, at(300.0, 1_000.0));
+            let store = place(&mut w, BuildingKind::Warehouse, at(400.0, 1_000.0));
+            w.buildings
+                .get_mut(store)
+                .unwrap()
+                .stock
+                .add(Resource::Wood, Tonnes(400.0));
+            let mill = place(&mut w, BuildingKind::Sawmill, at(3_400.0, 1_000.0));
+            if roads {
+                let mut previous = w.roads.add_node(at(400.0, 1_000.0));
+                for i in 1..=6 {
+                    let next = w.roads.add_node(at(400.0 + f64::from(i) * 500.0, 1_000.0));
+                    w.roads
+                        .connect(previous, next, crate::road::default_road_speed());
+                    previous = next;
+                }
+            }
+            for tick in 0..TICKS_PER_DAY {
+                w.tick();
+                if w.buildings.get(mill).unwrap().stock.get(Resource::Wood) >= Tonnes(20.0) {
+                    return tick;
+                }
+            }
+            u64::MAX
+        };
+
+        let across_country = delivered_by(false);
+        let by_road = delivered_by(true);
+        assert!(
+            across_country < u64::MAX && by_road < u64::MAX,
+            "neither run ever delivered"
+        );
+        assert!(
+            by_road < across_country,
+            "the road bought nothing: {by_road} minutes against {across_country}"
         );
     }
 
@@ -2404,7 +3549,11 @@ mod tests {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        crate::scenario::found(&mut world, 120);
+        // Enough settlers to staff everything this fixture puts down, tail
+        // included. A founding is allowed to be short of people; a *guard* is
+        // not, because the systems at the tail of the commissioning order are
+        // then never exercised and their declarations stop being checked.
+        crate::scenario::found(&mut world, 240);
         world.trade_policy = crate::trade::TradePolicy::new()
             .sell(Resource::Coal, Market::East)
             .buy(Resource::Machinery, Market::West, Tonnes(4.0));
@@ -2456,6 +3605,69 @@ mod tests {
             d.stock.add(Resource::Fuel, Tonnes(40.0));
         }
 
+        // A refinery in town and its crude four kilometres out, joined to the
+        // road above by a spur at each end.
+        //
+        // This is here for `Advance`, and it took a measurement to work out
+        // why it was needed. Every haul inside a founded town is a straight
+        // line across open ground — one leg, no waypoints, so no `Advance`
+        // ever — and simply *having* a road is not enough: freight only rides
+        // it when both ends are within `ROAD_ACCESS` of a junction and the
+        // detour is quicker than driving direct. Nothing else in the republic
+        // holds oil, so this is the one haul that must run the length of the
+        // network, which is what makes the declared write reachable at all.
+        let refinery = crate::scenario::find_site(
+            &world,
+            BuildingKind::Refinery,
+            Point::new(centre.x - Metres(700.0), centre.y - Metres(700.0)),
+            Metres(1_200.0),
+        )
+        .and_then(|site| {
+            world
+                .buildings
+                .place_built(BuildingKind::Refinery, site, &world.terrain, &world.geology)
+                .ok()
+        });
+        let oilfield =
+            crate::scenario::find_site(&world, BuildingKind::Warehouse, far, Metres(600.0))
+                .and_then(|site| {
+                    world
+                        .buildings
+                        .place_built(
+                            BuildingKind::Warehouse,
+                            site,
+                            &world.terrain,
+                            &world.geology,
+                        )
+                        .ok()
+                });
+        for end in [refinery, oilfield].into_iter().flatten() {
+            let at = world.buildings.get(end).expect("just placed").centre;
+            // A spur to whichever junction is nearest, so the two ends are on
+            // the network wherever the ground let them stand.
+            let spur = world.roads.add_node(at);
+            let mut junctions: Vec<_> = (0..world.roads.node_count() - 1)
+                .map(|i| crate::road::NodeId(i as u32))
+                .map(|id| {
+                    (
+                        world
+                            .roads
+                            .position_of(id)
+                            .expect("listed")
+                            .distance_to(at)
+                            .0,
+                        id,
+                    )
+                })
+                .collect();
+            junctions.sort_by(|(da, ia), (db, ib)| da.total_cmp(db).then_with(|| ia.cmp(ib)));
+            if let Some(&(_, nearest)) = junctions.first() {
+                world
+                    .roads
+                    .connect(spur, nearest, crate::road::default_road_speed());
+            }
+        }
+
         let mut seen: BTreeMap<&'static str, std::collections::BTreeSet<MutationKind>> =
             BTreeMap::new();
         let mut note = |name: &'static str, mutations: &[Mutation]| {
@@ -2475,6 +3687,9 @@ mod tests {
                     let m = contracts(&world);
                     note("contracts", &m);
                     apply(&mut world, &m);
+                    let m = commissioning(&world);
+                    note("commissioning", &m);
+                    apply(&mut world, &m);
                     // Accept everything, so deliveries and failures both happen.
                     let offers: Vec<_> = world.contracts.offers().map(|c| c.id).collect();
                     for id in offers {
@@ -2488,7 +3703,8 @@ mod tests {
                     ("production", production),
                     ("households", households),
                     ("trade", trade),
-                    ("logistics", logistics),
+                    ("fleet", fleet),
+                    ("dispatch", dispatch),
                 ] {
                     let m = system(&world);
                     note(name, &m);
@@ -2496,9 +3712,16 @@ mod tests {
                 }
                 world.clock.advance();
             }
-            // Keep the border stocked so imports as well as exports happen.
+            // Keep the border stocked so imports as well as exports happen,
+            // and keep crude coming out of the ground at the far end so the
+            // long haul recurs rather than happening once.
             if day % 30 == 0 {
                 world.treasury.credit(Market::West, 200.0);
+                if let Some(field) = oilfield
+                    && let Some(b) = world.buildings.get_mut(field)
+                {
+                    b.stock.add(Resource::Oil, Tonnes(150.0));
+                }
             }
         }
         seen

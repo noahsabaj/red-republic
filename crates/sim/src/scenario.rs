@@ -27,6 +27,8 @@ pub struct StartingBase {
     pub store: Option<BuildingId>,
     pub construction_office: Option<BuildingId>,
     pub depot: Option<BuildingId>,
+    /// The garage the republic's lorries live in. Without it nothing moves.
+    pub motor_depot: Option<BuildingId>,
     pub farm: Option<BuildingId>,
     pub food_factory: Option<BuildingId>,
     pub textile_mill: Option<BuildingId>,
@@ -153,6 +155,7 @@ pub fn found(world: &mut World, citizens: usize) -> StartingBase {
         store: None,
         construction_office: None,
         depot: None,
+        motor_depot: None,
         farm: None,
         food_factory: None,
         textile_mill: None,
@@ -200,6 +203,16 @@ pub fn found(world: &mut World, citizens: usize) -> StartingBase {
         world,
         BuildingKind::HeatingPlant,
         Point::new(centre.x + Metres(200.0), centre.y - Metres(450.0)),
+        Metres(MAX_WALK.0 / 2.0),
+    );
+    // And haulage, for the same reason and in the same breath. Freight is
+    // physical now: without a garage and its lorries, nothing reaches anything
+    // and the republic starves beside its own full bins. That makes the motor
+    // depot life-support, and life-support goes in before the shops.
+    base.motor_depot = put(
+        world,
+        BuildingKind::MotorDepot,
+        Point::new(centre.x - Metres(300.0), centre.y - Metres(500.0)),
         Metres(MAX_WALK.0 / 2.0),
     );
     base.woodcutter = put(
@@ -280,6 +293,12 @@ pub fn found(world: &mut World, citizens: usize) -> StartingBase {
         b.stock.add(Resource::Clothes, Tonnes(40.0));
         b.stock.add(Resource::Planks, Tonnes(80.0));
         b.stock.add(Resource::Bricks, Tonnes(80.0));
+        // Diesel, because a republic with no refinery yet still has to move
+        // things. It is a grant and not an allowance: it runs out, and what
+        // replaces it is an oil chain or a trade rule that buys fuel. That
+        // deadline is the point of granting a finite amount rather than
+        // waiving the cost.
+        b.stock.add(Resource::Fuel, Tonnes(20.0));
     }
 
     // Settlers, spread evenly over what housing exists.
