@@ -18,6 +18,7 @@
 //! different amount of coal for the same output.
 
 use red_republic_sim::climate::ClimateId;
+use red_republic_sim::command::Command;
 use red_republic_sim::resource::Resource;
 use red_republic_sim::scenario;
 use red_republic_sim::time::TICKS_PER_DAY;
@@ -71,30 +72,43 @@ fn main() {
         if base.customs.is_some() { "yes" } else { "NO" },
     );
     // Sell surplus coal east; that is how a republic earns anything.
-    world.trade_policy = red_republic_sim::trade::TradePolicy::new()
-        .sell(Resource::Coal, red_republic_sim::trade::Market::East);
+    //
+    // Issued as a command rather than written into the world, because this
+    // runner is held to exactly the boundary the shell is: it is a separate
+    // crate, so every field on `World` is out of its reach and the only way it
+    // can change anything is to ask. That is the point of running it this way —
+    // if the player API is awkward, the trajectory runner finds out first.
+    world
+        .issue(Command::AddTradeRule {
+            resource: Resource::Coal,
+            market: red_republic_sim::trade::Market::East,
+            action: red_republic_sim::trade::TradeAction::Sell,
+        })
+        .expect("adding a trade rule cannot fail");
     // And order a track out to the crossing, which is the one long haul a
     // founded republic makes. A dirt track because there is no gravel quarry
     // in the founding — the cheapest road there is, and still weeks of the
     // crew's time, which is the trade the column below is here to show.
     if let Some(customs) = base.customs {
-        let crossing = world.buildings.get(customs).expect("just founded").centre;
-        match world.order_road(
-            base.centre,
-            crossing,
-            red_republic_sim::roadworks::Grade::Dirt,
-        ) {
+        let crossing = world.buildings().get(customs).expect("just founded").centre;
+        match world.issue(Command::OrderRoad {
+            from: base.centre,
+            to: crossing,
+            grade: red_republic_sim::roadworks::Grade::Dirt,
+        }) {
             Ok(_) => println!(
                 "ordered a dirt track to the crossing: {:.1} km",
                 base.centre.distance_to(crossing).as_km()
             ),
-            Err(why) => println!("no track to the crossing: {why:?}"),
+            // The refusal prints its own reason rather than a Debug dump,
+            // which is the whole argument for commands carrying one.
+            Err(why) => println!("no track to the crossing: {why}"),
         }
     }
     println!(
         "coal in the ground at founding: {:.0} t",
         world
-            .geology
+            .geology()
             .remaining_of(red_republic_sim::geology::Mineral::Coal)
             .0
     );
@@ -141,23 +155,26 @@ fn main() {
         // obligation it never accepts is a mechanism it never exercises — and
         // accepting everything is the stress case worth watching, because it is
         // where a plan that quietly stopped working shows up as a fine.
-        let offers: Vec<_> = world.contracts.offers().map(|c| c.id).collect();
+        let offers: Vec<_> = world.contracts().offers().map(|c| c.id).collect();
         for id in offers {
-            if world.contracts.accept(id) {
+            if world
+                .issue(Command::AcceptContract { contract: id })
+                .is_ok()
+            {
                 taken += 1;
             }
         }
-        let date = world.clock.date();
+        let date = world.clock().date();
         let held = |r: Resource| -> Tonnes {
             world
-                .buildings
+                .buildings()
                 .all()
                 .iter()
                 .map(|b| b.stock.get(r))
                 .sum::<Tonnes>()
         };
         let dark = world
-            .buildings
+            .buildings()
             .all()
             .iter()
             .filter(|b| b.def().power_draw > 0.0 && !b.powered)
@@ -165,11 +182,11 @@ fn main() {
 
         // Average provisioning across the estates people actually live in.
         let estates: Vec<f64> = world
-            .buildings
+            .buildings()
             .all()
             .iter()
             .filter(|b| b.is_built() && b.def().residents > 0)
-            .filter(|b| !world.population.residents_of(b.id).is_empty())
+            .filter(|b| !world.population().residents_of(b.id).is_empty())
             .map(|b| b.provisioned)
             .collect();
         let fed = if estates.is_empty() {
@@ -181,11 +198,11 @@ fn main() {
         // How many of the people who need warming are getting it. The column
         // that says whether a winter is being survived or merely endured.
         let (housed, warm) = world
-            .buildings
+            .buildings()
             .all()
             .iter()
             .filter(|b| b.is_built() && b.def().heat > 0.0)
-            .filter(|b| !world.population.residents_of(b.id).is_empty())
+            .filter(|b| !world.population().residents_of(b.id).is_empty())
             .fold((0u32, 0u32), |(total, ok), b| {
                 (total + 1, ok + u32::from(b.heated))
             });
@@ -200,46 +217,46 @@ fn main() {
             date.year,
             date.month,
             date.day,
-            world.population.count(),
-            world.population.employed(),
+            world.population().count(),
+            world.population().employed(),
             fed * 100.0,
             world.temperature(),
-            world.ground.softness() * 100.0,
+            world.ground().softness() * 100.0,
             warm_share * 100.0,
             held(Resource::Coal).0,
             held(Resource::Food).0,
             held(Resource::Fuel).0,
             moved.0,
-            world.fleet.running(),
-            world.fleet.len(),
+            world.fleet().running(),
+            world.fleet().len(),
             stuck,
-            if world.roadworks.is_empty() {
-                format!("{:.1}", world.roads.total_length().as_km())
+            if world.roadworks().is_empty() {
+                format!("{:.1}", world.roads().total_length().as_km())
             } else {
                 format!(
                     "{:.1}+{}",
-                    world.roads.total_length().as_km(),
-                    world.roadworks.len()
+                    world.roads().total_length().as_km(),
+                    world.roadworks().len()
                 )
             },
             world
-                .geology
+                .geology()
                 .remaining_of(red_republic_sim::geology::Mineral::Coal)
                 .0,
-            world.treasury.rubles,
+            world.treasury().rubles,
             dark,
         );
     }
 
-    let live = world.contracts.active().count();
+    let live = world.contracts().active().count();
     let done = world
-        .contracts
+        .contracts()
         .all()
         .iter()
         .filter(|c| c.state == red_republic_sim::contract::ContractState::Done)
         .count();
     let failed = world
-        .contracts
+        .contracts()
         .all()
         .iter()
         .filter(|c| c.state == red_republic_sim::contract::ContractState::Failed)
@@ -248,15 +265,15 @@ fn main() {
     println!(
         "tenders: {taken} accepted · {live} running, {done} delivered, {failed} failed · relations east {:.2} west {:.2}",
         world
-            .contracts
+            .contracts()
             .penalty(red_republic_sim::trade::Market::East),
         world
-            .contracts
+            .contracts()
             .penalty(red_republic_sim::trade::Market::West),
     );
     println!(
         "commuting: {} of {} workers ride a bus",
-        world.population.riders(),
-        world.population.employed()
+        world.population().riders(),
+        world.population().employed()
     );
 }

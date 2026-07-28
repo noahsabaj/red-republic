@@ -69,6 +69,22 @@ impl Mineral {
         Mineral::Groundwater,
     ];
 
+    /// What the player calls it.
+    ///
+    /// Authored beside the variants rather than derived from the identifier, so
+    /// `IronOre` reads as "iron ore" and a new mineral cannot arrive without
+    /// somebody deciding what it is called. The generated in-game reference and
+    /// every refusal message read this.
+    pub fn name(self) -> &'static str {
+        match self {
+            Mineral::Coal => "coal",
+            Mineral::IronOre => "iron ore",
+            Mineral::Oil => "oil",
+            Mineral::Gravel => "gravel",
+            Mineral::Groundwater => "groundwater",
+        }
+    }
+
     /// Whether the body refills. Only groundwater does — an aquifer recharges,
     /// a coal seam does not.
     pub fn recharges(self) -> bool {

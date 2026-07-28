@@ -23,6 +23,7 @@
 use crate::building::Buildings;
 use crate::citizen::Population;
 use crate::climate::{self, ClimateId};
+use crate::command::{Command, Done, Journal, Outcome, Refused};
 use crate::contract::Contracts;
 use crate::fleet::Destination;
 use crate::fleet::Fleet;
@@ -54,7 +55,11 @@ use serde::{Deserialize, Serialize};
 /// they are state rather than a function of the date.
 ///
 /// 5: the traversal lattice, and vehicles that can be stuck in it.
-pub const SAVE_VERSION: u32 = 6;
+///
+/// 7: the journal. A save now carries what the player did, not only what the
+/// republic became, which is what makes a save replayable and a reported bug
+/// reproducible from the save alone.
+pub const SAVE_VERSION: u32 = 7;
 
 /// The first version the format ever carried.
 ///
@@ -186,44 +191,63 @@ impl WorldSpec {
 }
 
 /// All mutable simulation state.
+///
+/// # Every field is `pub(crate)`, and that is the point
+///
+/// Systems live in this crate and are unaffected — they still read
+/// `world.buildings` directly. Anything *outside* the crate reads through the
+/// view methods below and writes through [`World::issue`], which is the only
+/// public path that changes anything except [`World::tick`].
+///
+/// Before this, every field here was `pub` and every structure under it handed
+/// out `get_mut`, so a shell could write what no system was allowed to write —
+/// the `{field, value}` escape hatch the single-writer rule exists to refuse,
+/// left open to the UI by accident. See [`crate::command`] for the whole
+/// argument.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct World {
-    pub clock: SimClock,
+    pub(crate) clock: SimClock,
     /// The sequential simulation stream. Systems draw from this in a fixed
     /// order, which is why the order systems run in is load-bearing.
-    pub rng: Rng,
+    pub(crate) rng: Rng,
     /// The ground.
-    pub terrain: Terrain,
+    pub(crate) terrain: Terrain,
     /// What is under the ground, and how much of it is left.
-    pub geology: Geology,
+    pub(crate) geology: Geology,
     /// What stands on it.
-    pub buildings: Buildings,
+    pub(crate) buildings: Buildings,
     /// The roads between them.
-    pub roads: RoadNetwork,
+    pub(crate) roads: RoadNetwork,
     /// The roads that have been ordered and are not yet drivable.
-    pub roadworks: RoadWorks,
+    pub(crate) roadworks: RoadWorks,
     /// How wet and how frozen the open ground is today.
-    pub ground: Ground,
+    pub(crate) ground: Ground,
     /// The coarse lattice vehicles cross country over, and where the ground has
     /// been worn into tracks.
-    pub lattice: Lattice,
+    pub(crate) lattice: Lattice,
     /// The lorries that move everything, and where each of them is.
-    pub fleet: Fleet,
+    pub(crate) fleet: Fleet,
     /// The people.
-    pub population: Population,
+    pub(crate) population: Population,
     /// Which edge of the map is foreign soil. A customs house must stand near
     /// it, and nothing else about the republic may depend on where it is.
-    pub border: BorderEdge,
+    pub(crate) border: BorderEdge,
     /// Hard currency. Earned at the border, spent at the border, and never on
     /// anything domestic.
-    pub treasury: Treasury,
+    pub(crate) treasury: Treasury,
     /// Standing instructions to the customs house.
-    pub trade_policy: TradePolicy,
+    pub(crate) trade_policy: TradePolicy,
     /// Tenders from the two blocs: offers, live deals and recent history.
-    pub contracts: Contracts,
+    pub(crate) contracts: Contracts,
     /// The posting's climate. Fixed at founding — you do not get a milder
     /// winter by asking for one.
-    pub climate: ClimateId,
+    pub(crate) climate: ClimateId,
+    /// Everything the player has actually done, in order.
+    ///
+    /// Persisted with the world, so a save is a record of how its republic came
+    /// to be and not only what it currently is. It is what gives the
+    /// determinism rule's *same inputs* half something to hold constant.
+    pub(crate) journal: Journal,
     /// The founding seed, kept so derived substreams can be recomputed from
     /// it at any time without disturbing `rng`.
     seed: u64,
@@ -269,6 +293,7 @@ impl World {
             trade_policy: TradePolicy::new(),
             contracts: Contracts::default(),
             climate: spec.climate,
+            journal: Journal::new(),
             seed: spec.seed,
         }
     }
@@ -410,7 +435,10 @@ impl World {
     /// [`crate::building::Buildings::place`] cannot check the border itself —
     /// it has no idea where the border is, and giving it one would mean handing
     /// the whole world to every placement. This is the layer that knows.
-    pub fn place(
+    /// `pub(crate)` because [`crate::command::Command::Place`] is the public
+    /// way in: a placement that skips the journal is a placement a replay
+    /// cannot reproduce.
+    pub(crate) fn place(
         &mut self,
         kind: crate::building::BuildingKind,
         at: crate::units::Point,
@@ -428,7 +456,9 @@ impl World {
     /// Both ends have to be on ground that will take a road. What happens in
     /// between is deliberately not checked yet — a road across water is a
     /// bridge, and a bridge is a decision this build has not made.
-    pub fn order_road(
+    /// `pub(crate)`; [`crate::command::Command::OrderRoad`] is the public way
+    /// in, for the same reason as [`World::place`].
+    pub(crate) fn order_road(
         &mut self,
         from: Point,
         to: Point,
@@ -483,7 +513,12 @@ impl World {
     }
 
     /// The same, already finished — the founding grant.
-    pub fn place_built(
+    ///
+    /// Scenario setup rather than play, and `pub(crate)` for a stronger reason
+    /// than the others: there is no player action that makes a finished
+    /// building appear, so exposing one would be handing a shell a cheat with
+    /// no in-fiction meaning. [`crate::scenario::found`] is the public caller.
+    pub(crate) fn place_built(
         &mut self,
         kind: crate::building::BuildingKind,
         at: crate::units::Point,
@@ -508,6 +543,143 @@ impl World {
     /// Ignoring the result is fine and costs nothing.
     pub fn tick(&mut self) -> Vec<crate::systems::Mutation> {
         crate::systems::run_tick(self)
+    }
+
+    /// Carry out a player command, or say why not.
+    ///
+    /// **The only public way to change a republic except [`World::tick`].**
+    /// Everything under [`World`] is `pub(crate)`, so a shell has exactly two
+    /// verbs: advance time, and ask for something.
+    ///
+    /// An accepted command is recorded in the journal as it is applied; a
+    /// refused one changes nothing and is not recorded, because replaying a
+    /// no-op is not replay. That recording is what finally gives the
+    /// determinism rule's *same seed and same inputs* half an **inputs** to
+    /// hold constant — see
+    /// [`crate::world::tests::a_republic_replays_from_its_own_journal`].
+    pub fn issue(&mut self, command: Command) -> Outcome {
+        let done = self.carry_out(&command)?;
+        self.journal.record(self.clock.ticks(), command);
+        Ok(done)
+    }
+
+    /// The half of [`World::issue`] that does the work, split out so the
+    /// journal records exactly what succeeded and nothing else.
+    fn carry_out(&mut self, command: &Command) -> Outcome {
+        match *command {
+            Command::Place { kind, at } => self
+                .place(kind, at)
+                .map(Done::Commissioned)
+                .map_err(Refused::Placement),
+
+            Command::Demolish { building } => {
+                if self.buildings.demolish(building) {
+                    Ok(Done::Nothing)
+                } else {
+                    Err(Refused::NoSuchBuilding(building))
+                }
+            }
+
+            Command::OrderRoad { from, to, grade } => self
+                .order_road(from, to, grade)
+                .map(Done::Ordered)
+                .map_err(Refused::Road),
+
+            Command::AcceptContract { contract } => {
+                if self.contracts.accept(contract) {
+                    Ok(Done::Nothing)
+                } else {
+                    Err(Refused::NoSuchOffer(contract))
+                }
+            }
+
+            Command::DeclineContract { contract } => {
+                if self.contracts.decline(contract) {
+                    Ok(Done::Nothing)
+                } else {
+                    Err(Refused::NoSuchOffer(contract))
+                }
+            }
+
+            Command::AddTradeRule { .. }
+            | Command::RemoveTradeRule { .. }
+            | Command::MoveTradeRule { .. } => {
+                crate::command::edit_rules(&mut self.trade_policy.rules, command)
+            }
+        }
+    }
+
+    /// Everything the player has done, in order.
+    pub fn journal(&self) -> &Journal {
+        &self.journal
+    }
+
+    // ---- Views -------------------------------------------------------------
+    //
+    // The read half of the boundary. Borrowed, so nothing outside the crate can
+    // write through them, and coarse on purpose: the measured marshalling rule
+    // is that a chatty *small* interface is free (a raw FFI call is 0.21 µs)
+    // while a bulky *structured* one is not (a dictionary per entity at 1,205
+    // buildings cost 8.6 ms against 27 µs for a packed array — 316× apart).
+
+    pub fn clock(&self) -> SimClock {
+        self.clock
+    }
+
+    pub fn terrain(&self) -> &Terrain {
+        &self.terrain
+    }
+
+    pub fn geology(&self) -> &Geology {
+        &self.geology
+    }
+
+    pub fn buildings(&self) -> &Buildings {
+        &self.buildings
+    }
+
+    pub fn roads(&self) -> &RoadNetwork {
+        &self.roads
+    }
+
+    pub fn roadworks(&self) -> &RoadWorks {
+        &self.roadworks
+    }
+
+    pub fn ground(&self) -> Ground {
+        self.ground
+    }
+
+    pub fn lattice(&self) -> &Lattice {
+        &self.lattice
+    }
+
+    pub fn fleet(&self) -> &Fleet {
+        &self.fleet
+    }
+
+    pub fn population(&self) -> &Population {
+        &self.population
+    }
+
+    pub fn border(&self) -> BorderEdge {
+        self.border
+    }
+
+    pub fn treasury(&self) -> Treasury {
+        self.treasury
+    }
+
+    pub fn trade_policy(&self) -> &TradePolicy {
+        &self.trade_policy
+    }
+
+    pub fn contracts(&self) -> &Contracts {
+        &self.contracts
+    }
+
+    pub fn climate(&self) -> ClimateId {
+        self.climate
     }
 
     /// A generator derived from the founding seed, independent of how far the
@@ -627,6 +799,74 @@ impl World {
         let save: Save =
             postcard::from_bytes(bytes).map_err(|e| SaveError::Corrupt(e.to_string()))?;
         Self::from_save(save)
+    }
+}
+
+/// Construction and measurement access for the benchmark harness.
+///
+/// Behind the `fixtures` feature, which nothing but `tests/baselines.rs`
+/// enables — so a shell cannot reach any of it, and the seal on [`World`] holds
+/// where it matters.
+///
+/// It exists because the baselines rule is **one baseline per axis**, and an
+/// axis cannot be isolated through [`World::issue`]. Timing the labour pass at
+/// four thousand citizens means calling the labour pass with four thousand
+/// citizens; founding a republic and ticking it would time every system at once
+/// and report the wrong number confidently. Standing up ten thousand buildings
+/// to measure placement scaling is the same problem — no player does that, and
+/// building them through construction would measure construction.
+///
+/// The rule this keeps: **nothing here is reachable from a build that renders
+/// anything.** A hatch nobody can open from the shell is not a hatch in the
+/// shell.
+#[cfg(feature = "fixtures")]
+pub mod fixtures {
+    use super::World;
+    use crate::building::{BuildingId, BuildingKind, Buildings, PlacementError};
+    use crate::citizen::Population;
+    use crate::ground::{Ground, Lattice};
+    use crate::terrain::Terrain;
+    use crate::units::Point;
+
+    impl World {
+        /// Stand a finished building up, as the founding grant does.
+        pub fn establish(
+            &mut self,
+            kind: BuildingKind,
+            at: Point,
+        ) -> Result<BuildingId, PlacementError> {
+            self.place_built(kind, at)
+        }
+
+        /// Swap the ground, rebuilding the traversal lattice with it.
+        pub fn replace_terrain(&mut self, terrain: Terrain) {
+            self.set_terrain(terrain);
+        }
+
+        /// The population, mutably, so a pass over it can be timed on its own.
+        pub fn population_mut(&mut self) -> &mut Population {
+            &mut self.population
+        }
+
+        /// Put the ground in a chosen state.
+        ///
+        /// Cross-country routing cost depends entirely on how soft the going
+        /// is, so measuring it on whatever the weather happened to do would be
+        /// measuring the weather. The routing baseline soaks the map on purpose.
+        pub fn set_ground(&mut self, ground: Ground) {
+            self.ground = ground;
+        }
+
+        /// The traversal lattice, mutably, so wear can be laid down before it
+        /// is routed over rather than driven in over a simulated year.
+        pub fn lattice_mut(&mut self) -> &mut Lattice {
+            &mut self.lattice
+        }
+
+        /// The buildings, mutably, for standing a great many of them up at once.
+        pub fn buildings_mut(&mut self) -> &mut Buildings {
+            &mut self.buildings
+        }
     }
 }
 
@@ -976,6 +1216,293 @@ mod tests {
             "the sweep never reached a point away from the border, \
              so agreement was proved about nothing"
         );
+    }
+
+    /// A republic replays from its own journal.
+    ///
+    /// **This is what the determinism rule's *same inputs* half was missing.**
+    /// Before commands existed there was no such thing as an input, so
+    /// `a_reloaded_world_resumes_the_same_future` proved replay for a world
+    /// nobody was playing — a real guard whose subject was half absent.
+    ///
+    /// Two republics from the same seed. One is played: roads ordered,
+    /// buildings commissioned and pulled down, tenders taken, trade rules added
+    /// and reordered, all at scattered ticks. The other is handed nothing but
+    /// the first one's journal and told to re-run it. They must end the same
+    /// world, byte for byte.
+    ///
+    /// The premise assertions are load-bearing. A journal that came out empty,
+    /// or a script whose commands were all refused, would make two untouched
+    /// republics agree trivially and prove nothing at all.
+    #[test]
+    fn a_republic_replays_from_its_own_journal() {
+        use crate::building::BuildingKind;
+        use crate::command::Command;
+        use crate::roadworks::Grade;
+        use crate::trade::{Market, TradeAction};
+
+        let at = |x: f64, y: f64| Point::new(Metres(x), Metres(y));
+
+        // What a session looks like: commands landing on scattered ticks with
+        // the world running in between.
+        let script: Vec<(u64, Command)> = vec![
+            (
+                0,
+                Command::AddTradeRule {
+                    resource: Resource::Coal,
+                    market: Market::East,
+                    action: TradeAction::Sell,
+                },
+            ),
+            (
+                0,
+                Command::AddTradeRule {
+                    resource: Resource::Food,
+                    market: Market::West,
+                    action: TradeAction::Buy {
+                        up_to: Tonnes(50.0),
+                    },
+                },
+            ),
+            (3, Command::MoveTradeRule { from: 1, to: 0 }),
+            (
+                5,
+                Command::Place {
+                    kind: BuildingKind::House,
+                    at: at(300.0, 300.0),
+                },
+            ),
+            (
+                11,
+                Command::Place {
+                    kind: BuildingKind::Warehouse,
+                    at: at(420.0, 300.0),
+                },
+            ),
+            (
+                17,
+                Command::OrderRoad {
+                    from: at(300.0, 300.0),
+                    to: at(700.0, 300.0),
+                    grade: Grade::Dirt,
+                },
+            ),
+            (40, Command::RemoveTradeRule { index: 0 }),
+        ];
+
+        let run = |script: &[(u64, Command)]| -> World {
+            let mut world = World::new(spec(1961));
+            for tick in 0..90u64 {
+                for (at_tick, command) in script {
+                    if *at_tick == tick {
+                        let _ = world.issue(command.clone());
+                    }
+                }
+                world.tick();
+            }
+            world
+        };
+
+        let played = run(&script);
+
+        // The premise: this proves nothing unless the script actually did
+        // things. A journal of refusals is a journal of no-ops.
+        assert!(
+            played.journal().len() >= 5,
+            "only {} commands were carried out; the script was mostly refused \
+             and this test would pass on two untouched republics",
+            played.journal().len()
+        );
+        assert!(
+            played.journal().entries().iter().any(|e| e.tick > 0),
+            "every command landed on tick zero, so nothing tested that the \
+             journal replays commands at the right moment"
+        );
+
+        // Replay: a fresh republic from the same seed, given only the journal.
+        let mut replayed = World::new(spec(1961));
+        for tick in 0..90u64 {
+            for command in played.journal().on_tick(tick).cloned().collect::<Vec<_>>() {
+                let _ = replayed.issue(command);
+            }
+            replayed.tick();
+        }
+
+        assert_eq!(
+            fingerprint(&played),
+            fingerprint(&replayed),
+            "same seed and same inputs did not produce the same world"
+        );
+        assert_eq!(played, replayed);
+    }
+
+    /// A refusal changes nothing and is not written down.
+    ///
+    /// Both halves matter. If a refused command left a mark, the journal would
+    /// no longer be the set of things that moved the world; if it were recorded
+    /// anyway, a replay would spend its time re-refusing.
+    #[test]
+    fn a_refused_command_changes_nothing_and_is_not_recorded() {
+        use crate::building::{BuildingKind, PlacementError};
+        use crate::command::{Command, Refused};
+
+        let mut world = World::new(spec(1961));
+        let before = fingerprint(&world);
+
+        // A customs house away from the border: refused by a rule, not by the
+        // ground, so this does not depend on what the terrain happened to be.
+        let refused = world.issue(Command::Place {
+            kind: BuildingKind::Customs,
+            at: Point::new(Metres(500.0), Metres(500.0)),
+        });
+        assert_eq!(
+            refused,
+            Err(Refused::Placement(PlacementError::NotOnTheBorder))
+        );
+
+        // And demolishing something that is not there.
+        assert_eq!(
+            world.issue(Command::Demolish {
+                building: crate::building::BuildingId(9_999),
+            }),
+            Err(Refused::NoSuchBuilding(crate::building::BuildingId(9_999)))
+        );
+
+        assert_eq!(fingerprint(&world), before, "a refusal moved the world");
+        assert!(world.journal().is_empty(), "a refusal was written down");
+
+        // The reason is a sentence, not a debug dump — this is what a panel
+        // prints and what greys out a button with a tooltip.
+        assert_eq!(
+            refused.unwrap_err().to_string(),
+            "a customs house must stand at the national border"
+        );
+    }
+
+    /// Pulling a building down while a lorry is driving to it does not strand
+    /// anything.
+    ///
+    /// `Demolish` is the first command that can invalidate what another system
+    /// is already holding: a vehicle's job names a `Destination`, a citizen's
+    /// `Workplace` and `Home` name buildings, and the dispatcher has already
+    /// ranked a demand against a yard that is about to stop existing.
+    ///
+    /// **What is asserted is that it resolves, not that it never happens.** A
+    /// lorry already on the road to a building that has just come down is
+    /// correct and transient — it finishes its leg, finds nothing to collect or
+    /// nowhere to put its load, and turns for home. The first version of this
+    /// test demanded that no job ever reference a missing building for even one
+    /// tick, which is not the invariant and is not physical.
+    ///
+    /// It is also the second version. The first sampled once, thirty days
+    /// later, and the premise assertion caught it out: a founded republic's
+    /// fleet holds a job on only 12.9% of ticks — 101 dispatches and 198 t
+    /// moved over the same month, so freight is working, it is simply idle most
+    /// of the time — and the single instant it looked at had every lorry
+    /// parked.
+    #[test]
+    fn a_republic_survives_having_a_building_pulled_out_from_under_its_lorries() {
+        use crate::command::Command;
+        use crate::fleet::{Destination, VehicleState};
+
+        let mut world = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        crate::scenario::found(&mut world, 120);
+        simulate_days(&mut world, 20);
+
+        // Premise: somebody is actually driving to the thing being demolished.
+        let target = world
+            .fleet()
+            .all()
+            .iter()
+            .filter_map(|v| v.job)
+            .filter_map(|job| job.haul())
+            .find_map(|(_, to, _, _)| match to {
+                Destination::Building(id) => Some(id),
+                Destination::RoadSite(_) => None,
+            })
+            .expect("no lorry was en route to a building, so this proves nothing");
+        let population_before = world.population().count();
+        assert!(population_before > 0, "an empty republic proves nothing");
+
+        assert_eq!(
+            world.issue(Command::Demolish { building: target }),
+            Ok(crate::command::Done::Nothing)
+        );
+        assert!(world.buildings().get(target).is_none(), "it is still there");
+
+        // How long the republic carries a job pointing at nothing, and whether
+        // freight keeps flowing while it does.
+        let mut still_pointing_at_it = 0u32;
+        let mut dispatches = 0u32;
+        for _ in 0..30 * TICKS_PER_DAY {
+            for m in world.tick() {
+                if matches!(m, crate::systems::Mutation::Dispatch { .. }) {
+                    dispatches += 1;
+                }
+            }
+            if world.fleet().all().iter().any(|v| {
+                v.job
+                    .and_then(|j| j.haul())
+                    .is_some_and(|(from, to, _, _)| {
+                        from == target || to == Destination::Building(target)
+                    })
+            }) {
+                still_pointing_at_it += 1;
+            }
+        }
+
+        // Measured at 9 ticks — nine simulated minutes, which is the lorry
+        // finishing the leg it was on and turning for home. The bound is four
+        // hours: loose enough that a longer haul cannot make it flaky, and two
+        // orders of magnitude tighter than the failure it exists to catch,
+        // which is a job that points at nothing for ever.
+        assert!(
+            still_pointing_at_it < 240,
+            "a lorry carried a job to a demolished building for              {still_pointing_at_it} ticks; it took 9 when this was measured"
+        );
+        assert!(
+            dispatches > 0,
+            "the republic dispatched nothing for a month after one demolition,              so freight did not survive it"
+        );
+        assert!(
+            world
+                .fleet()
+                .all()
+                .iter()
+                .all(|v| v.state == VehicleState::Idle
+                    || matches!(v.state, VehicleState::Bogged { .. })
+                    || v.journey.is_some()),
+            "a vehicle is neither parked, stuck, nor going anywhere"
+        );
+        assert_eq!(
+            world.population().count(),
+            population_before,
+            "demolishing a building should not delete people"
+        );
+    }
+
+    /// The journal survives a save, because it is part of the world.
+    #[test]
+    fn a_save_carries_the_journal_that_built_it() {
+        use crate::building::BuildingKind;
+        use crate::command::Command;
+
+        let mut world = World::new(spec(1961));
+        world
+            .issue(Command::Place {
+                kind: BuildingKind::House,
+                at: Point::new(Metres(300.0), Metres(300.0)),
+            })
+            .expect("open ground");
+        simulate_days(&mut world, 2);
+
+        let reloaded = World::from_bytes(&world.to_bytes()).expect("a save this build wrote");
+        assert_eq!(reloaded.journal(), world.journal());
+        assert_eq!(reloaded.journal().len(), 1);
     }
 
     /// A save from an older build is refused, not quietly reinterpreted.

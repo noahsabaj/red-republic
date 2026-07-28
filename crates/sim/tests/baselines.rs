@@ -115,7 +115,7 @@ fn geology_query_cost() {
         extent: Metres(10_000.0),
         climate: ClimateId::Plains,
     });
-    let bodies = world.geology.all().len();
+    let bodies = world.geology().all().len();
 
     const QUERIES: u32 = 100_000;
     let start = Instant::now();
@@ -123,7 +123,7 @@ fn geology_query_cost() {
     for i in 0..QUERIES {
         let p = at(f64::from(i % 10_000), f64::from((i * 7) % 10_000));
         if world
-            .geology
+            .geology()
             .distance_to_nearest(p, Mineral::Coal)
             .is_some()
         {
@@ -191,17 +191,21 @@ fn labour_scaling() {
             climate: ClimateId::Plains,
         });
         let base = scenario::found(&mut world, citizens);
-        let jobs = world.buildings.jobs();
+        let jobs = world.buildings().jobs();
 
         let start = Instant::now();
         const PASSES: u32 = 20;
         for _ in 0..PASSES {
-            assign_labour(&mut world.population, &world.buildings, &world.roads);
+            {
+                // Timed on its own: the axis is the labour pass, not a tick.
+                let (buildings, roads) = (world.buildings().clone(), world.roads().clone());
+                assign_labour(world.population_mut(), &buildings, &roads);
+            }
         }
         let each = start.elapsed().as_secs_f64() * 1000.0 / f64::from(PASSES);
         println!(
             "[BASELINE labour] {citizens} citizens, {jobs} jobs, {} buildings: {each:.2} ms per assignment",
-            world.buildings.all().len()
+            world.buildings().all().len()
         );
         assert!(!base.housing.is_empty());
         assert!(each < 500.0, "labour assignment took {each:.2} ms");
@@ -227,7 +231,7 @@ fn simulated_day_cost() {
         let day = start.elapsed().as_secs_f64() * 1000.0;
         println!(
             "[BASELINE tick] {citizens} citizens, {} buildings: {day:.0} ms per simulated day ({:.3} ms per tick)",
-            world.buildings.all().len(),
+            world.buildings().all().len(),
             day / TICKS_PER_DAY as f64
         );
         assert!(day < 60_000.0, "a simulated day took {day:.0} ms");
@@ -295,7 +299,7 @@ fn building_scaling() {
                 300.0 + (i % 60) as f64 * 90.0,
                 300.0 + (i / 60) as f64 * 90.0,
             );
-            if world.place_built(BuildingKind::House, p).is_ok() {
+            if world.establish(BuildingKind::House, p).is_ok() {
                 placed += 1;
             }
         }
@@ -307,7 +311,7 @@ fn building_scaling() {
         let day = start.elapsed().as_secs_f64() * 1000.0;
         println!(
             "[BASELINE buildings] {} buildings ({placed} extra): {day:.0} ms per simulated day",
-            world.buildings.all().len()
+            world.buildings().all().len()
         );
         assert!(day < 120_000.0, "a simulated day took {day:.0} ms");
     }
@@ -337,13 +341,13 @@ fn fleet_scaling() {
             climate: ClimateId::Plains,
         });
         scenario::found(&mut world, 1_500);
-        let centre = world.buildings.all()[0].centre;
+        let centre = world.buildings().all()[0].centre;
         for i in 0..garages.saturating_sub(1) {
             let p = at(
                 centre.x.0 + 300.0 + (i % 6) as f64 * 200.0,
                 centre.y.0 + 600.0 + (i / 6) as f64 * 200.0,
             );
-            let _ = world.place_built(BuildingKind::MotorDepot, p);
+            let _ = world.establish(BuildingKind::MotorDepot, p);
         }
         // Three days to commission the vehicles, staff the depots and get the
         // fleet rolling, so what follows measures a working republic rather
@@ -356,7 +360,7 @@ fn fleet_scaling() {
         let mut busiest = 0;
         for _ in 0..TICKS_PER_DAY {
             world.tick();
-            busiest = busiest.max(world.fleet.running());
+            busiest = busiest.max(world.fleet().running());
         }
         let day = start.elapsed().as_secs_f64() * 1000.0;
 
@@ -375,10 +379,10 @@ fn fleet_scaling() {
 
         println!(
             "[BASELINE fleet] {} vehicles ({busiest} on the road at once), {} buildings: {day:.0} ms per simulated day · leg scan {scan:.0} ns/tick · dispatch {dispatch:.1} us/tick",
-            world.fleet.len(),
-            world.buildings.all().len(),
+            world.fleet().len(),
+            world.buildings().all().len(),
         );
-        assert!(!world.fleet.is_empty(), "no vehicles were commissioned");
+        assert!(!world.fleet().is_empty(), "no vehicles were commissioned");
         assert!(day < 120_000.0, "a simulated day took {day:.0} ms");
     }
 }
@@ -403,13 +407,13 @@ fn cross_country_routing_cost() {
         });
         // Soaked, so every cell has a real cost and the search cannot shortcut
         // on everything being equally free.
-        world.ground = red_republic_sim::ground::Ground {
+        world.set_ground(red_republic_sim::ground::Ground {
             moisture: 1.0,
             water: 1.0,
             snow: 0.0,
             frost: 0.0,
-        };
-        let cells = world.lattice.cells();
+        });
+        let cells = world.lattice().cells();
         let crossing = world.crossing();
 
         const QUERIES: u32 = 400;
@@ -429,7 +433,7 @@ fn cross_country_routing_cost() {
 
         // The same map with a wall of water across it, so the straight line is
         // never available and every query is a real search.
-        let mut walled = world.terrain.clone();
+        let mut walled = world.terrain().clone();
         let mut x = 0.0;
         while x < extent * 0.8 {
             let mut y = extent * 0.45;
@@ -439,7 +443,7 @@ fn cross_country_routing_cost() {
             }
             x += 10.0;
         }
-        world.set_terrain(walled);
+        world.replace_terrain(walled);
         let crossing = world.crossing();
         let start = Instant::now();
         for i in 0..QUERIES {
@@ -470,17 +474,17 @@ fn wear_sweep_cost() {
             extent: Metres(extent),
             climate: ClimateId::Plains,
         });
-        let cells = world.lattice.cells();
+        let cells = world.lattice().cells();
         // Wear in a long diagonal corridor plus a scattering, so the sweep has
         // real runs to find and real cells to walk past.
         let side = f64::from(cells);
         for i in 0..cells {
             let along = f64::from(i) * 100.0 + 50.0;
-            if let Some(cell) = world.lattice.cell_of(at(along, along)) {
-                world.lattice.wear_in(cell, 1.0);
+            if let Some(cell) = world.lattice().cell_of(at(along, along)) {
+                world.lattice_mut().wear_in(cell, 1.0);
             }
-            if let Some(cell) = world.lattice.cell_of(at(along, side * 100.0 - along)) {
-                world.lattice.wear_in(cell, 0.9);
+            if let Some(cell) = world.lattice().cell_of(at(along, side * 100.0 - along)) {
+                world.lattice_mut().wear_in(cell, 0.9);
             }
         }
 
@@ -515,9 +519,10 @@ fn placement_scaling() {
             500.0 + f64::from(i % 30) * 150.0,
             500.0 + f64::from(i / 30) * 150.0,
         );
+        let (terrain, geology) = (world.terrain().clone(), world.geology().clone());
         if world
-            .buildings
-            .place(BuildingKind::House, p, &world.terrain, &world.geology)
+            .buildings_mut()
+            .place(BuildingKind::House, p, &terrain, &geology)
             .is_ok()
         {
             placed += 1;
