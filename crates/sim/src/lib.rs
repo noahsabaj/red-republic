@@ -66,7 +66,7 @@ pub use time::{Date, Season, SimClock};
 pub use trade::{BorderEdge, Market, TradeAction, TradePolicy, TradeRule, Treasury};
 pub use transport::{Commute, Mode};
 pub use units::{Metres, Point, Seconds, Speed, Tonnes};
-pub use world::{SAVE_VERSION, Save, SaveError, World};
+pub use world::{SAVE_VERSION, Save, SaveError, World, WorldSpec};
 
 #[cfg(test)]
 mod tests {

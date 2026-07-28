@@ -351,6 +351,7 @@ pub fn generate_terrain(seed: u64, extent: Metres, plan: &TerrainPlan) -> Terrai
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     const SMALL: Metres = Metres(1_000.0); // 100 x 100 cells

@@ -1,0 +1,32 @@
+; Red Republic — the Godot project.
+;
+; Scenes, Control layouts, themes and materials live here. All simulation lives
+; in crates/sim, and the only Rust that knows this project exists is
+; crates/red-republic-shell.
+
+config_version=5
+
+[application]
+
+config/name="Red Republic"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.4", "Forward Plus")
+
+[display]
+
+window/size/viewport_width=1600
+window/size/viewport_height=900
+
+; Vsync OFF by default during development, and this is not a preference.
+;
+; With it on, every frame measurement comes back as exactly 16.67 ms whatever
+; the load, so a benchmark reports a healthy number for a scene that is
+; drowning. Measured on this machine; it silently invalidated a whole probe run
+; before anyone noticed. The shipped build turns it back on.
+window/vsync/vsync_mode=0
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
+; The republic is watched from above and from a distance; a far plane short of
+; the map diagonal clips the far side of a 16 km posting.
