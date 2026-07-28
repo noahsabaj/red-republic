@@ -27,6 +27,7 @@ use crate::contract::Contracts;
 use crate::fleet::Destination;
 use crate::fleet::Fleet;
 use crate::geology::Geology;
+use crate::ground::Ground;
 use crate::mapgen;
 use crate::resource::Resource;
 use crate::rng::{Rng, RngState};
@@ -48,7 +49,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// 3: roads under construction, and journey legs carrying a speed limit rather
 /// than a flag.
-pub const SAVE_VERSION: u32 = 3;
+///
+/// 4: the state of the ground. Soil moisture and lying snow accumulate, so
+/// they are state rather than a function of the date.
+pub const SAVE_VERSION: u32 = 4;
 
 /// Substream identifier for terrain generation.
 pub const TERRAIN_STREAM: u64 = 2;
@@ -161,6 +165,8 @@ pub struct World {
     pub roads: RoadNetwork,
     /// The roads that have been ordered and are not yet drivable.
     pub roadworks: RoadWorks,
+    /// How wet and how frozen the open ground is today.
+    pub ground: Ground,
     /// The lorries that move everything, and where each of them is.
     pub fleet: Fleet,
     /// The people.
@@ -210,6 +216,7 @@ impl World {
             buildings: Buildings::new(),
             roads: RoadNetwork::new(),
             roadworks: RoadWorks::new(),
+            ground: Ground::default(),
             fleet: Fleet::new(),
             population: Population::new(),
             // One edge per seed, drawn from its own substream so the choice
@@ -240,9 +247,40 @@ impl World {
 
     /// The same for any day, past or future — which is what a forecast is.
     pub fn temperature_on_day(&self, day_index: u64) -> f64 {
-        let deviation = self.substream(WEATHER_STREAM, day_index).next_f64();
+        self.weather_on_day(day_index).0
+    }
+
+    /// Millimetres of rain today. Below freezing it falls as snow, which is
+    /// [`crate::ground`]'s business rather than the sky's.
+    pub fn precipitation(&self) -> f64 {
+        self.weather_on_day(self.clock.day_index()).1
+    }
+
+    /// The whole day's weather, drawn from one substream in a fixed order.
+    ///
+    /// Temperature and rain share a stream and are drawn in this order always,
+    /// so adding a third reading later must append rather than interleave — a
+    /// draw inserted in the middle would change every temperature in every
+    /// existing seed.
+    pub fn weather_on_day(&self, day_index: u64) -> (f64, f64) {
+        let mut stream = self.substream(WEATHER_STREAM, day_index);
+        let deviation = stream.next_f64();
+        let wetness = stream.next_f64();
         let day_of_year = (day_index % u64::from(crate::time::DAYS_PER_YEAR)) as u32;
-        climate::temperature_on(self.climate.def(), day_of_year, deviation)
+        let def = self.climate.def();
+        (
+            climate::temperature_on(def, day_of_year, deviation),
+            climate::precipitation_on(def, day_of_year, wetness),
+        )
+    }
+
+    /// How badly the open ground would bog a vehicle today, at a given place.
+    pub fn going_at(&self, at: Point) -> f64 {
+        match self.terrain.surface_at(at) {
+            Some(surface) => self.ground.going_on(surface),
+            // Off the map is not ground at all.
+            None => 1.0,
+        }
     }
 
     /// How far a point is from foreign soil.

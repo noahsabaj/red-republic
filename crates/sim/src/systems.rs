@@ -75,6 +75,14 @@ pub enum Mutation {
         resource: Resource,
         tonnes: Tonnes,
     },
+    /// The day's weather worked through the ground: what the topsoil holds,
+    /// what snow is lying, and how frozen it is.
+    ///
+    /// One kind because the three move together and only together: rain that
+    /// falls below freezing becomes snow instead of moisture, and snow that
+    /// melts becomes moisture instead of snow. Splitting them would make
+    /// "it snowed and the ground got wetter" representable.
+    Weather(crate::ground::Ground),
     /// A garage takes delivery of a vehicle its establishment allows.
     Commission {
         garage: BuildingId,
@@ -214,6 +222,7 @@ pub enum MutationKind {
     Import,
     Build,
     Lay,
+    Weather,
     Offer,
     CloseContract,
     DropContract,
@@ -241,6 +250,7 @@ impl Mutation {
             Mutation::Import { .. } => MutationKind::Import,
             Mutation::Build { .. } => MutationKind::Build,
             Mutation::Lay { .. } => MutationKind::Lay,
+            Mutation::Weather(_) => MutationKind::Weather,
             Mutation::Offer(_) => MutationKind::Offer,
             Mutation::CloseContract { .. } => MutationKind::CloseContract,
             Mutation::DropContract { .. } => MutationKind::DropContract,
@@ -275,6 +285,7 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
         &[MutationKind::Consume, MutationKind::Provision],
     ),
     ("trade", &[MutationKind::Export, MutationKind::Import]),
+    ("weather", &[MutationKind::Weather]),
     ("commissioning", &[MutationKind::Commission]),
     ("dispatch", &[MutationKind::Dispatch]),
     (
@@ -452,6 +463,9 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                 if let Some(b) = world.buildings.get_mut(site) {
                     b.work_done += worked;
                 }
+            }
+            &Mutation::Weather(ground) => {
+                world.ground = ground;
             }
             &Mutation::Lay { site, builder_days } => {
                 let Some(road) = world.roadworks.get(site) else {
@@ -2034,6 +2048,18 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
     out
 }
 
+/// The day's weather, worked through the ground.
+///
+/// Daily, and it has to be: soil moisture and lying snow are quantities per
+/// *day*, and running the recurrence 1,440 times would dry a field out in an
+/// afternoon and melt a winter's snow before lunch.
+pub fn weather(world: &World) -> Vec<Mutation> {
+    let (temperature, rain) = world.weather_on_day(world.clock.day_index());
+    let mut ground = world.ground;
+    ground.advance(temperature, rain);
+    vec![Mutation::Weather(ground)]
+}
+
 /// Vehicles arriving on a garage's strength.
 ///
 /// Daily, because a depot does not take delivery of a lorry between one minute
@@ -2085,7 +2111,9 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
     // are day indices and relations decay per day, so running the sweep per
     // tick would fine a republic 1,440 times for one missed delivery.
     if world.clock.is_day_boundary() {
+        // Weather first: the day's going is what everything after it reads.
         for system in [
+            |w: &mut World| weather(w),
             labour,
             |w: &mut World| contracts(w),
             |w: &mut World| commissioning(w),
@@ -3916,6 +3944,9 @@ mod tests {
                     apply(&mut world, &m);
                     let m = commissioning(&world);
                     note("commissioning", &m);
+                    apply(&mut world, &m);
+                    let m = weather(&world);
+                    note("weather", &m);
                     apply(&mut world, &m);
                     // Accept everything, so deliveries and failures both happen.
                     let offers: Vec<_> = world.contracts.offers().map(|c| c.id).collect();

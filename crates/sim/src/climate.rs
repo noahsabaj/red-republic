@@ -83,6 +83,12 @@ pub struct Climate {
     pub monthly_mean_c: [f64; 12],
     /// How far a single day may stray from its month's mean, either way.
     pub daily_swing_c: f64,
+    /// Mean precipitation in each month, January first, in millimetres per day.
+    ///
+    /// Authored beside the temperature it shares a year with, because the two
+    /// together are what make a climate somewhere: the taiga is cold and dry,
+    /// the maritime posting is mild and wet, and those are different problems.
+    pub monthly_rain_mm: [f64; 12],
 }
 
 /// The four postings, carried over from the archived build.
@@ -97,6 +103,7 @@ pub const CLIMATES: &[Climate] = &[
             -12.0, -9.4, -2.7, 6.3, 15.3, 21.7, 24.0, 21.4, 14.7, 5.7, -3.3, -9.4,
         ],
         daily_swing_c: 6.0,
+        monthly_rain_mm: [1.0, 0.9, 1.0, 1.3, 1.6, 2.2, 2.4, 2.0, 1.6, 1.4, 1.3, 1.1],
     },
     Climate {
         id: ClimateId::Taiga,
@@ -105,6 +112,7 @@ pub const CLIMATES: &[Climate] = &[
             -24.0, -20.9, -12.7, -1.6, 9.3, 17.2, 20.0, 16.9, 8.7, -2.4, -13.3, -20.9,
         ],
         daily_swing_c: 7.0,
+        monthly_rain_mm: [0.8, 0.7, 0.7, 0.9, 1.3, 2.0, 2.4, 2.1, 1.7, 1.4, 1.1, 0.9],
     },
     Climate {
         id: ClimateId::Steppe,
@@ -113,6 +121,7 @@ pub const CLIMATES: &[Climate] = &[
             -6.0, -3.7, 2.2, 10.3, 18.2, 24.0, 26.0, 23.7, 17.8, 9.7, 1.8, -3.7,
         ],
         daily_swing_c: 6.0,
+        monthly_rain_mm: [0.7, 0.7, 0.9, 1.2, 1.5, 1.4, 1.2, 1.0, 1.0, 1.0, 0.9, 0.8],
     },
     Climate {
         id: ClimateId::Maritime,
@@ -121,8 +130,32 @@ pub const CLIMATES: &[Climate] = &[
             2.0, 3.1, 6.1, 10.1, 14.1, 17.0, 18.0, 16.9, 13.9, 9.9, 5.9, 3.1,
         ],
         daily_swing_c: 4.0,
+        monthly_rain_mm: [2.6, 2.2, 2.0, 1.8, 1.7, 1.7, 1.8, 2.0, 2.3, 2.7, 2.9, 2.8],
     },
 ];
+
+/// Read a twelve-month table on a given day of the year, interpolating between
+/// the two months either side of it.
+///
+/// Each authored figure sits at the middle of its month, so the curve passes
+/// through the table rather than stepping between plateaus — a 1 January that
+/// is a whole degree different from 31 December would be a calendar artefact,
+/// and those are what this module exists to avoid.
+fn read_monthly(table: &[f64; 12], day_of_year: u32) -> f64 {
+    let day = f64::from(day_of_year % DAYS_PER_YEAR);
+    let per_month = f64::from(DAYS_PER_MONTH);
+    // Position along the year in months, with month m's figure at m + 0.5.
+    let position = day / per_month - 0.5;
+    let months = f64::from(MONTHS_PER_YEAR);
+    // `rem_euclid` keeps late December interpolating into January rather than
+    // falling off the end of the table.
+    let wrapped = position.rem_euclid(months);
+    let index = wrapped.floor();
+    let frac = wrapped - index;
+    let a = table[(index as usize) % 12];
+    let b = table[((index as usize) + 1) % 12];
+    a + (b - a) * frac
+}
 
 impl Climate {
     /// The seasonal mean on a given day of the year, interpolated between the
@@ -133,19 +166,13 @@ impl Climate {
     /// that is a whole degree different from 31 December would be a calendar
     /// artefact, and those are what this module exists to avoid.
     pub fn mean_on(&self, day_of_year: u32) -> f64 {
-        let day = f64::from(day_of_year % DAYS_PER_YEAR);
-        let per_month = f64::from(DAYS_PER_MONTH);
-        // Position along the year in months, with month m's mean at m + 0.5.
-        let position = day / per_month - 0.5;
-        let months = f64::from(MONTHS_PER_YEAR);
-        // `rem_euclid` keeps late December interpolating into January rather
-        // than falling off the end of the table.
-        let wrapped = position.rem_euclid(months);
-        let index = wrapped.floor();
-        let frac = wrapped - index;
-        let a = self.monthly_mean_c[(index as usize) % 12];
-        let b = self.monthly_mean_c[((index as usize) + 1) % 12];
-        a + (b - a) * frac
+        read_monthly(&self.monthly_mean_c, day_of_year)
+    }
+
+    /// The seasonal mean rainfall on a given day, in millimetres, read from the
+    /// table the same way the temperature is.
+    pub fn rain_on(&self, day_of_year: u32) -> f64 {
+        read_monthly(&self.monthly_rain_mm, day_of_year)
     }
 
     /// The coldest month's mean — what a founding briefing quotes, because it
@@ -191,6 +218,34 @@ pub fn heat_demand_factor(temperature_c: f64) -> f64 {
 pub fn temperature_on(climate: &Climate, day_of_year: u32, deviation: f64) -> f64 {
     let swing = (deviation * 2.0 - 1.0) * climate.daily_swing_c;
     climate.mean_on(day_of_year) + swing
+}
+
+/// Share of days that carry any rain at all.
+///
+/// Rain is bursty and that matters: a month's water smeared evenly over thirty
+/// days never saturates anything, while the same water in nine falls turns the
+/// ground to mud twice and dries out in between. The wet week is the event the
+/// mechanic exists to produce, and an average cannot produce one.
+pub const WET_DAY_SHARE: f64 = 0.3;
+
+/// Millimetres of rain today.
+///
+/// `roll` is a draw in `0.0..1.0` from the caller's weather substream, passed
+/// in for the same reason [`temperature_on`] takes one: this stays a pure
+/// function and the stream discipline stays visible at the call site.
+///
+/// The distribution preserves the authored monthly mean exactly — most wet days
+/// are small, a few are not, and the average over a month is what the table
+/// says. Below freezing this is snow, which is [`crate::ground`]'s business.
+pub fn precipitation_on(climate: &Climate, day_of_year: u32, roll: f64) -> f64 {
+    if roll >= WET_DAY_SHARE {
+        return 0.0;
+    }
+    // Where in the wet share the draw landed, 1.0 at the wettest.
+    let intensity = 1.0 - roll / WET_DAY_SHARE;
+    // The 0.4 + 1.2x shape averages to 1.0 over a uniform draw, so scaling the
+    // month's mean by 1/WET_DAY_SHARE conserves it.
+    climate.rain_on(day_of_year) / WET_DAY_SHARE * (0.4 + 1.2 * intensity)
 }
 
 #[cfg(test)]
