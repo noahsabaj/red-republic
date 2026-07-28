@@ -844,6 +844,38 @@ mod tests {
         );
     }
 
+    /// The mirror of the test above, and it exists because sabotage caught the
+    /// first version of this guard failing to reach its subject.
+    ///
+    /// `a_save_from_an_older_build_is_refused_rather_than_misread` builds its
+    /// bytes from a *valid* world, so deleting the version check in
+    /// [`World::from_bytes`] changed nothing: parsing succeeded and
+    /// [`World::from_save`] refused it one call later. The test went on passing
+    /// against a build with the thing it was written for removed.
+    ///
+    /// A body that cannot be parsed is what tells the two apart. With the check
+    /// the version decides; without it, parsing fails first and the player is
+    /// told their save is corrupt when it is merely old.
+    #[test]
+    fn an_older_version_is_recognised_before_the_world_is_parsed() {
+        let mut bytes = postcard::to_stdvec(&(SAVE_VERSION - 1)).expect("a u32 serializes");
+        bytes.extend_from_slice(b"not a world at all");
+        assert_eq!(
+            World::from_bytes(&bytes),
+            Err(SaveError::FromThePast {
+                found: SAVE_VERSION - 1,
+                supported: SAVE_VERSION,
+            })
+        );
+    }
+
+    /// Rubbish is corrupt, not old.
+    ///
+    /// Three zero bytes decode to version 0, which sits below
+    /// [`FIRST_SAVE_VERSION`] — no save has ever carried it. Without that floor
+    /// this reports "from an older build", which is a more confident lie than
+    /// "corrupt" and sends whoever reads it hunting a migration that was never
+    /// missing.
     #[test]
     fn rubbish_bytes_are_refused_rather_than_half_loaded() {
         assert!(matches!(

@@ -1,0 +1,58 @@
+name: CI
+
+# The gate, run on the machine that is not Noah's.
+#
+# `archive/` is excluded from the Cargo workspace and has its own frozen
+# toolchain, so nothing here touches it. It is never built or released again.
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A warning that is not an error is a warning nobody reads.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  gate:
+    # Two operating systems on purpose, and it is not redundancy.
+    #
+    # Map generation must reproduce ACROSS MACHINES — a shared seed is a promise
+    # between players — so `generated_geology_is_pinned_across_machines` and
+    # `generated_ground_is_pinned_across_machines` are claims that can only be
+    # tested somewhere other than where the pin was taken. Running the suite on
+    # a second OS and a second CPU vendor is the cheapest real evidence for that
+    # rule available, and until this workflow existed nothing had ever checked
+    # it anywhere but one desktop.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      # Release-mode baselines are measurements rather than assertions, so they
+      # are recorded in the log and never gate. Their numbers come from whatever
+      # hardware the runner happened to be, which is why nothing here compares
+      # them to a threshold — the pinned figures in the repo are Noah's machine.
+      - name: Baselines
+        run: cargo test --release --test baselines -- --nocapture
