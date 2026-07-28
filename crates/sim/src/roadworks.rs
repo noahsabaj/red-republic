@@ -134,6 +134,29 @@ pub enum RoadError {
     Unbuildable,
 }
 
+/// What the player is told. Same reasoning as
+/// [`crate::building::PlacementError`]'s: the wording lives beside the
+/// variants so a new one cannot be added without it.
+impl std::fmt::Display for RoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RoadError::TooShort => write!(
+                f,
+                "a road shorter than {} m is not worth surveying",
+                MIN_ROAD.0
+            ),
+            RoadError::Unbuildable => {
+                write!(
+                    f,
+                    "one end is off the map or on ground that will not take a road"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RoadError {}
+
 /// A road that has been ordered and not yet opened.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoadSite {

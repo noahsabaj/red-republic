@@ -492,6 +492,7 @@ version = "0.1.0"
 dependencies = [
  "bevy_ecs",
  "postcard",
+ "red-republic-sim",
  "serde",
 ]
 

@@ -504,6 +504,30 @@ pub enum PlacementError {
     NotOnTheBorder,
 }
 
+/// What the player is told, in the register the rest of the game speaks in.
+///
+/// A refusal that cannot say why is a refusal nobody can act on, and the
+/// archived build's reason strings are what drove both its toasts and the
+/// tooltip on every greyed-out button. Written here, next to the variants, so
+/// adding a variant without its wording is a compile error rather than a
+/// silent fallback.
+impl std::fmt::Display for PlacementError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlacementError::Unbuildable => write!(f, "the ground here will not take it"),
+            PlacementError::Occupied => write!(f, "something already stands here"),
+            PlacementError::NothingToTap(mineral) => {
+                write!(f, "there is no {} beneath this ground", mineral.name())
+            }
+            PlacementError::NotOnTheBorder => {
+                write!(f, "a customs house must stand at the national border")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PlacementError {}
+
 /// Every building in the republic.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Buildings {

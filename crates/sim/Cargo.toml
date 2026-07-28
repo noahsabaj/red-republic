@@ -13,6 +13,17 @@ authors.workspace = true
 # strictly better than hand-writing it: the archived build's save round-trip
 # test existed to catch fields someone forgot to persist, and a derive removes
 # that class of bug rather than testing for it.
+[features]
+# Construction and measurement access for `tests/baselines.rs`, which is a
+# separate crate and so is held to exactly the boundary the shell is.
+#
+# The baselines rule is one measurement per axis, and an axis cannot be isolated
+# through the player API: timing the labour pass at four thousand citizens means
+# calling the labour pass, not founding a republic and ticking it. This feature
+# is how that stays possible without leaving the hatch open to a renderer —
+# nothing that draws anything enables it. See `world::fixtures`.
+fixtures = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 
@@ -32,3 +43,9 @@ bevy_ecs = { version = "0.19", default-features = false }
 # corruption this requirement exists to prevent — with the guard test still
 # passing, because the guard would be testing a format nothing uses.
 postcard = { version = "1", features = ["use-std"] }
+
+# Self dev-dependency so `cargo test` builds the library with `fixtures` on.
+# Cargo unifies features across the graph for the same package, so this enables
+# the feature for the test build without a second compilation of the crate.
+[dev-dependencies]
+red-republic-sim = { path = ".", features = ["fixtures"] }
