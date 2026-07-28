@@ -56,6 +56,17 @@ use serde::{Deserialize, Serialize};
 /// 5: the traversal lattice, and vehicles that can be stuck in it.
 pub const SAVE_VERSION: u32 = 6;
 
+/// The first version the format ever carried.
+///
+/// Load-bearing rather than trivia: it is what separates *an older save* from
+/// *not a save*. `from_bytes` decodes a leading varint before it knows whether
+/// the bytes are a save at all, and arbitrary rubbish frequently decodes to a
+/// small number — three zero bytes give version 0. Without a floor, every such
+/// blob would be reported as coming from an older build, which is a more
+/// confident lie than "corrupt" and sends whoever reads it looking for a
+/// migration that was never missing.
+pub const FIRST_SAVE_VERSION: u32 = 1;
+
 /// Substream identifier for terrain generation.
 pub const TERRAIN_STREAM: u64 = 2;
 
@@ -94,6 +105,15 @@ pub fn derive(seed: u64, purpose: u64) -> u64 {
 pub enum SaveError {
     /// The save was written by a newer build than this one.
     FromTheFuture { found: u32, supported: u32 },
+    /// The save was written by an older build and no migration exists for it.
+    ///
+    /// Reported rather than attempted, because **postcard is not
+    /// self-describing**: an older save is a bare byte sequence laid out to an
+    /// older `World`, and decoding it against today's shape does not reliably
+    /// fail — it can succeed and hand back a world whose fields have quietly
+    /// slid past each other. Silent corruption is the one outcome a save format
+    /// may never have, and it is the same reason `serde_json` was rejected.
+    FromThePast { found: u32, supported: u32 },
     /// The bytes are not a save this build can read.
     Corrupt(String),
 }
@@ -104,6 +124,11 @@ impl std::fmt::Display for SaveError {
             SaveError::FromTheFuture { found, supported } => write!(
                 f,
                 "save format {found} is newer than this build understands ({supported})"
+            ),
+            SaveError::FromThePast { found, supported } => write!(
+                f,
+                "save format {found} is older than this build reads ({supported}), \
+                 and no migration exists for it"
             ),
             SaveError::Corrupt(why) => write!(f, "save could not be read: {why}"),
         }
@@ -342,6 +367,43 @@ impl World {
         self.border.distance_from(at, self.terrain.extent())
     }
 
+    /// The rules that need to know where the border is.
+    ///
+    /// Written once and shared by [`Self::place`] and [`Self::can_place`],
+    /// because the moment the preview and the commit each carry their own copy
+    /// they are free to disagree — and they did.
+    fn border_rule(
+        &self,
+        kind: crate::building::BuildingKind,
+        at: crate::units::Point,
+    ) -> Result<(), crate::building::PlacementError> {
+        if kind == crate::building::BuildingKind::Customs
+            && self.distance_to_border(at).0 > crate::trade::CUSTOMS_RANGE.0
+        {
+            return Err(crate::building::PlacementError::NotOnTheBorder);
+        }
+        Ok(())
+    }
+
+    /// Would this go here? Every rule [`Self::place`] applies, without
+    /// committing — what a placement preview asks.
+    ///
+    /// [`crate::building::Buildings::can_place`] is the wrong call for a shell
+    /// to make directly and this exists because it was the only one available.
+    /// That layer has no idea where the border is, so it answered *yes* for a
+    /// customs house anywhere on the map while [`Self::place`] refused it: a
+    /// ghost rendering green over ground that would reject it. A preview which
+    /// asks a different question from the commit is not a preview.
+    pub fn can_place(
+        &self,
+        kind: crate::building::BuildingKind,
+        at: crate::units::Point,
+    ) -> Result<Option<crate::geology::DepositId>, crate::building::PlacementError> {
+        self.border_rule(kind, at)?;
+        self.buildings
+            .can_place(kind, at, &self.terrain, &self.geology)
+    }
+
     /// Put a building up, applying every rule including the ones that need to
     /// know where the border is.
     ///
@@ -353,11 +415,7 @@ impl World {
         kind: crate::building::BuildingKind,
         at: crate::units::Point,
     ) -> Result<crate::building::BuildingId, crate::building::PlacementError> {
-        if kind == crate::building::BuildingKind::Customs
-            && self.distance_to_border(at).0 > crate::trade::CUSTOMS_RANGE.0
-        {
-            return Err(crate::building::PlacementError::NotOnTheBorder);
-        }
+        self.border_rule(kind, at)?;
         self.buildings.place(kind, at, &self.terrain, &self.geology)
     }
 
@@ -487,7 +545,27 @@ impl World {
             });
         }
         // Migrations for versions below SAVE_VERSION go here, oldest first.
-        // There are none yet because there is only one version.
+        // There are none, so an older save is refused rather than accepted.
+        //
+        // The comment that used to sit here said there was no ladder "because
+        // there is only one version", while the constant read 6 — and the code
+        // under it returned `Ok` for every version below. That combination is
+        // the worst of both: it claims a migration path, provides none, and
+        // succeeds anyway. Verified before changing it — nothing in the repo
+        // holds a save written by an older build, and no test loads one, so
+        // this branch has never had a real subject.
+        if save.version < FIRST_SAVE_VERSION {
+            return Err(SaveError::Corrupt(format!(
+                "save format {} has never existed",
+                save.version
+            )));
+        }
+        if save.version < SAVE_VERSION {
+            return Err(SaveError::FromThePast {
+                found: save.version,
+                supported: SAVE_VERSION,
+            });
+        }
         Ok(save.world)
     }
 
@@ -515,11 +593,33 @@ impl World {
     /// their save was corrupt when it is merely from a newer build. That is the
     /// point of the version travelling outside the world, and reading it in one
     /// pass with everything else would have quietly thrown it away.
+    ///
+    /// **Both directions are decided before the world is touched**, and the
+    /// backward one matters more than it looks. `postcard` is not
+    /// self-describing, so decoding an older layout against today's `World` is
+    /// not reliably an error — it can succeed on shifted bytes. Refusing on the
+    /// version is the only check that happens before that can occur.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, SaveError> {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes)
             .map_err(|e| SaveError::Corrupt(e.to_string()))?;
         if version > SAVE_VERSION {
             return Err(SaveError::FromTheFuture {
+                found: version,
+                supported: SAVE_VERSION,
+            });
+        }
+        if version < FIRST_SAVE_VERSION {
+            // Not an old save — not a save. Versions have started at
+            // FIRST_SAVE_VERSION since the format existed, so anything below it
+            // is arbitrary bytes whose first varint happened to decode, and
+            // calling that "from an older build" would be a worse lie than the
+            // one this check replaced. Three zero bytes are the worked example.
+            return Err(SaveError::Corrupt(format!(
+                "save format {version} has never existed"
+            )));
+        }
+        if version < SAVE_VERSION {
+            return Err(SaveError::FromThePast {
                 found: version,
                 supported: SAVE_VERSION,
             });
@@ -744,6 +844,38 @@ mod tests {
         );
     }
 
+    /// The mirror of the test above, and it exists because sabotage caught the
+    /// first version of this guard failing to reach its subject.
+    ///
+    /// `a_save_from_an_older_build_is_refused_rather_than_misread` builds its
+    /// bytes from a *valid* world, so deleting the version check in
+    /// [`World::from_bytes`] changed nothing: parsing succeeded and
+    /// [`World::from_save`] refused it one call later. The test went on passing
+    /// against a build with the thing it was written for removed.
+    ///
+    /// A body that cannot be parsed is what tells the two apart. With the check
+    /// the version decides; without it, parsing fails first and the player is
+    /// told their save is corrupt when it is merely old.
+    #[test]
+    fn an_older_version_is_recognised_before_the_world_is_parsed() {
+        let mut bytes = postcard::to_stdvec(&(SAVE_VERSION - 1)).expect("a u32 serializes");
+        bytes.extend_from_slice(b"not a world at all");
+        assert_eq!(
+            World::from_bytes(&bytes),
+            Err(SaveError::FromThePast {
+                found: SAVE_VERSION - 1,
+                supported: SAVE_VERSION,
+            })
+        );
+    }
+
+    /// Rubbish is corrupt, not old.
+    ///
+    /// Three zero bytes decode to version 0, which sits below
+    /// [`FIRST_SAVE_VERSION`] — no save has ever carried it. Without that floor
+    /// this reports "from an older build", which is a more confident lie than
+    /// "corrupt" and sends whoever reads it hunting a migration that was never
+    /// missing.
     #[test]
     fn rubbish_bytes_are_refused_rather_than_half_loaded() {
         assert!(matches!(
@@ -796,5 +928,85 @@ mod tests {
         // month that does not exist here.
         let date = world.clock.date();
         assert_eq!((date.year, date.month, date.day), (1960, 6, 1));
+    }
+
+    /// A preview must answer exactly what the commit will answer.
+    ///
+    /// [`crate::building::Buildings::can_place`] is border-blind, so before
+    /// [`World::can_place`] existed a shell previewing a customs house was told
+    /// *yes* on ground [`World::place`] then refused — a ghost rendering green
+    /// over a placement that could not happen.
+    ///
+    /// This asserts the two **agree** rather than asserting one particular
+    /// answer, so it goes on protecting the invariant when the border model is
+    /// replaced. The premise assertion at the end is not decoration: sweep a
+    /// map that never produces an off-border point and this test would pass
+    /// against a build with the rule deleted.
+    #[test]
+    fn a_placement_preview_answers_exactly_what_the_placement_will() {
+        use crate::building::{BuildingKind, PlacementError};
+
+        let mut world = World::new(spec(1961));
+        let extent = world.terrain.extent().0;
+        let mut refused_for_the_border = 0;
+
+        for i in 0..=10u32 {
+            for j in 0..=10u32 {
+                let at = Point::new(
+                    Metres(extent * f64::from(i) / 10.0),
+                    Metres(extent * f64::from(j) / 10.0),
+                );
+                let previewed = world.can_place(BuildingKind::Customs, at);
+                if previewed == Err(PlacementError::NotOnTheBorder) {
+                    refused_for_the_border += 1;
+                }
+                let committed = world.place(BuildingKind::Customs, at);
+                match (previewed, committed) {
+                    (Err(p), Err(c)) => {
+                        assert_eq!(p, c, "preview and placement disagree at {at:?}")
+                    }
+                    (Ok(_), Ok(_)) => {}
+                    (p, c) => panic!("preview said {p:?} but placement said {c:?} at {at:?}"),
+                }
+            }
+        }
+
+        assert!(
+            refused_for_the_border > 0,
+            "the sweep never reached a point away from the border, \
+             so agreement was proved about nothing"
+        );
+    }
+
+    /// A save from an older build is refused, not quietly reinterpreted.
+    ///
+    /// `postcard` is not self-describing: an older save is a bare byte sequence
+    /// laid out to an older `World`, so decoding it against today's shape is
+    /// not reliably an error. It can succeed on shifted bytes and hand back a
+    /// world that looks valid and is not — the same silent-corruption failure
+    /// that ruled out `serde_json`. The old code returned `Ok` for every
+    /// version below the current one while its comment claimed there was only
+    /// ever one version.
+    #[test]
+    fn a_save_from_an_older_build_is_refused_rather_than_misread() {
+        let world = World::new(spec(1961));
+        let older = SAVE_VERSION - 1;
+        let expected = SaveError::FromThePast {
+            found: older,
+            supported: SAVE_VERSION,
+        };
+
+        assert_eq!(
+            World::from_save(Save {
+                version: older,
+                world: world.clone(),
+            }),
+            Err(expected.clone()),
+        );
+
+        // And through the bytes, which is the path a shell actually uses.
+        let mut bytes = postcard::to_stdvec(&older).expect("a u32 serializes");
+        bytes.extend_from_slice(&postcard::to_stdvec(&world).expect("a world serializes"));
+        assert_eq!(World::from_bytes(&bytes), Err(expected));
     }
 }

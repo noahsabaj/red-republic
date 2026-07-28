@@ -154,6 +154,19 @@ impl Population {
 
     /// Everyone, **sorted by id**. Every system that walks the population walks
     /// it through here, never through raw query order.
+    ///
+    /// # This allocates and sorts the whole republic
+    ///
+    /// Call it when you need everyone in a defined order, and never inside a
+    /// loop over something else. The baselines have already caught this once:
+    /// the households system called [`Population::residents_of`] — which builds
+    /// this same vector — once per home per tick, and at 4,000 citizens that
+    /// was **212 ms per simulated day against 23 ms** once the work was done in
+    /// one pass. Nothing about the calling code looked wrong.
+    ///
+    /// For a count, an aggregate or a per-building tally there is a single-pass
+    /// method beside this one; for a shell reading it every frame there is no
+    /// excuse at all.
     pub fn records(&self) -> Vec<CitizenRecord> {
         let mut out: Vec<CitizenRecord> = self
             .query
@@ -170,14 +183,20 @@ impl Population {
         out
     }
 
+    /// How many people there are.
+    ///
+    /// Single-pass on purpose: a count does not care what order it counted in,
+    /// so paying for [`Population::records`]'s allocation and sort to read
+    /// `.len()` off the result was pure waste on a method this hot.
     pub fn count(&self) -> usize {
-        self.records().len()
+        self.query.iter_manual(&self.world).count()
     }
 
+    /// How many hold a job. Order-independent, so single-pass.
     pub fn employed(&self) -> usize {
-        self.records()
-            .iter()
-            .filter(|c| c.workplace.0.is_some())
+        self.query
+            .iter_manual(&self.world)
+            .filter(|(_, _, workplace, _, _)| workplace.0.is_some())
             .count()
     }
 
@@ -203,16 +222,20 @@ impl Population {
         counts
     }
 
+    /// How many people work at a building. Order-independent, so single-pass.
     pub fn staff_of(&self, building: BuildingId) -> u32 {
-        self.records()
-            .iter()
-            .filter(|c| c.workplace.0 == Some(building))
+        self.query
+            .iter_manual(&self.world)
+            .filter(|(_, _, workplace, _, _)| workplace.0 == Some(building))
             .count() as u32
     }
 
     /// How many people currently hold a job they can only reach by bus.
     pub fn riders(&self) -> u32 {
-        self.records().iter().filter(|c| c.rides()).count() as u32
+        self.query
+            .iter_manual(&self.world)
+            .filter(|(_, _, _, _, commute)| commute.mode == Mode::Bus)
+            .count() as u32
     }
 
     /// Apply a set of workplace assignments and the journeys they imply.
@@ -747,5 +770,54 @@ mod tests {
             0,
             "nobody commutes from a building that is gone"
         );
+    }
+
+    /// The single-pass counters answer exactly what walking the sorted
+    /// population answers.
+    ///
+    /// `count`, `employed`, `staff_of` and `riders` each built and sorted the
+    /// whole republic to read a number off the end of it. Counting does not
+    /// care what order it counted in, so the sort was pure waste on the hottest
+    /// reads in the crate — but "pure waste" is a claim, and this is the
+    /// assertion that it was only waste and not also the answer.
+    #[test]
+    fn the_single_pass_counters_agree_with_walking_every_record() {
+        let mut b = Buildings::new();
+        let t = ground();
+        let g = coal_at(at(1_000.0, 1_000.0));
+        let home = b
+            .place_built(BuildingKind::Apartment, at(1_000.0, 1_100.0), &t, &g)
+            .expect("housing");
+        let mine = b
+            .place_built(BuildingKind::CoalMine, at(1_000.0, 1_000.0), &t, &g)
+            .expect("a mine on the deposit");
+
+        let mut p = Population::new();
+        for i in 0..12 {
+            p.spawn_citizen(home, 20 + i);
+        }
+        assign_labour(&mut p, &b, &RoadNetwork::new());
+
+        let records = p.records();
+        assert_eq!(p.count(), records.len());
+        assert_eq!(
+            p.employed(),
+            records.iter().filter(|c| c.workplace.0.is_some()).count()
+        );
+        assert_eq!(
+            p.staff_of(mine),
+            records
+                .iter()
+                .filter(|c| c.workplace.0 == Some(mine))
+                .count() as u32
+        );
+        assert_eq!(
+            p.riders(),
+            records.iter().filter(|c| c.rides()).count() as u32
+        );
+
+        // The premise: if nobody ever got hired, three of those four
+        // comparisons are zero against zero and prove nothing.
+        assert!(p.employed() > 0, "nobody was hired, so this proved nothing");
     }
 }

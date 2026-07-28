@@ -117,6 +117,31 @@ impl RoadNetwork {
         self.segments.len()
     }
 
+    /// Every stretch of road laid.
+    ///
+    /// A borrowed slice, the same shape as [`crate::building::Buildings::all`]
+    /// and [`crate::fleet::Fleet::all`], because anything that wants the whole
+    /// network wants all of it at once. Drawing the roads had no cheap path
+    /// before this existed: the only public reads were `node_count`,
+    /// `position_of` and `are_connected`, so a renderer had to test every pair
+    /// of junctions to find out what joined them — quadratic in the size of the
+    /// thing the player builds most of.
+    pub fn segments(&self) -> &[Segment] {
+        &self.segments
+    }
+
+    /// Where a segment runs, in world coordinates.
+    ///
+    /// [`Segment`] carries [`NodeId`]s because that is what routing needs;
+    /// anything drawing it needs points, and resolving them is the one step
+    /// that requires the network the segment came from.
+    pub fn segment_ends(&self, segment: &Segment) -> Option<(Point, Point)> {
+        Some((
+            self.position_of(segment.from)?,
+            self.position_of(segment.to)?,
+        ))
+    }
+
     pub fn position_of(&self, node: NodeId) -> Option<Point> {
         self.nodes.get(node.0 as usize).copied()
     }
@@ -457,5 +482,41 @@ mod tests {
     fn a_road_from_a_junction_to_itself_is_refused() {
         let mut r = straight(2);
         r.connect(NodeId(0), NodeId(0), default_road_speed());
+    }
+
+    /// Every stretch of road is readable, with the points it runs between.
+    ///
+    /// Drawing the network had no cheap path before this: the public reads were
+    /// `node_count`, `position_of` and `are_connected`, so anything rendering
+    /// roads had to test every pair of junctions — quadratic in the thing the
+    /// player builds most of.
+    #[test]
+    fn every_stretch_of_road_reads_back_with_the_points_it_runs_between() {
+        let r = straight(4);
+        assert_eq!(r.segments().len(), r.segment_count());
+        assert_eq!(r.segments().len(), 3);
+
+        for (i, segment) in r.segments().iter().enumerate() {
+            let (from, to) = r.segment_ends(segment).expect("both junctions exist");
+            let step = |n: usize| Point::new(Metres(n as f64 * 1_000.0), Metres(0.0));
+            assert_eq!(from, step(i));
+            assert_eq!(to, step(i + 1));
+            assert_eq!(segment.length, Metres(1_000.0));
+            assert_eq!(segment.speed, default_road_speed());
+        }
+    }
+
+    /// A segment whose junctions are not in this network resolves to nothing
+    /// rather than panicking — the shell will hold segments across a reload.
+    #[test]
+    fn a_segment_from_elsewhere_has_no_ends_here() {
+        let r = straight(2);
+        let stray = Segment {
+            from: NodeId(0),
+            to: NodeId(99),
+            length: Metres(1.0),
+            speed: default_road_speed(),
+        };
+        assert_eq!(r.segment_ends(&stray), None);
     }
 }
