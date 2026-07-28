@@ -338,12 +338,51 @@ impl Building {
         }
     }
 
-    /// Whether every material the site needs has been delivered.
+    /// Whether the materials for the work still to do are on hand.
+    ///
+    /// A site that has been delivered nothing waits — the archived build's
+    /// rule, and what makes freight priority matter during a build-out. But the
+    /// bill is consumed **in step with the work** (see `Mutation::Build`), so a
+    /// site that has had its full bill delivered once must not then read as
+    /// short of it. The requirement falls as the work is done, and the total a
+    /// site consumes over its life is exactly its bill.
+    ///
+    /// This used to demand the whole bill at every moment, which meant a site
+    /// worked for one tick and then stalled until freight topped it back up
+    /// — twice over the bill in total. That was invisible while freight was a
+    /// scalar and a delivery landed the instant it was ranked. With lorries it
+    /// is minutes or hours per top-up, and a build-out slowed to a crawl for a
+    /// reason nothing about the construction code showed.
     pub fn has_materials(&self) -> bool {
-        self.def()
+        // One `def()` lookup, not two: this runs for every building on every
+        // tick of the construction pass, and the table is searched linearly.
+        let def = self.def();
+        let left = self.work_left(def);
+        def.materials
+            .iter()
+            .all(|&(r, q)| self.stock.get(r).0 + 1e-9 >= q * left)
+    }
+
+    /// How much of a material the site still has to be brought.
+    pub fn material_outstanding(&self, resource: Resource) -> Tonnes {
+        let def = self.def();
+        let left = self.work_left(def);
+        let wanted = def
             .materials
             .iter()
-            .all(|&(r, q)| self.stock.get(r).0 >= q)
+            .find(|(r, _)| *r == resource)
+            .map(|&(_, q)| q * left)
+            .unwrap_or(0.0);
+        Tonnes(wanted).saturating_sub(self.stock.get(resource))
+    }
+
+    /// The share of the build still to do, `0.0..=1.0`.
+    fn work_left(&self, def: &BuildingDef) -> f64 {
+        if def.labour <= 0.0 {
+            0.0
+        } else {
+            1.0 - (self.work_done / def.labour).clamp(0.0, 1.0)
+        }
     }
 
     /// How much of its work it can do, `0.0..=1.0`, from staffing alone.
@@ -433,6 +472,16 @@ impl Buildings {
 
     pub fn all(&self) -> &[Building] {
         &self.list
+    }
+
+    /// How many buildings the republic has ever commissioned.
+    ///
+    /// A [`BuildingId`] is drawn from this same sequence, so a building's id
+    /// *is* its place in the commissioning order — which is what lets
+    /// [`crate::roadworks::RoadSite`] take a number from the same run and be
+    /// ranked against buildings by the construction system.
+    pub fn commissioned(&self) -> u64 {
+        u64::from(self.next_id) - 1
     }
 
     pub fn get(&self, id: BuildingId) -> Option<&Building> {

@@ -24,15 +24,19 @@ use crate::building::Buildings;
 use crate::citizen::Population;
 use crate::climate::{self, ClimateId};
 use crate::contract::Contracts;
+use crate::fleet::Destination;
 use crate::fleet::Fleet;
 use crate::geology::Geology;
 use crate::mapgen;
+use crate::resource::Resource;
 use crate::rng::{Rng, RngState};
 use crate::road::RoadNetwork;
+use crate::roadworks::{Grade, RoadError, RoadSiteId, RoadWorks};
 use crate::terrain::{self, Terrain};
 use crate::time::SimClock;
 use crate::trade::{BorderEdge, TradePolicy, Treasury};
 use crate::units::Metres;
+use crate::units::{Point, Tonnes};
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a save can no longer be read by the current code. A load
@@ -41,7 +45,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// 2: the physical fleet. Vehicles are persisted state, so a save written
 /// before they existed no longer describes a whole world.
-pub const SAVE_VERSION: u32 = 2;
+///
+/// 3: roads under construction, and journey legs carrying a speed limit rather
+/// than a flag.
+pub const SAVE_VERSION: u32 = 3;
 
 /// Substream identifier for terrain generation.
 pub const TERRAIN_STREAM: u64 = 2;
@@ -97,6 +104,24 @@ pub struct Save {
     pub world: World,
 }
 
+/// Somewhere a load can be put down, whatever kind of thing it is.
+///
+/// An engine-owned view in the sense the shell decision made load-bearing: the
+/// UI and the dispatcher both read it rather than re-deriving it, and it stays
+/// coarse on purpose.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Consignee {
+    pub at: Point,
+    /// How much of the resource is already there.
+    pub held: Tonnes,
+    /// The most of it this place will take.
+    pub capacity: Tonnes,
+    /// Whether it is a finished building rather than a site still being built.
+    /// A site's need is finite and one-off, which is why freight serves it
+    /// whatever the quantity — see `systems::MIN_LOAD`.
+    pub finished: bool,
+}
+
 /// Everything needed to found a republic. The founding screen's output.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorldSpec {
@@ -134,6 +159,8 @@ pub struct World {
     pub buildings: Buildings,
     /// The roads between them.
     pub roads: RoadNetwork,
+    /// The roads that have been ordered and are not yet drivable.
+    pub roadworks: RoadWorks,
     /// The lorries that move everything, and where each of them is.
     pub fleet: Fleet,
     /// The people.
@@ -182,6 +209,7 @@ impl World {
             geology,
             buildings: Buildings::new(),
             roads: RoadNetwork::new(),
+            roadworks: RoadWorks::new(),
             fleet: Fleet::new(),
             population: Population::new(),
             // One edge per seed, drawn from its own substream so the choice
@@ -239,6 +267,69 @@ impl World {
             return Err(crate::building::PlacementError::NotOnTheBorder);
         }
         self.buildings.place(kind, at, &self.terrain, &self.geology)
+    }
+
+    /// Order a road between two points.
+    ///
+    /// It is a **site**, not a road: nothing routes over it, nothing commutes
+    /// along it, and no lorry is quicker for its existing until the crew have
+    /// finished it and the gravel has been driven out.
+    ///
+    /// Both ends have to be on ground that will take a road. What happens in
+    /// between is deliberately not checked yet — a road across water is a
+    /// bridge, and a bridge is a decision this build has not made.
+    pub fn order_road(
+        &mut self,
+        from: Point,
+        to: Point,
+        grade: Grade,
+    ) -> Result<RoadSiteId, RoadError> {
+        for end in [from, to] {
+            if !self
+                .terrain
+                .surface_at(end)
+                .is_some_and(|s| s.is_buildable())
+            {
+                return Err(RoadError::Unbuildable);
+            }
+        }
+        // Where this sits in the republic's commissioning order. Buildings are
+        // ranked by their own id, which counts the same sequence — so a road
+        // takes the count as it stands, meaning "after everything standing
+        // now", and the construction system breaks the tie in the buildings'
+        // favour because the building with that number was ordered first.
+        let ordered = self.buildings.commissioned();
+        self.roadworks.order(from, to, grade, ordered)
+    }
+
+    /// What dispatch needs to know about somewhere goods can go.
+    ///
+    /// One view over two different structures, which is the point: the ranking,
+    /// the load minimum and the delivery all ask the same four questions of a
+    /// building and of a road site, and neither should have to know which it is
+    /// looking at.
+    pub fn consignee(&self, to: Destination, resource: Resource) -> Option<Consignee> {
+        match to {
+            Destination::Building(id) => {
+                let b = self.buildings.get(id)?;
+                Some(Consignee {
+                    at: b.centre,
+                    held: b.stock.get(resource),
+                    capacity: b.intake_capacity(resource),
+                    finished: b.is_built(),
+                })
+            }
+            Destination::RoadSite(id) => {
+                let s = self.roadworks.get(id)?;
+                Some(Consignee {
+                    at: s.depot(),
+                    held: s.stock.get(resource),
+                    capacity: s.intake_capacity(resource),
+                    // Always a site: it stops existing the moment it is not.
+                    finished: false,
+                })
+            }
+        }
     }
 
     /// The same, already finished — the founding grant.

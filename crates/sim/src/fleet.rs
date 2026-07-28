@@ -38,6 +38,7 @@
 use crate::building::{Building, BuildingId};
 use crate::journey::Journey;
 use crate::resource::{Resource, Stock};
+use crate::roadworks::RoadSiteId;
 use crate::units::{Metres, Point, Speed, Tonnes};
 use serde::{Deserialize, Serialize};
 
@@ -140,11 +141,26 @@ pub enum VehicleState {
     Returning,
 }
 
+/// Somewhere goods can be delivered.
+///
+/// Freight used to reach only buildings, which was fine while roads appeared by
+/// someone calling `connect`. A road under construction is a site with a bill of
+/// materials like any other, and the gravel has to be *driven* to it — so the
+/// delivery half of the simulation has to be able to name one.
+///
+/// Goods are never collected *from* a road site, which is why [`Job::from`] is
+/// still a plain [`BuildingId`]: a site is a place work goes into, not a yard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Destination {
+    Building(BuildingId),
+    RoadSite(RoadSiteId),
+}
+
 /// A haul: take this much of this, from here to there.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Job {
     pub from: BuildingId,
-    pub to: BuildingId,
+    pub to: Destination,
     pub resource: Resource,
     pub tonnes: Tonnes,
 }
@@ -186,12 +202,13 @@ impl Vehicle {
         self.def().capacity.saturating_sub(self.cargo.total())
     }
 
-    /// The speed it makes on the leg it is currently driving.
+    /// The speed it makes on the leg it is currently driving — its own pace,
+    /// capped by whatever the road under it allows.
     pub fn leg_speed(&self) -> Speed {
         let def = self.def();
         match &self.journey {
-            Some(j) if j.leg_on_road() => def.on_road,
-            _ => def.cross_country,
+            Some(j) => j.leg_speed(def.on_road, def.cross_country),
+            None => Speed::ZERO,
         }
     }
 }

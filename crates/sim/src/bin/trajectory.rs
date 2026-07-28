@@ -73,6 +73,24 @@ fn main() {
     // Sell surplus coal east; that is how a republic earns anything.
     world.trade_policy = red_republic_sim::trade::TradePolicy::new()
         .sell(Resource::Coal, red_republic_sim::trade::Market::East);
+    // And order a track out to the crossing, which is the one long haul a
+    // founded republic makes. A dirt track because there is no gravel quarry
+    // in the founding — the cheapest road there is, and still weeks of the
+    // crew's time, which is the trade the column below is here to show.
+    if let Some(customs) = base.customs {
+        let crossing = world.buildings.get(customs).expect("just founded").centre;
+        match world.order_road(
+            base.centre,
+            crossing,
+            red_republic_sim::roadworks::Grade::Dirt,
+        ) {
+            Ok(_) => println!(
+                "ordered a dirt track to the crossing: {:.1} km",
+                base.centre.distance_to(crossing).as_km()
+            ),
+            Err(why) => println!("no track to the crossing: {why:?}"),
+        }
+    }
     println!(
         "coal in the ground at founding: {:.0} t",
         world
@@ -82,7 +100,7 @@ fn main() {
     );
     println!();
     println!(
-        "{:>10} {:>4} {:>5} {:>5} {:>6} {:>5} {:>8} {:>8} {:>6} {:>8} {:>7} {:>10} {:>9} {:>4}",
+        "{:>10} {:>4} {:>5} {:>5} {:>6} {:>5} {:>8} {:>8} {:>6} {:>8} {:>7} {:>8} {:>10} {:>9} {:>4}",
         "date",
         "pop",
         "empl",
@@ -94,6 +112,7 @@ fn main() {
         "fuel",
         "moved",
         "lorries",
+        "road km",
         "coal left",
         "roubles",
         "dark"
@@ -172,7 +191,7 @@ fn main() {
         };
 
         println!(
-            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>6.1} {:>4.0}% {:>8.0} {:>8.1} {:>6.2} {:>8.0} {:>3}/{:<3} {:>10.0} {:>9.0} {:>4}",
+            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>6.1} {:>4.0}% {:>8.0} {:>8.1} {:>6.2} {:>8.0} {:>3}/{:<3} {:>8} {:>10.0} {:>9.0} {:>4}",
             date.year,
             date.month,
             date.day,
@@ -187,6 +206,15 @@ fn main() {
             moved.0,
             world.fleet.running(),
             world.fleet.len(),
+            if world.roadworks.is_empty() {
+                format!("{:.1}", world.roads.total_length().as_km())
+            } else {
+                format!(
+                    "{:.1}+{}",
+                    world.roads.total_length().as_km(),
+                    world.roadworks.len()
+                )
+            },
             world
                 .geology
                 .remaining_of(red_republic_sim::geology::Mineral::Coal)

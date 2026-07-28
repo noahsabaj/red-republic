@@ -16,7 +16,7 @@ Every file gets one of four dispositions:
 - **Not yet** — a real gap. Nothing here is blocked; each is work that has not
   been done, and saying so is the point of writing the list down.
 
-Counts: **19 ported, 12 superseded, 10 n/a, 9 not yet.**
+Counts: **20 ported, 11 superseded, 10 n/a, 9 not yet.**
 
 ---
 
@@ -33,6 +33,7 @@ Counts: **19 ported, 12 superseded, 10 n/a, 9 not yet.**
 | `integer-quantities.test.ts` | Enforced by construction rather than tested: `units::Tonnes` is continuous throughout, and wholeness is an edge property. |
 | `logistics.test.ts` | `systems::dispatch`, `systems::serve`. |
 | `fleet.test.ts` | `fleet.rs`, `journey.rs`, `systems::fleet`, `systems::commissioning`. Two 1.x rules carried and the rest re-derived: **garages own vehicles** (a Motor Depot's establishment is authored on `BuildingDef`, and `crewed` says how many have drivers) and **a vehicle never accepts a job it cannot finish** (the round trip is priced at dispatch, so running dry is a refusal in the yard). Speeds are real km/h rather than 1.x's road-tile-equivalents per day. |
+| `roads.test.ts` | `roadworks.rs`, `systems::construction`, `Mutation::Lay`. The 1.x lifecycle — order, gravel delivered, crew, and **not drivable until complete** — is ported whole; what is superseded is the tile it produced, since a finished road here becomes graph segments with junctions along its length. Grades are authored and a journey leg carries the road's speed limit, so a dirt track and tarmac are a real choice 1.x did not have. **Not** ported from that file: bulldozing a site and refunding its stock, instant-build-by-import, and the site-versus-building placement collision — all of which need a per-site build policy or a demolition model this build has neither of. |
 | `mapgen-sizes.test.ts` | `founding::SIZES`, now named in kilometres rather than tile counts. |
 | `mapgen-snapshot.test.ts` | `mapgen::tests::generated_geology_is_pinned_across_machines` and `terrain::tests::generated_ground_is_pinned_across_machines`. Same role, and the same rule: never re-pin to make a change pass. |
 | `mapgen.test.ts` | `mapgen.rs`, `terrain.rs`. |
@@ -53,7 +54,6 @@ Counts: **19 ported, 12 superseded, 10 n/a, 9 not yet.**
 | `deposits.test.ts` | `geology.rs`. Tile-visible deposits are gone; a deposit is a 3D body a mine *taps*, read through a survey. |
 | `pathfind.test.ts`, `pathfind-bounded.test.ts` | `road.rs`. A grid flood over a million cells was never going to survive metric scale; routing is a graph over what the player built. |
 | `topology.test.ts`, `topology-cache-regressions.test.ts` | Same. The caches existed to make grid floods affordable. |
-| `roads.test.ts` | `road.rs`. Roads are a graph, not tiles that become road. |
 | `weather-sim.test.ts` | `climate.rs`, partially — temperature is carried over because heating depends on it. Conditions, snow depth and river ice are **not yet** (below). |
 | `helpers.ts`, `campaign.ts` | `scenario::found`, and the `bare()` fixture in `systems`. |
 | `tilemap-cache.test.ts` | Nothing. It tested the offscreen rasteriser whose 16,384 px dimension cap is one of the things that ended 1.x. |

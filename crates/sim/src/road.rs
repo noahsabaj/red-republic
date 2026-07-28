@@ -152,6 +152,36 @@ impl RoadNetwork {
             .fold(Metres::ZERO, |acc, s| acc + s.length)
     }
 
+    /// The junction at a point, reusing one already within `merge`.
+    ///
+    /// This is what stops every road being an island: two roads ordered end to
+    /// end meet because the second one finds the first one's junction rather
+    /// than laying a new node a metre away from it.
+    pub fn junction_at(&mut self, at: Point, merge: Metres) -> NodeId {
+        match self.nearest_node(at, merge) {
+            Some(existing) => existing,
+            None => self.add_node(at),
+        }
+    }
+
+    /// Whether these two junctions already have road between them.
+    pub fn are_connected(&self, a: NodeId, b: NodeId) -> bool {
+        self.adjacency
+            .get(a.0 as usize)
+            .is_some_and(|links| links.iter().any(|&(other, _)| other == b))
+    }
+
+    /// The speed limit on the road between two adjacent junctions, if there is
+    /// road between them. Where two run in parallel, the quicker one.
+    pub fn speed_between(&self, a: NodeId, b: NodeId) -> Option<Speed> {
+        self.adjacency
+            .get(a.0 as usize)?
+            .iter()
+            .filter(|&&(other, _)| other == b)
+            .map(|&(_, segment)| self.segments[segment].speed)
+            .max_by(|x, y| x.as_mps().total_cmp(&y.as_mps()))
+    }
+
     /// The junction nearest a point, if one is within `within`.
     ///
     /// Ties break on the lower id so two junctions the same distance away

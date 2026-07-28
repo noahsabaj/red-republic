@@ -29,11 +29,12 @@ use crate::building::{BuildingId, BuildingKind};
 use crate::citizen::assign_labour;
 use crate::climate;
 use crate::contract::{self, Contract, ContractId, ContractState};
-use crate::fleet::{Job, VehicleId, VehicleKind, VehicleState, crewed};
+use crate::fleet::{Destination, Job, VehicleId, VehicleKind, VehicleState, crewed};
 use crate::geology::DepositId;
 use crate::journey::{self, Journey};
 use crate::resource::Resource;
 use crate::resource::Stock;
+use crate::roadworks::{self, RoadSiteId};
 use crate::time::TICK;
 use crate::trade::{CUSTOMS_RANGE, CUSTOMS_THROUGHPUT_PER_DAY, Market, TradeAction};
 use crate::transport;
@@ -122,7 +123,7 @@ pub enum Mutation {
     /// conserved, and it comes off in the garage yard.
     Unload {
         vehicle: VehicleId,
-        to: BuildingId,
+        to: Destination,
         resource: Resource,
         tonnes: Tonnes,
         journey: Journey,
@@ -161,6 +162,15 @@ pub enum Mutation {
     /// One kind: work and materials are the same transaction, and a site that
     /// advanced without consuming would be building itself out of nothing.
     Build { site: BuildingId, builder_days: f64 },
+    /// The same, on a road.
+    ///
+    /// Separate from [`Mutation::Build`] because it writes to a different
+    /// structure, and because its last builder-day does something a building's
+    /// never does: **the road opens**. The segments enter the network and the
+    /// site stops existing, in the same transaction, because a finished road
+    /// site that is not yet a road is not a state the simulation should be able
+    /// to hold.
+    Lay { site: RoadSiteId, builder_days: f64 },
     /// A bloc puts a tender on the table.
     Offer(Contract),
     /// A tender reaches its end, one way or the other.
@@ -203,6 +213,7 @@ pub enum MutationKind {
     Export,
     Import,
     Build,
+    Lay,
     Offer,
     CloseContract,
     DropContract,
@@ -229,6 +240,7 @@ impl Mutation {
             Mutation::Export { .. } => MutationKind::Export,
             Mutation::Import { .. } => MutationKind::Import,
             Mutation::Build { .. } => MutationKind::Build,
+            Mutation::Lay { .. } => MutationKind::Lay,
             Mutation::Offer(_) => MutationKind::Offer,
             Mutation::CloseContract { .. } => MutationKind::CloseContract,
             Mutation::DropContract { .. } => MutationKind::DropContract,
@@ -249,7 +261,7 @@ impl Mutation {
 pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
     ("power", &[MutationKind::Powered]),
     ("heating", &[MutationKind::Heated, MutationKind::Consume]),
-    ("construction", &[MutationKind::Build]),
+    ("construction", &[MutationKind::Build, MutationKind::Lay]),
     (
         "production",
         &[
@@ -441,6 +453,31 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     b.work_done += worked;
                 }
             }
+            &Mutation::Lay { site, builder_days } => {
+                let Some(road) = world.roadworks.get(site) else {
+                    continue;
+                };
+                let labour = road.labour();
+                if labour <= 0.0 {
+                    continue;
+                }
+                let worked = builder_days.min((labour - road.work_done).max(0.0));
+                // Materials go in step with the work, exactly as on a building.
+                let bill = road.materials();
+                let share = worked / labour;
+                if let Some(road) = world.roadworks.get_mut(site) {
+                    for (resource, quantity) in bill {
+                        road.stock.take(resource, Tonnes(quantity.0 * share));
+                    }
+                    road.work_done += worked;
+                }
+                // And the last builder-day opens it.
+                if world.roadworks.get(site).is_some_and(|r| r.is_finished())
+                    && let Some(opened) = world.roadworks.remove(site)
+                {
+                    roadworks::open(&mut world.roads, &opened);
+                }
+            }
             &Mutation::Commission { garage, kind } => {
                 if let Some(yard) = world.buildings.get(garage).map(|b| b.centre) {
                     world.fleet.commission(kind, garage, yard);
@@ -527,17 +564,25 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     .get(*vehicle)
                     .map(|v| v.cargo.get(*resource))
                     .unwrap_or(Tonnes::ZERO);
-                let landed = if let Some(b) = world.buildings.get_mut(*to) {
-                    let room = b
-                        .intake_capacity(*resource)
-                        .saturating_sub(b.stock.get(*resource));
-                    let landed = tonnes.min(aboard).min(room);
-                    b.stock.add(*resource, landed);
-                    landed
-                } else {
-                    Tonnes::ZERO
+                let Some(consignee) = world.consignee(*to, *resource) else {
+                    continue;
                 };
-                let bay = world.buildings.get(*to).map(|b| b.centre);
+                let landed = tonnes
+                    .min(aboard)
+                    .min(consignee.capacity.saturating_sub(consignee.held));
+                match *to {
+                    Destination::Building(id) => {
+                        if let Some(b) = world.buildings.get_mut(id) {
+                            b.stock.add(*resource, landed);
+                        }
+                    }
+                    Destination::RoadSite(id) => {
+                        if let Some(road) = world.roadworks.get_mut(id) {
+                            road.stock.add(*resource, landed);
+                        }
+                    }
+                }
+                let bay = Some(consignee.at);
                 if let Some(v) = world.fleet.get_mut(*vehicle) {
                     v.fuel = v.fuel.saturating_sub(*burn);
                     v.cargo.take(*resource, landed);
@@ -799,28 +844,48 @@ pub fn construction(world: &World) -> Vec<Mutation> {
         return Vec::new();
     }
 
-    let mut sites: Vec<_> = world
-        .buildings
-        .all()
-        .iter()
-        .filter(|b| !b.is_built() && b.has_materials())
-        .collect();
-    sites.sort_by_key(|b| b.id);
+    // Buildings and roads, ranked together. A building's id *is* its place in
+    // the commissioning order; a road site carries the count as it stood when
+    // it was ordered, and ties go to the building because the building holding
+    // that number was placed first. Ordering a road therefore takes its turn in
+    // the queue like anything else, rather than jumping it or waiting behind
+    // every factory in the republic.
+    let mut sites: Vec<(u64, Destination, f64)> = Vec::new();
+    for b in world.buildings.all() {
+        if b.is_built() || !b.has_materials() {
+            continue;
+        }
+        let remaining = (b.def().labour - b.work_done).max(0.0);
+        sites.push((u64::from(b.id.0), Destination::Building(b.id), remaining));
+    }
+    for road in world.roadworks.all() {
+        if !road.has_materials() {
+            continue;
+        }
+        let remaining = (road.labour() - road.work_done).max(0.0);
+        sites.push((road.ordered, Destination::RoadSite(road.id), remaining));
+    }
+    sites.sort_by(|(oa, da, _), (ob, db, _)| oa.cmp(ob).then_with(|| da.cmp(db)));
 
     let mut out = Vec::new();
-    for site in sites {
+    for (_, site, wanted) in sites {
         if crew <= 0.0 {
             break;
         }
-        let wanted = (site.def().labour - site.work_done).max(0.0);
         let days = crew.min(BUILDERS_PER_SITE * day).min(wanted);
         if days <= 0.0 {
             continue;
         }
         crew -= days;
-        out.push(Mutation::Build {
-            site: site.id,
-            builder_days: days,
+        out.push(match site {
+            Destination::Building(id) => Mutation::Build {
+                site: id,
+                builder_days: days,
+            },
+            Destination::RoadSite(id) => Mutation::Lay {
+                site: id,
+                builder_days: days,
+            },
         });
     }
     out
@@ -1392,13 +1457,13 @@ pub fn dispatch(world: &World) -> Vec<Mutation> {
     let mut out = Vec::new();
 
     // Pass one: needs that prevent real downtime, worst cover first.
-    let mut urgent: Vec<(f64, BuildingId, Resource)> = Vec::new();
+    let mut urgent: Vec<(f64, Destination, Resource)> = Vec::new();
     for b in world.buildings.all() {
         for &(resource, _) in b.def().inputs {
             if let Some(days) = cover_days(world, b.id, resource)
                 && days < RESUPPLY_AT_DAYS
             {
-                urgent.push((days, b.id, resource));
+                urgent.push((days, Destination::Building(b.id), resource));
             }
         }
     }
@@ -1425,7 +1490,7 @@ pub fn dispatch(world: &World) -> Vec<Mutation> {
     // Shops, ranked emptiest first. This sits in the urgent pass because a
     // shop running dry is a republic that stops eating, which outranks any
     // factory stalling.
-    let mut shops: Vec<(f64, BuildingId, Resource)> = Vec::new();
+    let mut shops: Vec<(f64, Destination, Resource)> = Vec::new();
     for b in world.buildings.all() {
         if !b.is_built() {
             continue;
@@ -1437,7 +1502,7 @@ pub fn dispatch(world: &World) -> Vec<Mutation> {
                 1.0
             };
             if fill < 1.0 {
-                shops.push((fill, b.id, resource));
+                shops.push((fill, Destination::Building(b.id), resource));
             }
         }
     }
@@ -1463,14 +1528,23 @@ pub fn dispatch(world: &World) -> Vec<Mutation> {
     // Pass one and a half: sites waiting on materials. A site with nothing
     // arriving is a crew standing idle, so this sits above comfortable
     // top-ups but below a running building about to stall.
-    let mut sites: Vec<(BuildingId, Resource)> = Vec::new();
+    let mut sites: Vec<(Destination, Resource)> = Vec::new();
     for b in world.buildings.all() {
         if b.is_built() {
             continue;
         }
-        for &(resource, quantity) in b.def().materials {
-            if b.stock.get(resource).0 < quantity {
-                sites.push((b.id, resource));
+        for &(resource, _) in b.def().materials {
+            if b.material_outstanding(resource).is_positive() {
+                sites.push((Destination::Building(b.id), resource));
+            }
+        }
+    }
+    // A road under construction wants its gravel driven out to it like any
+    // other site, and this is the pass where that happens.
+    for road in world.roadworks.all() {
+        for (resource, _) in road.materials() {
+            if road.material_outstanding(resource).is_positive() {
+                sites.push((Destination::RoadSite(road.id), resource));
             }
         }
     }
@@ -1515,19 +1589,26 @@ pub fn dispatch(world: &World) -> Vec<Mutation> {
                 if idle.is_empty() {
                     break;
                 }
-                serve(world, house, resource, &mut idle, &mut booked, &mut out);
+                serve(
+                    world,
+                    Destination::Building(house),
+                    resource,
+                    &mut idle,
+                    &mut booked,
+                    &mut out,
+                );
             }
         }
     }
 
     // Pass two: comfortable top-ups, on what the first pass left.
-    let mut comfortable: Vec<(BuildingId, Resource)> = Vec::new();
+    let mut comfortable: Vec<(Destination, Resource)> = Vec::new();
     for b in world.buildings.all() {
         for &(resource, _) in b.def().inputs {
             if let Some(days) = cover_days(world, b.id, resource)
                 && days >= RESUPPLY_AT_DAYS
             {
-                comfortable.push((b.id, resource));
+                comfortable.push((Destination::Building(b.id), resource));
             }
         }
     }
@@ -1592,7 +1673,7 @@ fn available(world: &World) -> Vec<VehicleId> {
 #[derive(Default)]
 struct Booked {
     /// Promised to a destination but not yet delivered.
-    incoming: BTreeMap<(BuildingId, Resource), Tonnes>,
+    incoming: BTreeMap<(Destination, Resource), Tonnes>,
     /// Spoken for at a supplier but not yet collected.
     promised: BTreeMap<(BuildingId, Resource), Tonnes>,
     /// Fuel already drawn from each garage during this pass.
@@ -1623,12 +1704,12 @@ impl Booked {
         booked
     }
 
-    fn reserve(&mut self, from: BuildingId, to: BuildingId, resource: Resource, tonnes: Tonnes) {
+    fn reserve(&mut self, from: BuildingId, to: Destination, resource: Resource, tonnes: Tonnes) {
         *self.incoming.entry((to, resource)).or_default() += tonnes;
         *self.promised.entry((from, resource)).or_default() += tonnes;
     }
 
-    fn incoming(&self, to: BuildingId, resource: Resource) -> Tonnes {
+    fn incoming(&self, to: Destination, resource: Resource) -> Tonnes {
         self.incoming
             .get(&(to, resource))
             .copied()
@@ -1656,13 +1737,13 @@ impl Booked {
 /// Find the nearest surplus, and the nearest lorry that can fetch it.
 fn serve(
     world: &World,
-    destination: BuildingId,
+    destination: Destination,
     resource: Resource,
     idle: &mut Vec<VehicleId>,
     booked: &mut Booked,
     out: &mut Vec<Mutation>,
 ) {
-    let Some(to) = world.buildings.get(destination) else {
+    let Some(to) = world.consignee(destination, resource) else {
         return;
     };
     // A site's bill of materials can exceed its finished storage bin — a steel
@@ -1670,8 +1751,8 @@ fn serve(
     // but a smaller building could easily need more than it will ever store.
     // Capping a site by its bin would stall it forever.
     let room = to
-        .intake_capacity(resource)
-        .saturating_sub(to.stock.get(resource))
+        .capacity
+        .saturating_sub(to.held)
         .saturating_sub(booked.incoming(destination, resource));
     if !room.is_positive() {
         return;
@@ -1683,12 +1764,12 @@ fn serve(
         .buildings
         .all()
         .iter()
-        .filter(|b| b.id != destination)
+        .filter(|b| Destination::Building(b.id) != destination)
         .filter(|b| !b.def().inputs.iter().any(|(r, _)| *r == resource))
         .filter(|b| !b.def().sells.contains(&resource))
         .map(|b| {
             (
-                b.centre.distance_to(to.centre).0,
+                b.centre.distance_to(to.at).0,
                 b.id,
                 b.stock
                     .get(resource)
@@ -1699,7 +1780,7 @@ fn serve(
         .collect();
     suppliers.sort_by(|(da, ia, _), (db, ib, _)| da.total_cmp(db).then_with(|| ia.cmp(ib)));
 
-    let drop_at = to.centre;
+    let drop_at = to.at;
     let now = world.clock.ticks() as f64;
 
     // Nearest first, but **not nearest only**. A yard with a few kilograms left
@@ -1726,7 +1807,7 @@ fn serve(
         let wanted = spare.min(room);
         let yard_full = supplier.stock.get(resource).0 + 1e-9 >= supplier.storage_cap().0;
         let clears_the_yard = yard_full && wanted.0 + 1e-9 >= spare.0;
-        if wanted.0 < MIN_LOAD.0 && to.is_built() && !clears_the_yard {
+        if wanted.0 < MIN_LOAD.0 && to.finished && !clears_the_yard {
             continue;
         }
 
@@ -1754,7 +1835,7 @@ fn serve(
 #[allow(clippy::too_many_arguments)]
 fn dispatch_one(
     world: &World,
-    destination: BuildingId,
+    destination: Destination,
     resource: Resource,
     from: BuildingId,
     load_at: Point,
@@ -1865,12 +1946,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
         let burn = v.fuel_for(journey.leg_distance());
 
         if !journey.on_last_leg() {
-            let speed = if journey.on_road[journey.leg as usize + 1] {
-                def.on_road
-            } else {
-                def.cross_country
-            };
-            let (leg, leg_start, leg_end) = journey.next_leg(speed);
+            let (leg, leg_start, leg_end) = journey.next_leg(def.on_road, def.cross_country);
             out.push(Mutation::Advance {
                 vehicle: v.id,
                 leg,
@@ -1918,7 +1994,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                 let tonnes = job.tonnes.min(held).min(v.spare_capacity());
                 // A yard emptied since the job was booked sends the lorry home
                 // rather than on to a destination it has nothing for.
-                let onto = world.buildings.get(job.to).map(|b| b.centre);
+                let onto = world.consignee(job.to, job.resource).map(|c| c.at);
                 let (state, next) = match (tonnes.is_positive(), onto) {
                     (true, Some(target)) => (VehicleState::Delivering, target),
                     _ => (VehicleState::Returning, yard),
@@ -1938,12 +2014,8 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                     continue;
                 };
                 let room = world
-                    .buildings
-                    .get(job.to)
-                    .map(|b| {
-                        b.intake_capacity(job.resource)
-                            .saturating_sub(b.stock.get(job.resource))
-                    })
+                    .consignee(job.to, job.resource)
+                    .map(|c| c.capacity.saturating_sub(c.held))
                     .unwrap_or(Tonnes::ZERO);
                 out.push(Mutation::Unload {
                     vehicle: v.id,
@@ -2356,7 +2428,11 @@ mod tests {
         let jobs = dispatch(&w);
         match jobs.first().expect("something should be dispatched") {
             Mutation::Dispatch { job, .. } => {
-                assert_eq!(job.to, starving, "the empty mill should be served first");
+                assert_eq!(
+                    job.to,
+                    Destination::Building(starving),
+                    "the empty mill should be served first"
+                );
                 assert_eq!(job.resource, Resource::Wood);
                 assert_eq!(job.from, store, "the wood should come from the warehouse");
             }
@@ -2562,7 +2638,7 @@ mod tests {
                 },
                 Mutation::Unload {
                     vehicle: lorry,
-                    to,
+                    to: Destination::Building(to),
                     resource: Resource::Wood,
                     tonnes: Tonnes(8.0),
                     journey: nowhere,
@@ -3154,7 +3230,7 @@ mod tests {
         for _ in 0..TICKS_PER_DAY {
             for m in w.tick() {
                 if let Mutation::Dispatch { job, .. } = &m
-                    && job.to == mill
+                    && job.to == Destination::Building(mill)
                 {
                     sent += 1;
                 }
@@ -3244,7 +3320,7 @@ mod tests {
         let jobs = dispatch(&w);
         match jobs.first() {
             Some(Mutation::Dispatch { job, .. }) => {
-                assert_eq!(job.to, mill);
+                assert_eq!(job.to, Destination::Building(mill));
                 assert_eq!(
                     job.from, further_off,
                     "the dispatcher stopped at the yard that could not fill a lorry"
@@ -3252,6 +3328,177 @@ mod tests {
             }
             other => panic!("the mill was left short of wood: {other:?}"),
         }
+    }
+
+    // ---- Roads ----
+
+    /// The whole loop, and the last free thing in the simulation being paid
+    /// for: a road is ordered, gravel is *driven* out to it by the same lorries
+    /// that carry everything else, the crew lay it, and only then does anything
+    /// drive on it.
+    #[test]
+    fn a_road_is_ordered_materialled_laid_and_only_then_drivable() {
+        let mut w = bare();
+        haulage(&mut w, at(1_000.0, 700.0));
+        place(
+            &mut w,
+            BuildingKind::ConstructionOffice,
+            at(1_000.0, 1_150.0),
+        );
+        staff_up(&mut w, at(1_000.0, 1_300.0), 20);
+        let yard = place(&mut w, BuildingKind::Warehouse, at(1_000.0, 1_000.0));
+        w.buildings
+            .get_mut(yard)
+            .unwrap()
+            .stock
+            .add(Resource::Gravel, Tonnes(200.0));
+
+        let ends = (at(1_400.0, 1_000.0), at(2_400.0, 1_000.0));
+        let road = w
+            .order_road(ends.0, ends.1, roadworks::Grade::Gravel)
+            .expect("flat open ground");
+
+        // An ordered road is not a road. Nothing routes over it and nothing is
+        // any quicker for it existing.
+        assert_eq!(w.roads.segment_count(), 0, "an ordered road is drivable");
+        assert!(
+            w.roadworks.get(road).unwrap().material(Resource::Gravel) > Tonnes::ZERO,
+            "a gravel road that needs no gravel"
+        );
+
+        let mut delivered = false;
+        for _ in 0..TICKS_PER_DAY * 30 {
+            w.tick();
+            delivered |= w
+                .roadworks
+                .get(road)
+                .is_some_and(|r| r.stock.get(Resource::Gravel).is_positive());
+            if w.roadworks.get(road).is_none() {
+                break;
+            }
+        }
+
+        assert!(delivered, "no gravel was ever driven out to the site");
+        assert!(
+            w.roadworks.get(road).is_none(),
+            "the road never opened: {:.0}% built",
+            w.roadworks
+                .get(road)
+                .map_or(100.0, |r| r.progress() * 100.0)
+        );
+        // The gravel came out of a yard rather than out of nowhere.
+        assert!(
+            w.buildings.get(yard).unwrap().stock.get(Resource::Gravel) < Tonnes(200.0),
+            "the road was surfaced with gravel nobody moved"
+        );
+        // And it is a road now: junctions along its length, joined end to end.
+        assert_eq!(w.roads.segment_count(), 5, "a kilometre at 200 m a segment");
+        let a = w.roads.nearest_node(ends.0, Metres(30.0)).expect("start");
+        let b = w.roads.nearest_node(ends.1, Metres(30.0)).expect("end");
+        assert!(w.roads.route(a, b).is_some(), "the two ends are not joined");
+    }
+
+    /// The queue is one queue. A road ordered before a factory is laid before
+    /// the factory goes up, and a road ordered after it waits its turn.
+    #[test]
+    fn the_crew_works_roads_and_buildings_in_the_order_they_were_ordered() {
+        let worked = |road_first: bool| -> (f64, f64) {
+            let mut w = bare();
+            place(
+                &mut w,
+                BuildingKind::ConstructionOffice,
+                at(1_000.0, 1_000.0),
+            );
+            staff_up(&mut w, at(1_000.0, 1_150.0), 20);
+
+            let order_the_road = |w: &mut World| {
+                w.order_road(
+                    at(1_500.0, 1_000.0),
+                    at(2_500.0, 1_000.0),
+                    // Dirt, so the only thing deciding is the queue rather than
+                    // which site happened to have its gravel first.
+                    roadworks::Grade::Dirt,
+                )
+                .expect("flat open ground")
+            };
+            let place_the_site = |w: &mut World| {
+                let id = w
+                    .buildings
+                    .place(
+                        BuildingKind::Warehouse,
+                        at(1_000.0, 1_400.0),
+                        &w.terrain,
+                        &w.geology,
+                    )
+                    .expect("open ground");
+                for &(resource, quantity) in BuildingKind::Warehouse.def().materials {
+                    w.buildings
+                        .get_mut(id)
+                        .unwrap()
+                        .stock
+                        .add(resource, Tonnes(quantity));
+                }
+                id
+            };
+
+            let (road, site) = if road_first {
+                let road = order_the_road(&mut w);
+                (road, place_the_site(&mut w))
+            } else {
+                let site = place_the_site(&mut w);
+                (order_the_road(&mut w), site)
+            };
+
+            for _ in 0..TICKS_PER_DAY {
+                w.tick();
+            }
+            (
+                w.roadworks.get(road).map_or(f64::INFINITY, |r| r.work_done),
+                w.buildings.get(site).unwrap().work_done,
+            )
+        };
+
+        let (road, building) = worked(true);
+        assert!(
+            road > 0.0 && building == 0.0,
+            "the road was ordered first and got {road} days against the building's {building}"
+        );
+        let (road, building) = worked(false);
+        assert!(
+            building > 0.0 && road == 0.0,
+            "the building was ordered first and got {building} days against the road's {road}"
+        );
+    }
+
+    /// A site with no materials waits, exactly as a building does — and does
+    /// not quietly get laid out of nothing.
+    #[test]
+    fn a_road_with_no_gravel_stands_unlaid() {
+        let mut w = bare();
+        place(
+            &mut w,
+            BuildingKind::ConstructionOffice,
+            at(1_000.0, 1_000.0),
+        );
+        staff_up(&mut w, at(1_000.0, 1_150.0), 20);
+        let road = w
+            .order_road(
+                at(1_500.0, 1_000.0),
+                at(2_500.0, 1_000.0),
+                roadworks::Grade::Gravel,
+            )
+            .expect("flat open ground");
+
+        // No quarry, no warehouse, no gravel anywhere in the republic.
+        for _ in 0..TICKS_PER_DAY * 20 {
+            w.tick();
+        }
+        assert_eq!(
+            w.roadworks.get(road).expect("still a site").work_done,
+            0.0,
+            "a gravel road was laid without gravel"
+        );
+        assert_eq!(w.roads.segment_count(), 0);
     }
 
     /// The consequence the whole ground-movement model exists to create: the
@@ -3565,22 +3812,20 @@ mod tests {
             Point::new(centre.x, centre.y + Metres(700.0)),
         );
 
-        // And a bus route to somewhere out of walking range, so the labour pass
-        // actually spends seats and burns a depot's fuel. Without this the
-        // republic is compact enough that nobody ever rides, and `labour`'s
-        // declared Consume would look like a superset when it is not.
-        let mut previous = world.roads.add_node(centre);
-        for i in 1..=8 {
-            let next = world.roads.add_node(Point::new(
-                centre.x + Metres(f64::from(i) * 400.0),
-                centre.y,
-            ));
-            world
-                .roads
-                .connect(previous, next, crate::road::default_road_speed());
-            previous = next;
-        }
+        // And a road out to somewhere beyond walking range, **ordered rather
+        // than conjured**: the crew has to lay it before anything can use it,
+        // which is what makes `construction`'s declared `Lay` reachable. A dirt
+        // track because a founded republic has no gravel quarry, so anything
+        // dearer would sit unbuilt for ever and prove nothing.
+        //
+        // Once it opens the labour pass has somewhere out of walking range to
+        // send people, so seats get spent and a bus depot's fuel gets burnt —
+        // without which `labour`'s declared Consume looks like a superset when
+        // it is not.
         let far = Point::new(centre.x + Metres(3_200.0), centre.y);
+        world
+            .order_road(centre, far, crate::roadworks::Grade::Dirt)
+            .expect("the town centre and the far end are both buildable");
         if let Some(site) =
             crate::scenario::find_site(&world, BuildingKind::Woodcutter, far, Metres(500.0))
         {
@@ -3641,31 +3886,13 @@ mod tests {
                         )
                         .ok()
                 });
-        for end in [refinery, oilfield].into_iter().flatten() {
-            let at = world.buildings.get(end).expect("just placed").centre;
-            // A spur to whichever junction is nearest, so the two ends are on
-            // the network wherever the ground let them stand.
-            let spur = world.roads.add_node(at);
-            let mut junctions: Vec<_> = (0..world.roads.node_count() - 1)
-                .map(|i| crate::road::NodeId(i as u32))
-                .map(|id| {
-                    (
-                        world
-                            .roads
-                            .position_of(id)
-                            .expect("listed")
-                            .distance_to(at)
-                            .0,
-                        id,
-                    )
-                })
-                .collect();
-            junctions.sort_by(|(da, ia), (db, ib)| da.total_cmp(db).then_with(|| ia.cmp(ib)));
-            if let Some(&(_, nearest)) = junctions.first() {
-                world
-                    .roads
-                    .connect(spur, nearest, crate::road::default_road_speed());
-            }
+        for (end, join) in [(refinery, centre), (oilfield, far)] {
+            let Some(end) = end else { continue };
+            let yard = world.buildings.get(end).expect("just placed").centre;
+            // A spur onto the main road, ordered like the road itself. Both
+            // ends of a spur land on a junction the main road will lay, so the
+            // three roads become one network rather than three islands.
+            let _ = world.order_road(yard, join, crate::roadworks::Grade::Dirt);
         }
 
         let mut seen: BTreeMap<&'static str, std::collections::BTreeSet<MutationKind>> =

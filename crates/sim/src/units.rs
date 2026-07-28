@@ -167,6 +167,12 @@ impl Speed {
         self.0
     }
 
+    /// The slower of two speeds — a vehicle's own pace against what the road
+    /// it is on will take.
+    pub fn min(self, other: Self) -> Self {
+        Self(self.0.min(other.0))
+    }
+
     /// How long this speed takes to cover a distance.
     ///
     /// # Panics

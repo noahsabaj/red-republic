@@ -69,8 +69,13 @@ pub fn leg_ticks(distance: Metres, speed: Speed) -> f64 {
 pub struct Journey {
     /// Waypoints. Leg `i` runs from `path[i]` to `path[i + 1]`.
     pub path: Vec<Point>,
-    /// Whether each leg rides the road network. Always one shorter than `path`.
-    pub on_road: Vec<bool>,
+    /// What the road allows on each leg, or `None` where the leg crosses open
+    /// ground. Always one shorter than `path`.
+    ///
+    /// A limit rather than a flag because a road's whole point is that a better
+    /// surface carries faster: a lorry on a dirt track makes 25 km/h whatever it
+    /// is capable of, and the same lorry on tarmac makes its own fifty.
+    pub limit: Vec<Option<Speed>>,
     /// Which leg is under way.
     pub leg: u32,
     /// When this leg began, as an absolute fractional tick.
@@ -83,19 +88,19 @@ impl Journey {
     /// Start a journey along `path`, with its first leg already timed.
     ///
     /// # Panics
-    /// If the path has fewer than two waypoints, or if `on_road` does not
-    /// describe exactly one flag per leg. Both are contract violations by the
+    /// If the path has fewer than two waypoints, or if `limit` does not
+    /// describe exactly one leg per hop. Both are contract violations by the
     /// caller rather than states the simulation can reach.
-    pub fn begin(path: Vec<Point>, on_road: Vec<bool>, now: f64, first_leg: f64) -> Self {
+    pub fn begin(path: Vec<Point>, limit: Vec<Option<Speed>>, now: f64, first_leg: f64) -> Self {
         assert!(path.len() >= 2, "a journey needs somewhere to go");
         assert_eq!(
-            on_road.len() + 1,
+            limit.len() + 1,
             path.len(),
-            "every leg needs to say whether it is on road"
+            "every leg needs to say what the road allows on it"
         );
         Self {
             path,
-            on_road,
+            limit,
             leg: 0,
             leg_start: now,
             leg_end: now + first_leg,
@@ -119,7 +124,25 @@ impl Journey {
 
     /// Whether the current leg rides the road network.
     pub fn leg_on_road(&self) -> bool {
-        self.on_road[self.leg as usize]
+        self.limit[self.leg as usize].is_some()
+    }
+
+    /// What a vehicle makes on leg `leg`: its own pace on the road, capped by
+    /// what that stretch of road allows, or its cross-country pace off it.
+    ///
+    /// The cap is the whole reason a grade is a decision. Without it a road is
+    /// worth exactly what any other road is worth, and there is nothing to
+    /// choose between a dirt track and tarmac.
+    pub fn speed_on(&self, leg: u32, on_road: Speed, cross_country: Speed) -> Speed {
+        match self.limit[leg as usize] {
+            Some(limit) => on_road.min(limit),
+            None => cross_country,
+        }
+    }
+
+    /// [`Journey::speed_on`] for the leg under way.
+    pub fn leg_speed(&self, on_road: Speed, cross_country: Speed) -> Speed {
+        self.speed_on(self.leg, on_road, cross_country)
     }
 
     pub fn leg_distance(&self) -> Metres {
@@ -149,7 +172,8 @@ impl Journey {
         now >= self.leg_end
     }
 
-    /// The next leg, timed at `speed`, as `(leg, leg_start, leg_end)`.
+    /// The next leg, timed for a vehicle of these two speeds, as
+    /// `(leg, leg_start, leg_end)`.
     ///
     /// `leg_start` is the previous leg's *scheduled* end rather than the tick it
     /// was noticed on, which is the whole reason arrival times do not drift on a
@@ -157,11 +181,12 @@ impl Journey {
     ///
     /// # Panics
     /// If there is no next leg. Callers check [`Journey::on_last_leg`] first.
-    pub fn next_leg(&self, speed: Speed) -> (u32, f64, f64) {
+    pub fn next_leg(&self, on_road: Speed, cross_country: Speed) -> (u32, f64, f64) {
         assert!(!self.on_last_leg(), "there is no leg after the last one");
         let leg = self.leg + 1;
         let start = self.leg_end;
         let distance = self.path[leg as usize].distance_to(self.path[leg as usize + 1]);
+        let speed = self.speed_on(leg, on_road, cross_country);
         (leg, start, start + leg_ticks(distance, speed))
     }
 
@@ -187,27 +212,68 @@ impl Journey {
     }
 }
 
-/// Builds a waypoint list, dropping steps that go nowhere.
+/// How far off a straight line two hops may be and still count as one leg.
+///
+/// A sine rather than an angle, because that is what the cross product gives
+/// directly and no trigonometry means nothing platform-dependent. About one
+/// degree.
+const STRAIGHT_ENOUGH: f64 = 0.02;
+
+/// Whether `a -> b -> c` carries straight on rather than turning.
+fn is_straight_on(a: Point, b: Point, c: Point) -> bool {
+    let (ux, uy) = ((b.x - a.x).0, (b.y - a.y).0);
+    let (vx, vy) = ((c.x - b.x).0, (c.y - b.y).0);
+    let (lu, lv) = ((ux * ux + uy * uy).sqrt(), (vx * vx + vy * vy).sqrt());
+    if lu <= 0.0 || lv <= 0.0 {
+        return true;
+    }
+    // Doubling back is never straight on, however small the cross product.
+    if ux * vx + uy * vy <= 0.0 {
+        return false;
+    }
+    (ux * vy - uy * vx).abs() / (lu * lv) < STRAIGHT_ENOUGH
+}
+
+/// Builds a waypoint list, dropping steps that go nowhere and merging steps
+/// that carry straight on at the same speed.
 struct PathBuilder {
     path: Vec<Point>,
-    on_road: Vec<bool>,
+    limit: Vec<Option<Speed>>,
 }
 
 impl PathBuilder {
     fn from(start: Point) -> Self {
         Self {
             path: vec![start],
-            on_road: Vec::new(),
+            limit: Vec::new(),
         }
     }
 
-    fn step(&mut self, to: Point, on_road: bool) {
+    fn step(&mut self, to: Point, limit: Option<Speed>) {
         let last = *self.path.last().expect("a builder always has its start");
         if last.distance_to(to).0 < SAME_PLACE.0 {
             return;
         }
+        // A straight run at one speed is **one leg**, however many junctions it
+        // passes through.
+        //
+        // This is not tidiness, it is correctness, and it was found by
+        // measurement. A road is laid down with a junction every 200 m so that
+        // buildings along it can reach it — but [`MIN_LEG_TICKS`] floors every
+        // leg at a minute, and 200 m in a minute is 12 km/h. A road subdivided
+        // for access was therefore *slower* than the open ground beside it, and
+        // the planner correctly refused to use any of them. Waypoints exist to
+        // mark where something changes; a junction on a straight road changes
+        // nothing.
+        if self.limit.last() == Some(&limit)
+            && let Some(&previous) = self.path.get(self.path.len().wrapping_sub(2))
+            && is_straight_on(previous, last, to)
+        {
+            *self.path.last_mut().expect("just read it") = to;
+            return;
+        }
         self.path.push(to);
-        self.on_road.push(on_road);
+        self.limit.push(limit);
     }
 }
 
@@ -232,13 +298,13 @@ pub fn plan(
 ) -> Journey {
     let direct = {
         let mut b = PathBuilder::from(from);
-        b.step(to, false);
+        b.step(to, None);
         b
     };
 
     let candidate = by_road(from, to, roads).unwrap_or_else(|| PathBuilder {
         path: Vec::new(),
-        on_road: Vec::new(),
+        limit: Vec::new(),
     });
 
     let cost = |b: &PathBuilder| -> f64 {
@@ -247,9 +313,12 @@ pub fn plan(
         }
         b.path
             .windows(2)
-            .zip(&b.on_road)
-            .map(|(pair, &road)| {
-                let speed = if road { on_road } else { cross_country };
+            .zip(&b.limit)
+            .map(|(pair, &limit)| {
+                let speed = match limit {
+                    Some(limit) => on_road.min(limit),
+                    None => cross_country,
+                };
                 leg_ticks(pair[0].distance_to(pair[1]), speed)
             })
             .sum()
@@ -265,17 +334,20 @@ pub fn plan(
 
     // A destination within a metre of the start still needs a leg, or there is
     // no journey to finish and the vehicle never arrives.
-    let (path, flags) = if chosen.path.len() < 2 {
-        (vec![from, to], vec![false])
+    let (path, limit) = if chosen.path.len() < 2 {
+        (vec![from, to], vec![None])
     } else {
-        (chosen.path, chosen.on_road)
+        (chosen.path, chosen.limit)
     };
 
     let first = leg_ticks(
         path[0].distance_to(path[1]),
-        if flags[0] { on_road } else { cross_country },
+        match limit[0] {
+            Some(limit) => on_road.min(limit),
+            None => cross_country,
+        },
     );
-    Journey::begin(path, flags, now, first)
+    Journey::begin(path, limit, now, first)
 }
 
 /// The road-network candidate: cross-country to the nearest junction, along the
@@ -287,12 +359,16 @@ fn by_road(from: Point, to: Point, roads: &RoadNetwork) -> Option<PathBuilder> {
 
     let mut b = PathBuilder::from(from);
     let mut nodes = route.nodes.into_iter();
-    let first = nodes.next()?;
-    b.step(roads.position_of(first)?, false);
+    let mut previous = nodes.next()?;
+    b.step(roads.position_of(previous)?, None);
     for node in nodes {
-        b.step(roads.position_of(node)?, true);
+        // Each hop carries the limit of the road actually being ridden, so a
+        // dirt track in the middle of a paved route slows only that stretch.
+        let limit = roads.speed_between(previous, node);
+        b.step(roads.position_of(node)?, limit);
+        previous = node;
     }
-    b.step(to, false);
+    b.step(to, None);
     Some(b)
 }
 
@@ -307,6 +383,11 @@ mod tests {
 
     fn lorry() -> Speed {
         Speed::from_kph(15.0)
+    }
+
+    /// The same lorry's speed once it is on tarmac.
+    fn fast_lorry() -> Speed {
+        Speed::from_kph(50.0)
     }
 
     /// Junctions in a line 500 m apart, starting at the origin.
@@ -326,7 +407,7 @@ mod tests {
     fn a_position_is_linear_along_the_leg_it_is_on() {
         let j = Journey::begin(
             vec![at(0.0, 0.0), at(1_000.0, 0.0)],
-            vec![false],
+            vec![None],
             100.0,
             10.0,
         );
@@ -342,7 +423,7 @@ mod tests {
     fn sampling_outside_the_leg_clamps_to_its_ends() {
         let j = Journey::begin(
             vec![at(0.0, 0.0), at(1_000.0, 0.0)],
-            vec![false],
+            vec![None],
             100.0,
             10.0,
         );
@@ -354,7 +435,12 @@ mod tests {
     /// whole plan-based model is built on.
     #[test]
     fn position_is_a_pure_function_of_plan_and_time() {
-        let j = Journey::begin(vec![at(0.0, 0.0), at(900.0, 300.0)], vec![true], 7.0, 3.0);
+        let j = Journey::begin(
+            vec![at(0.0, 0.0), at(900.0, 300.0)],
+            vec![Some(default_road_speed())],
+            7.0,
+            3.0,
+        );
         for i in 0..1_000 {
             let t = 7.0 + f64::from(i) * 0.003;
             assert_eq!(j.position_at(t), j.position_at(t));
@@ -376,13 +462,13 @@ mod tests {
         let path: Vec<Point> = (0..=20).map(|i| at(f64::from(i) * 1_000.0, 0.0)).collect();
         let mut j = Journey::begin(
             path,
-            vec![false; 20],
+            vec![None; 20],
             0.0,
             leg_ticks(Metres(1_000.0), lorry()),
         );
         let one = leg_ticks(Metres(1_000.0), lorry());
         while !j.on_last_leg() {
-            let (leg, start, end) = j.next_leg(lorry());
+            let (leg, start, end) = j.next_leg(default_road_speed(), lorry());
             j.leg = leg;
             j.leg_start = start;
             j.leg_end = end;
@@ -405,7 +491,7 @@ mod tests {
             0.0,
         );
         assert_eq!(j.path, vec![at(0.0, 0.0), at(3_000.0, 0.0)]);
-        assert_eq!(j.on_road, vec![false]);
+        assert_eq!(j.limit, vec![None]);
         // 3 km at 15 km/h is twelve minutes, and a tick is a minute.
         assert!((j.leg_end - 12.0).abs() < 1e-9, "{}", j.leg_end);
     }
@@ -428,14 +514,10 @@ mod tests {
         let driven = plan(from, to, &roads, default_road_speed(), lorry(), 0.0);
 
         let total = |j: &Journey| -> f64 {
-            j.path
-                .windows(2)
-                .zip(&j.on_road)
-                .map(|(pair, &road)| {
-                    leg_ticks(
-                        pair[0].distance_to(pair[1]),
-                        if road { default_road_speed() } else { lorry() },
-                    )
+            (0..j.legs())
+                .map(|leg| {
+                    let hop = j.path[leg as usize].distance_to(j.path[leg as usize + 1]);
+                    leg_ticks(hop, j.speed_on(leg, default_road_speed(), lorry()))
                 })
                 .sum()
         };
@@ -445,10 +527,144 @@ mod tests {
             total(&driven),
             total(&cross_country)
         );
-        assert!(driven.on_road.iter().any(|&r| r), "no leg rode the network");
+        assert!(
+            driven.limit.iter().any(|l| l.is_some()),
+            "no leg rode the network"
+        );
         // The hops onto and off the network are never on tarmac.
-        assert!(!driven.on_road[0]);
-        assert!(!driven.on_road[driven.on_road.len() - 1]);
+        assert!(driven.limit[0].is_none());
+        assert!(driven.limit[driven.limit.len() - 1].is_none());
+    }
+
+    /// The interaction that would otherwise have made every laid road useless.
+    ///
+    /// A road is subdivided every 200 m so buildings along it can reach it, and
+    /// a leg is floored at one tick — so a road taken junction by junction has
+    /// a ceiling of 12 km/h, slower than driving across the field beside it.
+    /// Merging a straight run into one leg is what makes the two rules able to
+    /// coexist.
+    #[test]
+    fn a_straight_road_is_one_leg_however_many_junctions_it_has() {
+        let mut sparse = RoadNetwork::new();
+        let mut dense = RoadNetwork::new();
+        for (roads, spacing) in [(&mut sparse, 1_000.0), (&mut dense, 200.0)] {
+            let steps = (6_000.0 / spacing) as u32;
+            let mut previous = roads.add_node(at(0.0, 0.0));
+            for i in 1..=steps {
+                let next = roads.add_node(at(f64::from(i) * spacing, 0.0));
+                roads.connect(previous, next, default_road_speed());
+                previous = next;
+            }
+        }
+
+        let ends = (at(0.0, 100.0), at(5_000.0, 100.0));
+        let a = plan(ends.0, ends.1, &sparse, fast_lorry(), lorry(), 0.0);
+        let b = plan(ends.0, ends.1, &dense, fast_lorry(), lorry(), 0.0);
+        assert_eq!(
+            a.legs(),
+            b.legs(),
+            "junction spacing changed the shape of the journey"
+        );
+        assert!(b.legs() <= 3, "{} legs down a straight road", b.legs());
+
+        // And the dense road is still worth taking, which is the point.
+        let across = plan(
+            ends.0,
+            ends.1,
+            &RoadNetwork::new(),
+            fast_lorry(),
+            lorry(),
+            0.0,
+        );
+        assert!(
+            b.leg_end < across.leg_end || b.legs() > 1,
+            "the subdivided road was refused"
+        );
+        let by_road: f64 = (0..b.legs())
+            .map(|leg| {
+                let hop = b.path[leg as usize].distance_to(b.path[leg as usize + 1]);
+                leg_ticks(hop, b.speed_on(leg, fast_lorry(), lorry()))
+            })
+            .sum();
+        assert!(
+            by_road < leg_ticks(ends.0.distance_to(ends.1), lorry()),
+            "the road took {by_road:.1} minutes against open ground"
+        );
+    }
+
+    /// Merging must not cut corners: a road that turns keeps its turn, or the
+    /// shell would draw lorries driving through the countryside.
+    #[test]
+    fn a_road_that_turns_keeps_its_corner() {
+        let mut roads = RoadNetwork::new();
+        let a = roads.add_node(at(0.0, 0.0));
+        let corner = roads.add_node(at(2_000.0, 0.0));
+        let b = roads.add_node(at(2_000.0, 2_000.0));
+        roads.connect(a, corner, default_road_speed());
+        roads.connect(corner, b, default_road_speed());
+
+        let j = plan(
+            at(0.0, 0.0),
+            at(2_000.0, 2_000.0),
+            &roads,
+            fast_lorry(),
+            lorry(),
+            0.0,
+        );
+        assert!(
+            j.path.iter().any(|p| p.x.0 > 1_900.0 && p.y.0 < 100.0),
+            "the corner was cut: {:?}",
+            j.path
+        );
+    }
+
+    /// A road is only worth what its surface allows.
+    ///
+    /// The limit is what makes a grade a decision: a lorry capable of 50 km/h
+    /// makes 25 on a dirt track and its own fifty on tarmac, so ordering the
+    /// better road buys something measurable rather than a nicer word.
+    #[test]
+    fn a_leg_is_capped_by_the_road_it_is_on() {
+        let fast = Speed::from_kph(50.0);
+        let track = Speed::from_kph(25.0);
+        let j = Journey::begin(
+            vec![at(0.0, 0.0), at(1_000.0, 0.0), at(2_000.0, 0.0)],
+            vec![Some(track), Some(fast)],
+            0.0,
+            1.0,
+        );
+        assert_eq!(j.speed_on(0, fast, lorry()), track, "the track should bind");
+        assert_eq!(j.speed_on(1, fast, lorry()), fast, "tarmac should not");
+        // And a lorry slower than the road is still the slower of the two.
+        assert_eq!(j.speed_on(1, lorry(), lorry()), lorry());
+    }
+
+    /// Two roads, same length, different surface: the better one is chosen and
+    /// the journey is timed at what it allows.
+    #[test]
+    fn a_better_surface_wins_over_a_longer_detour_on_a_worse_one() {
+        let mut roads = RoadNetwork::new();
+        let a = roads.add_node(at(0.0, 0.0));
+        let b = roads.add_node(at(4_000.0, 0.0));
+        let track = roads.add_node(at(2_000.0, 100.0));
+        // A direct dirt track, and a paved way round through one junction.
+        roads.connect(a, b, Speed::from_kph(25.0));
+        roads.connect(a, track, Speed::from_kph(60.0));
+        roads.connect(track, b, Speed::from_kph(60.0));
+
+        let j = plan(
+            at(0.0, 0.0),
+            at(4_000.0, 0.0),
+            &roads,
+            fast_lorry(),
+            lorry(),
+            0.0,
+        );
+        assert!(
+            j.path.iter().any(|p| p.y.0 > 50.0),
+            "the lorry stayed on the dirt track: {:?}",
+            j.path
+        );
     }
 
     /// A detour that is longer in minutes loses, however much road it has. The
@@ -490,7 +706,7 @@ mod tests {
         );
         assert_eq!(j.path[0], at(0.0, 0.0));
         assert_ne!(j.path[1], at(0.0, 0.0), "a leg that goes nowhere survived");
-        assert_eq!(j.on_road.len() + 1, j.path.len());
+        assert_eq!(j.limit.len() + 1, j.path.len());
     }
 
     /// Somewhere you already are is still a journey, or a vehicle sent to fetch
@@ -514,7 +730,7 @@ mod tests {
     fn distance_is_the_sum_of_the_legs() {
         let j = Journey::begin(
             vec![at(0.0, 0.0), at(300.0, 400.0), at(300.0, 0.0)],
-            vec![false, true],
+            vec![None, Some(default_road_speed())],
             0.0,
             1.0,
         );
@@ -529,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "whether it is on road")]
+    #[should_panic(expected = "what the road allows")]
     fn a_journey_whose_flags_do_not_match_its_legs_is_refused() {
         Journey::begin(vec![at(0.0, 0.0), at(1.0, 1.0)], vec![], 0.0, 1.0);
     }
