@@ -16,7 +16,7 @@ Every file gets one of four dispositions:
 - **Not yet** — a real gap. Nothing here is blocked; each is work that has not
   been done, and saying so is the point of writing the list down.
 
-Counts: **20 ported, 11 superseded, 10 n/a, 9 not yet.**
+Counts: **20 ported, 11 superseded, 10 n/a, 10 not yet.**
 
 ---
 
@@ -72,10 +72,15 @@ These tested a canvas renderer, a pointer gesture machine, or a React panel.
 The crate has no renderer and must not grow one — that independence is what
 keeps the shell decision open.
 
+**What is not N/A is what those panels sent.** The commands underneath them are
+simulation, and they are counted above as their own row. This classification
+covers the tests, never the verbs.
+
 ## Not yet — real gaps, with what each would need
 
 | Missing | What it was in 1.x | What it needs here |
 |---|---|---|
+| **A player command surface** | Every v1 panel sent a command — place, demolish, set a delivery priority, accept a tender, pause a site. Those test files are filed N/A below, which was right about the *tests* (they drove React) and wrong about the commands underneath them, which are simulation. | A `Command` type applied through the same single-writer path systems use, and **recorded as it is applied**. Today every field on `World` is `pub` and the deliberate verbs are four — `place`, `order_road`, `place_built`, `tick` — so a shell can write anything a system may not, and the determinism rule's *same seed and same inputs* has no **inputs** to hold constant. Counted on 2026-07-28: the largest uncounted row, and on the critical path, since the goal's first condition cannot close without it. |
 | **Refuelling away from home** (`customs-refuel.test.ts`) | Vehicles topping up at a filling point mid-route. | A vehicle tops up from its own garage at dispatch and the round trip is priced before it leaves, so it cannot strand itself — which makes this a *range* mechanic rather than a safety one. `GasStation` is already in the building table with nothing to do; it becomes real when hauls get long enough that a full tank is not a round trip. |
 | **Machinery wear** (`machinery.test.ts`) | Per-building machinery drained daily; a dry bin cut output. | A `wear` field on `BuildingDef` and a system. The physical dependency it creates — industry needs machinery to build *and* to run — is a good mechanic and worth having. |
 | **Foreign construction labour** (`foreign-labor.test.ts`) | Paid builders in roubles, per-site opt-in. | Needs per-site build policy first. |
