@@ -129,7 +129,20 @@ What the re-check found, against what was recorded before it:
 
 **The cost, stated plainly:** a marshalling boundary, and this UI reads a lot. It is survivable because the heavy transfers are one-off or event-driven (terrain mesh at load, buildings as a MultiMesh updated on change) while per-frame traffic is a camera and a few panels — and because the sim already exposes coarse engine-owned views (`Geology::survey`, `stall_reason`, `cover_days`, `Shelf`) built so the UI never recomputes anything. **Those views are the marshalling surface. Keep them coarse; that discipline is now load-bearing for performance as well as for correctness.**
 
-**What would reverse this:** the first vertical slice — the founding shelf and one world view, driven by the real sim — showing either a fat per-frame marshalling surface or Godot handling a million-cell heightmap badly. Build that before building anything else. The sim is untouched either way, which is what the zero-dependency rule bought.
+**What would reverse this:** a fat per-frame marshalling surface, or Godot handling a million-cell heightmap badly. The sim is untouched either way, which is what the zero-dependency rule bought.
+
+**Probed 2026-07-28, and neither fired.** A throwaway gdext probe — the real sim behind a `Node3D`, a real 10 km / 10 m terrain as one `ArrayMesh`, 2,000 building instances in a `MultiMesh`, vehicles moved every frame, camera orbiting, vsync off, 600 frames on an RTX 4060 Ti:
+
+| | |
+|---|---|
+| terrain build + upload, 1,996,002 tris | **30 ms**, one-off |
+| every height read through the public `height_at` | **3.2 ms** for 1,000,000 calls |
+| 2,000-instance MultiMesh write | **0.5 ms** |
+| frame p50 / p95 | **0.37 ms / 0.50 ms** — 2.2% of a 60 fps budget |
+| per-frame vehicle read, interpolated | **0.9 µs** |
+| first frame | **146 ms** — pipeline compile, so a load screen is real |
+
+**What this does and does not settle.** It settles the two conditions written above: the heightmap is comfortable and per-frame marshalling is free, which also means **`Terrain` needs no bulk accessor** — the private `Vec<f32>` behind `height_at` was assumed to be a problem and measured not to be. It does **not** settle the axis the decision was actually made on: **this game is half UI, dense themed Control layouts are why Godot was chosen, and the probe contains no UI at all.** Nor does it test a real terrain shader (one flat material, no LOD, no splatting, no water), a weaker GPU, or the sim at scale — the republic here had 16 buildings and 7 vehicles, and the other 1,984 instances were synthetic transforms testing the renderer alone. Composing the probe against the existing `simulated_day_cost` baseline puts a 615-building tick at ~0.07 ms, so sim plus render lands near 0.44 ms — but that is two measurements added together, not one observed.
 
 ## Open decisions, with their decision points
 
