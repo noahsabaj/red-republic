@@ -174,6 +174,28 @@ pub const MUD_DRAG: f64 = 2.0;
 /// How much of a cell has to be water before nothing can cross it.
 const DROWNED: f64 = 0.25;
 
+/// How much one laden pass packs a cell down.
+///
+/// Fifty passes to turn open field into a made track, less the fading. That is
+/// deliberately a season's worth of traffic rather than a week's: a track a
+/// republic did not plan should arrive slowly enough to be noticed happening.
+pub const WEAR_PER_PASS: f64 = 0.02;
+
+/// How much of its packing a cell loses in a day.
+///
+/// Without this every line any lorry ever drove is permanent, and a map ends up
+/// covered in the ghosts of routes nobody uses. With it a corridor has to be
+/// *kept* — roughly a pass every other day merely holds station.
+pub const WEAR_FADE_PER_DAY: f64 = 0.01;
+
+/// The packing at which a corridor stops being a worn line and becomes a track
+/// on the map.
+pub const PROMOTE_AT: f64 = 0.85;
+
+/// The shortest run of worn cells worth calling a road: three hundred metres.
+/// Below that it is a gateway, not a route.
+pub const MIN_TRACK_CELLS: usize = 3;
+
 /// The lattice a vehicle crosses country over.
 ///
 /// Carries the **static** part of the going — what the surface is — because
@@ -307,6 +329,81 @@ impl Lattice {
             .filter(|&(_, &w)| f64::from(w) >= threshold)
             .map(|(i, _)| i)
             .collect()
+    }
+
+    /// The eight cells around one, in a fixed order.
+    pub fn neighbours(&self, index: usize) -> Vec<usize> {
+        let side = self.cells as i64;
+        let (cx, cy) = ((index as i64) % side, (index as i64) / side);
+        let mut out = Vec::with_capacity(8);
+        for dy in -1i64..=1 {
+            for dx in -1i64..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let (nx, ny) = (cx + dx, cy + dy);
+                if nx >= 0 && ny >= 0 && nx < side && ny < side {
+                    out.push((ny * side + nx) as usize);
+                }
+            }
+        }
+        out
+    }
+
+    /// Every distinct cell a straight run passes through, in the order it meets
+    /// them. What a leg actually drove over, and therefore what it packed down.
+    pub fn cells_along(&self, from: Point, to: Point) -> Vec<usize> {
+        let distance = from.distance_to(to).0;
+        let steps = ((distance / (self.cell_size.0 * 0.5)).ceil() as u32).clamp(1, 512);
+        let mut out: Vec<usize> = Vec::new();
+        for step in 0..=steps {
+            let t = f64::from(step) / f64::from(steps);
+            let at = Point::new(
+                Metres(from.x.0 + (to.x.0 - from.x.0) * t),
+                Metres(from.y.0 + (to.y.0 - from.y.0) * t),
+            );
+            if let Some(cell) = self.cell_of(at)
+                && out.last() != Some(&cell)
+                && !out.contains(&cell)
+            {
+                out.push(cell);
+            }
+        }
+        out
+    }
+
+    /// Connected runs of cells worn past a threshold, longest-lived first by
+    /// index so the answer is reproducible.
+    ///
+    /// Runs shorter than [`MIN_TRACK_CELLS`] are left alone: a couple of worn
+    /// squares outside a loading bay is a yard, not a road, and promoting it
+    /// would litter the network with stubs.
+    pub fn tracks_beyond(&self, threshold: f64) -> Vec<Vec<usize>> {
+        let worn = self.worn_beyond(threshold);
+        let mut seen = vec![false; (self.cells as usize) * (self.cells as usize)];
+        let mut runs = Vec::new();
+        for &start in &worn {
+            if seen[start] {
+                continue;
+            }
+            let mut run = Vec::new();
+            let mut frontier = vec![start];
+            seen[start] = true;
+            while let Some(cell) = frontier.pop() {
+                run.push(cell);
+                for next in self.neighbours(cell) {
+                    if !seen[next] && f64::from(self.wear[next]) >= threshold {
+                        seen[next] = true;
+                        frontier.push(next);
+                    }
+                }
+            }
+            if run.len() >= MIN_TRACK_CELLS {
+                run.sort_unstable();
+                runs.push(run);
+            }
+        }
+        runs
     }
 }
 

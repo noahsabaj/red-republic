@@ -455,6 +455,49 @@ fn cross_country_routing_cost() {
     }
 }
 
+/// The daily wear sweep: fading every cell, and finding the corridors that have
+/// packed down far enough to go on the map.
+///
+/// Both are O(cells) over the whole lattice and both run once a day, so this is
+/// the cost of emergent roads existing at all. Measured against a lattice that
+/// is heavily worn, because an empty one finds nothing and proves nothing.
+#[test]
+fn wear_sweep_cost() {
+    for &extent in &[6_000.0, 10_000.0] {
+        let mut world = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(extent),
+            climate: ClimateId::Plains,
+        });
+        let cells = world.lattice.cells();
+        // Wear in a long diagonal corridor plus a scattering, so the sweep has
+        // real runs to find and real cells to walk past.
+        let side = f64::from(cells);
+        for i in 0..cells {
+            let along = f64::from(i) * 100.0 + 50.0;
+            if let Some(cell) = world.lattice.cell_of(at(along, along)) {
+                world.lattice.wear_in(cell, 1.0);
+            }
+            if let Some(cell) = world.lattice.cell_of(at(along, side * 100.0 - along)) {
+                world.lattice.wear_in(cell, 0.9);
+            }
+        }
+
+        const PASSES: u32 = 200;
+        let start = Instant::now();
+        let mut found = 0;
+        for _ in 0..PASSES {
+            found = red_republic_sim::systems::tracks(&world).len();
+        }
+        let each = start.elapsed().as_secs_f64() * 1e6 / f64::from(PASSES);
+        println!(
+            "[BASELINE wear] {cells}x{cells} lattice ({} cells): daily sweep {each:.0} us ({found} mutations)",
+            cells * cells
+        );
+        assert!(each < 20_000.0, "the daily wear sweep took {each:.0} us");
+    }
+}
+
 /// Placement gets slower as the republic fills up, because every candidate is
 /// tested against every standing building.
 #[test]

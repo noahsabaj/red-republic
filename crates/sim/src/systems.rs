@@ -140,6 +140,22 @@ pub enum Mutation {
     /// A vehicle got home: the job is done and anything still aboard is put
     /// into the garage.
     Park { vehicle: VehicleId, burn: Tonnes },
+    /// Ground packed down by something driving over it.
+    ///
+    /// Traffic is the only thing that makes a track, and the loop it closes is
+    /// the point: the first lorry picks a line, that line gets marginally
+    /// cheaper to drive, the next one picks the same line, and a route nobody
+    /// planned hardens into one the republic can see.
+    Wear { cells: Vec<usize>, by: f64 },
+    /// A day of the ground coming back. Without it every line ever driven is
+    /// permanent and a map fills with the ghosts of routes nobody uses.
+    Fade { by: f64 },
+    /// A worn corridor becomes a dirt track on the map: proper segments in
+    /// the road network, which anything can then route over as a road.
+    ///
+    /// The end of the loop, and the reason roads in this republic are earned
+    /// rather than drawn.
+    Promote { cells: Vec<usize> },
     /// A vehicle stuck fast. It keeps its job, its load and its plan; what it
     /// has lost is the ability to go anywhere.
     ///
@@ -253,6 +269,9 @@ pub enum MutationKind {
     Bog,
     Free,
     Recover,
+    Wear,
+    Fade,
+    Promote,
     Provision,
     Export,
     Import,
@@ -281,6 +300,9 @@ impl Mutation {
             Mutation::Load { .. } => MutationKind::Load,
             Mutation::Unload { .. } => MutationKind::Unload,
             Mutation::Park { .. } => MutationKind::Park,
+            Mutation::Wear { .. } => MutationKind::Wear,
+            Mutation::Fade { .. } => MutationKind::Fade,
+            Mutation::Promote { .. } => MutationKind::Promote,
             Mutation::Bog { .. } => MutationKind::Bog,
             Mutation::Free { .. } => MutationKind::Free,
             Mutation::Recover { .. } => MutationKind::Recover,
@@ -340,8 +362,10 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
             MutationKind::Bog,
             MutationKind::Free,
             MutationKind::Recover,
+            MutationKind::Wear,
         ],
     ),
+    ("tracks", &[MutationKind::Fade, MutationKind::Promote]),
     ("labour", &[MutationKind::Staff, MutationKind::Consume]),
     (
         "contracts",
@@ -650,6 +674,34 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     }
                     v.journey = Some(journey.clone());
                     v.state = VehicleState::Returning;
+                }
+            }
+            Mutation::Wear { cells, by } => {
+                for &cell in cells {
+                    world.lattice.wear_in(cell, *by);
+                }
+            }
+            &Mutation::Fade { by } => world.lattice.fade(by),
+            Mutation::Promote { cells } => {
+                // Each worn cell joins the worn cells beside it. A corridor is
+                // one or two cells wide, so what comes out is a chain rather
+                // than a mesh — and `are_connected` keeps a track that is
+                // promoted again tomorrow from laying a second carriageway.
+                let speed = crate::roadworks::Grade::Dirt.def().speed;
+                let merge = crate::roadworks::JUNCTION_MERGE;
+                for &cell in cells {
+                    let here = world.lattice.centre_of(cell);
+                    let a = world.roads.junction_at(here, merge);
+                    for next in world.lattice.neighbours(cell) {
+                        if !cells.contains(&next) {
+                            continue;
+                        }
+                        let there = world.lattice.centre_of(next);
+                        let b = world.roads.junction_at(there, merge);
+                        if a != b && !world.roads.are_connected(a, b) {
+                            world.roads.connect(a, b, speed);
+                        }
+                    }
                 }
             }
             &Mutation::Bog { vehicle, day } => {
@@ -2327,6 +2379,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                 leg_end,
                 burn,
             });
+            out.extend(wore(world, v, journey.leg));
             // The crossing about to be attempted, evaluated against the ground
             // as it is *now* rather than as it was when the plan was made.
             if sticks(world, &crossing, v.id, v.capability(), journey, ahead, day) {
@@ -2355,6 +2408,9 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                 depart,
             )
         };
+
+        // Whatever it just drove over, it packed down a little.
+        out.extend(wore(world, v, journey.leg));
 
         match v.state {
             VehicleState::Returning => out.push(Mutation::Park {
@@ -2482,6 +2538,27 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
     out
 }
 
+/// The ground a vehicle just packed down finishing a leg.
+///
+/// Nothing on a road: tarmac and gravel do not take a rut, and a road that
+/// wore itself into a better road would be a loop with no end.
+fn wore(world: &World, v: &crate::fleet::Vehicle, leg: u32) -> Option<Mutation> {
+    let journey = v.journey.as_ref()?;
+    if journey.limit[leg as usize].is_some() {
+        return None;
+    }
+    let (from, to) = journey.leg_ends(leg);
+    let cells = world.lattice.cells_along(from, to);
+    if cells.is_empty() {
+        return None;
+    }
+    Some(Mutation::Wear {
+        cells,
+        // A laden lorry leaves more of a line than an empty one.
+        by: crate::ground::WEAR_PER_PASS * (0.4 + 0.6 * v.load_fraction()),
+    })
+}
+
 /// Whether a vehicle sticks setting out on a given leg today.
 ///
 /// A pure function of who, which leg, and what day, so it gives the same
@@ -2526,6 +2603,43 @@ fn bog_key(vehicle: VehicleId, leg: u32, day: u64) -> u64 {
     u64::from(vehicle.0).wrapping_mul(0x9E37_79B9_7F4A_7C15)
         ^ u64::from(leg).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
         ^ day.wrapping_mul(0xBF58_476D_1CE4_E5B9)
+}
+
+/// The ground giving back what traffic put into it, and what is left over
+/// becoming a road.
+///
+/// Daily, because both halves are daily quantities and because sweeping ten
+/// thousand cells for connected corridors has no business happening 1,440
+/// times a day.
+///
+/// **The feedback loop needs damping or it runs away.** Wear lowers the cost
+/// of a cell, which concentrates traffic on it, which wears it further. Two
+/// things bound it: packing saturates at a made track rather than improving
+/// for ever, and a corridor that reaches the threshold is promoted *out* of
+/// the lattice into the road network — after which traffic rides a road leg
+/// instead of a cross-country one, stops wearing the cells, and lets them
+/// fade. The loop closes rather than diverging.
+pub fn tracks(world: &World) -> Vec<Mutation> {
+    let mut out = vec![Mutation::Fade {
+        by: crate::ground::WEAR_FADE_PER_DAY,
+    }];
+    for run in world.lattice.tracks_beyond(crate::ground::PROMOTE_AT) {
+        // Already a road here? Then the corridor has been promoted before and
+        // is only waiting to fade.
+        let all_on_the_map = run.iter().all(|&cell| {
+            world
+                .roads
+                .nearest_node(
+                    world.lattice.centre_of(cell),
+                    crate::roadworks::JUNCTION_MERGE,
+                )
+                .is_some()
+        });
+        if !all_on_the_map {
+            out.push(Mutation::Promote { cells: run });
+        }
+    }
+    out
 }
 
 /// The day's weather, worked through the ground.
@@ -2594,6 +2708,7 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
         // Weather first: the day's going is what everything after it reads.
         for system in [
             |w: &mut World| weather(w),
+            |w: &mut World| tracks(w),
             labour,
             |w: &mut World| contracts(w),
             |w: &mut World| commissioning(w),
@@ -4109,6 +4224,160 @@ mod tests {
         );
     }
 
+    // ---- Wear, and roads that grow themselves ----
+
+    /// The acceptance scenario for the whole ground-movement model, and the one
+    /// mechanic in it that nobody has to order: a remote works with no road to
+    /// it, hauled to often enough that the line the lorries picked packs down,
+    /// hardens, and turns up on the map as a dirt track.
+    ///
+    /// The second half is the half that matters. Traffic too light to keep a
+    /// corridor packed must **not** grow one, or every idle line a lorry ever
+    /// drove becomes a permanent road and the map fills with ghosts.
+    #[test]
+    fn a_road_grows_where_the_lorries_go_and_nowhere_else() {
+        let track_after = |days: u64, deliveries: bool| -> (usize, usize) {
+            let mut w = bare();
+            haulage(&mut w, at(600.0, 600.0));
+            let store = place(&mut w, BuildingKind::Warehouse, at(900.0, 600.0));
+            if deliveries {
+                w.buildings
+                    .get_mut(store)
+                    .unwrap()
+                    .stock
+                    .add(Resource::Wood, Tonnes(4_000.0));
+            }
+            // A works out on its own, well beyond the town, with nothing but
+            // open field between it and its wood.
+            let works = place(&mut w, BuildingKind::Sawmill, at(3_200.0, 2_600.0));
+
+            // The most ground that was ever packed at once. Measured as it
+            // happens rather than at the end, because a corridor that reaches
+            // the threshold is promoted onto the map and then fades — so the
+            // evidence of packing is gone by the time the road is there.
+            let mut packed = 0;
+            for _ in 0..TICKS_PER_DAY * days {
+                w.tick();
+                packed = packed.max(w.lattice.worn_beyond(crate::ground::PROMOTE_AT).len());
+                // It burns what it is brought, so the haul never stops.
+                if let Some(b) = w.buildings.get_mut(works) {
+                    b.stock.set(Resource::Wood, Tonnes::ZERO);
+                }
+            }
+            (w.roads.segment_count(), packed)
+        };
+
+        let (with_traffic, packed) = track_after(200, true);
+        assert!(
+            with_traffic > 0,
+            "two hundred days of hauling across open field grew no track at all"
+        );
+        assert!(packed > 2, "the corridor was never packed: {packed} cells");
+
+        // The same republic with nothing to carry lays no road, because nothing
+        // drove anywhere to lay one.
+        let (idle, _) = track_after(200, false);
+        assert_eq!(
+            idle, 0,
+            "a republic with nothing to haul grew {idle} segments of road"
+        );
+    }
+
+    /// The damping, without which the feedback loop runs away.
+    ///
+    /// Wear makes a cell cheaper, which concentrates traffic on it, which wears
+    /// it further. Two things stop that diverging: packing saturates at a made
+    /// track, and a corridor that reaches the threshold is promoted **out** of
+    /// the lattice into the road network — after which traffic rides a road leg
+    /// rather than a cross-country one, stops packing the cells, and lets them
+    /// fade back.
+    #[test]
+    fn packing_saturates_and_a_promoted_track_stops_being_worn() {
+        let mut w = bare();
+        let cell = w.lattice.cell_of(at(1_000.0, 1_000.0)).expect("on the map");
+        for _ in 0..500 {
+            w.lattice.wear_in(cell, crate::ground::WEAR_PER_PASS);
+        }
+        assert_eq!(w.lattice.wear_at(cell), 1.0, "packing ran away");
+
+        // A worn corridor, promoted, is a road — and a road is not worn.
+        for offset in 0..4 {
+            let c = w
+                .lattice
+                .cell_of(at(1_000.0 + f64::from(offset) * 100.0, 1_000.0))
+                .expect("on the map");
+            w.lattice.wear_in(c, 1.0);
+        }
+        let promotions = tracks(&w);
+        apply(&mut w, &promotions);
+        assert!(
+            w.roads.segment_count() > 0,
+            "a fully packed corridor was not put on the map"
+        );
+
+        // And it fades from here, because nothing crossing a road packs it.
+        let before = w.lattice.wear_at(cell);
+        for _ in 0..50 {
+            apply(
+                &mut w,
+                &[Mutation::Fade {
+                    by: crate::ground::WEAR_FADE_PER_DAY,
+                }],
+            );
+        }
+        assert!(
+            w.lattice.wear_at(cell) < before,
+            "a corridor nobody uses any more never gives the ground back"
+        );
+    }
+
+    /// Wear is what traffic does, so what does not drive over ground does not
+    /// wear it — and a road is not worn by the lorries riding it.
+    #[test]
+    fn tarmac_takes_no_ruts() {
+        let mut w = bare();
+        haulage(&mut w, at(600.0, 1_000.0));
+        let store = place(&mut w, BuildingKind::Warehouse, at(900.0, 1_000.0));
+        w.buildings
+            .get_mut(store)
+            .unwrap()
+            .stock
+            .add(Resource::Wood, Tonnes(2_000.0));
+        let mill = place(&mut w, BuildingKind::Sawmill, at(3_400.0, 1_000.0));
+        // A proper road the whole way, so every haul rides it.
+        let mut previous = w.roads.add_node(at(900.0, 1_000.0));
+        for i in 1..=6 {
+            let next = w.roads.add_node(at(900.0 + f64::from(i) * 420.0, 1_000.0));
+            w.roads
+                .connect(previous, next, crate::road::default_road_speed());
+            previous = next;
+        }
+        let segments = w.roads.segment_count();
+
+        for _ in 0..TICKS_PER_DAY * 60 {
+            w.tick();
+            if let Some(b) = w.buildings.get_mut(mill) {
+                b.stock.set(Resource::Wood, Tonnes::ZERO);
+            }
+        }
+        // Ground does wear where a lorry leaves the network to reach a door —
+        // that is the mechanic working. What must never wear is the ground
+        // under the road itself, however many lorries ride it.
+        for i in 0..6 {
+            let along = 900.0 + 420.0 * (f64::from(i) + 0.5);
+            let cell = w.lattice.cell_of(at(along, 1_000.0)).expect("on the map");
+            assert_eq!(
+                w.lattice.wear_at(cell),
+                0.0,
+                "the road was rutted {along:.0} m along it"
+            );
+        }
+        assert!(
+            w.roads.segment_count() >= segments,
+            "the road was somehow un-built"
+        );
+    }
+
     // ---- Roads ----
 
     /// The whole loop, and the last free thing in the simulation being paid
@@ -4170,11 +4439,18 @@ mod tests {
             w.buildings.get(yard).unwrap().stock.get(Resource::Gravel) < Tonnes(200.0),
             "the road was surfaced with gravel nobody moved"
         );
-        // And it is a road now: junctions along its length, joined end to end.
-        assert_eq!(w.roads.segment_count(), 5, "a kilometre at 200 m a segment");
+        // And it is a road now, joined end to end. The count is not pinned here
+        // because the lorries that carried the gravel will have worn tracks of
+        // their own by now, which is a different mechanic doing its job — the
+        // segment spacing of a laid road is pinned in `roadworks` instead.
         let a = w.roads.nearest_node(ends.0, Metres(30.0)).expect("start");
         let b = w.roads.nearest_node(ends.1, Metres(30.0)).expect("end");
-        assert!(w.roads.route(a, b).is_some(), "the two ends are not joined");
+        let route = w.roads.route(a, b).expect("the two ends are not joined");
+        assert!(
+            route.nodes.len() >= 6,
+            "a kilometre should be junctioned every 200 m, got {:?}",
+            route.nodes.len()
+        );
     }
 
     /// The queue is one queue. A road ordered before a factory is laid before
@@ -4698,6 +4974,9 @@ mod tests {
                     apply(&mut world, &m);
                     let m = weather(&world);
                     note("weather", &m);
+                    apply(&mut world, &m);
+                    let m = tracks(&world);
+                    note("tracks", &m);
                     apply(&mut world, &m);
                     // Accept everything, so deliveries and failures both happen.
                     let offers: Vec<_> = world.contracts.offers().map(|c| c.id).collect();

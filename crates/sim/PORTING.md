@@ -54,7 +54,7 @@ Counts: **20 ported, 11 superseded, 10 n/a, 9 not yet.**
 | `deposits.test.ts` | `geology.rs`. Tile-visible deposits are gone; a deposit is a 3D body a mine *taps*, read through a survey. |
 | `pathfind.test.ts`, `pathfind-bounded.test.ts` | `road.rs`. A grid flood over a million cells was never going to survive metric scale; routing is a graph over what the player built. |
 | `topology.test.ts`, `topology-cache-regressions.test.ts` | Same. The caches existed to make grid floods affordable. |
-| `weather-sim.test.ts` | `climate.rs`, partially — temperature is carried over because heating depends on it. Conditions, snow depth and river ice are **not yet** (below). |
+| `weather-sim.test.ts` | `climate.rs` and `ground.rs`. Temperature carried over; precipitation, lying snow, soil moisture and frost are new and drive cross-country going rather than farm output. River ice is still **not yet**. |
 | `helpers.ts`, `campaign.ts` | `scenario::found`, and the `bare()` fixture in `systems`. |
 | `tilemap-cache.test.ts` | Nothing. It tested the offscreen rasteriser whose 16,384 px dimension cap is one of the things that ended 1.x. |
 | `logistics-characterization.test.ts` | Partly ported into `systems::logistics` tests; the parts that characterised v1's tile routing went with the router. |
@@ -83,7 +83,7 @@ keeps the shell decision open.
 | **Loans** (`loans.test.ts`) | Bloc advances with fixed simple interest. | Contained; `contract.rs` is the natural neighbour. |
 | **Happiness** (`happiness-breakdown.test.ts`) | A weighted satisfaction model driving migration. | `Building::provisioned` and `Building::heated` are the measured inputs and already exist. What is missing is what they *do* — see below. |
 | **Water and sewage** (`water.test.ts`) | Wells, towers, waste. | Groundwater is already a peer mineral with recharge, specifically so this is not a retrofit. |
-| **Weather beyond temperature** (`weather-sim.test.ts`) | Conditions, snow depth, river freeze, drought. | Farm output is currently seasonless. `climate.rs` is the place. |
+| **Seasonal farm output** | Weather driving what a farm yields. | `ground.rs` now models moisture, snow and frost, and `climate.rs` the rain that feeds them — but nothing agricultural reads any of it. A farm yields the same tonnage in a drought as in a good year. |
 | **Per-site build policy** (`per-site-policy.test.ts`, `planning-mode.test.ts`, `construction-pause.test.ts`) | Instant build, auto-buy, foreign labour and planning mode, per site. | Blocks three of the rows above. |
 
 ---
