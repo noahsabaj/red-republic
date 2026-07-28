@@ -212,6 +212,30 @@ The heightmap probe contained no UI, and dense themed `Control` layouts are the 
 
 Verified by looking at it, not only by the numbers: the panel renders real building names, staff counts and POWERED/DARK states over a terrain that is genuinely in frustum. A probe that drew nothing would have reported excellent frame times. **Still untested:** `Tree` / `ItemList` / `Button`, nested and scrolling containers, a real theme resource, and input handling — this was `Label` in a `GridContainer` with one StyleBox.
 
+### The shell as built, and what a rendered frame caught that numbers did not
+
+`crates/red-republic-shell` and `godot/` exist. The republic is a `Node3D`; Godot calls `tick()` and reads. Six speeds, the terrain as one `ArrayMesh`, buildings as a `MultiMesh` uploaded only when the count changes, vehicles interpolated per frame through `Journey::position_at`, and roads drawn from `RoadNetwork::segments`.
+
+**Measured on the founded 6 km republic, vsync off, 600 frames:**
+
+| speed | frame p50 | frame p95 |
+|---|---|---|
+| 0 paused | 0.65 ms | 1.30 ms |
+| 1 real-time | 0.61 ms | 1.27 ms |
+| 5 (8 h/s) | 0.61 ms | 1.29 ms |
+
+**Flat across every speed** — about 4% of a 60 fps budget with the simulation genuinely running. At this size the renderer is not the constraint and neither is the tick.
+
+**Three bugs got through every number and were caught only by looking at a rendered frame**, which is the argument for `-- --shot <path>` existing as a permanent check rather than a one-off:
+
+- **The terrain rendered as nothing at all.** 361,201 vertices uploaded, no errors, an empty frame. The triangles were wound clockwise, so the entire map faced downwards and was culled. Nothing that counts vertices can see this.
+- **The camera aimed at the map's corner.** `look_at_from_position` takes **global** coordinates and it was handed the rig's local origin, which is world zero. The republic sat in the bottom-right of the frame with half the screen empty.
+- **The camera framed the map rather than the republic.** A posting is sited on the shallowest coal body, so it is routinely nowhere near the middle — framing the map means opening on empty ground.
+
+A fourth thing was not a bug and is worth recording because it looked like one: the ground appeared perfectly flat. Measured, a 6 km map has **64.7 m of relief** and a 10 km map has 82.2 m. It read flat because the placeholder albedo was fully saturated. The fix was the material, and it is why `terrain.gdshader` reads a one-hot surface channel out of vertex colour rather than Rust deciding what grass looks like — **the art direction has to be changeable without recompiling the simulation's renderer.**
+
+**Correcting a recorded fact:** the PDB-rename warning was noted as something a crate name of ~13 bytes or more avoids. It does not. `red_republic_shell` is 18 bytes and still trips it, because the check is against the **path** the DLL embeds, and the replacement name is always longer than the original. It is cosmetic and costs hot reload; it is not a naming rule.
+
 ## Open decisions, with their decision points
 
 - **Which ECS** — `bevy_ecs` standalone stays. It is a storage library for the sim's citizens and is unaffected by the shell decision; the simulation must not expose engine-specific types at its boundaries. Holding so far: `CitizenRecord` is the serialization boundary and no `Entity` crosses the crate's public surface. Re-examine only if `bevy_ecs` alone starts costing more than a plain `Vec` would.

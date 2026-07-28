@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/sim"]
+members = ["crates/sim", "crates/red-republic-shell"]
 # archive/src-tauri is a Rust package too — the frozen 1.x desktop shell. It
 # sits inside this workspace directory but is not part of this project, and
 # without an explicit exclude Cargo refuses to build it on its own terms.
