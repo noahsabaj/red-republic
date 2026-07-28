@@ -142,7 +142,25 @@ What the re-check found, against what was recorded before it:
 | per-frame vehicle read, interpolated | **0.9 µs** |
 | first frame | **146 ms** — pipeline compile, so a load screen is real |
 
-**What this does and does not settle.** It settles the two conditions written above: the heightmap is comfortable and per-frame marshalling is free, which also means **`Terrain` needs no bulk accessor** — the private `Vec<f32>` behind `height_at` was assumed to be a problem and measured not to be. It does **not** settle the axis the decision was actually made on: **this game is half UI, dense themed Control layouts are why Godot was chosen, and the probe contains no UI at all.** Nor does it test a real terrain shader (one flat material, no LOD, no splatting, no water), a weaker GPU, or the sim at scale — the republic here had 16 buildings and 7 vehicles, and the other 1,984 instances were synthetic transforms testing the renderer alone. Composing the probe against the existing `simulated_day_cost` baseline puts a 615-building tick at ~0.07 ms, so sim plus render lands near 0.44 ms — but that is two measurements added together, not one observed.
+**What this settles.** The two conditions written above: the heightmap is comfortable and per-frame marshalling is free, which also means **`Terrain` needs no bulk accessor** — the private `Vec<f32>` behind `height_at` was assumed to be a problem and measured not to be. It does not test a real terrain shader (one flat material, no LOD, no splatting, no water), a weaker GPU, or the sim at scale — the republic here had 16 buildings and 7 vehicles, and the other 1,984 instances were synthetic transforms testing the renderer alone. Composing the probe against the existing `simulated_day_cost` baseline puts a 615-building tick at ~0.07 ms, so sim plus render lands near 0.44 ms — but that is two measurements added together, not one observed.
+
+### The UI axis, probed separately — because that is the axis the decision was made on
+
+The heightmap probe contained no UI, and dense themed `Control` layouts are the *reason* Godot was chosen. Swept a themed stock-ledger panel over the same live 3D scene, refreshing **every label from simulation state every frame**, 400 measured frames per level:
+
+| rows | labels | build | frame p50 | `set_text` p50 |
+|---|---|---|---|---|
+| 0 | 0 | 3.9 ms | 0.39 ms | — |
+| 50 | 250 | 11 ms | 0.39 ms | 44 µs |
+| 200 | 1,000 | 44 ms | 0.47 ms | 162 µs |
+| 500 | 2,500 | 112 ms | 0.80 ms | 403 µs |
+| 1,000 | 5,000 | 229 ms | 1.39 ms | 816 µs |
+
+**A clean linear gradient with no cliff anywhere**, which is the shape that says tune it rather than replace it. Per-frame cost is ~0.2 µs per label and **`set_text` is nearly all of it** — the cost is text shaping, not layout or draw, and a real panel does not change five thousand numbers a frame. At the density a 615-building republic actually needs, a visible table costs **0.08 ms over baseline**, half a percent of a frame.
+
+**The one architectural consequence: build cost dominates, at ~46 µs per label — 165× the per-frame cost.** Opening a panel that instantiates 5,000 `Label` nodes is a visible 229 ms hitch, while updating them is free. **Virtualise long lists — build nodes for visible rows only, or pool them.** That is a design rule for the shell, not a tuning note.
+
+Verified by looking at it, not only by the numbers: the panel renders real building names, staff counts and POWERED/DARK states over a terrain that is genuinely in frustum. A probe that drew nothing would have reported excellent frame times. **Still untested:** `Tree` / `ItemList` / `Button`, nested and scrolling containers, a real theme resource, and input handling — this was `Label` in a `GridContainer` with one StyleBox.
 
 ## Open decisions, with their decision points
 
