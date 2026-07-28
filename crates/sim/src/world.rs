@@ -54,7 +54,7 @@ use serde::{Deserialize, Serialize};
 /// they are state rather than a function of the date.
 ///
 /// 5: the traversal lattice, and vehicles that can be stuck in it.
-pub const SAVE_VERSION: u32 = 5;
+pub const SAVE_VERSION: u32 = 6;
 
 /// Substream identifier for terrain generation.
 pub const TERRAIN_STREAM: u64 = 2;

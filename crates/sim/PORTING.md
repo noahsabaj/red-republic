@@ -16,7 +16,7 @@ Every file gets one of four dispositions:
 - **Not yet** — a real gap. Nothing here is blocked; each is work that has not
   been done, and saying so is the point of writing the list down.
 
-Counts: **20 ported, 11 superseded, 10 n/a, 10 not yet.**
+Counts: **22 ported, 11 superseded, 10 n/a, 8 not yet.**
 
 ---
 
@@ -40,6 +40,8 @@ Counts: **20 ported, 11 superseded, 10 n/a, 10 not yet.**
 | `mutation-writeset.test.ts` | `systems::WRITE_SETS` plus three guards. **Both directions** are checked — a system may not emit outside its set, and a set may not claim more than the system emits. |
 | `power.test.ts` | `systems::power`. |
 | `production.test.ts` | `systems::production`. Limiters are kept separate so a stalled building can say which one stopped it. |
+| `machinery.test.ts` | `BuildingDef::wear` authored on all 28 rows, `systems::WORN_EFFICIENCY`. The archived rule whole: wear is proportional to activity so an idle building wears nothing, and a dry bin is a **soft penalty at 0.5, never a stall**. Guards `a_dry_machinery_bin_halves_output_and_never_stalls_it` and `machines_wear_only_when_they_are_worked` — the second needs an unstaffed twin, which is the only fixture that tells "scales with activity" from "drains daily". What is **not** carried: instant-build pricing and the imported-machinery loop, which want the border and per-site policy. |
+| `weather-sim.test.ts` (the farm half) | `systems::growing_conditions`, `BuildingDef::farms`, `ground::Ground::water`. Rain feeds them, frost stops them, drought withers them — ported against continuous ground state rather than v1's weather enum and `droughtAfterDays` counter. Guards `frozen_ground_grows_nothing_however_warm_the_air`, `a_drought_cuts_the_harvest_without_ending_it` and `a_farm_that_cannot_grow_produces_nothing_and_wears_nothing`. **Nothing consults the month**, and the frozen-midsummer case is what proves it. The rest of that file stays superseded, below. |
 | `save-format.test.ts` | `world::SAVE_VERSION`, `World::to_bytes`/`from_bytes`, `a_future_version_is_recognised_before_the_world_is_parsed`. |
 | `save-roundtrip.test.ts` | `world::tests::a_reloaded_world_resumes_the_same_future`. The tripwire that catches every field somebody forgot to persist, and it existed here before parallelism was ever on the table. |
 | `trade.test.ts` | `trade.rs`, `systems::trade`. |
@@ -54,7 +56,7 @@ Counts: **20 ported, 11 superseded, 10 n/a, 10 not yet.**
 | `deposits.test.ts` | `geology.rs`. Tile-visible deposits are gone; a deposit is a 3D body a mine *taps*, read through a survey. |
 | `pathfind.test.ts`, `pathfind-bounded.test.ts` | `road.rs`. A grid flood over a million cells was never going to survive metric scale; routing is a graph over what the player built. |
 | `topology.test.ts`, `topology-cache-regressions.test.ts` | Same. The caches existed to make grid floods affordable. |
-| `weather-sim.test.ts` | `climate.rs` and `ground.rs`. Temperature carried over; precipitation, lying snow, soil moisture and frost are new and drive cross-country going rather than farm output. River ice is still **not yet**. |
+| `weather-sim.test.ts` | `climate.rs` and `ground.rs`. Temperature carried over; precipitation, lying snow, soil moisture and frost are new. They drive cross-country going **and, since 2026-07-28, farm output** — through the root-zone `water` field rather than the topsoil `moisture` one, for reasons measured and recorded in `CLAUDE.md`. The farm half is ported rather than superseded and is listed above. River ice is still **not yet**. |
 | `helpers.ts`, `campaign.ts` | `scenario::found`, and the `bare()` fixture in `systems`. |
 | `tilemap-cache.test.ts` | Nothing. It tested the offscreen rasteriser whose 16,384 px dimension cap is one of the things that ended 1.x. |
 | `logistics-characterization.test.ts` | Partly ported into `systems::logistics` tests; the parts that characterised v1's tile routing went with the router. |
@@ -82,13 +84,11 @@ covers the tests, never the verbs.
 |---|---|---|
 | **A player command surface** | Every v1 panel sent a command — place, demolish, set a delivery priority, accept a tender, pause a site. Those test files are filed N/A below, which was right about the *tests* (they drove React) and wrong about the commands underneath them, which are simulation. | A `Command` type applied through the same single-writer path systems use, and **recorded as it is applied**. Today every field on `World` is `pub` and the deliberate verbs are four — `place`, `order_road`, `place_built`, `tick` — so a shell can write anything a system may not, and the determinism rule's *same seed and same inputs* has no **inputs** to hold constant. Counted on 2026-07-28: the largest uncounted row, and on the critical path, since the goal's first condition cannot close without it. |
 | **Refuelling away from home** (`customs-refuel.test.ts`) | Vehicles topping up at a filling point mid-route. | A vehicle tops up from its own garage at dispatch and the round trip is priced before it leaves, so it cannot strand itself — which makes this a *range* mechanic rather than a safety one. `GasStation` is already in the building table with nothing to do; it becomes real when hauls get long enough that a full tank is not a round trip. |
-| **Machinery wear** (`machinery.test.ts`) | Per-building machinery drained daily; a dry bin cut output. | A `wear` field on `BuildingDef` and a system. The physical dependency it creates — industry needs machinery to build *and* to run — is a good mechanic and worth having. **The archive's rule, read 2026-07-28, is a wear tax and not a throughput multiplier**: `wear: { machinery: 0.015 }` per building is daily consumption at *full activity*, it scales with activity so an idle building wears nothing, and a dry bin runs **worn at half efficiency rather than stalling** (`wornEffMult: 0.5`). Worth knowing before building it: this creates a standing machinery demand every republic must meet by import or by a Machine Works, so it changes the whole economy and belongs in a phase of its own. It does **not** speed extraction — see the geology rule on why depletion needs a 20× swing that this cannot supply. |
 | **Foreign construction labour** (`foreign-labor.test.ts`) | Paid builders in roubles, per-site opt-in. | Needs per-site build policy first. |
 | **Auto-buy and bonded imports** (`auto-buy.test.ts`, `bulk-autobuy.test.ts`) | A site's import bill paid at the border, delivered as earmarked virtual imports. | Same: per-site build policy. |
 | **Loans** (`loans.test.ts`) | Bloc advances with fixed simple interest. | Contained; `contract.rs` is the natural neighbour. |
 | **Happiness** (`happiness-breakdown.test.ts`) | A weighted satisfaction model driving migration. | `Building::provisioned` and `Building::heated` are the measured inputs and already exist. What is missing is what they *do* — see below. |
 | **Water and sewage** (`water.test.ts`) | Wells, towers, waste. | Groundwater is already a peer mineral with recharge, specifically so this is not a retrofit. |
-| **Seasonal farm output** | Weather driving what a farm yields. | `ground.rs` now models moisture, snow and frost, and `climate.rs` the rain that feeds them — but nothing agricultural reads any of it. A farm yields the same tonnage in a drought as in a good year. |
 | **Per-site build policy** (`per-site-policy.test.ts`, `planning-mode.test.ts`, `construction-pause.test.ts`) | Instant build, auto-buy, foreign labour and planning mode, per site. | Blocks three of the rows above. |
 
 ---

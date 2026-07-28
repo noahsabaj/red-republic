@@ -1471,6 +1471,79 @@ fn tender(world: &World) -> Option<Contract> {
 /// Efficiency is the product of separate limiters — staffing, power, input
 /// availability — each computed on its own so a stalled building can always be
 /// asked *which* one stopped it. They are deliberately not folded together.
+/// What a building with a dry machinery bin runs at.
+///
+/// Ported verbatim from the archived `BALANCE.wornEffMult`. **A soft penalty
+/// and never a stall** — a republic that runs out of machinery limps, which is
+/// recoverable, rather than stopping dead, which is not.
+pub const WORN_EFFICIENCY: f64 = 0.5;
+
+/// Below this air temperature nothing grows, whatever the ground is doing.
+pub const GROWING_MIN_C: f64 = 5.0;
+/// At and above this, warmth has stopped being the limiting factor.
+pub const GROWING_WARM_C: f64 = 18.0;
+/// Root-zone water below which crops are withering for want of it.
+pub const DROUGHT_BELOW: f64 = 0.35;
+/// What a farm still yields with the root zone completely exhausted.
+///
+/// **Not zero, and that is deliberate.** The Southern Steppe sits at a median
+/// of 0.029 through its growing season — measured — so a drought curve running
+/// to nothing would mean the steppe could never feed itself at all. The goal
+/// says a wall has to be a design consequence rather than a balance hole, and
+/// "this posting is agriculturally impossible" is the second. Dry farming is
+/// poor, not futile.
+pub const DROUGHT_FLOOR: f64 = 0.25;
+/// Root-zone water at and above which the ground is wetter than the crop needs.
+///
+/// Set from the measured distributions so this is a genuinely wet spell rather
+/// than the normal state: growing-season medians are 0.670 plains, 0.911 taiga,
+/// 0.722 maritime.
+pub const WATERED_AT: f64 = 0.85;
+/// What a well-watered spell is worth. The archived build's `rain.farmMult`.
+pub const WATERED_YIELD: f64 = 1.15;
+
+/// How well crops are growing today, as a multiplier on a farm's output.
+///
+/// **Ported from the archived rule — rain feeds them, frost stops them,
+/// drought withers them — but expressed against state rather than against a
+/// weather word.** v1 read a discrete weather enum and a `droughtAfterDays`
+/// counter; this build already carries soil moisture and frost continuously in
+/// [`crate::ground::Ground`], so the same three behaviours fall out of asking
+/// the ground what it is like.
+///
+/// **Nothing here mentions a season, and that is the point** — it is the same
+/// discipline `ground.rs` follows to produce the spring thaw without a
+/// calendar. Winter yields nothing because it is cold and the ground is frozen,
+/// not because a month index says so, which means a mild winter and a cold
+/// snap in May both do what they should without a special case.
+///
+/// Engine-owned and public so a UI can show the player *why* the harvest is
+/// poor rather than presenting a bare number.
+pub fn growing_conditions(world: &World) -> f64 {
+    // Frozen ground: roots cannot work it, however warm the air briefly gets.
+    let thawed = (1.0 - world.ground.frost).clamp(0.0, 1.0);
+
+    // Warmth, ramping rather than switching, so a cold spring is a bad harvest
+    // rather than no harvest.
+    let warmth =
+        ((world.temperature() - GROWING_MIN_C) / (GROWING_WARM_C - GROWING_MIN_C)).clamp(0.0, 1.0);
+
+    // Water: withering below the drought line, full between, and a real bonus
+    // when the ground is properly wet. Reads the **root zone**, not the
+    // topsoil — see [`crate::ground::ROOT_DRYING_PER_DAY`] for the measurement
+    // that forced the distinction.
+    let m = world.ground.water;
+    let water = if m < DROUGHT_BELOW {
+        DROUGHT_FLOOR + (1.0 - DROUGHT_FLOOR) * (m / DROUGHT_BELOW).clamp(0.0, 1.0)
+    } else if m < WATERED_AT {
+        1.0
+    } else {
+        WATERED_YIELD
+    };
+
+    (thawed * warmth * water).max(0.0)
+}
+
 pub fn production(world: &World) -> Vec<Mutation> {
     let day = tick_days();
     let mut out = Vec::new();
@@ -1499,6 +1572,22 @@ pub fn production(world: &World) -> Vec<Mutation> {
             continue;
         }
 
+        // A farm answers to the ground and the air, not to the calendar.
+        if def.farms {
+            efficiency *= growing_conditions(world);
+            if efficiency <= 0.0 {
+                continue;
+            }
+        }
+
+        // Worn machinery is a soft penalty, never a stall — the archived rule.
+        // Deliberately *not* folded into `input_factor` below: an input a
+        // building is short of throttles it toward zero, and machinery must
+        // not, or a republic that runs out stops instead of limping.
+        if def.wear > 0.0 && !b.stock.get(Resource::Machinery).is_positive() {
+            efficiency *= WORN_EFFICIENCY;
+        }
+
         // How much of what it wants is actually in the bins.
         let mut input_factor: f64 = 1.0;
         for &(resource, rate) in def.inputs {
@@ -1519,6 +1608,20 @@ pub fn production(world: &World) -> Vec<Mutation> {
                 resource,
                 tonnes: Tonnes(rate * day * efficiency),
             });
+        }
+
+        // Machines wear in proportion to how hard they are worked. `efficiency`
+        // already carries staffing, power, growing conditions and input
+        // shortfall, so an idle building wears nothing without a special case.
+        if def.wear > 0.0 {
+            let worn = Tonnes(def.wear * day * efficiency).min(b.stock.get(Resource::Machinery));
+            if worn.is_positive() {
+                out.push(Mutation::Consume {
+                    building: b.id,
+                    resource: Resource::Machinery,
+                    tonnes: worn,
+                });
+            }
         }
 
         match (def.taps, b.tapped) {
@@ -2818,6 +2921,12 @@ mod tests {
         // down on purpose.
         w.ground = crate::ground::Ground {
             moisture: 0.0,
+            // The root zone is set mid-band on purpose — comfortably between
+            // DROUGHT_BELOW and WATERED_AT, so growing conditions contribute
+            // exactly 1.0 and no economy test here quietly becomes a drought
+            // test. The same reasoning as the bone-dry topsoil above, for the
+            // other reservoir. Farm tests set it themselves.
+            water: 0.6,
             snow: 0.0,
             frost: 0.0,
         };
@@ -3002,6 +3111,201 @@ mod tests {
         let b = w.buildings.get(mill).unwrap();
         assert!(b.stock.get(Resource::Planks).is_positive(), "no planks");
         assert!(b.stock.get(Resource::Wood).0 < 20.0, "no wood consumed");
+    }
+
+    /// Advance until the air itself is not the limiting factor, so a growing
+    /// test is asking about the ground and nothing else.
+    fn warm_day(w: &mut World) {
+        for _ in 0..(360 * TICKS_PER_DAY) {
+            if w.temperature() > GROWING_WARM_C {
+                return;
+            }
+            w.tick();
+        }
+        panic!("no day warm enough to grow anything in a whole year");
+    }
+
+    /// The archived rule, and the reason it is a *tax* rather than a stall: a
+    /// republic that runs out of machinery limps, which is recoverable.
+    #[test]
+    fn a_dry_machinery_bin_halves_output_and_never_stalls_it() {
+        fn planks_after_a_day(machinery: f64) -> f64 {
+            let mut w = bare();
+            let mill = place(&mut w, BuildingKind::Sawmill, at(1_000.0, 1_000.0));
+            staff_up(&mut w, at(1_100.0, 1_000.0), 10);
+            let b = w.buildings.get_mut(mill).unwrap();
+            b.stock.add(Resource::Wood, Tonnes(40.0));
+            if machinery > 0.0 {
+                b.stock.add(Resource::Machinery, Tonnes(machinery));
+            }
+            for _ in 0..TICKS_PER_DAY {
+                w.tick();
+            }
+            w.buildings.get(mill).unwrap().stock.get(Resource::Planks).0
+        }
+
+        let healthy = planks_after_a_day(5.0);
+        let worn = planks_after_a_day(0.0);
+        assert!(healthy > 0.0, "the mill made nothing even with machinery");
+        assert!(
+            worn > 0.0,
+            "a dry bin stalled the mill instead of wearing it"
+        );
+        assert!(
+            (worn / healthy - WORN_EFFICIENCY).abs() < 1e-6,
+            "worn output was {worn} against {healthy}, ratio {}, wanted {WORN_EFFICIENCY}",
+            worn / healthy
+        );
+    }
+
+    /// Wear is proportional to activity, so a building nobody staffs wears
+    /// nothing — the half of the rule that a fixed daily drain would get wrong.
+    #[test]
+    fn machines_wear_only_when_they_are_worked() {
+        let mut w = bare();
+        let worked = place(&mut w, BuildingKind::Sawmill, at(1_000.0, 1_000.0));
+        // Far enough from the housing that nobody can walk to it, so labour
+        // leaves it empty. This is the fixture doing real work: an unstaffed
+        // twin is the only way to tell "scales with activity" from "drains
+        // every day".
+        let idle = place(&mut w, BuildingKind::Sawmill, at(3_600.0, 3_600.0));
+        staff_up(&mut w, at(1_100.0, 1_000.0), 10);
+        for id in [worked, idle] {
+            let b = w.buildings.get_mut(id).unwrap();
+            b.stock.add(Resource::Wood, Tonnes(40.0));
+            b.stock.add(Resource::Machinery, Tonnes(5.0));
+        }
+
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+
+        let worked_left = w
+            .buildings
+            .get(worked)
+            .unwrap()
+            .stock
+            .get(Resource::Machinery);
+        let idle_left = w
+            .buildings
+            .get(idle)
+            .unwrap()
+            .stock
+            .get(Resource::Machinery);
+        assert_eq!(
+            w.buildings.get(idle).unwrap().staff,
+            0,
+            "the idle twin got staffed — the fixture is not testing what it claims"
+        );
+        assert!(
+            worked_left.0 < 5.0,
+            "a working mill wore no machinery at all"
+        );
+        assert!(
+            (idle_left.0 - 5.0).abs() < 1e-9,
+            "an idle mill wore {:.6} t of machinery",
+            5.0 - idle_left.0
+        );
+    }
+
+    /// Rain feeds them, frost stops them, drought withers them — the archived
+    /// rule, against ground state rather than a weather word.
+    ///
+    /// **Nothing here consults the month, and the frozen case proves it**: this
+    /// is high summer by the calendar and the answer is still zero.
+    #[test]
+    fn frozen_ground_grows_nothing_however_warm_the_air() {
+        let mut w = bare();
+        warm_day(&mut w);
+        w.ground.water = 0.6;
+
+        w.ground.frost = 0.0;
+        let thawed = growing_conditions(&w);
+        assert!(
+            thawed > 0.0,
+            "a warm, watered, unfrozen day grew nothing at all"
+        );
+
+        w.ground.frost = 1.0;
+        assert_eq!(
+            growing_conditions(&w),
+            0.0,
+            "crops grew in ground frozen solid, in the middle of summer"
+        );
+    }
+
+    /// Dry farming is poor, not futile — the floor exists because the Southern
+    /// Steppe sits at a measured median of 0.029 through its growing season.
+    #[test]
+    fn a_drought_cuts_the_harvest_without_ending_it() {
+        let mut w = bare();
+        warm_day(&mut w);
+        w.ground.frost = 0.0;
+
+        w.ground.water = 0.6;
+        let watered = growing_conditions(&w);
+        w.ground.water = 0.0;
+        let parched = growing_conditions(&w);
+
+        assert!(parched < watered, "a drought cost the harvest nothing");
+        assert!(
+            parched > 0.0,
+            "a drought ended the harvest outright, which would make the steppe unplayable"
+        );
+    }
+
+    /// Both mechanics through the real system rather than the helper: a farm
+    /// that cannot grow produces nothing *and* wears nothing, because growing
+    /// conditions land in `efficiency` before wear is taken.
+    #[test]
+    fn a_farm_that_cannot_grow_produces_nothing_and_wears_nothing() {
+        let mut w = bare();
+        warm_day(&mut w);
+        let farm = place(&mut w, BuildingKind::Farm, at(1_000.0, 1_000.0));
+        // Clear of the farm's 240 m footprint, and still inside the 2 km a
+        // worker will walk.
+        staff_up(&mut w, at(1_400.0, 1_000.0), 12);
+        w.buildings
+            .get_mut(farm)
+            .unwrap()
+            .stock
+            .add(Resource::Machinery, Tonnes(5.0));
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        assert!(
+            w.buildings.get(farm).unwrap().staff > 0,
+            "the farm never got staffed — the fixture proves nothing"
+        );
+
+        // Read `production` directly: a whole tick would let the weather system
+        // rewrite the ground out from under the assertion.
+        w.ground.frost = 0.0;
+        w.ground.water = 0.6;
+        let growing = production(&w);
+        assert!(
+            growing.iter().any(|m| matches!(m,
+                Mutation::Produce { building, resource: Resource::Crops, .. } if *building == farm)),
+            "a warm watered farm proposed no crops"
+        );
+        assert!(
+            growing.iter().any(|m| matches!(m,
+                Mutation::Consume { building, resource: Resource::Machinery, .. } if *building == farm)),
+            "a working farm wore no machinery"
+        );
+
+        w.ground.frost = 1.0;
+        let frozen = production(&w);
+        assert!(
+            !frozen.iter().any(|m| matches!(m,
+                Mutation::Produce { building, .. } if *building == farm)),
+            "a frozen farm still produced"
+        );
+        assert!(
+            !frozen.iter().any(|m| matches!(m,
+                Mutation::Consume { building, resource: Resource::Machinery, .. } if *building == farm)),
+            "a frozen farm still wore its machinery out"
+        );
     }
 
     /// The rule the archived build documented at length: drain is what a
@@ -3973,6 +4277,7 @@ mod tests {
     fn soak(w: &mut World) {
         w.ground = crate::ground::Ground {
             moisture: 1.0,
+            water: 1.0,
             snow: 0.0,
             frost: 0.0,
         };
@@ -4060,11 +4365,13 @@ mod tests {
 
         let thaw = stuck_in(crate::ground::Ground {
             moisture: 1.0,
+            water: 1.0,
             snow: 0.0,
             frost: 0.0,
         });
         let midwinter = stuck_in(crate::ground::Ground {
             moisture: 1.0,
+            water: 1.0,
             snow: 60.0,
             frost: 1.0,
         });

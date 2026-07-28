@@ -405,6 +405,7 @@ fn cross_country_routing_cost() {
         // on everything being equally free.
         world.ground = red_republic_sim::ground::Ground {
             moisture: 1.0,
+            water: 1.0,
             snow: 0.0,
             frost: 0.0,
         };

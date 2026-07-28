@@ -65,6 +65,25 @@ pub const DRYING_PER_DAY: f64 = 0.10;
 /// How warm it has to be for drying to run at full rate, above freezing.
 pub const DRYING_FULL_AT_C: f64 = 15.0;
 
+/// Millimetres of water that fill the **root zone** from empty.
+///
+/// Four times [`SATURATION_MM`], because this is not the same body of water as
+/// the topsoil. `moisture` is the top few centimetres — what decides whether a
+/// lorry sinks — and it is gone ten days after rain. A root draws on something
+/// deeper and far slower, which is why a crop survives a fortnight of sun and a
+/// lorry stops bogging after a weekend of it.
+pub const ROOT_SATURATION_MM: f64 = 160.0;
+
+/// How fast the root zone gives up water on a warm day — an eighth of
+/// [`DRYING_PER_DAY`].
+///
+/// **Measured, not chosen:** using `moisture` as the crop's water supply killed
+/// every harvest, because on the 188 days a year warm enough to grow anything
+/// its median value is 0.000 and its p75 is 0.088. Tuning the crop threshold
+/// against that would only have made the harvest depend on which day a rain
+/// burst happened to land. The signal was wrong, not the constant.
+pub const ROOT_DRYING_PER_DAY: f64 = 0.012;
+
 /// How wet and how frozen the open ground is.
 ///
 /// One figure for the whole republic. Weather is regional at this scale — a map
@@ -74,7 +93,20 @@ pub const DRYING_FULL_AT_C: f64 = 15.0;
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Ground {
     /// Water in the topsoil, `0.0` bone dry to `1.0` saturated.
+    ///
+    /// **This is the trafficability figure, not the agricultural one.** It is
+    /// the top few centimetres, it decides whether a lorry sinks, and it is dry
+    /// most of the summer. Crops read [`Ground::water`].
     pub moisture: f64,
+    /// Water in the **root zone**, `0.0` exhausted to `1.0` full.
+    ///
+    /// Fed by the same rain and meltwater as [`Ground::moisture`] and drained
+    /// by the same warmth, but four times the reservoir and an eighth the
+    /// drying rate — so it carries a crop through a dry fortnight the way real
+    /// subsoil does. Kept as a peer field rather than derived, because the two
+    /// answer genuinely different questions and neither is a function of the
+    /// other.
+    pub water: f64,
     /// Snow lying, in millimetres of water equivalent.
     pub snow: f64,
     /// How frozen the ground is, `0.0` soft to `1.0` set hard.
@@ -89,6 +121,7 @@ impl Default for Ground {
     fn default() -> Self {
         Self {
             moisture: 0.5,
+            water: 0.5,
             snow: 0.0,
             frost: 0.3,
         }
@@ -114,11 +147,13 @@ impl Ground {
 
         let water = if freezing { 0.0 } else { precipitation_mm } + melt;
         self.moisture = (self.moisture + water / SATURATION_MM).min(1.0);
+        self.water = (self.water + water / ROOT_SATURATION_MM).min(1.0);
 
         // It dries out only when it is warm and there is nothing lying on top.
         if !freezing && self.snow <= 0.0 {
             let warmth = ((temperature_c - FREEZE_C) / DRYING_FULL_AT_C).clamp(0.0, 1.5);
             self.moisture = (self.moisture - DRYING_PER_DAY * warmth).max(0.0);
+            self.water = (self.water - ROOT_DRYING_PER_DAY * warmth).max(0.0);
         }
     }
 
@@ -787,6 +822,7 @@ mod tests {
     fn a_frozen_bog_is_a_road() {
         let soaked_and_frozen = Ground {
             moisture: 1.0,
+            water: 1.0,
             snow: 100.0,
             frost: 1.0,
         };
@@ -802,6 +838,7 @@ mod tests {
     fn dry_ground_is_firm_whatever_the_season() {
         let dry = Ground {
             moisture: 0.0,
+            water: 0.0,
             snow: 0.0,
             frost: 0.0,
         };
@@ -899,6 +936,7 @@ mod tests {
     fn rock_stays_firm_when_grass_turns_to_mud() {
         let wet = Ground {
             moisture: 1.0,
+            water: 1.0,
             snow: 0.0,
             frost: 0.0,
         };
