@@ -241,6 +241,11 @@ pub enum Mutation {
     /// How a bloc feels about the republic, after a failure or a day of
     /// forgetting.
     Relations { market: Market, penalty: f64 },
+    /// An advance came due with money still owed. The bloc writes it off and
+    /// remembers. Coarse on purpose: the debt going, the fine landing and
+    /// relations souring are one event, and a default that half happened would
+    /// be a republic that owes nothing to a bloc that is not angry.
+    DefaultOnLoan { market: Market },
     /// A penalty for undelivered goods. Separate from [`Mutation::Export`]
     /// because no goods move: this is money leaving and nothing coming back.
     Fine { market: Market, amount: f64 },
@@ -283,6 +288,7 @@ pub enum MutationKind {
     DropContract,
     Relations,
     Fine,
+    DefaultOnLoan,
 }
 
 impl Mutation {
@@ -316,6 +322,7 @@ impl Mutation {
             Mutation::CloseContract { .. } => MutationKind::CloseContract,
             Mutation::DropContract { .. } => MutationKind::DropContract,
             Mutation::Relations { .. } => MutationKind::Relations,
+            Mutation::DefaultOnLoan { .. } => MutationKind::DefaultOnLoan,
             Mutation::Fine { .. } => MutationKind::Fine,
         }
     }
@@ -348,6 +355,17 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
     ("trade", &[MutationKind::Export, MutationKind::Import]),
     ("weather", &[MutationKind::Weather]),
     ("commissioning", &[MutationKind::Commission]),
+    // Daily, and for the same reason contracts are: a deadline is a day index,
+    // so a per-tick sweep would default a republic 1,440 times over one unpaid
+    // advance.
+    (
+        "loans",
+        &[
+            MutationKind::DefaultOnLoan,
+            MutationKind::Fine,
+            MutationKind::Relations,
+        ],
+    ),
     // Dispatch emits `Bog` because a lorry can stick on the very first crossing
     // out of the yard, and a single-leg journey has no leg boundary for the
     // fleet system to catch it at.
@@ -482,6 +500,9 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
             }
             &Mutation::DropContract { contract } => {
                 world.contracts.remove(contract);
+            }
+            &Mutation::DefaultOnLoan { market } => {
+                world.loans.default_on(market);
             }
             &Mutation::Relations { market, penalty } => {
                 world.contracts.set_penalty(market, penalty);
@@ -2776,6 +2797,37 @@ pub fn weather(world: &World) -> Vec<Mutation> {
 /// finishing: a depot that opened, a save that reloaded, and a future in which
 /// an establishment can be enlarged all land in the same code path, and none of
 /// them can be forgotten separately.
+/// Advances that came due with money still owed.
+///
+/// **Daily**, for the same reason contracts are: a due day is a day index, so a
+/// per-tick sweep would default a republic 1,440 times over one unpaid advance.
+///
+/// A default costs more than the money. The bloc writes the debt off, takes a
+/// quarter of what was outstanding as a fine, and sours — worse than a missed
+/// tender does, because failing to deliver goods is a bad month and failing to
+/// repay an advance is a bad republic. That penalty rides the same relations
+/// machinery a missed tender uses, so a defaulted-on bloc quotes worse prices
+/// thereafter without a second mechanism for it.
+pub fn loans(world: &World) -> Vec<Mutation> {
+    let today = world.clock.day_index();
+    let mut out = Vec::new();
+    for loan in world.loans.overdue(today) {
+        let lost = loan.outstanding();
+        out.push(Mutation::DefaultOnLoan {
+            market: loan.market,
+        });
+        out.push(Mutation::Fine {
+            market: loan.market,
+            amount: lost * crate::loan::DEFAULT_FINE,
+        });
+        out.push(Mutation::Relations {
+            market: loan.market,
+            penalty: crate::loan::DEFAULT_RELATIONS,
+        });
+    }
+    out
+}
+
 pub fn commissioning(world: &World) -> Vec<Mutation> {
     let mut out = Vec::new();
     for garage in world.buildings.all() {
@@ -2823,6 +2875,10 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
             |w: &mut World| tracks(w),
             labour,
             |w: &mut World| contracts(w),
+            // After contracts, because a default sours relations the same way a
+            // missed delivery does and the order the two land in is part of the
+            // simulation's definition rather than an implementation detail.
+            |w: &mut World| loans(w),
             |w: &mut World| commissioning(w),
         ] {
             let mutations = system(world);
@@ -5191,6 +5247,22 @@ mod tests {
             .sell(Resource::Coal, trading_bloc)
             .buy(Resource::Machinery, trading_bloc, Tonnes(4.0));
         world.treasury.credit(trading_bloc, 500.0);
+
+        // An advance this fixture will never repay, so `loans` has a default to
+        // emit. Taken through `issue` rather than written in, because that is
+        // the path a player uses and a fixture that skips it stops testing the
+        // command layer it depends on.
+        //
+        // The shortest term is 360 days and the run below is longer, which is
+        // deliberate: the due day has to fall comfortably inside the run rather
+        // than on its last tick, or this guard starts failing for calendar
+        // reasons that have nothing to do with write sets.
+        world
+            .issue(crate::command::Command::TakeLoan {
+                market: trading_bloc,
+                tier: 0,
+            })
+            .expect("no advance is outstanding at founding");
         // Something under construction, so the construction system has work.
         let centre = world.buildings.all()[0].centre;
         let _ = world.place(
@@ -5291,7 +5363,15 @@ mod tests {
         };
 
         // A year, so a winter and several tender cycles pass.
-        for day in 0..360u32 {
+        // NOTE: this loop is a second copy of `run_tick`'s schedule, which is
+        // the one thing about this guard that is not self-maintaining. A system
+        // added to `run_tick` and not here goes unwatched — caught, but only
+        // indirectly, by `every_system_and_every_mutation_kind_is_accounted_for`
+        // demanding every system be declared and every declaration be reached.
+        //
+        // Longer than the shortest loan term, so the advance taken above comes
+        // due well inside the run. See the note where it is taken.
+        for day in 0..400u32 {
             for _ in 0..TICKS_PER_DAY {
                 if world.clock.is_day_boundary() {
                     let m = labour(&mut world);
@@ -5299,6 +5379,9 @@ mod tests {
                     apply(&mut world, &m);
                     let m = contracts(&world);
                     note("contracts", &m);
+                    apply(&mut world, &m);
+                    let m = loans(&world);
+                    note("loans", &m);
                     apply(&mut world, &m);
                     let m = commissioning(&world);
                     note("commissioning", &m);
@@ -5704,6 +5787,63 @@ mod tests {
     }
 
     // ---- Contracts ----
+
+    /// A default costs the money, a fine, and the bloc's patience.
+    ///
+    /// The mechanic is only worth having if failing to repay is worse than
+    /// never borrowing. All three consequences are asserted because a default
+    /// that only wrote the debt off would be a free loan with a waiting period.
+    #[test]
+    fn failing_to_repay_an_advance_costs_more_than_the_advance() {
+        let mut w = bare();
+        let bloc = Market::East;
+
+        w.issue(crate::command::Command::TakeLoan {
+            market: bloc,
+            tier: 0,
+        })
+        .expect("nothing is owed yet");
+
+        let advanced = w.treasury.of(bloc);
+        assert_eq!(advanced, crate::loan::TIERS[0].principal);
+        let owed = w.loans.outstanding(bloc);
+        assert!(owed > advanced, "an advance costs interest");
+        let relations_before = w.contracts.penalty(bloc);
+
+        // Spend it, so the default lands on a republic that cannot simply pay.
+        w.treasury.debit(bloc, advanced);
+
+        // Run past the due day. The system is daily, so this also proves the
+        // republic is not fined 1,440 times for one unpaid advance.
+        let due = crate::loan::TIERS[0].term_days;
+        for _ in 0..(due + 2) * TICKS_PER_DAY {
+            w.tick();
+        }
+
+        assert!(w.loans.of(bloc).is_none(), "the debt was written off");
+        assert_eq!(w.loans.defaulted, 1, "and counted, exactly once");
+        assert!(
+            w.contracts.penalty(bloc) > relations_before,
+            "the bloc did not sour, so every future price is unchanged"
+        );
+        // The consequence that does not need money to bite, and the reason
+        // this mechanic is not a free loan with a waiting period. The treasury
+        // refuses to go negative on purpose, so a fine on an empty purse takes
+        // nothing at all -- which this test found the first time it ran.
+        assert!(
+            !w.loans.will_lend(bloc),
+            "the bloc would lend again to a republic that never repaid it"
+        );
+        assert_eq!(
+            w.issue(crate::command::Command::TakeLoan {
+                market: bloc,
+                tier: 0
+            }),
+            Err(crate::command::Refused::Loan(
+                crate::loan::LoanError::Defaulted
+            ))
+        );
+    }
 
     /// A customs house at an EASTERN frontier post.
     ///

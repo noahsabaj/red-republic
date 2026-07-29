@@ -81,6 +81,12 @@ pub enum Command {
     /// Withdraw one.
     RemoveTradeRule { index: u32 },
 
+    /// Take an advance from a bloc. `tier` indexes `loan::TIERS`.
+    TakeLoan { market: Market, tier: u32 },
+
+    /// Pay some of an advance back. More than is owed pays off what is owed.
+    RepayLoan { market: Market, amount: f64 },
+
     /// Move one up or down the running order.
     ///
     /// Its own command rather than a re-send of the whole policy, because the
@@ -114,6 +120,8 @@ pub enum Refused {
     NoSuchOffer(ContractId),
     /// There is no trade rule at that position.
     NoSuchRule { index: u32, rules: u32 },
+    /// The advance could not be taken or repaid.
+    Loan(crate::loan::LoanError),
 }
 
 impl std::fmt::Display for Refused {
@@ -125,6 +133,7 @@ impl std::fmt::Display for Refused {
             // The id is carried for the caller, never shown: a contract number
             // is not something a player has ever seen or could act on.
             Refused::NoSuchOffer(_) => write!(f, "that tender is no longer on the table"),
+            Refused::Loan(why) => write!(f, "{why}"),
             Refused::NoSuchRule { index, rules } => match rules {
                 0 => write!(f, "there are no trade rules to change"),
                 1 => write!(f, "there is only one trade rule, and it is not {index}"),
@@ -145,6 +154,12 @@ impl From<PlacementError> for Refused {
 impl From<RoadError> for Refused {
     fn from(why: RoadError) -> Self {
         Refused::Road(why)
+    }
+}
+
+impl From<crate::loan::LoanError> for Refused {
+    fn from(why: crate::loan::LoanError) -> Self {
+        Refused::Loan(why)
     }
 }
 

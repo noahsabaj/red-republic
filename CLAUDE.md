@@ -40,7 +40,9 @@ Taken 2026-07-28 in the interview that set the scope above. Everything here was 
 
   **Trade is geographic, and that is the whole point.** A customs house clears *only* for the bloc whose post it stands at, so earning dollars means hauling to a Western post — and if the only Western post is across the map, that is what a dollar costs. The trajectory runner proved it in one run: told to sell coal east from a republic whose crossing is Western, it earned **zero for two years**. It now reads the bloc off its own crossing, which is what a competent player would do.
 
-  Still to come on this row: loans, and refuelling away from home.
+  **Loans are built, and a test rewrote the mechanic within a minute of it existing.** Three tiers per bloc, simple interest locked at taking, one advance per bloc at a time, and a daily sweep that defaults an overdue one. The first version's only penalties were a fine and soured relations — and `Treasury::debit` deliberately refuses to go negative, because a republic does not run an overdraft it never agreed to, so **a fine on an empty purse takes nothing and defaulting while broke was free**: borrow, spend it, default, borrow again. The fix is that a defaulted-on bloc **never lends again**, which is a consequence that does not need money to bite — the right shape for a penalty aimed at a republic that has none.
+
+  Still to come on this row: refuelling away from home.
 
 - **Construction Offices employ the builders and own the machinery, and they run crew buses.** Not local hire: an office's workers commute to the office like any other workplace, and the office shuttles them out to its sites. That is a second physical transport hop, and it is deliberate — it means a remote site is expensive in the same currency everything else in this game is expensive in, which is vehicles, roads and time.
 

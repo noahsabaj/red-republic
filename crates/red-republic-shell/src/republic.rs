@@ -526,6 +526,66 @@ impl Republic {
         GString::from(format!("{} {} · {:?}", what, rule.resource.name(), rule.market).as_str())
     }
 
+    /// What each bloc has advanced and what is still owed, one line each.
+    ///
+    /// A republic that cannot see its own debts cannot plan around the day they
+    /// come due — and a default costs a quarter of what is outstanding plus
+    /// relations that price every future trade with that bloc.
+    #[func]
+    fn loan_count(&self) -> i64 {
+        self.world
+            .as_ref()
+            .map_or(0, |w| w.loans().all().len() as i64)
+    }
+
+    #[func]
+    fn loan_line(&self, index: i64) -> GString {
+        let Some(w) = &self.world else {
+            return GString::from("");
+        };
+        let Some(loan) = w.loans().all().get(index.max(0) as usize) else {
+            return GString::from("");
+        };
+        let today = w.clock().day_index();
+        GString::from(
+            format!(
+                "{:?}: {:.0} of {:.0} owed · {} days",
+                loan.market,
+                loan.outstanding(),
+                loan.owed,
+                loan.days_left(today),
+            )
+            .as_str(),
+        )
+    }
+
+    /// How much a bloc is still owed. Zero when nothing is outstanding.
+    #[func]
+    fn owed_to(&self, market_index: i64) -> f64 {
+        let Some(w) = &self.world else { return 0.0 };
+        let market = if market_index == 0 {
+            red_republic_sim::Market::East
+        } else {
+            red_republic_sim::Market::West
+        };
+        w.loans().outstanding(market)
+    }
+
+    /// The republic's record: advances cleared, and advances defaulted on.
+    #[func]
+    fn loans_cleared(&self) -> i64 {
+        self.world
+            .as_ref()
+            .map_or(0, |w| i64::from(w.loans().cleared))
+    }
+
+    #[func]
+    fn loans_defaulted(&self) -> i64 {
+        self.world
+            .as_ref()
+            .map_or(0, |w| i64::from(w.loans().defaulted))
+    }
+
     /// Everything the player has done, in order. A republic that can show its
     /// own history is one whose save can be replayed and whose bug report is
     /// reproducible.
