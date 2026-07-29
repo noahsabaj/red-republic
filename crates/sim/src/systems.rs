@@ -405,6 +405,49 @@ pub enum Mutation {
         journey: Journey,
         burn: Tonnes,
     },
+    /// Visitors from abroad walking up to a frontier post.
+    ///
+    /// They are at the border and nowhere else — the same shape as
+    /// [`Mutation::Immigrate`], and for the same reason: somebody who appeared
+    /// in a hotel would be the click-a-button shape this build refuses.
+    Arrive {
+        at: Point,
+        heads: u32,
+        market: Market,
+    },
+    /// A coach reached a party of visitors; they boarded, and it turns for the
+    /// hotel it was sent to.
+    Fetch {
+        vehicle: VehicleId,
+        visit: crate::tourism::VisitId,
+        journey: Journey,
+        burn: Tonnes,
+    },
+    /// A coach set its party down at a hotel, and their stay began.
+    ///
+    /// One kind for both halves, for the reason [`Mutation::Settle`] is one: a
+    /// party that had left the coach without checking in would be people
+    /// standing in a lobby that nothing in the simulation can see.
+    CheckIn {
+        vehicle: VehicleId,
+        visit: crate::tourism::VisitId,
+        hotel: BuildingId,
+        at: Point,
+        journey: Journey,
+        burn: Tonnes,
+    },
+    /// A day of hard currency from visitors, and whose stay ended.
+    ///
+    /// **Coarse on purpose**: the sweep that counts the money is the sweep that
+    /// ends a stay, and a party that went home without its last day's takings
+    /// would be money the republic earned and did not get. `leaving` also
+    /// carries parties that gave up at a post, because from the republic's side
+    /// both are visitors it no longer has.
+    Takings {
+        market: Market,
+        amount: f64,
+        leaving: Vec<crate::tourism::VisitId>,
+    },
     /// A plough went through: these cells are swept.
     ///
     /// The same shape as [`Mutation::Wear`] and emitted at the same moment for
@@ -481,6 +524,10 @@ pub enum MutationKind {
     Immigrate,
     GiveUp,
     Clear,
+    Arrive,
+    Fetch,
+    CheckIn,
+    Takings,
     Board,
     Settle,
 }
@@ -537,6 +584,10 @@ impl Mutation {
             Mutation::GiveUp { .. } => MutationKind::GiveUp,
             Mutation::Board { .. } => MutationKind::Board,
             Mutation::Clear { .. } => MutationKind::Clear,
+            Mutation::Arrive { .. } => MutationKind::Arrive,
+            Mutation::Fetch { .. } => MutationKind::Fetch,
+            Mutation::CheckIn { .. } => MutationKind::CheckIn,
+            Mutation::Takings { .. } => MutationKind::Takings,
             Mutation::Settle { .. } => MutationKind::Settle,
         }
     }
@@ -620,6 +671,8 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
             MutationKind::Clear,
             MutationKind::Board,
             MutationKind::Settle,
+            MutationKind::Fetch,
+            MutationKind::CheckIn,
         ],
     ),
     ("tracks", &[MutationKind::Fade, MutationKind::Promote]),
@@ -672,6 +725,14 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
     // need a machine sent after it. Declaring `Bog` here would have been a
     // declaration nothing could reach, which constrains nothing and looks fine.
     ("clearing", &[MutationKind::Dispatch]),
+    // Visitors turning up, spending and going home. Daily, for the reason
+    // wages and contracts are: a night in a hotel is a day's takings, and a
+    // per-tick sweep would charge a party 1,440 times for one.
+    ("tourism", &[MutationKind::Arrive, MutationKind::Takings]),
+    // And the coach that fetches them. It shares the passenger pool with
+    // `settling` and runs after it, which is what says a settler outranks a
+    // visitor for the last coach.
+    ("touring", &[MutationKind::Dispatch, MutationKind::Bog]),
     (
         "contracts",
         &[
@@ -1335,6 +1396,84 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
             }
             &Mutation::GiveUp { group } => {
                 world.migration.give_up(group);
+            }
+            &Mutation::Arrive { at, heads, market } => {
+                world
+                    .tourism
+                    .arrive(at, heads, market, world.clock.day_index());
+            }
+            Mutation::Fetch {
+                vehicle,
+                visit,
+                journey,
+                burn,
+            } => {
+                let boarded = world.tourism.get_mut(*visit).map(|v| {
+                    v.riding = Some(*vehicle);
+                    v.at
+                });
+                if let Some(v) = world.fleet.get_mut(*vehicle) {
+                    v.fuel = v.fuel.saturating_sub(*burn);
+                    if let Some(at) = boarded {
+                        v.at = at;
+                    }
+                    v.journey = Some(journey.clone());
+                    v.state = VehicleState::Delivering;
+                }
+            }
+            Mutation::CheckIn {
+                vehicle,
+                visit,
+                hotel,
+                at,
+                journey,
+                burn,
+            } => {
+                // A hotel pulled down or filled while the coach was in the air
+                // is the same case a demolished estate is: the party has
+                // nowhere to go and goes home, and the ledger records it rather
+                // than losing them quietly.
+                let room = world
+                    .buildings
+                    .get(*hotel)
+                    .filter(|b| b.is_built())
+                    .map(|b| b.def().beds.saturating_sub(world.tourism.booked_at(*hotel)))
+                    .unwrap_or(0);
+                let heads = world.tourism.get(*visit).map_or(0, |v| v.heads);
+                if room >= heads && heads > 0 {
+                    world
+                        .tourism
+                        .check_in(*visit, *hotel, *at, world.clock.day_index());
+                } else {
+                    world.tourism.end(*visit);
+                }
+                let yard = world
+                    .fleet
+                    .get(*vehicle)
+                    .and_then(|v| world.buildings.get(v.home))
+                    .map(|b| b.centre);
+                if let Some(v) = world.fleet.get_mut(*vehicle) {
+                    v.fuel = v.fuel.saturating_sub(*burn);
+                    if let Some(at) = yard {
+                        let _ = at;
+                    }
+                    v.at = *at;
+                    v.journey = Some(journey.clone());
+                    v.state = VehicleState::Returning;
+                }
+            }
+            Mutation::Takings {
+                market,
+                amount,
+                leaving,
+            } => {
+                if *amount > 0.0 {
+                    world.treasury.credit(*market, *amount);
+                    world.tourism.take(*market, *amount);
+                }
+                for visit in leaving {
+                    world.tourism.end(*visit);
+                }
             }
             Mutation::Board {
                 vehicle,
@@ -4009,6 +4148,30 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                         }),
                     }
                 }
+                // Arrived at a post where visitors are standing. They get on
+                // and the coach turns for the hotel it was sent to.
+                Some(Job::Tour { visit, to }) => {
+                    match world.buildings.get(to).map(|b| b.centre) {
+                        Some(door) if onward(door).is_some() => out.push(Mutation::Fetch {
+                            vehicle: v.id,
+                            visit,
+                            journey: onward(door).expect("just checked"),
+                            burn,
+                        }),
+                        // Either nobody is here or the hotel has gone. Go home
+                        // rather than stand in a field holding a job that can
+                        // never finish.
+                        _ => out.push(Mutation::Load {
+                            vehicle: v.id,
+                            from: v.home,
+                            resource: Resource::Fuel,
+                            tonnes: Tonnes::ZERO,
+                            journey: home_run.clone(),
+                            state: VehicleState::Returning,
+                            burn,
+                        }),
+                    }
+                }
                 // Reached the far end of what it was sent to clear. There is
                 // nothing to pick up: it turns round, and the way home is
                 // swept exactly as the way out was.
@@ -4059,6 +4222,26 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                     vehicle: v.id,
                     group,
                     home,
+                    journey: plan,
+                    burn,
+                });
+                if stuck {
+                    out.push(Mutation::Bog { vehicle: v.id, day });
+                }
+            }
+            // A coach with visitors aboard, arriving at the hotel. They check
+            // in and start spending; the coach turns for its depot.
+            VehicleState::Delivering if matches!(v.job, Some(Job::Tour { .. })) => {
+                let Some(Job::Tour { visit, to }) = v.job else {
+                    continue;
+                };
+                let plan = home_run.clone();
+                let stuck = sticks(world, &crossing, v.id, def.ground, &plan, 0, day);
+                out.push(Mutation::CheckIn {
+                    vehicle: v.id,
+                    visit,
+                    hotel: to,
+                    at: arrived,
                     journey: plan,
                     burn,
                 });
@@ -4970,6 +5153,276 @@ pub fn settling(world: &World) -> Vec<Mutation> {
     out
 }
 
+/// What a place is worth to somebody who came to look at it, `0.0..=1.0`.
+///
+/// Culture within walking distance, and air worth breathing. Both are read off
+/// machinery that already existed rather than authored again — `serves` cover
+/// and the pollution lattice — because a visitor and a resident are asking a
+/// similar question about a place and should get a consistent answer.
+///
+/// **Weighted toward culture**, because that is the half the player builds on
+/// purpose. Clean air is mostly a matter of not putting the hotel downwind of
+/// the steel works, which is a siting decision rather than a construction one,
+/// and the two should not be worth the same.
+///
+/// [`crate::tourism::APPEAL_FLOOR`] is why an empty steppe posting with a hotel
+/// still earns something: a multiplier reaching zero would make the mechanic
+/// unreachable until some other building existed, which is a lock wearing a
+/// balance curve's clothes.
+pub fn appeal(world: &World, at: Point) -> f64 {
+    let culture = service_cover(world, at, crate::building::Need::Culture);
+    let clean = 1.0 - world.lattice.pollution_near(at);
+    let raw = 0.65 * culture + 0.35 * clean.clamp(0.0, 1.0);
+    (crate::tourism::APPEAL_FLOOR + (1.0 - crate::tourism::APPEAL_FLOOR) * raw).clamp(0.0, 1.0)
+}
+
+/// Visitors turning up, spending, and going home.
+///
+/// **Daily**, for the reason contracts and wages are: a night in a hotel is a
+/// day's takings, and a per-tick sweep would charge a party 1,440 times for one.
+///
+/// Three things in one pass, and they belong together: who arrives is decided by
+/// how many beds are free, which is decided by who left this morning.
+pub fn tourism(world: &World) -> Vec<Mutation> {
+    let day = world.clock.day_index();
+    let mut out = Vec::new();
+
+    // The day's takings, and whose stay ended. One mutation carrying both,
+    // because they are one transaction: a party whose fortnight ended without
+    // its last day's money would be a republic that earned something and did
+    // not get it.
+    let mut takings: BTreeMap<Market, f64> = BTreeMap::new();
+    let mut leaving: Vec<crate::tourism::VisitId> = Vec::new();
+    for visit in world.tourism.all() {
+        if visit.has_given_up(day) {
+            leaving.push(visit.id);
+            continue;
+        }
+        let Some(hotel) = visit.staying_at else {
+            continue;
+        };
+        // A hotel that has lost its staff stops earning. It does not throw
+        // anybody out — they are already asleep in it — but nobody is being
+        // served, and a republic should not be paid for a building it cannot
+        // run.
+        let open = world
+            .buildings
+            .get(hotel)
+            .is_some_and(|b| b.is_built() && b.staffing() > 0.0);
+        if open {
+            let spend = f64::from(visit.heads)
+                * crate::tourism::SPEND_PER_HEAD_PER_DAY
+                * appeal(world, visit.at);
+            *takings.entry(visit.market).or_default() += spend;
+        }
+        if visit.is_done(day) {
+            leaving.push(visit.id);
+        }
+    }
+    for (market, amount) in takings {
+        out.push(Mutation::Takings {
+            market,
+            amount,
+            leaving: if out.is_empty() {
+                std::mem::take(&mut leaving)
+            } else {
+                Vec::new()
+            },
+        });
+    }
+    // Nobody spent anything but somebody still went home.
+    if !leaving.is_empty() {
+        out.push(Mutation::Takings {
+            market: Market::East,
+            amount: 0.0,
+            leaving,
+        });
+    }
+
+    // And who turns up. Bounded by beds that will actually be free, counting
+    // the parties already on their way to them — the lesson `crews` learnt
+    // twice, and the reason nobody arrives for a bed somebody else has.
+    let free = world.free_beds();
+    if free >= PARTY_FLOOR {
+        let heads = free.min(crate::tourism::PARTY);
+        // Keyed by day so the stream is reproducible and does not depend on how
+        // many times anything was asked.
+        let roll = world
+            .substream(crate::world::TOURIST_STREAM, day)
+            .next_f64();
+        // How attractive the republic is decides how *often* a party comes
+        // rather than how large it is, so a republic with one culture club gets
+        // visitors occasionally and one with a full town gets them steadily.
+        let best = world
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().beds > 0)
+            .map(|b| appeal(world, b.centre))
+            .fold(0.0f64, f64::max);
+        if roll < best * ARRIVALS_PER_DAY {
+            // From whichever bloc holds a post, and their money is that bloc's.
+            // Which posts a republic can reach is what decides whether its
+            // tourism earns dollars or roubles, exactly as it decides that for
+            // its coal.
+            let market = if roll < best * ARRIVALS_PER_DAY * 0.5 {
+                Market::West
+            } else {
+                Market::East
+            };
+            if let Some(post) = world
+                .frontier
+                .crossings()
+                .iter()
+                .filter(|c| c.bloc == market)
+                .min_by_key(|c| c.id)
+            {
+                out.push(Mutation::Arrive {
+                    at: post.at,
+                    heads,
+                    market,
+                });
+            }
+        }
+    }
+
+    out
+}
+
+/// The fewest free beds worth sending a party to.
+///
+/// A coach's worth, near enough. A party of two would cost the same journey as
+/// a party of twenty, and a republic sending a bus across the map for two
+/// visitors is one whose coaches are doing nothing better — which, if true, it
+/// can fix by building another hotel.
+const PARTY_FLOOR: u32 = 6;
+
+/// The chance per day that a party turns up at a republic worth visiting.
+///
+/// About one every four days at full appeal, so a fortnight's stay overlaps
+/// several parties and a hotel is busy rather than occasionally occupied.
+const ARRIVALS_PER_DAY: f64 = 0.25;
+
+/// Fetching visitors in from a frontier post.
+///
+/// **Shares the coach pool with `settling`, and runs after it.** That is a
+/// decision rather than an accident: both are people standing at a border
+/// waiting to be driven in, a republic that has decided to move people has
+/// decided it once, and which one gets the last coach is a judgement — settlers
+/// first, because somebody who wants to live here outranks somebody visiting.
+/// Being second in the schedule is what says so.
+pub fn touring(world: &World) -> Vec<Mutation> {
+    let mut coaches = available(world, Role::Passenger);
+    if coaches.is_empty() {
+        return Vec::new();
+    }
+
+    let coming: Vec<crate::tourism::VisitId> = world
+        .fleet
+        .all()
+        .iter()
+        .filter_map(|v| match v.job {
+            Some(Job::Tour { visit, .. }) => Some(visit),
+            _ => None,
+        })
+        .collect();
+
+    let crossing = world.crossing();
+    let now = world.clock.ticks() as f64;
+    let day = world.clock.day_index();
+    let mut drawn: BTreeMap<BuildingId, Tonnes> = BTreeMap::new();
+    let mut booked: BTreeMap<BuildingId, u32> = BTreeMap::new();
+    let mut out = Vec::new();
+
+    let waiting: Vec<(crate::tourism::VisitId, Point, u32)> = world
+        .tourism
+        .unfetched()
+        .filter(|v| !coming.contains(&v.id))
+        .map(|v| (v.id, v.at, v.heads))
+        .collect();
+
+    for (visit, at, heads) in waiting {
+        if coaches.is_empty() {
+            break;
+        }
+        // The emptiest hotel with room, ties on id — the same ranking settling
+        // uses for housing, and for the same reason.
+        let mut hotels: Vec<(u32, BuildingId, Point)> = world
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().beds > 0 && b.staffing() > 0.0)
+            .filter_map(|b| {
+                let taken = world.tourism.booked_at(b.id) + booked.get(&b.id).copied().unwrap_or(0);
+                let room = b.def().beds.saturating_sub(taken);
+                (room > 0).then_some((room, b.id, b.centre))
+            })
+            .collect();
+        hotels.sort_by(|(ra, ia, _), (rb, ib, _)| rb.cmp(ra).then_with(|| ia.cmp(ib)));
+        let Some(&(room, hotel, door)) = hotels.first() else {
+            continue;
+        };
+
+        let mut nearest: Vec<(f64, usize)> = coaches
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| {
+                let v = world.fleet.get(*id)?;
+                Some((v.at.distance_to(at).0, i))
+            })
+            .collect();
+        nearest.sort_by(|(da, ia), (db, ib)| da.total_cmp(db).then_with(|| ia.cmp(ib)));
+
+        for (_, index) in nearest {
+            let id = coaches[index];
+            let (Some(v), Some(yard)) = (
+                world.fleet.get(id),
+                world
+                    .fleet
+                    .get(id)
+                    .and_then(|v| world.buildings.get(v.home))
+                    .map(|b| b.centre),
+            ) else {
+                continue;
+            };
+            let def = v.def();
+            let leg = |a: Point, b: Point| plan_leg(world, &crossing, def, a, b, now);
+            let (Some(outbound), Some(carrying), Some(home_run)) =
+                (leg(v.at, at), leg(at, door), leg(door, yard))
+            else {
+                continue;
+            };
+            let whole = outbound.distance() + carrying.distance() + home_run.distance();
+            let held = world
+                .buildings
+                .get(v.home)
+                .map(|b| b.stock.get(Resource::Fuel))
+                .unwrap_or(Tonnes::ZERO)
+                .saturating_sub(drawn.get(&v.home).copied().unwrap_or(Tonnes::ZERO));
+            let top_up = def.tank.saturating_sub(v.fuel).min(held);
+            if (v.fuel + top_up).0 < v.fuel_for(whole).0 {
+                continue;
+            }
+
+            let stuck = sticks(world, &crossing, id, v.capability(), &outbound, 0, day);
+            out.push(Mutation::Dispatch {
+                vehicle: id,
+                job: Job::Tour { visit, to: hotel },
+                journey: outbound,
+                refuel: top_up,
+            });
+            if stuck {
+                out.push(Mutation::Bog { vehicle: id, day });
+            }
+            *drawn.entry(v.home).or_default() += top_up;
+            *booked.entry(hotel).or_default() += heads.min(room);
+            coaches.remove(index);
+            break;
+        }
+    }
+    out
+}
+
 /// How buried a stretch has to be before a plough is worth sending.
 ///
 /// Below this the snow is a nuisance rather than a problem and the diesel is
@@ -5420,6 +5873,10 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
             // it read state the four above have just written: loyalty for who
             // leaves, contentment for who wants to come.
             |w: &mut World| migration(w),
+            // And tourism last, because who arrives depends on how many beds
+            // are free, which depends on who left this morning — and because
+            // it reads the pollution and culture the passes above have settled.
+            |w: &mut World| tourism(w),
         ] {
             let mutations = system(world);
             apply(world, &mutations);
@@ -5446,6 +5903,9 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
         // systems happened to be listed the other way round.
         crews,
         settling,
+        // After settling and sharing its pool: somebody who wants to live here
+        // outranks somebody visiting, and the schedule is what says so.
+        touring,
         clearing,
     ] {
         let mutations = system(world);
@@ -8639,6 +9099,18 @@ mod tests {
             }
         }
 
+        // A hotel and a culture club, so `tourism` and `touring` have a whole
+        // path to run: visitors only arrive where there are beds, and what they
+        // pay for is what is near them. Both in town, because a hotel out at the
+        // far end would be unstaffed and an unstaffed hotel takes nobody.
+        for kind in [BuildingKind::Hotel, BuildingKind::CultureClub] {
+            if let Some(site) = crate::scenario::find_site(&world, kind, centre, Metres(600.0)) {
+                let _ = world
+                    .buildings
+                    .place_built(kind, site, &world.terrain, &world.geology);
+            }
+        }
+
         // A foreign gang on the books, so the wage bill is a thing that
         // happens. Issued as a command rather than written in, because the
         // whole path — fee, arrival at a post, the bus that fetches them — is
@@ -8713,6 +9185,9 @@ mod tests {
                     let m = migration(&world);
                     note("migration", &m);
                     apply(&mut world, &m);
+                    let m = tourism(&world);
+                    note("tourism", &m);
+                    apply(&mut world, &m);
                     // Accept everything, so deliveries and failures both happen.
                     let offers: Vec<_> = world.contracts.offers().map(|c| c.id).collect();
                     for id in offers {
@@ -8731,6 +9206,7 @@ mod tests {
                     ("dispatch", dispatch),
                     ("crews", crews),
                     ("settling", settling),
+                    ("touring", touring),
                     ("clearing", clearing),
                 ] {
                     let m = system(&world);
@@ -11233,6 +11709,153 @@ mod tests {
             ordered.0 <= 60.0 + 1e-6,
             "the order was for 60 t and {:.1} t turned up",
             ordered.0
+        );
+    }
+
+    /// Visitors arrive at a post, are driven to a hotel, and leave money.
+    ///
+    /// The whole mechanic end to end, and every premise is asserted first
+    /// because each is a way this could pass while doing nothing: no beds, no
+    /// coach, or a republic already rich enough that the takings vanish in the
+    /// noise.
+    #[test]
+    fn visitors_are_fetched_from_the_border_and_pay_in_their_own_money() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let centre = base.centre;
+
+        // Hands to spare. The founding sends **exactly** enough people for its
+        // own jobs, so anything commissioned afterwards stands unstaffed for
+        // ever — which is the staffing order working, and would make this a test
+        // of that rather than of tourism. An estate and sixty people is what
+        // lets the buildings below actually open.
+        let estate = crate::scenario::find_site(&w, BuildingKind::Apartment, centre, Metres(900.0))
+            .expect("somewhere for another block");
+        let block = w
+            .place_built(BuildingKind::Apartment, estate)
+            .expect("a block");
+        for _ in 0..60 {
+            w.population.spawn_citizen(block, 30);
+        }
+
+        // A hotel, a coach depot to fetch with, and something worth coming for.
+        let mut opened = Vec::new();
+        for kind in [
+            BuildingKind::Hotel,
+            BuildingKind::BusDepot,
+            BuildingKind::CultureClub,
+        ] {
+            let site = crate::scenario::find_site(&w, kind, centre, Metres(900.0))
+                .unwrap_or_else(|| panic!("somewhere for a {kind:?}"));
+            let id = w.place_built(kind, site).expect("open ground");
+            let b = w.buildings.get_mut(id).unwrap();
+            b.staff = kind.def().workers;
+            b.stock.add(Resource::Fuel, Tonnes(30.0));
+            opened.push(id);
+        }
+        for &(kind, n) in BuildingKind::BusDepot.def().vehicles {
+            for _ in 0..n {
+                w.fleet.commission(kind, opened[1], centre);
+            }
+        }
+
+        assert!(
+            w.free_beds() > 0,
+            "the premise: nowhere for a visitor to sleep"
+        );
+        assert!(
+            w.fleet
+                .all()
+                .iter()
+                .any(|v| v.def().role == crate::fleet::Role::Passenger),
+            "the premise: nothing to fetch anybody with"
+        );
+        let hotel_at = w.buildings.get(opened[0]).unwrap().centre;
+        assert!(
+            w.appeal_at(hotel_at) > crate::tourism::APPEAL_FLOOR,
+            "the premise: a hotel beside nothing earns the floor, and this test \
+             wants to see the culture club counted"
+        );
+
+        let before = (w.treasury.rubles, w.treasury.dollars);
+        for _ in 0..(TICKS_PER_DAY * 60) {
+            w.tick();
+        }
+
+        assert!(
+            w.tourism.visited() > 0,
+            "sixty days and nobody ever reached a hotel"
+        );
+        let earned = w.tourism.earned(Market::East) + w.tourism.earned(Market::West);
+        assert!(earned > 0.0, "visitors stayed and spent nothing");
+        let after = (w.treasury.rubles, w.treasury.dollars);
+        assert!(
+            after.0 > before.0 || after.1 > before.1,
+            "the takings never reached the treasury"
+        );
+
+        // Their money is their bloc's. A republic whose only reachable posts are
+        // Western earns dollars from tourism exactly as it does from coal, which
+        // is the whole reason this is geographic rather than a flat income.
+        for market in [Market::East, Market::West] {
+            if w.tourism.earned(market) > 0.0 {
+                let posts = w
+                    .frontier
+                    .crossings()
+                    .iter()
+                    .filter(|c| c.bloc == market)
+                    .count();
+                assert!(posts > 0, "{market:?} money from a bloc with no post here");
+            }
+        }
+    }
+
+    /// What a hotel is worth is what is near it, and it is showable.
+    ///
+    /// A player who cannot see why one hotel earns three times another has a
+    /// building with a random yield. The floor is asserted too, because a
+    /// multiplier that reached zero would make the whole mechanic unreachable
+    /// on an empty posting — a lock wearing a balance curve's clothes.
+    #[test]
+    fn a_hotel_is_worth_what_stands_around_it() {
+        let mut w = bare();
+        let bare_spot = at(3_000.0, 500.0);
+        let town = at(1_000.0, 1_000.0);
+        staff_up(&mut w, town, 40);
+
+        let empty = w.appeal_at(bare_spot);
+        assert!(
+            empty >= crate::tourism::APPEAL_FLOOR,
+            "an empty posting earns nothing at all for having built a hotel"
+        );
+
+        let club = crate::scenario::find_site(&w, BuildingKind::CultureClub, town, Metres(300.0))
+            .expect("somewhere for a club");
+        let id = w
+            .place_built(BuildingKind::CultureClub, club)
+            .expect("a club");
+        w.buildings.get_mut(id).unwrap().staff = BuildingKind::CultureClub.def().workers;
+
+        let with_culture = w.appeal_at(town);
+        assert!(
+            with_culture > empty,
+            "a culture club next door was worth nothing: {empty:.2} then {with_culture:.2}"
+        );
+
+        // And smoke takes it back off, which is why siting a hotel downwind of
+        // the works is a decision rather than a detail.
+        for cell in w.lattice.cells_within(town, Metres(150.0)) {
+            w.lattice.foul(cell, 1.0);
+        }
+        let in_a_smog = w.appeal_at(town);
+        assert!(
+            in_a_smog < with_culture,
+            "a hotel in a smog is worth as much as one in clean air: \
+             {with_culture:.2} then {in_a_smog:.2}"
         );
     }
 

@@ -533,6 +533,15 @@ pub enum Job {
         group: crate::migration::GroupId,
         to: BuildingId,
     },
+    /// Fetch a party of visitors from a frontier post and take them to a hotel.
+    ///
+    /// The same two-hop shape as [`Job::Settle`] and for the same reason: the
+    /// coach has to be able to make post, then hotel, then home before it takes
+    /// the work. What differs is only what happens on arrival.
+    Tour {
+        visit: crate::tourism::VisitId,
+        to: BuildingId,
+    },
     /// Drive out there and back, pushing the snow off everything on the way.
     ///
     /// **Named by a place rather than by a building**, which is what makes it

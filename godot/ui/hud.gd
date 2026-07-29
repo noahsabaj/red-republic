@@ -239,6 +239,16 @@ func _refresh_migration_line(republic: Node) -> void:
 	# they go home.
 	migration_line.modulate = Color(0.9, 0.55, 0.45) if waiting > 0 else Color.WHITE
 
+	# Tourism on the same line, because it is the same fact from the other side:
+	# people at the border who need collecting, out of the same pool of coaches.
+	# It only appears once the republic has beds, so a player who has not built a
+	# hotel is not shown a row of zeroes about a mechanic they have not opened.
+	var visitors: PackedFloat32Array = republic.tourism()
+	if visitors.size() >= 7 and (visitors[4] > 0.0 or visitors[0] > 0.0):
+		migration_line.text += "   ·   %d visiting, %d beds free  ·  ₽ %.0f / $ %.0f" % [
+			visitors[0], visitors[4], visitors[5], visitors[6],
+		]
+
 
 ## Where the republic's builders are.
 ##

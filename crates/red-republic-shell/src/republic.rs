@@ -567,6 +567,26 @@ impl Republic {
             .map_or_else(PackedFloat32Array::new, views::snow_field)
     }
 
+    /// Tourism at a glance. See `views::tourism_totals` for the layout.
+    #[func]
+    fn tourism(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::tourism_totals)
+    }
+
+    /// What a hotel sited here would be worth to a visitor, `0.0..=1.0`.
+    ///
+    /// A placement query, in the same family as `going_at`: siting a hotel is a
+    /// decision about what stands around it, and a player who cannot ask before
+    /// they build has a building with a random yield.
+    #[func]
+    fn appeal_at(&self, x: f64, y: f64) -> f64 {
+        self.world
+            .as_ref()
+            .map_or(0.0, |w| w.appeal_at(Point::new(Metres(x), Metres(y))))
+    }
+
     /// The winter at a glance: `[lying, buried]`, each `0.0..=1.0`.
     ///
     /// How much is down, and how much of it nobody has shifted. Two numbers

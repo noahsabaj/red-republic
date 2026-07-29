@@ -367,6 +367,18 @@ fn main() {
         world.population().riders(),
         world.population().employed()
     );
+    // The founding builds no hotel, so a republic nobody plays reports zeroes
+    // here — which is the point rather than a gap. It is the same shape as the
+    // missing bus depot and the missing landfill: a whole earner switched off
+    // until the player decides to open it, and a line that says so.
+    println!(
+        "tourism: {} beds free · {} stayed, {} turned back at the border · ₽ {:.0} / $ {:.0}",
+        world.free_beds(),
+        world.tourism().visited(),
+        world.tourism().turned_away(),
+        world.tourism().earned(red_republic_sim::trade::Market::East),
+        world.tourism().earned(red_republic_sim::trade::Market::West),
+    );
     // The four ways through, and the fleet on each. Water is here beside the
     // built ones on purpose: it is the one network nobody builds, so a run that
     // reports "water 41 km, 0 vehicles" is reporting an asset the republic has

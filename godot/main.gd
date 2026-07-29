@@ -391,7 +391,7 @@ func _refresh_vehicles() -> void:
 ## The marker grows with the size of the group, so a crowd reads as a crowd.
 func _refresh_newcomers() -> void:
 	var flat: PackedFloat32Array = republic.newcomers()
-	var stride := 4
+	var stride := 5
 	var count := flat.size() / stride
 	var mm := newcomers_node.multimesh
 	if mm.instance_count != count:
@@ -400,7 +400,12 @@ func _refresh_newcomers() -> void:
 		var x := flat[i * stride]
 		var z := flat[i * stride + 1]
 		var heads := flat[i * stride + 2]
-		var scale := clampf(0.6 + heads / 40.0, 0.6, 2.0)
+		# Visitors stand a little lower than settlers, which is the only thing
+		# separating them here on purpose: from six hundred metres up they are
+		# the same fact -- a crowd at a post waiting for a coach -- and they draw
+		# on the same pool of coaches, which is the decision they share.
+		var visiting := flat[i * stride + 4] > 0.5
+		var scale := clampf(0.6 + heads / 40.0, 0.6, 2.0) * (0.75 if visiting else 1.0)
 		var at := Vector3(x, republic.ground_height(x, z) + 35.0 * scale, z)
 		mm.set_instance_transform(
 			i, Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * scale), at)
