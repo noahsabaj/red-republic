@@ -92,6 +92,14 @@ pub enum Medium {
     /// Roads where they help, open country where they do not.
     Road,
     Rail,
+    /// Street track. Its own network rather than a cheap grade of railway,
+    /// and that is a balance rule rather than a modelling flourish: sharing
+    /// one network would let a republic lay tramway at a third the price and
+    /// run hundred-and-twenty-tonne freight trains down it.
+    Tram,
+    /// Underground. Enormously dear, very fast, and it goes under a river
+    /// rather than over one — the only way that crosses water without a bridge.
+    Metro,
     /// Rivers and lakes — the one network nobody builds.
     Water,
     Air,
@@ -108,29 +116,79 @@ impl Medium {
         match self {
             Medium::Road => "Road",
             Medium::Rail => "Rail",
+            Medium::Tram => "Tram",
+            Medium::Metro => "Metro",
             Medium::Water => "Water",
             Medium::Air => "Air",
         }
     }
 
-    pub const ALL: [Medium; 4] = [Medium::Road, Medium::Rail, Medium::Water, Medium::Air];
+    /// What a passenger service on this way makes, stops and boarding
+    /// included — see [`crate::transport`] on commercial speed.
+    ///
+    /// A property of the way rather than of the depot, because it is the way
+    /// that decides: a tram stops every four hundred metres in traffic and a
+    /// metro does not stop at traffic at all, whoever runs them.
+    pub fn commercial_speed(self) -> Speed {
+        match self {
+            Medium::Road => Speed::from_kph(20.0),
+            Medium::Tram => Speed::from_kph(17.0),
+            Medium::Metro => Speed::from_kph(38.0),
+            Medium::Rail => Speed::from_kph(55.0),
+            Medium::Water => Speed::from_kph(12.0),
+            Medium::Air => Speed::from_kph(300.0),
+        }
+    }
+
+    pub const ALL: [Medium; 6] = [
+        Medium::Road,
+        Medium::Rail,
+        Medium::Tram,
+        Medium::Metro,
+        Medium::Water,
+        Medium::Air,
+    ];
 }
 
-/// Every way through the republic, handed to the planner together.
+/// Every way through the republic, handed to a caller together.
 ///
-/// One parameter rather than four, because a caller that has to name each
+/// One parameter rather than six, because a caller that has to name each
 /// network separately is a caller that can be given the wrong one — and a
 /// planner asked for a rail route with the road network in its hand would
 /// answer confidently and be wrong.
+///
+/// **The open ground is deliberately not in here.** It was, briefly, and it was
+/// wrong twice over: the ground is not a way anybody built, and carrying it
+/// meant every caller that only wanted to know which networks exist — the
+/// labour pass, a panel — had to produce a `Crossing` it had no use for.
 #[derive(Debug, Clone, Copy)]
 pub struct Ways<'a> {
     pub roads: &'a Network,
     pub rails: &'a Network,
+    pub tramway: &'a Network,
+    pub metro: &'a Network,
     pub water: &'a Network,
     /// Aerodromes, joined to each other. See [`Medium`].
     pub air: &'a Network,
-    /// The open ground, for the one medium allowed to cross it.
-    pub crossing: &'a Crossing<'a>,
+}
+
+/// A republic that has built roads and nothing else.
+///
+/// What most of this crate's tests are about, and what a republic is on its
+/// first day.
+static NO_WAY: std::sync::LazyLock<Network> = std::sync::LazyLock::new(Network::new);
+
+impl<'a> Ways<'a> {
+    pub fn on_roads(roads: &'a Network) -> Self {
+        Self {
+            roads,
+            rails: &NO_WAY,
+            tramway: &NO_WAY,
+            metro: &NO_WAY,
+            water: &NO_WAY,
+            air: &NO_WAY,
+        }
+    }
 }
 
 impl<'a> Ways<'a> {
@@ -138,6 +196,8 @@ impl<'a> Ways<'a> {
         match medium {
             Medium::Road => self.roads,
             Medium::Rail => self.rails,
+            Medium::Tram => self.tramway,
+            Medium::Metro => self.metro,
             Medium::Water => self.water,
             Medium::Air => self.air,
         }
@@ -500,11 +560,13 @@ fn by_road(from: Point, to: Point, roads: &Network) -> Option<PathBuilder> {
 /// job is out of reach of it there is no journey — and the dispatcher, which
 /// already moves on to the next vehicle when one cannot make a trip, keeps
 /// them off work they have no business taking without knowing they exist.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_for(
     medium: Medium,
     from: Point,
     to: Point,
     ways: Ways<'_>,
+    crossing: &Crossing<'_>,
     on_road: Speed,
     cross_country: Speed,
     now: f64,
@@ -514,7 +576,7 @@ pub fn plan_for(
             from,
             to,
             ways.roads,
-            ways.crossing,
+            crossing,
             on_road,
             cross_country,
             now,

@@ -66,6 +66,9 @@ pub enum BuildingKind {
     Warehouse,
     Depot,
     ConstructionOffice,
+    TrolleybusDepot,
+    TramDepot,
+    MetroDepot,
     RailwayStation,
     RiverPort,
     Aerodrome,
@@ -515,7 +518,37 @@ pub const BUILDINGS: &[BuildingDef] = &[
         cost: [(Bricks, 16.0), (Planks, 10.0), (Steel, 5.0), (Gravel, 8.0)], labour: 140.0, sells: [], taps: None, residents: 0, storage: 40.0,
             wear: 0.02, farms: false,
             needs: Schooled, teaches: None,
-            transforms: false, waste: 0.25, dirt: 1.0, on: None, orders: false),
+            transforms: false, waste: 0.25, dirt: 1.0, on: Some(crate::journey::Medium::Road), orders: false),
+    // The passenger services. What separates them is the way they ride, and
+    // that is the *only* thing separating them in code: `seats` says a building
+    // runs a service and `on` says over what, so a fifth mode is a data row.
+    //
+    // Two real trades rather than a ladder of bigger numbers. A trolleybus
+    // burns **no oil at all** -- it runs on the republic's own generation --
+    // and what it costs is that the wire has to be strung and the buses go
+    // where it goes. A tram and a metro carry vastly more for vastly more
+    // capital, and the metro is the only one that passes under a river.
+    def!(TrolleybusDepot, "Trolleybus Depot", 70.0, 50.0, workers: 14, draw: 6.0, out_mw: 0.0, heat: 0.4, heat_out: 0.0, seats: 520,
+        keeps: [(Trolleybus, 4)],
+        in: [], out: [],
+        cost: [(Bricks, 18.0), (Planks, 10.0), (Steel, 12.0), (Gravel, 8.0)], labour: 170.0, sells: [], taps: None, residents: 0, storage: 40.0,
+            wear: 0.02, farms: false,
+            needs: Schooled, teaches: None,
+            transforms: false, waste: 0.2, dirt: 0.2, on: Some(crate::journey::Medium::Road), orders: false),
+    def!(TramDepot, "Tram Depot", 100.0, 60.0, workers: 22, draw: 12.0, out_mw: 0.0, heat: 0.6, heat_out: 0.0, seats: 1100,
+        keeps: [(Tram, 6)],
+        in: [], out: [],
+        cost: [(Bricks, 34.0), (Planks, 14.0), (Steel, 30.0), (Gravel, 20.0)], labour: 280.0, sells: [], taps: None, residents: 0, storage: 50.0,
+            wear: 0.04, farms: false,
+            needs: Schooled, teaches: None,
+            transforms: false, waste: 0.3, dirt: 0.3, on: Some(crate::journey::Medium::Tram), orders: false),
+    def!(MetroDepot, "Metro Depot", 140.0, 80.0, workers: 34, draw: 30.0, out_mw: 0.0, heat: 0.8, heat_out: 0.0, seats: 3600,
+        keeps: [(MetroTrain, 4)],
+        in: [], out: [],
+        cost: [(Bricks, 90.0), (Planks, 20.0), (Steel, 80.0), (Gravel, 70.0), (Machinery, 10.0)], labour: 620.0, sells: [], taps: None, residents: 0, storage: 60.0,
+            wear: 0.08, farms: false,
+            needs: Graduate, teaches: None,
+            transforms: false, waste: 0.4, dirt: 0.4, on: Some(crate::journey::Medium::Metro), orders: false),
     // The three terminals, and they are one idea three times over: a place a
     // confined vehicle can be reached, which is why `on` and `orders` are
     // authored fields rather than three special cases in the dispatcher.
@@ -528,7 +561,7 @@ pub const BUILDINGS: &[BuildingDef] = &[
     // Storage is large and deliberately so: a terminal is where a hundred and
     // twenty tonnes lands at once, and one that could hold forty would spend
     // its life refusing trains.
-    def!(RailwayStation, "Railway Station", 120.0, 40.0, workers: 18, draw: 3.0, out_mw: 0.0, heat: 0.6, heat_out: 0.0, seats: 0,
+    def!(RailwayStation, "Railway Station", 120.0, 40.0, workers: 18, draw: 3.0, out_mw: 0.0, heat: 0.6, heat_out: 0.0, seats: 700,
         keeps: [(Locomotive, 2), (PassengerTrain, 1)],
         in: [(Fuel, 0.6)], out: [],
         cost: [(Bricks, 40.0), (Steel, 30.0), (Planks, 16.0), (Gravel, 24.0)], labour: 320.0, sells: [], taps: None, residents: 0, storage: 400.0,
@@ -823,6 +856,8 @@ impl std::fmt::Display for PlacementError {
                 crate::journey::TERMINAL_REACH.0,
                 match medium {
                     crate::journey::Medium::Rail => "a railway",
+                    crate::journey::Medium::Tram => "a tramway",
+                    crate::journey::Medium::Metro => "a metro line",
                     crate::journey::Medium::Water => "navigable water",
                     crate::journey::Medium::Air => "an aerodrome",
                     crate::journey::Medium::Road => "a road",

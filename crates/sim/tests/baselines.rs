@@ -204,7 +204,11 @@ fn labour_scaling() {
                         .network(red_republic_sim::journey::Medium::Road)
                         .clone(),
                 );
-                assign_labour(world.population_mut(), &buildings, &roads);
+                assign_labour(
+                    world.population_mut(),
+                    &buildings,
+                    red_republic_sim::journey::Ways::on_roads(&roads),
+                );
             }
         }
         let each = start.elapsed().as_secs_f64() * 1000.0 / f64::from(PASSES);

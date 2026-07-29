@@ -2451,7 +2451,18 @@ fn importable(
 /// burn. Splitting them would let the republic staff a factory by bus and then
 /// separately discover it had no fuel to run the bus.
 pub fn labour(world: &mut World) -> Vec<Mutation> {
-    let result = assign_labour(&mut world.population, &world.buildings, &world.roads);
+    // The ways are read out before the population is borrowed mutably. They
+    // are borrows of fields the labour pass never touches, and taking them
+    // first is what says so to the compiler.
+    let ways = crate::journey::Ways {
+        roads: &world.roads,
+        rails: &world.rails,
+        tramway: &world.tramway,
+        metro: &world.metro,
+        water: &world.waterways,
+        air: &world.airways,
+    };
+    let result = assign_labour(&mut world.population, &world.buildings, ways);
     let mut out: Vec<Mutation> = result
         .staffing
         .into_iter()
@@ -2872,7 +2883,8 @@ fn plan_leg(
         def.medium,
         a,
         b,
-        world.ways(crossing),
+        world.ways(),
+        crossing,
         def.on_road,
         def.cross_country,
         now,
@@ -5342,6 +5354,13 @@ mod tests {
         if let Some(b) = world.buildings.get_mut(garage) {
             b.staff = def.workers;
             b.stock.add(Resource::Fuel, Tonnes(5.0));
+            // Spares as well as diesel. A depot with an empty parts bin runs
+            // half its establishment, which is the maintenance rule — and a
+            // fixture that leaves them out is testing a half-crewed republic
+            // while claiming to test a working one. It caught itself: a test
+            // asserting a 40 t bin is worth two loads started reporting five,
+            // because the heavy lorry was the one in the shed.
+            b.stock.add(Resource::Machinery, Tonnes(5.0));
         }
         let arrivals = commissioning(world);
         apply(world, &arrivals);
@@ -8204,6 +8223,13 @@ mod tests {
             let d = world.buildings.get_mut(depot).expect("just placed");
             d.staff = BuildingKind::BusDepot.def().workers;
             d.stock.add(Resource::Fuel, Tonnes(40.0));
+            // Spares as well as diesel, or the depot runs half its coaches --
+            // and this fixture exists to reach a bogging roll that a *coach*
+            // makes on the way to a frontier post, measured at roughly one in
+            // a hundred and thirty journeys. Halving the coaches was enough to
+            // stop it firing at all, and the write-set guard's floor half said
+            // so within a minute of maintenance existing.
+            d.stock.add(Resource::Machinery, Tonnes(20.0));
         }
 
         // Empty housing, so the republic has somewhere to put people it
@@ -8637,6 +8663,13 @@ mod tests {
             if let Some(b) = world.buildings.get_mut(*id) {
                 b.staff = BuildingKind::BusDepot.def().workers;
                 b.stock.add(Resource::Fuel, Tonnes(60.0));
+                // Spares, and this is the **fifth** thing it took. A depot with
+                // an empty parts bin runs half its establishment, and half of
+                // two coaches is one — which halved the draws at a roll that
+                // already fires about once in a hundred and thirty journeys.
+                // The guard's floor half caught it the same minute maintenance
+                // existed, which is the whole argument for having that half.
+                b.stock.add(Resource::Machinery, Tonnes(40.0));
             }
         }
         // Unworn ground, and this is the fourth thing it took. Four hundred
@@ -10570,7 +10603,8 @@ mod tests {
                     def.medium,
                     a,
                     b,
-                    w.ways(&crossing),
+                    w.ways(),
+                    &crossing,
                     def.on_road,
                     def.cross_country,
                     0.0
@@ -10586,7 +10620,8 @@ mod tests {
             def.medium,
             a,
             b,
-            w.ways(&crossing),
+            w.ways(),
+            &crossing,
             def.on_road,
             def.cross_country,
             0.0,
@@ -10619,7 +10654,8 @@ mod tests {
                 def.medium,
                 a,
                 b,
-                w.ways(&crossing),
+                w.ways(),
+                &crossing,
                 def.on_road,
                 def.cross_country,
                 0.0
@@ -10744,7 +10780,8 @@ mod tests {
                 def.medium,
                 at(300.0, 1_250.0),
                 at(3_700.0, 1_250.0),
-                w.ways(&crossing),
+                w.ways(),
+                &crossing,
                 def.on_road,
                 def.cross_country,
                 0.0
@@ -10758,7 +10795,8 @@ mod tests {
                 def.medium,
                 at(300.0, 1_250.0),
                 at(2_000.0, 3_000.0),
-                w.ways(&crossing),
+                w.ways(),
+                &crossing,
                 def.on_road,
                 def.cross_country,
                 0.0
@@ -10784,7 +10822,8 @@ mod tests {
                 def.medium,
                 a,
                 b,
-                w.ways(&crossing),
+                w.ways(),
+                &crossing,
                 def.on_road,
                 def.cross_country,
                 0.0,
@@ -10831,7 +10870,8 @@ mod tests {
             def.medium,
             a,
             b,
-            w.ways(&crossing),
+            w.ways(),
+            &crossing,
             def.on_road,
             def.cross_country,
             0.0,
@@ -10934,5 +10974,255 @@ mod tests {
             km > 5.0,
             "a founded republic has {km:.1} km of navigable water — a barge has nowhere to go"
         );
+    }
+
+    // ---- Passenger modes ---------------------------------------------------
+
+    /// A tram carries people the bus could not, over track the bus cannot use.
+    ///
+    /// The whole passenger half in one test: the same two places, the same
+    /// people, and the only difference is which way the republic built.
+    #[test]
+    fn a_tramway_reaches_work_a_bus_route_does_not() {
+        let far = at(3_400.0, 1_000.0);
+        let home = at(400.0, 1_000.0);
+
+        let mut w = bare();
+        // No road between them at all, so a bus is no help however many seats
+        // it has: a bus rides the road network and there is none.
+        let depot = terminal(&mut w, BuildingKind::BusDepot, at(500.0, 1_000.0));
+        w.buildings
+            .get_mut(depot)
+            .unwrap()
+            .stock
+            .add(Resource::Fuel, Tonnes(20.0));
+        assert!(
+            crate::transport::reach_by(
+                home,
+                far,
+                w.ways(),
+                &crate::transport::services(&w.buildings)
+            )
+            .is_none(),
+            "somebody rode a bus across a republic with no road in it"
+        );
+
+        // Now lay tramway and put a tram depot on it.
+        lay(&mut w, crate::roadworks::Grade::Tramway, home, far);
+        let trams = terminal(&mut w, BuildingKind::TramDepot, at(900.0, 1_060.0));
+        w.buildings.get_mut(trams).unwrap().powered = true;
+        let services = crate::transport::services(&w.buildings);
+        let commute = crate::transport::reach_by(home, far, w.ways(), &services)
+            .expect("the tramway runs the whole way");
+        assert_eq!(
+            commute.medium(),
+            Some(crate::journey::Medium::Tram),
+            "the journey was made by something other than the tram"
+        );
+    }
+
+    /// **A pool per way, not one pool.**
+    ///
+    /// A republic whose trams are full has not thereby run out of buses, and
+    /// one pool would make the choice between laying tramway and buying more
+    /// buses mean nothing.
+    ///
+    /// This test is the second attempt and the first is the instructive part.
+    /// It built two `Service` values by hand and called `reach_by` with one of
+    /// them emptied — which proves the *planner* skips a service with no seats
+    /// and says nothing whatever about the labour pass, where the pools are
+    /// actually drawn down. Sabotaging that bookkeeping left it green. It now
+    /// runs the pass: work reachable **only** by tram, a barely-staffed tram
+    /// depot and a fully-staffed bus depot, so booking against the wrong pool
+    /// carries far more people than there are tram seats.
+    #[test]
+    fn a_full_service_does_not_draw_seats_from_another() {
+        let mut w = bare();
+        let home_at = at(400.0, 1_000.0);
+        let work_at = at(3_400.0, 1_000.0);
+        // Tramway all the way, and deliberately no road between the two: a bus
+        // rides the road network, so every one of these journeys must be a
+        // tram or none of them can happen.
+        lay(&mut w, crate::roadworks::Grade::Tramway, home_at, work_at);
+
+        // Buses, plentiful and useless here.
+        let buses = terminal(&mut w, BuildingKind::BusDepot, at(600.0, 1_060.0));
+        w.buildings
+            .get_mut(buses)
+            .unwrap()
+            .stock
+            .add(Resource::Fuel, Tonnes(60.0));
+
+        // Trams, barely staffed, so the pool is small and countable.
+        let trams = w
+            .place_built(BuildingKind::TramDepot, at(1_000.0, 1_060.0))
+            .expect("beside the tramway");
+        w.buildings.get_mut(trams).unwrap().powered = true;
+        w.buildings.get_mut(trams).unwrap().staff = 1;
+        let tram_seats = crate::transport::services(&w.buildings)
+            .into_iter()
+            .find(|s| s.medium == crate::journey::Medium::Tram)
+            .expect("the trams run")
+            .seats;
+        assert!(
+            tram_seats > 0 && tram_seats < 200,
+            "the tram pool is {tram_seats} seats — too big or too small to discriminate"
+        );
+
+        // Workplaces out at the far end, and **more jobs than tram seats** --
+        // which is the premise, and asserting it is what caught the first
+        // version of this test. One mill has fewer jobs than the pool has
+        // seats, so the pool could never be exceeded however badly the
+        // bookkeeping was broken, and the sabotage sailed through.
+        let mut jobs = 0u32;
+        for i in 0..5 {
+            let site = at(2_500.0 + f64::from(i) * 250.0, 1_120.0);
+            if let Ok(mill) = w.place_built(BuildingKind::TextileMill, site) {
+                jobs += w.buildings.get(mill).unwrap().def().workers;
+            }
+        }
+        staff_up(&mut w, home_at, 400);
+        assert!(
+            jobs > tram_seats,
+            "{jobs} jobs against {tram_seats} tram seats — the pool cannot be exceeded, \
+             so a broken booking would look exactly like a working one"
+        );
+
+        let ways = crate::journey::Ways {
+            roads: &w.roads,
+            rails: &w.rails,
+            tramway: &w.tramway,
+            metro: &w.metro,
+            water: &w.waterways,
+            air: &w.airways,
+        };
+        let labour = crate::citizen::assign_labour(&mut w.population, &w.buildings, ways);
+        assert!(
+            labour.seats_used > 0,
+            "nobody rode at all, so this proves nothing about which pool paid"
+        );
+        assert!(
+            labour.seats_used <= tram_seats,
+            "{} seats were spent against a tram pool of {tram_seats} — \
+             the bus pool paid for tram journeys",
+            labour.seats_used
+        );
+    }
+
+    /// **A trolleybus burns no oil**, and that is the entire trade: a republic
+    /// that strings wire runs its buses on its own generation instead of on
+    /// fuel it may have to buy. What it costs is that the wire has to be there.
+    #[test]
+    fn a_trolleybus_runs_on_the_grid_and_a_bus_runs_on_oil() {
+        let mut w = bare();
+        let depot = w
+            .place_built(BuildingKind::TrolleybusDepot, at(1_000.0, 1_000.0))
+            .expect("open ground");
+        w.buildings.get_mut(depot).unwrap().staff = BuildingKind::TrolleybusDepot.def().workers;
+
+        // Unpowered, it carries nobody however well staffed and however much
+        // fuel is standing in the yard.
+        w.buildings
+            .get_mut(depot)
+            .unwrap()
+            .stock
+            .add(Resource::Fuel, Tonnes(50.0));
+        w.buildings.get_mut(depot).unwrap().powered = false;
+        assert_eq!(
+            crate::transport::seats(&w.buildings),
+            0,
+            "a trolleybus depot ran on diesel standing in its yard"
+        );
+
+        w.buildings.get_mut(depot).unwrap().powered = true;
+        assert!(
+            crate::transport::seats(&w.buildings) > 0,
+            "a powered, staffed trolleybus depot carried nobody"
+        );
+        // And it books no fuel, however many seats are used.
+        assert!(
+            crate::transport::fuel_burn(&w.buildings, 500)
+                .iter()
+                .all(|&(id, _)| id != depot),
+            "the republic was billed for diesel a trolleybus did not burn"
+        );
+    }
+
+    /// The two new ways are their own networks, and that is a balance rule
+    /// rather than a modelling flourish: sharing one would let a republic lay
+    /// tramway at a third of a railway's price and run freight trains down it.
+    #[test]
+    fn a_freight_train_cannot_ride_a_tramway() {
+        let mut w = bare();
+        let (a, b) = (at(500.0, 1_000.0), at(3_000.0, 1_000.0));
+        lay(&mut w, crate::roadworks::Grade::Tramway, a, b);
+        assert!(
+            w.network(crate::journey::Medium::Tram).segment_count() > 0,
+            "the fixture laid no tramway, so this proves nothing"
+        );
+        assert_eq!(
+            w.network(crate::journey::Medium::Rail).segment_count(),
+            0,
+            "a tramway went into the railways"
+        );
+
+        let def = VehicleKind::Locomotive.def();
+        let crossing = w.crossing();
+        assert!(
+            crate::journey::plan_for(
+                def.medium,
+                a,
+                b,
+                w.ways(),
+                &crossing,
+                def.on_road,
+                def.cross_country,
+                0.0
+            )
+            .is_none(),
+            "a hundred-and-twenty-tonne train ran down a street tramway"
+        );
+    }
+
+    /// A metro goes under a river rather than over one, and it is the only way
+    /// that does. Everything else meets `NeedsABridge`.
+    #[test]
+    fn only_a_tunnel_crosses_water_without_a_bridge() {
+        let mut w = bare();
+        let mut ground = crate::terrain::Terrain::flat(Metres(4_000.0));
+        for cy in 0..ground.cells() {
+            for cx in 0..ground.cells() {
+                let p = ground.cell_centre(cx, cy);
+                if (1_900.0..2_100.0).contains(&p.x.0) {
+                    ground.set_surface(p, crate::terrain::Surface::Water);
+                }
+            }
+        }
+        w.set_terrain(ground);
+        let (a, b) = (at(1_000.0, 1_000.0), at(3_000.0, 1_000.0));
+
+        for grade in [
+            crate::roadworks::Grade::Gravel,
+            crate::roadworks::Grade::Railway,
+            crate::roadworks::Grade::Tramway,
+        ] {
+            assert_eq!(
+                w.order_road(a, b, grade),
+                Err(crate::roadworks::RoadError::NeedsABridge),
+                "{} crossed a river for nothing",
+                grade.def().name
+            );
+        }
+        for grade in [
+            crate::roadworks::Grade::Bridge,
+            crate::roadworks::Grade::RailBridge,
+            crate::roadworks::Grade::MetroTunnel,
+        ] {
+            assert!(
+                w.order_road(a, b, grade).is_ok(),
+                "{} could not span a river",
+                grade.def().name
+            );
+        }
     }
 }

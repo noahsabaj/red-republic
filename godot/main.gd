@@ -591,7 +591,8 @@ func _refresh_ways() -> void:
 	var rail: PackedFloat32Array = republic.ways(WAY_RAIL)
 	var water: PackedFloat32Array = republic.ways(WAY_WATER)
 	@warning_ignore("integer_division")
-	var count: int = rail.size() / 5 + water.size() / 5
+	var count: int = (rail.size() + water.size()
+		+ republic.ways(WAY_TRAM).size() + republic.ways(WAY_METRO).size()) / 5
 	if count == _ways_shown:
 		return
 	_ways_shown = count
@@ -608,7 +609,12 @@ func _refresh_ways() -> void:
 		# river: a flat ribbon that close to the terrain z-fights with it, and
 		# the result looks like a rendering fault rather than like a feature.
 		# Caught by looking at a frame -- nothing that counts spans can see it.
-		for pair in [[rail, RAIL_TONE, 6.0, 2.5], [water, WATER_TONE, 30.0, 1.5]]:
+		for pair in [
+			[rail, RAIL_TONE, 6.0, 2.5],
+			[republic.ways(WAY_TRAM), TRAM_TONE, 4.0, 2.0],
+			[republic.ways(WAY_METRO), METRO_TONE, 5.0, 0.8],
+			[water, WATER_TONE, 30.0, 1.5],
+		]:
 			var spans: PackedFloat32Array = pair[0]
 			@warning_ignore("integer_division")
 			var n: int = spans.size() / 5
@@ -623,13 +629,20 @@ func _refresh_ways() -> void:
 ## Indices into `Medium::ALL`, which is the order the shell hands them over in.
 const WAY_ROAD := 0
 const WAY_RAIL := 1
-const WAY_WATER := 2
-const WAY_AIR := 3
+const WAY_TRAM := 2
+const WAY_METRO := 3
+const WAY_WATER := 4
+const WAY_AIR := 5
 
 ## Track reads as dark steel; water as a broad pale ribbon lying almost flat on
 ## the ground, because it is the surface rather than something built on it.
 const RAIL_TONE := Color(0.32, 0.30, 0.28)
 const WATER_TONE := Color(0.35, 0.47, 0.60, 0.85)
+## Street track is lighter than mainline rail and thinner; the metro is drawn
+## faintly and low, because it is under the ground and the player is being
+## shown where it runs rather than a thing standing on the map.
+const TRAM_TONE := Color(0.52, 0.48, 0.44)
+const METRO_TONE := Color(0.46, 0.38, 0.52, 0.55)
 
 
 ## In the order `Utility::ALL` declares: power, heat, conveyor, pipeline.

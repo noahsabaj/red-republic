@@ -76,6 +76,11 @@ pub enum Grade {
     Railway,
     /// Track over water. The single most expensive thing in the table.
     RailBridge,
+    /// Street track, laid in a road somebody already built.
+    Tramway,
+    /// Underground. Dearer than anything else per kilometre, and it passes
+    /// beneath a river rather than needing a bridge over one.
+    MetroTunnel,
 }
 
 /// What a grade costs and what it is worth.
@@ -175,6 +180,32 @@ pub const GRADES: &[GradeDef] = &[
         ],
         labour: 780.0,
     },
+    // Street track. Half a railway's steel and no earthworks, because it is
+    // laid in a road somebody already built -- which is also why it is slow.
+    GradeDef {
+        grade: Grade::Tramway,
+        carries: Medium::Tram,
+        name: "Tramway",
+        speed: Speed::from_kph(30.0),
+        materials: &[(Resource::Steel, 45.0), (Resource::Gravel, 40.0)],
+        labour: 120.0,
+    },
+    // The most expensive kilometre in the republic, and the only way that
+    // crosses water without a bridge -- because it goes under the river rather
+    // than over it, which is exactly what a tunnel is for.
+    GradeDef {
+        grade: Grade::MetroTunnel,
+        carries: Medium::Metro,
+        name: "Metro Tunnel",
+        speed: Speed::from_kph(70.0),
+        materials: &[
+            (Resource::Steel, 180.0),
+            (Resource::Bricks, 320.0),
+            (Resource::Gravel, 240.0),
+            (Resource::Machinery, 12.0),
+        ],
+        labour: 1_400.0,
+    },
 ];
 
 impl GradeDef {
@@ -183,7 +214,10 @@ impl GradeDef {
     /// A property of the authored row rather than a match on the enum, for the
     /// reason every other property in this crate is one.
     pub fn spans_water(&self) -> bool {
-        matches!(self.grade, Grade::Bridge | Grade::RailBridge)
+        matches!(
+            self.grade,
+            Grade::Bridge | Grade::RailBridge | Grade::MetroTunnel
+        )
     }
 }
 

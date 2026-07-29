@@ -247,6 +247,11 @@ pub struct World {
     /// The railways. A peer of `roads` rather than a variant of it, because
     /// what keeps a train off a road is that the road is not in here.
     pub(crate) rails: Network,
+    /// Street track, and the metro's own tunnels. Separate from `rails` on
+    /// purpose: one network would let a republic lay tramway at a third the
+    /// price and run freight trains down it.
+    pub(crate) tramway: Network,
+    pub(crate) metro: Network,
     /// Navigable water. **The one network nobody builds** — it is derived from
     /// the ground the moment the ground exists, and rebuilt with it.
     pub(crate) waterways: Network,
@@ -335,6 +340,8 @@ impl World {
             buildings: Buildings::new(),
             roads: Network::new(),
             rails: Network::new(),
+            tramway: Network::new(),
+            metro: Network::new(),
             waterways,
             airways: Network::new(),
             roadworks: RoadWorks::new(),
@@ -436,13 +443,14 @@ impl World {
     /// One accessor rather than four fields threaded through every call site,
     /// because a planner handed the wrong network answers confidently and is
     /// wrong — see [`crate::journey::Ways`].
-    pub(crate) fn ways<'a>(&'a self, crossing: &'a Crossing<'a>) -> crate::journey::Ways<'a> {
+    pub(crate) fn ways(&self) -> crate::journey::Ways<'_> {
         crate::journey::Ways {
             roads: &self.roads,
             rails: &self.rails,
+            tramway: &self.tramway,
+            metro: &self.metro,
             water: &self.waterways,
             air: &self.airways,
-            crossing,
         }
     }
 
@@ -450,6 +458,8 @@ impl World {
     pub(crate) fn network_for(&mut self, grade: Grade) -> &mut Network {
         match grade.def().carries {
             crate::journey::Medium::Rail => &mut self.rails,
+            crate::journey::Medium::Tram => &mut self.tramway,
+            crate::journey::Medium::Metro => &mut self.metro,
             _ => &mut self.roads,
         }
     }
@@ -563,20 +573,21 @@ impl World {
         // An aerodrome is deliberately exempt: it *is* the network, so
         // requiring one to stand near an existing one would mean a republic
         // could never build its first.
+        // Two exemptions, both for reasons rather than convenience. A road
+        // vehicle is **free-ranging** — it can drive across a field to reach a
+        // depot, so a bus garage away from the tarmac is inconvenient rather
+        // than impossible. And an aerodrome *is* the air network, so requiring
+        // one near an existing one would mean a republic could never build its
+        // first.
         if let Some(medium) = kind.def().medium
             && medium != crate::journey::Medium::Air
-        {
-            let net = match medium {
-                crate::journey::Medium::Rail => &self.rails,
-                crate::journey::Medium::Water => &self.waterways,
-                _ => &self.roads,
-            };
-            if net
+            && !medium.free_ranging()
+            && self
+                .network(medium)
                 .nearest_node(at, crate::journey::TERMINAL_REACH)
                 .is_none()
-            {
-                return Err(crate::building::PlacementError::NoWayThere(medium));
-            }
+        {
+            return Err(crate::building::PlacementError::NoWayThere(medium));
         }
         Ok(())
     }
@@ -1072,6 +1083,8 @@ impl World {
         match medium {
             crate::journey::Medium::Road => &self.roads,
             crate::journey::Medium::Rail => &self.rails,
+            crate::journey::Medium::Tram => &self.tramway,
+            crate::journey::Medium::Metro => &self.metro,
             crate::journey::Medium::Water => &self.waterways,
             crate::journey::Medium::Air => &self.airways,
         }

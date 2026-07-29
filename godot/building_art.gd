@@ -110,6 +110,15 @@ static func table() -> Dictionary:
 		"Gas Station": Art.new(1, 4.0, F, 0, 2, false, Tone.METAL),
 		"Bus Depot": Art.new(1, 9.5, S, 0, 0, false, Tone.METAL),
 
+		# Passenger depots. All three are a shed full of vehicles, so they share
+		# the bus depot's sawtooth-and-metal read; what tells them apart is size,
+		# which comes from the real footprint the simulation authors. The metro
+		# depot is the only one with a gantry, because most of it is underground
+		# and the surface building is a hoist over a shaft.
+		"Trolleybus Depot": Art.new(1, 9.0, S, 0, 0, false, Tone.METAL),
+		"Tram Depot": Art.new(1, 10.0, S, 0, 0, false, Tone.METAL),
+		"Metro Depot": Art.new(1, 11.0, F, 0, 0, true, Tone.CONCRETE),
+
 		# Terminals. Long, low and mostly canopy -- a station and a wharf are
 		# both a shed over a platform, and the gantry is what makes them read as
 		# places where something is craned rather than as another warehouse.
