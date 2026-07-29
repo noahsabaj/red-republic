@@ -29,6 +29,7 @@ use crate::fleet::Destination;
 use crate::fleet::Fleet;
 use crate::geology::Geology;
 use crate::ground::{Crossing, Ground, Lattice};
+use crate::loan::Loans;
 use crate::mapgen;
 use crate::resource::Resource;
 use crate::rng::{Rng, RngState};
@@ -59,7 +60,10 @@ use serde::{Deserialize, Serialize};
 /// 7: the journal. A save now carries what the player did, not only what the
 /// republic became, which is what makes a save replayable and a reported bug
 /// reproducible from the save alone.
-pub const SAVE_VERSION: u32 = 7;
+///
+/// 8: the frontier replaces the single border edge, and the republic can carry
+/// advances from the blocs.
+pub const SAVE_VERSION: u32 = 8;
 
 /// The first version the format ever carried.
 ///
@@ -240,6 +244,8 @@ pub struct World {
     pub(crate) trade_policy: TradePolicy,
     /// Tenders from the two blocs: offers, live deals and recent history.
     pub(crate) contracts: Contracts,
+    /// Advances the blocs have made, at most one per bloc.
+    pub(crate) loans: Loans,
     /// The posting's climate. Fixed at founding — you do not get a milder
     /// winter by asking for one.
     pub(crate) climate: ClimateId,
@@ -295,6 +301,7 @@ impl World {
             treasury: Treasury::default(),
             trade_policy: TradePolicy::new(),
             contracts: Contracts::default(),
+            loans: Loans::new(),
             climate: spec.climate,
             journal: Journal::new(),
             seed: spec.seed,
@@ -637,6 +644,33 @@ impl World {
                 }
             }
 
+            // An advance credits the treasury the moment it is taken, and
+            // repaying debits it. Both are transactions at a genuine boundary —
+            // money moving and a debt moving never happen apart — which is the
+            // case the single-writer rule allows a coarse operation for.
+            Command::TakeLoan { market, tier } => {
+                let today = self.clock.day_index();
+                let principal = self.loans.take(market, tier as usize, today)?;
+                self.treasury.credit(market, principal);
+                Ok(Done::Nothing)
+            }
+
+            Command::RepayLoan { market, amount } => {
+                let owed = self.loans.outstanding(market);
+                if owed <= 0.0 {
+                    return Err(Refused::Loan(crate::loan::LoanError::NothingOwed));
+                }
+                // Capped at what is owed AND at what is held, so a repayment
+                // can never overdraw a purse that has no overdraft.
+                let payable = amount.min(owed).min(self.treasury.of(market));
+                if payable <= 0.0 {
+                    return Err(Refused::Loan(crate::loan::LoanError::CannotAfford));
+                }
+                let paid = self.loans.repay(market, payable)?;
+                self.treasury.debit(market, paid);
+                Ok(Done::Nothing)
+            }
+
             Command::AddTradeRule { .. }
             | Command::RemoveTradeRule { .. }
             | Command::MoveTradeRule { .. } => {
@@ -708,6 +742,11 @@ impl World {
 
     pub fn contracts(&self) -> &Contracts {
         &self.contracts
+    }
+
+    /// The advances the republic is carrying, and its record of paying them.
+    pub fn loans(&self) -> &Loans {
+        &self.loans
     }
 
     pub fn climate(&self) -> ClimateId {
