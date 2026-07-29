@@ -32,6 +32,7 @@ use crate::geology::Geology;
 use crate::ground::{Crossing, Ground, Lattice};
 use crate::loan::Loans;
 use crate::mapgen;
+use crate::policy::BuildPolicy;
 use crate::resource::Resource;
 use crate::rng::{Rng, RngState};
 use crate::road::RoadNetwork;
@@ -68,7 +69,11 @@ use serde::{Deserialize, Serialize};
 /// 9: building crews. Where a gang is standing and what it is working is
 /// persisted state — a save written before them describes a republic whose
 /// sites are being built by nobody.
-pub const SAVE_VERSION: u32 = 9;
+///
+/// 10: the build policy, and what has already been bought on each site's
+/// account. The second half is what makes a reloaded republic stop buying a
+/// wall it has already paid for.
+pub const SAVE_VERSION: u32 = 10;
 
 /// The first version the format ever carried.
 ///
@@ -254,6 +259,9 @@ pub struct World {
     /// The building crews that are out: who they belong to, where they are
     /// standing, and what they are working.
     pub(crate) crews: Crews,
+    /// Where sites buy materials the republic has not made, and through which
+    /// post. Empty by default — a republic imports nothing until told to.
+    pub(crate) build_policy: BuildPolicy,
     /// The posting's climate. Fixed at founding — you do not get a milder
     /// winter by asking for one.
     pub(crate) climate: ClimateId,
@@ -311,6 +319,7 @@ impl World {
             contracts: Contracts::default(),
             loans: Loans::new(),
             crews: Crews::new(),
+            build_policy: BuildPolicy::new(),
             climate: spec.climate,
             journal: Journal::new(),
             seed: spec.seed,
@@ -658,6 +667,11 @@ impl World {
                     return Err(Refused::CrewsOut);
                 }
                 if self.buildings.demolish(building) {
+                    // A building id is never reused, so a stale policy entry
+                    // would be harmless to read and would sit in every save
+                    // for ever. This is one of the few structures keyed by
+                    // something that stops existing.
+                    self.build_policy.forget(Destination::Building(building));
                     Ok(Done::Nothing)
                 } else {
                     Err(Refused::NoSuchBuilding(building))
@@ -723,6 +737,31 @@ impl World {
                 let paid = self.loans.repay(market, payable)?;
                 self.treasury.debit(market, paid);
                 Ok(Done::Nothing)
+            }
+
+            // The crossing is checked here rather than when it is read, so a
+            // policy in the world always names a post that exists — otherwise a
+            // typo would sit in a save quietly importing nothing, which looks
+            // exactly like a republic that cannot afford anything.
+            Command::SetImportPolicy { site, crossing } => {
+                if let Some(id) = crossing
+                    && self.frontier.get(id).is_none()
+                {
+                    return Err(Refused::NoSuchCrossing(id));
+                }
+                match site {
+                    Some(site) => self.build_policy.set_site(site, crossing),
+                    None => self.build_policy.set_global(crossing),
+                }
+                Ok(Done::Nothing)
+            }
+
+            Command::ClearImportPolicy { site } => {
+                if self.build_policy.clear_site(site) {
+                    Ok(Done::Nothing)
+                } else {
+                    Err(Refused::NoSuchPolicy)
+                }
             }
 
             Command::AddTradeRule { .. }
@@ -802,6 +841,11 @@ impl World {
     /// The building crews that are out.
     pub fn crews(&self) -> &Crews {
         &self.crews
+    }
+
+    /// Where sites buy what the republic has not made.
+    pub fn build_policy(&self) -> &BuildPolicy {
+        &self.build_policy
     }
 
     pub fn loans(&self) -> &Loans {

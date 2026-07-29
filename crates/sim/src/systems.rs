@@ -216,12 +216,21 @@ pub enum Mutation {
         contract: Option<ContractId>,
     },
     /// Goods arriving and the currency that paid for them.
+    ///
+    /// `for_site` names the site whose account this was bought on, when it was
+    /// bought for one. Carried on the mutation rather than booked separately for
+    /// the reason `Export` carries its contract: the goods landing, the money
+    /// leaving and the site's allowance falling are one transaction, and an
+    /// allowance that could fall without goods arriving — or goods that could
+    /// arrive without the allowance falling — is how a republic buys the same
+    /// wall eight times.
     Import {
         customs: BuildingId,
         resource: Resource,
         tonnes: Tonnes,
         market: Market,
         cost: f64,
+        for_site: Option<Destination>,
     },
     /// A crew set down at the site it is to work, and the bus turning for home.
     ///
@@ -570,8 +579,15 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                 tonnes,
                 market,
                 cost,
+                for_site,
             } => {
                 let spent = world.treasury.debit(market, cost);
+                if let Some(site) = for_site {
+                    // Booked against the site in the same breath the money
+                    // leaves, so an allowance cannot fall without goods and
+                    // goods cannot arrive without the allowance falling.
+                    world.build_policy.record_bought(site, resource, tonnes);
+                }
                 // Deliver in proportion to what was actually paid.
                 let landed = if cost > 0.0 {
                     Tonnes(tonnes.0 * (spent / cost))
@@ -650,6 +666,7 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     world
                         .crews
                         .release(Destination::RoadSite(site), opened.depot());
+                    world.build_policy.forget(Destination::RoadSite(site));
                     roadworks::open(&mut world.roads, &opened);
                 }
             }
@@ -1752,12 +1769,164 @@ pub fn trade(world: &World) -> Vec<Mutation> {
                         tonnes: affordable,
                         market: rule.market,
                         cost,
+                        // A standing trade rule buys for the republic, not for
+                        // any one site: it is a stock level the player asked
+                        // for, and nobody's account to charge.
+                        for_site: None,
                     });
                 }
             }
         }
+
+        // Construction imports, on whatever clearance the standing policy left.
+        //
+        // Below the trade rules on purpose: a rule is a plan the player wrote
+        // down and a site's shortfall is a consequence of one, so when a post
+        // cannot clear everything in a day the plan goes first. Same reasoning
+        // as freight's second pass.
+        let Some(post) = world.frontier.nearest_crossing(house.centre, None) else {
+            continue;
+        };
+        if post.at.distance_to(house.centre).0 > CUSTOMS_RANGE.0 {
+            continue;
+        }
+        for (site, resource, short) in importable(world, post.id) {
+            if !clearance.is_positive() {
+                break;
+            }
+            let unit = world.contracts.buy_price(bloc, resource);
+            if unit <= 0.0 {
+                continue;
+            }
+            let wanted = short.min(clearance);
+            let affordable = Tonnes((purse.of(bloc) / unit).min(wanted.0));
+            if !affordable.is_positive() {
+                continue;
+            }
+            clearance = clearance.saturating_sub(affordable);
+            let cost = purse.debit(bloc, affordable.0 * unit);
+            out.push(Mutation::Import {
+                customs: house.id,
+                resource,
+                tonnes: affordable,
+                market: bloc,
+                cost,
+                for_site: Some(site),
+            });
+            // Nothing is *reserved* for the site: the goods land in the post's
+            // yard and the ordinary freight ranking takes them from there, which
+            // is what keeps "no instant build" true for a republic that can
+            // afford anything. What is bounded is the spending, not the goods.
+        }
     }
     out
+}
+
+/// What the sites importing through a post still need, netted against what is
+/// already standing at that post and already on a lorry heading for them.
+///
+/// The netting is the whole of the difficulty. A site's shortfall does not fall
+/// when the goods are bought — it falls when they are *delivered*, and delivery
+/// is hours of driving away. Buying the shortfall every tick until it lands
+/// would spend a republic's hard currency several times over for one wall, and
+/// the failure would look like a balance problem rather than a bug.
+fn importable(
+    world: &World,
+    post: crate::trade::CrossingId,
+) -> Vec<(Destination, Resource, Tonnes)> {
+    let mut wanted: BTreeMap<Resource, Tonnes> = BTreeMap::new();
+    let mut sites: Vec<(Destination, Resource, Tonnes)> = Vec::new();
+
+    // The shortfall, capped by what the Directorate will still buy on this
+    // site's account. The cap is what stops auto-import chasing a shortfall it
+    // does not own — see `BuildPolicy::bought_for`.
+    let mut consider = |site: Destination, resource: Resource, short: Tonnes, bill: f64| {
+        if world.build_policy.crossing_for(site) != Some(post) {
+            return;
+        }
+        let short = Tonnes(
+            short
+                .0
+                .min(world.build_policy.allowance(site, resource, Tonnes(bill)).0),
+        );
+        if !short.is_positive() {
+            return;
+        }
+        *wanted.entry(resource).or_default() += short;
+        sites.push((site, resource, short));
+    };
+
+    for b in world.buildings.all() {
+        if b.is_built() {
+            continue;
+        }
+        for &(resource, bill) in b.def().materials {
+            consider(
+                Destination::Building(b.id),
+                resource,
+                b.material_outstanding(resource),
+                bill,
+            );
+        }
+    }
+    for road in world.roadworks.all() {
+        for (resource, bill) in road.materials() {
+            consider(
+                Destination::RoadSite(road.id),
+                resource,
+                road.material_outstanding(resource),
+                bill.0,
+            );
+        }
+    }
+    if sites.is_empty() {
+        return sites;
+    }
+
+    // What is already bought and not yet used: standing in the post's yard, or
+    // on a lorry that is taking it to one of these sites.
+    let mut covered: BTreeMap<Resource, Tonnes> = BTreeMap::new();
+    for b in world.buildings.all() {
+        if b.kind != BuildingKind::Customs || !b.is_built() {
+            continue;
+        }
+        if world
+            .frontier
+            .nearest_crossing(b.centre, None)
+            .is_none_or(|c| c.id != post)
+        {
+            continue;
+        }
+        for &resource in wanted.keys() {
+            *covered.entry(resource).or_default() += b.stock.get(resource);
+        }
+    }
+    for v in world.fleet.all() {
+        let Some((_, to, resource, tonnes)) = v.job.and_then(Job::haul) else {
+            continue;
+        };
+        if world.build_policy.crossing_for(to) == Some(post) && wanted.contains_key(&resource) {
+            // **What it was sent for, not what is on the bed.** A lorry driving
+            // out to collect has a job and an empty bed, and counting the bed
+            // made that whole leg invisible — the post bought the shortfall
+            // again on every tick the lorry was still on its way to fetch it.
+            // Measured: 47 t of machinery bought for a 6 t bill.
+            let promised = Tonnes(tonnes.0.max(v.cargo.get(resource).0));
+            *covered.entry(resource).or_default() += promised;
+        }
+    }
+
+    // Spread what is covered over the sites in the order they were commissioned,
+    // so the site that would be built first is the one already supplied.
+    sites.sort_by(|(da, ra, _), (db, rb, _)| da.cmp(db).then_with(|| ra.cmp(rb)));
+    sites.retain_mut(|(_, resource, short)| {
+        let held = covered.entry(*resource).or_default();
+        let taken = (*held).min(*short);
+        *held = held.saturating_sub(taken);
+        *short = short.saturating_sub(taken);
+        short.is_positive()
+    });
+    sites
 }
 
 /// Where people work, and what carrying them there costs.
@@ -5574,6 +5743,189 @@ mod tests {
         let far = started(at(3_400.0, 3_400.0));
         assert!(near < far, "near started at {near}, far at {far}");
         assert!(far < u64::MAX, "the far site never started at all");
+    }
+
+    /// A republic with no brickworks can still build, and what it buys lands at
+    /// the post rather than at the site.
+    ///
+    /// **The rule this must not break is "no instant build".** Auto-import
+    /// answers where a tonne of brick comes from; it does not shorten a build,
+    /// waive a bill or skip a journey. So the assertion is deliberately in two
+    /// halves: the goods appear at the customs house, and the site is *still
+    /// short of them* until a lorry has driven them over.
+    #[test]
+    fn imported_materials_land_at_the_post_and_still_have_to_be_driven() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let house = base.customs.expect("the founding opens a crossing");
+        let post = w
+            .frontier
+            .nearest_crossing(w.buildings.get(house).unwrap().centre, None)
+            .expect("a post to stand at")
+            .id;
+        let bloc = w.frontier.bloc_near(w.buildings.get(house).unwrap().centre);
+
+        // A site needing something no yard in the republic holds.
+        let site = w
+            .buildings
+            .place(
+                BuildingKind::MachineWorks,
+                Point::new(base.centre.x + Metres(400.0), base.centre.y - Metres(600.0)),
+                &w.terrain,
+                &w.geology,
+            )
+            .expect("open ground");
+        let dest = Destination::Building(site);
+        assert!(
+            w.buildings
+                .get(site)
+                .unwrap()
+                .material_outstanding(Resource::Machinery)
+                .is_positive(),
+            "the site should be short of machinery to begin with"
+        );
+
+        // Nothing is imported until a post is named, however rich the republic.
+        w.treasury.credit(bloc, 100_000.0);
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        assert_eq!(
+            w.buildings
+                .get(house)
+                .unwrap()
+                .stock
+                .get(Resource::Machinery),
+            Tonnes::ZERO,
+            "a republic imported before anybody told it to"
+        );
+
+        w.build_policy.set_global(Some(post));
+        let mut landed_at_post = false;
+        for _ in 0..(TICKS_PER_DAY * 3) {
+            w.tick();
+            if w.buildings
+                .get(house)
+                .unwrap()
+                .stock
+                .get(Resource::Machinery)
+                .is_positive()
+            {
+                landed_at_post = true;
+                break;
+            }
+        }
+        assert!(landed_at_post, "nothing was ever bought");
+        assert!(
+            w.buildings
+                .get(site)
+                .unwrap()
+                .material_outstanding(Resource::Machinery)
+                .is_positive(),
+            "the goods reached the site without being driven there — this is the \
+             instant build the whole design refuses"
+        );
+
+        // And an opted-out site buys nothing, even under a republic that does.
+        w.build_policy.set_site(dest, None);
+        let before = w.treasury.of(bloc);
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        assert!(
+            w.treasury.of(bloc) >= before - 1e-9,
+            "an opted-out site went on spending"
+        );
+    }
+
+    /// A shortfall does not fall when the goods are *bought*; it falls when they
+    /// are *delivered*, and delivery is hours of driving away.
+    ///
+    /// Without netting off what is already standing at the post and already on a
+    /// lorry, the republic buys the same wall several times over — and the
+    /// failure looks like a balance problem rather than a bug, because all it
+    /// does is empty a purse.
+    #[test]
+    fn a_wall_is_bought_once_however_long_the_lorry_takes() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let house = base.customs.expect("a crossing");
+        let post = w
+            .frontier
+            .nearest_crossing(w.buildings.get(house).unwrap().centre, None)
+            .expect("a post")
+            .id;
+        let bloc = w.frontier.bloc_near(w.buildings.get(house).unwrap().centre);
+        let site = w
+            .buildings
+            .place(
+                BuildingKind::MachineWorks,
+                Point::new(base.centre.x + Metres(400.0), base.centre.y - Metres(600.0)),
+                &w.terrain,
+                &w.geology,
+            )
+            .expect("open ground");
+        let bill: f64 = BuildingKind::MachineWorks
+            .def()
+            .materials
+            .iter()
+            .find(|(r, _)| *r == Resource::Machinery)
+            .map(|&(_, q)| q)
+            .expect("a machine works needs machinery");
+
+        w.build_policy.set_global(Some(post));
+        w.treasury.credit(bloc, 100_000.0);
+        let mut bought = Tonnes::ZERO;
+        for _ in 0..(TICKS_PER_DAY * 20) {
+            for m in w.tick() {
+                if let Mutation::Import {
+                    resource: Resource::Machinery,
+                    tonnes,
+                    ..
+                } = m
+                {
+                    bought += tonnes;
+                }
+            }
+        }
+        assert!(
+            bought.is_positive(),
+            "nothing was bought, so nothing is tested"
+        );
+        assert!(
+            bought.0 <= bill + 1e-6,
+            "bought {:.1} t of machinery for a {bill:.1} t bill",
+            bought.0
+        );
+
+        // And the diversion that made this necessary is real, not hypothetical:
+        // the goods land in a border yard and the republic's own freight ranking
+        // decides where they go. Most of this wall ended up in the Construction
+        // Office, which was about to run dry and outranks a foundation.
+        //
+        // **That is the failure mode this change chose**, and it is the right
+        // way round: a site standing still is on the screen, and hard currency
+        // draining into a border post is not. Fixing it is the player's — a
+        // standing trade rule, or a Machine Works of their own.
+        let elsewhere = w
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.id != site && b.kind != BuildingKind::Customs)
+            .map(|b| b.stock.get(Resource::Machinery).0)
+            .sum::<f64>();
+        assert!(
+            elsewhere > 0.0,
+            "nothing was diverted, so this test is not standing where it thinks"
+        );
     }
 
     /// One site, one gang. A crew riding toward a foundation has already been

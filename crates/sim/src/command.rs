@@ -75,6 +75,25 @@ pub enum Command {
     /// the player's plan that the player should be making.
     RecallCrew { site: Destination },
 
+    /// Say where sites buy materials the republic has not made.
+    ///
+    /// `site` names one site, or `None` for the republic's default. `crossing`
+    /// names the post to import through, or `None` to import nothing — and the
+    /// two `None`s mean different things, which is why neither is a bare id: a
+    /// site set to `None` while the default is set has been opted *out*, and a
+    /// site with no instruction at all follows the default.
+    ///
+    /// **This shortens no build.** It answers where a tonne of brick comes from
+    /// in a republic with no brickworks; the goods land at the post and your
+    /// lorries still have to fetch them.
+    SetImportPolicy {
+        site: Option<Destination>,
+        crossing: Option<crate::trade::CrossingId>,
+    },
+
+    /// Put a site back under the republic's default policy.
+    ClearImportPolicy { site: Destination },
+
     /// Take a tender the Foreign Trade Directorate has offered.
     AcceptContract { contract: ContractId },
 
@@ -138,6 +157,10 @@ pub enum Refused {
     CrewsOut,
     /// Nobody is working that site, so there is nobody to call off it.
     NoCrewThere,
+    /// There is no frontier post with that number.
+    NoSuchCrossing(crate::trade::CrossingId),
+    /// That site had no instruction of its own to clear.
+    NoSuchPolicy,
 }
 
 impl std::fmt::Display for Refused {
@@ -156,6 +179,12 @@ impl std::fmt::Display for Refused {
                 "this office still has crews out at sites; bring them in first"
             ),
             Refused::NoCrewThere => write!(f, "nobody is working that site"),
+            Refused::NoSuchCrossing(id) => {
+                write!(f, "there is no frontier post {}", id.0)
+            }
+            Refused::NoSuchPolicy => {
+                write!(f, "this site already follows the republic's import policy")
+            }
             Refused::NoSuchRule { index, rules } => match rules {
                 0 => write!(f, "there are no trade rules to change"),
                 1 => write!(f, "there is only one trade rule, and it is not {index}"),
