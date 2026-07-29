@@ -30,6 +30,8 @@ fov = 60.0
 
 [node name="Vehicles" type="MultiMeshInstance3D" parent="."]
 
+[node name="Newcomers" type="MultiMeshInstance3D" parent="."]
+
 [node name="Roads" type="MeshInstance3D" parent="."]
 
 [node name="Frontier" type="MeshInstance3D" parent="."]

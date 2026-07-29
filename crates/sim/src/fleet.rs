@@ -53,6 +53,7 @@ pub enum VehicleKind {
     HeavyLorry,
     RecoveryVehicle,
     CrewBus,
+    Coach,
 }
 
 /// What a vehicle is for.
@@ -71,6 +72,15 @@ pub enum Role {
     Crew,
     /// Pulls the others out of fields.
     Recovery,
+    /// Carries settlers from a frontier post to housing.
+    ///
+    /// Its own role rather than a second use for [`Role::Crew`], because the
+    /// two pools must never compete: a republic that stopped building because
+    /// its buses were fetching immigrants — or that stranded a hundred people
+    /// at the border because a foundation wanted a gang — would be a republic
+    /// where two unrelated decisions share one budget for no reason anybody
+    /// chose.
+    Passenger,
 }
 
 /// What a vehicle is and what it can do.
@@ -190,6 +200,24 @@ pub const VEHICLES: &[VehicleDef] = &[
         fuel_per_km: 0.00025,
         tank: Tonnes(0.12),
         ground: 0.7,
+        load_penalty: 0.0,
+    },
+    // What brings settlers in from a frontier post. Bigger than a crew bus
+    // because a group at the border is a group rather than a gang, and worse
+    // across country because it is a road coach: a republic that wants the
+    // people arriving at its far post has to build road out to it, which is the
+    // same answer trade already gives about the same posts.
+    VehicleDef {
+        kind: VehicleKind::Coach,
+        name: "Coach",
+        role: Role::Passenger,
+        capacity: Tonnes::ZERO,
+        seats: 24,
+        on_road: Speed::from_kph(65.0),
+        cross_country: Speed::from_kph(12.0),
+        fuel_per_km: 0.00035,
+        tank: Tonnes(0.20),
+        ground: 0.6,
         load_penalty: 0.0,
     },
 ];
@@ -315,6 +343,16 @@ pub enum Job {
     /// collected can be standing beside a road that now exists and has no site
     /// left to refer to.
     Collect { party: crate::crews::PartyId },
+    /// Fetch a group of settlers from a frontier post and take them to housing.
+    ///
+    /// Both halves are named at dispatch because the coach has to be able to
+    /// make the *whole* trip — post, then estate, then home — before it accepts
+    /// the work. A coach that ran dry with a hundred people aboard would be the
+    /// stranded-gang failure again, with more people in it.
+    Settle {
+        group: crate::migration::GroupId,
+        to: BuildingId,
+    },
 }
 
 impl Job {
@@ -349,6 +387,14 @@ impl Job {
     pub fn party(self) -> Option<crate::crews::PartyId> {
         match self {
             Job::Collect { party } => Some(party),
+            _ => None,
+        }
+    }
+
+    /// The group of settlers being fetched, and where they are being taken.
+    pub fn settling(self) -> Option<(crate::migration::GroupId, BuildingId)> {
+        match self {
+            Job::Settle { group, to } => Some((group, to)),
             _ => None,
         }
     }
@@ -589,6 +635,13 @@ mod tests {
                     !seats && !carries,
                     "{} recovers and also carries things",
                     def.name
+                ),
+                Role::Passenger => assert!(
+                    seats && !carries,
+                    "{} carries settlers with {} seats and {:?} of bed",
+                    def.name,
+                    def.seats,
+                    def.capacity
                 ),
             }
             assert!(def.ground > 0.0, "{} cannot leave a road", def.name);

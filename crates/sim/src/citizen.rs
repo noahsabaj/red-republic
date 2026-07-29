@@ -52,9 +52,104 @@ pub const ROAD_ACCESS: Metres = Metres(300.0);
 /// The years during which someone holds a job.
 pub const WORKING_AGE: std::ops::Range<u32> = 16..60;
 
+/// The years someone is at school.
+pub const SCHOOL_AGE: std::ops::Range<u32> = 6..16;
+
+/// The years someone may be at university, if they finished school.
+///
+/// It overlaps [`WORKING_AGE`] deliberately and that overlap **is** the cost: a
+/// student is a working-age adult who is not working. A republic that sends its
+/// young people to university is short of hands for three years to be better
+/// off afterwards, which is the whole trade and the reason education is not
+/// simply a free upgrade.
+pub const UNIVERSITY_AGE: std::ops::Range<u32> = 16..19;
+
+/// Days of attendance that make somebody schooled.
+///
+/// Five years out of the ten between [`SCHOOL_AGE`]'s ends, so a school built
+/// halfway through a child's schooling still catches them and one built the
+/// year they leave does not. Attendance is only counted on days a *staffed*
+/// school is within reach of where they live — a school with no teachers
+/// teaches nobody.
+pub const SCHOOL_DAYS: u32 = 5 * crate::time::DAYS_PER_YEAR;
+
+/// Days at university, on top of school, that make somebody a graduate.
+pub const UNIVERSITY_DAYS: u32 = 3 * crate::time::DAYS_PER_YEAR;
+
 /// An unhurried adult pace.
 pub fn walking_speed() -> Speed {
     Speed::from_kph(5.0)
+}
+
+/// What somebody was taught.
+///
+/// Ordered, and the ordering is load-bearing: [`crate::building::BuildingDef`]
+/// authors the minimum a job needs and the labour pass compares against it, so
+/// a graduate can work a quarry and an unschooled labourer cannot run a
+/// refinery.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+pub enum Education {
+    /// Nobody taught them anything. The state a republic with no school
+    /// produces, one generation later.
+    #[default]
+    Unschooled,
+    Schooled,
+    Graduate,
+}
+
+impl Education {
+    pub const ALL: [Education; 3] = [
+        Education::Unschooled,
+        Education::Schooled,
+        Education::Graduate,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Education::Unschooled => "Unschooled",
+            Education::Schooled => "Schooled",
+            Education::Graduate => "Graduate",
+        }
+    }
+}
+
+/// Where somebody is in their life.
+///
+/// Derived rather than stored, from age and whether they are enrolled — a
+/// stored copy would be a second source of truth for something age already
+/// answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum LifeStage {
+    /// Too young for school.
+    Infant,
+    /// Of school age.
+    Pupil,
+    /// Of working age and at university instead.
+    Student,
+    Worker,
+    Retired,
+}
+
+impl LifeStage {
+    pub const ALL: [LifeStage; 5] = [
+        LifeStage::Infant,
+        LifeStage::Pupil,
+        LifeStage::Student,
+        LifeStage::Worker,
+        LifeStage::Retired,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            LifeStage::Infant => "Infants",
+            LifeStage::Pupil => "Pupils",
+            LifeStage::Student => "Students",
+            LifeStage::Worker => "Workers",
+            LifeStage::Retired => "Retired",
+        }
+    }
 }
 
 /// A stable identity, independent of ECS storage.
@@ -73,6 +168,74 @@ pub struct Workplace(pub Option<BuildingId>);
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Age(pub u32);
 
+/// What somebody has been taught, and whether they are still being taught it.
+///
+/// One component rather than two because they are read together everywhere:
+/// what you know is a function of the days you attended, and whether you are
+/// attending is what decides whether you can hold a job today.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Learning {
+    /// Days of attendance, at school and then at university.
+    pub days: u32,
+    /// Enrolled at a university right now, and therefore not available for
+    /// work. Written by the schooling pass, never authored.
+    pub studying: bool,
+}
+
+impl Learning {
+    /// Somebody who has never seen a classroom.
+    pub const NONE: Self = Self {
+        days: 0,
+        studying: false,
+    };
+
+    /// Somebody who finished school. What Moscow sends with a posting, and the
+    /// bar the next generation has to be given a school to clear.
+    pub const SCHOOLED: Self = Self {
+        days: SCHOOL_DAYS,
+        studying: false,
+    };
+
+    /// What the days add up to.
+    pub fn attainment(&self) -> Education {
+        if self.days >= SCHOOL_DAYS + UNIVERSITY_DAYS {
+            Education::Graduate
+        } else if self.days >= SCHOOL_DAYS {
+            Education::Schooled
+        } else {
+            Education::Unschooled
+        }
+    }
+}
+
+/// How somebody is, and how they feel about the republic.
+///
+/// Both `0.0..=1.0`, both individual rather than per-estate: mortality reads
+/// health and emigration reads loyalty, and neither is a question about a
+/// building.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Wellbeing {
+    pub health: f64,
+    /// How they feel about living here. Follows the contentment of their home
+    /// slowly — see [`crate::wellbeing::LOYALTY_DRIFT`].
+    pub loyalty: f64,
+}
+
+impl Wellbeing {
+    /// Somebody who has just arrived: in good health, and neither committed nor
+    /// disaffected.
+    pub const ARRIVING: Self = Self {
+        health: 0.9,
+        loyalty: 0.6,
+    };
+}
+
+impl Default for Wellbeing {
+    fn default() -> Self {
+        Self::ARRIVING
+    }
+}
+
 /// One citizen, flattened — the save representation and the ordered view.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CitizenRecord {
@@ -84,11 +247,46 @@ pub struct CitizenRecord {
     /// workplace, because the two are one decision: a job is only a job if
     /// there is a way to get to it.
     pub commute: Commute,
+    pub learning: Learning,
+    pub wellbeing: Wellbeing,
 }
 
 impl CitizenRecord {
+    /// Whether they are available to hold a job.
+    ///
+    /// A student is a working-age adult who is *not* working, and that is what
+    /// makes a university a cost as well as an investment.
     pub fn can_work(&self) -> bool {
-        WORKING_AGE.contains(&self.age.0)
+        WORKING_AGE.contains(&self.age.0) && !self.learning.studying
+    }
+
+    pub fn education(&self) -> Education {
+        self.learning.attainment()
+    }
+
+    pub fn stage(&self) -> LifeStage {
+        if self.learning.studying {
+            LifeStage::Student
+        } else if self.age.0 < SCHOOL_AGE.start {
+            LifeStage::Infant
+        } else if SCHOOL_AGE.contains(&self.age.0) {
+            LifeStage::Pupil
+        } else if WORKING_AGE.contains(&self.age.0) {
+            LifeStage::Worker
+        } else {
+            LifeStage::Retired
+        }
+    }
+
+    /// The day of the year they were born on.
+    ///
+    /// Derived from the id rather than stored, so ageing is spread evenly over
+    /// the year instead of the whole republic having a birthday at once. A
+    /// cohort that ages on one day is a cohort that *dies* on one day, and a
+    /// population graph with that sawtooth in it is a modelling artefact a
+    /// player would rightly read as a bug.
+    pub fn birthday(&self) -> u32 {
+        self.id.0 % crate::time::DAYS_PER_YEAR
     }
 
     /// Whether this person needs a seat on a bus to hold their job.
@@ -97,12 +295,31 @@ impl CitizenRecord {
     }
 }
 
+/// What one home holds, counted in a single walk of the population.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HomeCensus {
+    pub residents: u32,
+    /// Of working age and not at university.
+    pub working_age: u32,
+    /// Of those, how many hold a job.
+    pub employed: u32,
+    /// Of school age, whether or not a school exists to send them to.
+    pub pupils: u32,
+    /// Of an age to be starting a family.
+    pub fertile: u32,
+}
+
+/// The years during which a household may grow.
+pub const FERTILE_AGE: std::ops::Range<u32> = 20..40;
+
 type CitizenQuery = (
     &'static CitizenId,
     &'static Home,
     &'static Workplace,
     &'static Age,
     &'static Commute,
+    &'static Learning,
+    &'static Wellbeing,
 );
 
 /// Everyone in the republic.
@@ -126,11 +343,35 @@ impl Population {
     }
 
     /// Add a citizen.
+    ///
+    /// **An adult conjured into the republic arrives schooled, and a newborn
+    /// does not.** That is a rule rather than a convenience: the only two ways
+    /// somebody appears here at an adult age are the founding hand Moscow sends
+    /// and immigrants walking up to a post, and both of those had their
+    /// schooling somewhere else. A person who grows up *inside* the republic
+    /// never comes through here as an adult — they are born at nought and age,
+    /// so what they know is whatever the republic gave them, which is the whole
+    /// point of the attribute.
+    ///
+    /// Doing it by construction means no caller can create an educated adult by
+    /// forgetting to say where they were taught.
     pub fn spawn_citizen(&mut self, home: BuildingId, age: u32) -> CitizenId {
+        let learning = if age >= WORKING_AGE.start {
+            Learning::SCHOOLED
+        } else {
+            Learning::NONE
+        };
         let id = CitizenId(self.next_id);
         self.next_id += 1;
-        self.world
-            .spawn((id, Home(home), Workplace(None), Age(age), Commute::NONE));
+        self.world.spawn((
+            id,
+            Home(home),
+            Workplace(None),
+            Age(age),
+            Commute::NONE,
+            learning,
+            Wellbeing::ARRIVING,
+        ));
         // The cached query must learn about the archetype the first spawn
         // creates, or `iter_manual` sees nothing at all.
         self.query.update_archetypes(&self.world);
@@ -171,13 +412,17 @@ impl Population {
         let mut out: Vec<CitizenRecord> = self
             .query
             .iter_manual(&self.world)
-            .map(|(&id, &home, &workplace, &age, &commute)| CitizenRecord {
-                id,
-                home,
-                workplace,
-                age,
-                commute,
-            })
+            .map(
+                |(&id, &home, &workplace, &age, &commute, &learning, &wellbeing)| CitizenRecord {
+                    id,
+                    home,
+                    workplace,
+                    age,
+                    commute,
+                    learning,
+                    wellbeing,
+                },
+            )
             .collect();
         out.sort_by_key(|c| c.id);
         out
@@ -196,8 +441,82 @@ impl Population {
     pub fn employed(&self) -> usize {
         self.query
             .iter_manual(&self.world)
-            .filter(|(_, _, workplace, _, _)| workplace.0.is_some())
+            .filter(|(_, _, workplace, _, _, _, _)| workplace.0.is_some())
             .count()
+    }
+
+    /// How many people are in each life stage, in one pass.
+    ///
+    /// Indexed by [`LifeStage::ALL`], because the shell reads it as a packed
+    /// array and labels it by position.
+    pub fn by_stage(&self) -> [u32; LifeStage::ALL.len()] {
+        let mut out = [0u32; LifeStage::ALL.len()];
+        for record in self.walk() {
+            let stage = record.stage();
+            if let Some(i) = LifeStage::ALL.iter().position(|s| *s == stage) {
+                out[i] += 1;
+            }
+        }
+        out
+    }
+
+    /// How many people hold each level of education, in one pass.
+    pub fn by_education(&self) -> [u32; Education::ALL.len()] {
+        let mut out = [0u32; Education::ALL.len()];
+        for record in self.walk() {
+            let level = record.education();
+            if let Some(i) = Education::ALL.iter().position(|e| *e == level) {
+                out[i] += 1;
+            }
+        }
+        out
+    }
+
+    /// Mean health and mean loyalty, in one pass. `(0.0, 0.0)` when empty.
+    pub fn mean_wellbeing(&self) -> (f64, f64) {
+        let (mut health, mut loyalty, mut n) = (0.0, 0.0, 0u32);
+        for (_, _, _, _, _, _, w) in self.query.iter_manual(&self.world) {
+            health += w.health;
+            loyalty += w.loyalty;
+            n += 1;
+        }
+        if n == 0 {
+            return (0.0, 0.0);
+        }
+        (health / f64::from(n), loyalty / f64::from(n))
+    }
+
+    /// Everyone, unsorted, as flattened records.
+    ///
+    /// **For aggregates and for keyed per-person rolls** — anything whose
+    /// answer depends on the order it walked in must go through
+    /// [`Population::records`], which allocates and sorts the whole republic.
+    ///
+    /// The distinction is worth stating because it is not obvious: a mortality
+    /// roll is keyed by `(citizen, day)` from its own substream, so *who* dies
+    /// does not depend on what order they were considered in. What does depend
+    /// on order is the mutation's payload, and sorting a day's handful of
+    /// birthdays is nothing beside sorting four thousand people to find them.
+    ///
+    /// **Measured, and the honest figure is small**: at 4,000 citizens a
+    /// simulated day costs 26–27 ms with four full sorts in the daily people
+    /// pass and 25–26 ms with two. Worth having and not worth claiming more
+    /// for. The first reading said 45 ms against 33 ms and both were wrong —
+    /// the baseline suite runs its twelve tests concurrently, so a figure taken
+    /// while eleven others are competing for the cores is not comparable with
+    /// one taken alone. Run the axis on its own before believing a number moved.
+    pub(crate) fn walk(&self) -> impl Iterator<Item = CitizenRecord> + '_ {
+        self.query.iter_manual(&self.world).map(
+            |(&id, &home, &workplace, &age, &commute, &learning, &wellbeing)| CitizenRecord {
+                id,
+                home,
+                workplace,
+                age,
+                commute,
+                learning,
+                wellbeing,
+            },
+        )
     }
 
     pub fn residents_of(&self, building: BuildingId) -> Vec<CitizenRecord> {
@@ -216,17 +535,45 @@ impl Population {
     /// simulated day. This walks the ECS once and counts.
     pub fn residents_by_home(&self) -> BTreeMap<BuildingId, u32> {
         let mut counts = BTreeMap::new();
-        for (_, home, _, _, _) in self.query.iter_manual(&self.world) {
+        for (_, home, _, _, _, _, _) in self.query.iter_manual(&self.world) {
             *counts.entry(home.0).or_insert(0) += 1;
         }
         counts
+    }
+
+    /// How many people live in each building, how many of them are of working
+    /// age, how many of those hold a job, and how many are of school age — all
+    /// in one pass.
+    ///
+    /// One walk rather than four, because the contentment pass needs every one
+    /// of these per home and this population is walked once per day already.
+    /// The lesson `residents_of` taught, applied before it could be relearned.
+    pub fn census_by_home(&self) -> BTreeMap<BuildingId, HomeCensus> {
+        let mut out: BTreeMap<BuildingId, HomeCensus> = BTreeMap::new();
+        for record in self.walk() {
+            let entry = out.entry(record.home.0).or_default();
+            entry.residents += 1;
+            if record.can_work() {
+                entry.working_age += 1;
+                if record.workplace.0.is_some() {
+                    entry.employed += 1;
+                }
+            }
+            if SCHOOL_AGE.contains(&record.age.0) {
+                entry.pupils += 1;
+            }
+            if FERTILE_AGE.contains(&record.age.0) {
+                entry.fertile += 1;
+            }
+        }
+        out
     }
 
     /// How many people work at a building. Order-independent, so single-pass.
     pub fn staff_of(&self, building: BuildingId) -> u32 {
         self.query
             .iter_manual(&self.world)
-            .filter(|(_, _, workplace, _, _)| workplace.0 == Some(building))
+            .filter(|(_, _, workplace, _, _, _, _)| workplace.0 == Some(building))
             .count() as u32
     }
 
@@ -234,8 +581,48 @@ impl Population {
     pub fn riders(&self) -> u32 {
         self.query
             .iter_manual(&self.world)
-            .filter(|(_, _, _, _, commute)| commute.mode == Mode::Bus)
+            .filter(|(_, _, _, _, commute, _, _)| commute.mode == Mode::Bus)
             .count() as u32
+    }
+
+    /// Age everybody in the list by a year.
+    pub(crate) fn age_by_one(&mut self, ids: &[CitizenId]) {
+        let mut query = self.world.query::<(&CitizenId, &mut Age)>();
+        for (id, mut age) in query.iter_mut(&mut self.world) {
+            if ids.binary_search(id).is_ok() {
+                age.0 += 1;
+            }
+        }
+    }
+
+    /// Write a day of schooling: who attended, and who is enrolled at a
+    /// university right now.
+    ///
+    /// `studying` is set from the census wholesale rather than toggled, because
+    /// enrolment is a daily question — a university that lost its staff stops
+    /// having students the same day, and a flag that could only be set would
+    /// leave graduates-in-waiting permanently out of the workforce.
+    pub(crate) fn school(&mut self, attended: &[CitizenId], enrolled: &[CitizenId]) {
+        let mut query = self.world.query::<(&CitizenId, &mut Learning)>();
+        for (id, mut learning) in query.iter_mut(&mut self.world) {
+            if attended.binary_search(id).is_ok() {
+                learning.days += 1;
+            }
+            let studying = enrolled.binary_search(id).is_ok();
+            if learning.studying != studying {
+                learning.studying = studying;
+            }
+        }
+    }
+
+    /// Write the day's health and loyalty.
+    pub(crate) fn set_wellbeing(&mut self, updates: &[(CitizenId, Wellbeing)]) {
+        let mut query = self.world.query::<(&CitizenId, &mut Wellbeing)>();
+        for (id, mut wellbeing) in query.iter_mut(&mut self.world) {
+            if let Ok(index) = updates.binary_search_by_key(id, |(i, _)| *i) {
+                *wellbeing = updates[index].1;
+            }
+        }
     }
 
     /// Apply a set of workplace assignments and the journeys they imply.
@@ -264,6 +651,8 @@ impl Population {
                 record.workplace,
                 record.age,
                 record.commute,
+                record.learning,
+                record.wellbeing,
             ));
         }
         population.query.update_archetypes(&population.world);
@@ -397,11 +786,11 @@ pub fn assign_labour(
             .map(|b| b.centre)
     };
 
-    // Everyone of working age whose home still stands.
-    let mut available: Vec<(CitizenId, Point)> = people
+    // Everyone of working age whose home still stands, with what they know.
+    let mut available: Vec<(CitizenId, Point, Education)> = people
         .iter()
         .filter(|c| c.can_work())
-        .filter_map(|c| home_of(c).map(|p| (c.id, p)))
+        .filter_map(|c| home_of(c).map(|p| (c.id, p, c.education())))
         .collect();
 
     let mut assignment: Vec<(CitizenId, Option<BuildingId>, Commute)> =
@@ -425,11 +814,18 @@ pub fn assign_labour(
 
     for workplace in workplaces {
         let jobs = workplace.def().workers as usize;
+        // What the job needs to have been taught. A republic with no school is
+        // a republic whose next generation cannot run its own mines, which is
+        // the entire point of the attribute — and it is checked here rather
+        // than in the schooling pass because reachability and qualification are
+        // the same question: whether this person can hold this job.
+        let needs = workplace.def().schooling;
 
         // Rank: walkers first, then by journey time, then by id.
         let mut candidates: Vec<(u8, f64, CitizenId, Commute)> = available
             .iter()
-            .filter_map(|&(id, home)| {
+            .filter(|&&(_, _, taught)| taught >= needs)
+            .filter_map(|&(id, home, _)| {
                 let commute = transport::reach(home, workplace.centre, roads)?;
                 let rank = match commute.mode {
                     Mode::Foot => 0,
@@ -468,7 +864,7 @@ pub fn assign_labour(
             hired.push(id);
         }
 
-        available.retain(|(id, _)| !hired.contains(id));
+        available.retain(|(id, _, _)| !hired.contains(id));
         staffing.push((workplace.id, hired.len() as u32));
     }
 

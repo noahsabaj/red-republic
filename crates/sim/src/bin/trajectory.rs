@@ -131,7 +131,7 @@ fn main() {
     );
     println!();
     println!(
-        "{:>10} {:>4} {:>5} {:>5} {:>6} {:>6} {:>5} {:>8} {:>8} {:>6} {:>8} {:>7} {:>5} {:>8} {:>10} {:>9} {:>4} {:>8}",
+        "{:>10} {:>4} {:>5} {:>5} {:>6} {:>6} {:>5} {:>8} {:>8} {:>6} {:>8} {:>7} {:>5} {:>8} {:>10} {:>9} {:>4} {:>8} {:>5} {:>9}",
         "date",
         "pop",
         "empl",
@@ -153,7 +153,16 @@ fn main() {
         // somewhere waiting for a bus. The second number is the friction one:
         // a gang with nowhere to be is people the republic is paying to stand
         // in a field, and it is invisible in every other column here.
-        "crew/wait"
+        "crew/wait",
+        // How content the republic's people are, on the same weighted average
+        // the shell shows. Below 60% nobody wants to come, and below 35% people
+        // start going — so this is the column that says whether a republic is
+        // growing, holding, or quietly bleeding.
+        "cont%",
+        // And who actually came and went: settled / left / turned back at the
+        // border for want of a coach. The last of the three is the friction
+        // number — people the republic was offered and could not reach.
+        "in/out/x"
     );
 
     let months = years * 12;
@@ -243,8 +252,26 @@ fn main() {
             f64::from(warm) / f64::from(housed)
         };
 
+        // How the republic is treating the people in it, weighted by how many
+        // live in each estate — one wretched outpost does not cancel a working
+        // city, and an unweighted mean would say it did.
+        let (scored, heads) = world
+            .buildings()
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().residents > 0)
+            .fold((0.0f64, 0u32), |(scored, heads), b| {
+                let here = world.population().residents_of(b.id).len() as u32;
+                (scored + b.content.overall() * f64::from(here), heads + here)
+            });
+        let content = if heads == 0 {
+            0.0
+        } else {
+            scored / f64::from(heads)
+        };
+
         println!(
-            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>6.1} {:>5.0}% {:>4.0}% {:>8.0} {:>8.1} {:>6.2} {:>8.0} {:>3}/{:<3} {:>5} {:>8} {:>10.0} {:>9.0} {:>4} {:>8}",
+            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>6.1} {:>5.0}% {:>4.0}% {:>8.0} {:>8.1} {:>6.2} {:>8.0} {:>3}/{:<3} {:>5} {:>8} {:>10.0} {:>9.0} {:>4} {:>8} {:>4.0}% {:>9}",
             date.year,
             date.month,
             date.day,
@@ -277,6 +304,13 @@ fn main() {
             world.treasury().of(bloc),
             dark,
             format!("{peak_out}/{peak_waiting}"),
+            content * 100.0,
+            format!(
+                "{}/{}/{}",
+                world.migration().settled(),
+                world.migration().left(),
+                world.migration().gave_up()
+            ),
         );
     }
 

@@ -76,7 +76,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// 11: foreign labour. Who a republic has hired, from which bloc, and which
 /// gangs are still travelling in from a frontier post.
-pub const SAVE_VERSION: u32 = 11;
+pub const SAVE_VERSION: u32 = 12;
 
 /// The first version the format ever carried.
 ///
@@ -112,6 +112,15 @@ pub const CONTRACT_STREAM: u64 = 5;
 /// to it, which is most of the explicability a probability model normally
 /// costs.
 pub const BOG_STREAM: u64 = 6;
+
+/// Substream identifier for births, deaths and people deciding to leave.
+///
+/// One stream for all three, keyed by who and when, for the same reason bogging
+/// has its own: a republic's demography must not shift because a lorry took a
+/// different route. Keyed rather than drawn in sequence, so asking whether a
+/// particular person died this year is a pure function and not a position in a
+/// queue.
+pub const LIFE_STREAM: u64 = 7;
 
 /// Mix a seed with a stream identifier.
 ///
@@ -265,6 +274,9 @@ pub struct World {
     /// Where sites buy materials the republic has not made, and through which
     /// post. Empty by default — a republic imports nothing until told to.
     pub(crate) build_policy: BuildPolicy,
+    /// People standing at the frontier waiting to be let in, and the running
+    /// tally of everyone who has come and gone.
+    pub(crate) migration: crate::migration::Migration,
     /// The posting's climate. Fixed at founding — you do not get a milder
     /// winter by asking for one.
     pub(crate) climate: ClimateId,
@@ -323,6 +335,7 @@ impl World {
             loans: Loans::new(),
             crews: Crews::new(),
             build_policy: BuildPolicy::new(),
+            migration: crate::migration::Migration::new(),
             climate: spec.climate,
             journal: Journal::new(),
             seed: spec.seed,
@@ -882,6 +895,12 @@ impl World {
     /// Where sites buy what the republic has not made.
     pub fn build_policy(&self) -> &BuildPolicy {
         &self.build_policy
+    }
+
+    /// Who is standing at the frontier wanting in, and the running tally of
+    /// everyone who has arrived, left, or given up waiting.
+    pub fn migration(&self) -> &crate::migration::Migration {
+        &self.migration
     }
 
     pub fn loans(&self) -> &Loans {
@@ -1735,10 +1754,20 @@ mod tests {
         // freight keeps flowing while it does.
         let mut still_pointing_at_it = 0u32;
         let mut dispatches = 0u32;
+        // Demography is a legitimate reason for the head count to move over a
+        // month, so the population claim below is accounted rather than fixed:
+        // people are born and die whatever the player demolishes, and an
+        // assertion that ignores that is one that fails for the wrong reason.
+        let mut born = 0usize;
+        let mut gone = 0usize;
         for _ in 0..30 * TICKS_PER_DAY {
             for m in world.tick() {
-                if matches!(m, crate::systems::Mutation::Dispatch { .. }) {
-                    dispatches += 1;
+                match &m {
+                    crate::systems::Mutation::Dispatch { .. } => dispatches += 1,
+                    crate::systems::Mutation::Birth { homes } => born += homes.len(),
+                    crate::systems::Mutation::Death { citizens } => gone += citizens.len(),
+                    crate::systems::Mutation::Emigrate { citizens } => gone += citizens.len(),
+                    _ => {}
                 }
             }
             if world.fleet().all().iter().any(|v| {
@@ -1777,8 +1806,9 @@ mod tests {
         );
         assert_eq!(
             world.population().count(),
-            population_before,
-            "demolishing a building should not delete people"
+            population_before + born - gone,
+            "the head count moved by more than the births and deaths account \
+             for — demolishing a building deleted people"
         );
     }
 
