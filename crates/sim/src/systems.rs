@@ -285,6 +285,19 @@ pub enum Mutation {
     /// relations souring are one event, and a default that half happened would
     /// be a republic that owes nothing to a bloc that is not angry.
     DefaultOnLoan { market: Market },
+    /// The day's wages for foreign builders, and whoever went home because the
+    /// republic could not pay them.
+    ///
+    /// **One kind, and coarse on purpose.** Paying and losing people are the
+    /// same daily transaction: what the purse could not cover *is* who leaves,
+    /// and a republic that had paid nothing and lost nobody would be a republic
+    /// employing foreign labour for free. `dismissed` is empty on almost every
+    /// day, which is what a wage bill that is being met looks like.
+    Wages {
+        market: Market,
+        paid: f64,
+        dismissed: Vec<(BuildingId, u32)>,
+    },
     /// A penalty for undelivered goods. Separate from [`Mutation::Export`]
     /// because no goods move: this is money leaving and nothing coming back.
     Fine { market: Market, amount: f64 },
@@ -331,6 +344,7 @@ pub enum MutationKind {
     Relations,
     Fine,
     DefaultOnLoan,
+    Wages,
 }
 
 impl Mutation {
@@ -369,6 +383,7 @@ impl Mutation {
             Mutation::Relations { .. } => MutationKind::Relations,
             Mutation::DefaultOnLoan { .. } => MutationKind::DefaultOnLoan,
             Mutation::Fine { .. } => MutationKind::Fine,
+            Mutation::Wages { .. } => MutationKind::Wages,
         }
     }
 }
@@ -415,6 +430,9 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
     ("trade", &[MutationKind::Export, MutationKind::Import]),
     ("weather", &[MutationKind::Weather]),
     ("commissioning", &[MutationKind::Commission]),
+    // Daily, like contracts and loans: a wage is a day's pay, and a per-tick
+    // sweep would bill a republic 1,440 times for one of them.
+    ("wages", &[MutationKind::Wages]),
     // Daily, and for the same reason contracts are: a deadline is a day index,
     // so a per-tick sweep would default a republic 1,440 times over one unpaid
     // advance.
@@ -572,6 +590,16 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
             }
             &Mutation::Fine { market, amount } => {
                 world.treasury.debit(market, amount);
+            }
+            Mutation::Wages {
+                market,
+                paid,
+                dismissed,
+            } => {
+                world.treasury.debit(*market, *paid);
+                for &(office, heads) in dismissed {
+                    world.crews.let_go(office, *market, heads);
+                }
             }
             &Mutation::Import {
                 customs,
@@ -942,9 +970,15 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                 };
                 let home = v.home;
                 // Anyone riding is home: the heads go back into the office's
-                // establishment, which is what makes them postable again.
-                if let Some(party) = world.crews.riding(vehicle).map(|p| p.id) {
-                    world.crews.dissolve(party);
+                // establishment, which is what makes them postable again. If
+                // they were foreign labour on its way in, this is the moment
+                // they join the books — before it they are travelling, and an
+                // office cannot post people who are still at the border.
+                if let Some(party) = world.crews.riding(vehicle).map(|p| p.id)
+                    && let Some(party) = world.crews.dissolve(party)
+                    && let Some(market) = party.hired_from
+                {
+                    world.crews.take_on(party.office, market, party.heads);
                 }
                 let aboard: Vec<(Resource, Tonnes)> = v.cargo.iter().collect();
                 let yard = world.buildings.get(home).map(|b| b.centre);
@@ -1379,8 +1413,10 @@ pub fn crews(world: &World) -> Vec<Mutation> {
             .buildings
             .get(v.home)
             .map(|office| {
-                office
-                    .staff
+                // Its own staff plus whatever foreign labour it has taken on.
+                // A hired builder is a builder — what stays different is that
+                // the republic pays them daily in hard currency.
+                (office.staff + world.crews.hired_total(office.id))
                     .saturating_sub(world.crews.posted(office.id))
                     .saturating_sub(going.get(&office.id).copied().unwrap_or(0))
                     .min(v.def().seats)
@@ -3544,6 +3580,57 @@ pub fn loans(world: &World) -> Vec<Mutation> {
     out
 }
 
+/// The foreign wage bill, paid daily in each bloc's own money.
+///
+/// **A penalty denominated in something the republic still has.** The obvious
+/// consequence of an unpaid wage bill is a fine, and this project has already
+/// learned once — from loans — that a fine on an empty purse takes nothing and
+/// is therefore free. What an unpayable wage costs here is the *worker*: as many
+/// as the money did not cover pack up and go home, which bites precisely when
+/// the republic has no money, and leaves it with the half-built site it hired
+/// them for.
+///
+/// Daily rather than per-tick, for the same reason contracts are: a wage is a
+/// day's pay, and a per-tick sweep would bill a republic 1,440 times for it.
+///
+/// Whoever leaves is taken from the **last** office to have hired, so a
+/// republic losing half its foreign labour loses it from one place rather than
+/// evenly from everywhere — a gang is a gang, and thinning every one of them is
+/// worse than losing one outright.
+pub fn wages(world: &World) -> Vec<Mutation> {
+    let mut out = Vec::new();
+    for market in Market::ALL {
+        let employers = world.crews.employers(market);
+        if employers.is_empty() {
+            continue;
+        }
+        let heads: u32 = employers.iter().map(|(_, n)| n).sum();
+        let owed = f64::from(heads) * crate::crews::FOREIGN_WAGE;
+        let held = world.treasury.of(market);
+        let paid = owed.min(held);
+
+        // How many the shortfall could not cover, rounded **up**: a worker paid
+        // three quarters of a day is not paid.
+        let unpaid = ((owed - paid) / crate::crews::FOREIGN_WAGE).ceil().max(0.0) as u32;
+        let mut dismissed = Vec::new();
+        let mut left = unpaid.min(heads);
+        for &(office, on_books) in employers.iter().rev() {
+            if left == 0 {
+                break;
+            }
+            let go = left.min(on_books);
+            dismissed.push((office, go));
+            left -= go;
+        }
+        out.push(Mutation::Wages {
+            market,
+            paid,
+            dismissed,
+        });
+    }
+    out
+}
+
 pub fn commissioning(world: &World) -> Vec<Mutation> {
     let mut out = Vec::new();
     for garage in world.buildings.all() {
@@ -3596,6 +3683,11 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
             // simulation's definition rather than an implementation detail.
             |w: &mut World| loans(w),
             |w: &mut World| commissioning(w),
+            // After loans, because both spend hard currency and which one gets
+            // the last rouble is part of the simulation's definition. Wages
+            // come second: an advance falling due is a deadline the republic
+            // agreed to, and a day's pay is not.
+            |w: &mut World| wages(w),
         ] {
             let mutations = system(world);
             apply(world, &mutations);
@@ -5928,6 +6020,128 @@ mod tests {
         );
     }
 
+    /// Foreign builders arrive at a frontier post and have to be fetched, and
+    /// the republic pays them every day it keeps them.
+    ///
+    /// The three claims that make this a mechanic rather than a purchase: they
+    /// land at the **border** and not in the yard, they only count toward what
+    /// an office can post once a bus has brought them **in**, and the wage is
+    /// **ongoing** in the bloc's own currency.
+    #[test]
+    fn hired_builders_arrive_at_the_border_and_are_paid_every_day() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let office = base.construction_office.expect("the founding places one");
+        let market = w.bloc_near(w.buildings.get(office).unwrap().centre);
+        w.treasury.credit(market, 5_000.0);
+        let before = w.treasury.of(market);
+
+        let hired = 6;
+        w.issue(crate::command::Command::HireForeign {
+            market,
+            office,
+            heads: hired,
+        })
+        .expect("a republic with money can hire");
+
+        // The fee is charged now, and they are standing at the post — not in
+        // the yard, and not yet on anybody's books.
+        assert!(
+            (before - w.treasury.of(market) - f64::from(hired) * crate::crews::HIRING_FEE).abs()
+                < 1e-6,
+            "the placement fee was not charged"
+        );
+        let party = w.crews.all().last().copied().expect("a gang was created");
+        assert_eq!(party.hired_from, Some(market));
+        assert_eq!(w.crews.hired_total(office), 0, "they are still travelling");
+        assert!(
+            w.frontier.distance_from(party.at).0 <= crate::trade::CROSSING_INSET.0 + 1.0,
+            "they should be standing at a frontier post, not in the yard"
+        );
+
+        // A bus goes and gets them, and only then do they count.
+        let mut arrived = None;
+        for tick in 0..(TICKS_PER_DAY * 20) {
+            w.tick();
+            if w.crews.hired_total(office) > 0 {
+                arrived = Some(tick);
+                break;
+            }
+        }
+        let arrived = arrived.expect("nobody ever fetched them");
+        assert!(arrived > 0, "they were on the books before the bus set out");
+        assert_eq!(w.crews.hired(office, market), hired);
+
+        // And the bill runs. A day of wages is a day of wages.
+        let purse = w.treasury.of(market);
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        let spent = purse - w.treasury.of(market);
+        assert!(
+            (spent - f64::from(hired) * crate::crews::FOREIGN_WAGE).abs() < 1e-6,
+            "a day cost {spent}, not {} for {hired} builders",
+            f64::from(hired) * crate::crews::FOREIGN_WAGE
+        );
+    }
+
+    /// A republic that cannot pay loses the workers, not a fine it cannot
+    /// afford either.
+    ///
+    /// **The lesson loans taught, applied before it could be relearned.**
+    /// `Treasury::debit` refuses to go negative, so a penalty denominated in
+    /// money takes nothing from a republic that has none — which is exactly the
+    /// state an unpaid wage bill describes. What an unpayable wage costs is the
+    /// worker, and that bites when there is no money at all.
+    #[test]
+    fn builders_the_republic_cannot_pay_go_home() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let office = base.construction_office.expect("an office");
+        let market = w.bloc_near(w.buildings.get(office).unwrap().centre);
+        w.treasury.credit(market, 5_000.0);
+        w.issue(crate::command::Command::HireForeign {
+            market,
+            office,
+            heads: 6,
+        })
+        .expect("hire");
+        for _ in 0..(TICKS_PER_DAY * 20) {
+            w.tick();
+            if w.crews.hired_total(office) > 0 {
+                break;
+            }
+        }
+        assert_eq!(w.crews.hired(office, market), 6, "they never arrived");
+
+        // Now the purse runs dry with the gang still on the books.
+        w.treasury.debit(market, w.treasury.of(market));
+        let mut days = 0;
+        while w.crews.hired_total(office) > 0 && days < 30 {
+            for _ in 0..TICKS_PER_DAY {
+                w.tick();
+            }
+            days += 1;
+        }
+        assert_eq!(
+            w.crews.hired_total(office),
+            0,
+            "a broke republic kept its foreign builders for {days} days"
+        );
+        assert!(
+            w.treasury.of(market) >= 0.0,
+            "the treasury went negative paying a wage bill it could not meet"
+        );
+    }
+
     /// One site, one gang. A crew riding toward a foundation has already been
     /// committed to it.
     ///
@@ -6526,6 +6740,20 @@ mod tests {
             let _ = world.order_road(yard, join, crate::roadworks::Grade::Dirt);
         }
 
+        // A foreign gang on the books, so the wage bill is a thing that
+        // happens. Issued as a command rather than written in, because the
+        // whole path — fee, arrival at a post, the bus that fetches them — is
+        // what this guard is watching.
+        if let Some(office) = base.construction_office {
+            let market = world.bloc_near(centre);
+            world.treasury.credit(market, 4_000.0);
+            let _ = world.issue(crate::command::Command::HireForeign {
+                market,
+                office,
+                heads: 4,
+            });
+        }
+
         let mut seen: BTreeMap<&'static str, std::collections::BTreeSet<MutationKind>> =
             BTreeMap::new();
         let mut note = |name: &'static str, mutations: &[Mutation]| {
@@ -6558,6 +6786,9 @@ mod tests {
                     apply(&mut world, &m);
                     let m = commissioning(&world);
                     note("commissioning", &m);
+                    apply(&mut world, &m);
+                    let m = wages(&world);
+                    note("wages", &m);
                     apply(&mut world, &m);
                     let m = weather(&world);
                     note("weather", &m);

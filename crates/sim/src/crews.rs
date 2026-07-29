@@ -32,8 +32,10 @@
 
 use crate::building::BuildingId;
 use crate::fleet::{Destination, VehicleId};
+use crate::trade::Market;
 use crate::units::Point;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// A stable handle to a crew.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -55,6 +57,20 @@ pub struct Party {
     pub working: Option<Destination>,
     /// The bus they are aboard, if they are aboard one.
     pub riding: Option<VehicleId>,
+    /// The bloc these builders were hired from, if they are foreign labour on
+    /// its way in.
+    ///
+    /// **Set only until they reach the office.** Foreign workers arrive at a
+    /// frontier post — they do not appear in the yard — so they are a gang
+    /// standing at the border needing a lift, which is a state this module
+    /// already models. Once the bus brings them in they join the office's books
+    /// and stop being distinguishable from anybody else it employs; what stays
+    /// different is that the republic pays them, daily, in their own bloc's
+    /// money.
+    ///
+    /// It is what keeps [`Crews::posted`] honest while they travel: they are not
+    /// yet part of the establishment, so they must not be subtracted from it.
+    pub hired_from: Option<Market>,
 }
 
 impl Party {
@@ -70,13 +86,35 @@ impl Party {
 pub struct Crews {
     list: Vec<Party>,
     next_id: u32,
+    /// Foreign builders on an office's books, by the bloc that supplied them.
+    ///
+    /// Kept by bloc because the republic pays them in **their** currency, every
+    /// day, for as long as it keeps them — that ongoing cost in hard money is
+    /// the whole difference between hiring abroad and training at home, and a
+    /// single total could not say which purse it comes out of.
+    hired: BTreeMap<(BuildingId, Market), u32>,
 }
+
+/// What a bloc charges to place one worker with you, in its own currency.
+///
+/// A one-off fee on top of the wage, and deliberately steep next to the wage:
+/// hiring abroad is a decision you make once and then live with, not a dial you
+/// turn up and down by the week. First-pass balance.
+pub const HIRING_FEE: f64 = 40.0;
+
+/// What one foreign builder is paid a day, in their own bloc's currency.
+///
+/// The ongoing half, and the reason this is never simply better than training
+/// your own: domestic labour costs the republic nothing in money, and every day
+/// a foreign gang stays is hard currency the border earned being spent again.
+pub const FOREIGN_WAGE: f64 = 1.5;
 
 impl Crews {
     pub fn new() -> Self {
         Self {
             list: Vec::new(),
             next_id: 1,
+            hired: BTreeMap::new(),
         }
     }
 
@@ -108,9 +146,52 @@ impl Crews {
     pub fn posted(&self, office: BuildingId) -> u32 {
         self.list
             .iter()
-            .filter(|p| p.office == office)
+            .filter(|p| p.office == office && p.hired_from.is_none())
             .map(|p| p.heads)
             .sum()
+    }
+
+    /// Foreign builders on this office's books, by bloc.
+    pub fn hired(&self, office: BuildingId, market: Market) -> u32 {
+        self.hired.get(&(office, market)).copied().unwrap_or(0)
+    }
+
+    /// Every foreign builder this office employs, whichever bloc sent them.
+    pub fn hired_total(&self, office: BuildingId) -> u32 {
+        Market::ALL.iter().map(|&m| self.hired(office, m)).sum()
+    }
+
+    /// The whole republic's foreign wage bill in one bloc's money, in heads.
+    pub fn hired_from_bloc(&self, market: Market) -> u32 {
+        self.hired
+            .iter()
+            .filter(|((_, m), _)| *m == market)
+            .map(|(_, n)| n)
+            .sum()
+    }
+
+    /// Every office that employs anybody from this bloc, in commissioning order.
+    pub fn employers(&self, market: Market) -> Vec<(BuildingId, u32)> {
+        self.hired
+            .iter()
+            .filter(|((_, m), n)| *m == market && **n > 0)
+            .map(|((office, _), n)| (*office, *n))
+            .collect()
+    }
+
+    pub(crate) fn take_on(&mut self, office: BuildingId, market: Market, heads: u32) {
+        *self.hired.entry((office, market)).or_default() += heads;
+    }
+
+    /// Let foreign workers go. Returns how many actually left.
+    pub(crate) fn let_go(&mut self, office: BuildingId, market: Market, heads: u32) -> u32 {
+        let on_books = self.hired.entry((office, market)).or_default();
+        let gone = heads.min(*on_books);
+        *on_books -= gone;
+        if *on_books == 0 {
+            self.hired.remove(&(office, market));
+        }
+        gone
     }
 
     /// The crew working a site, if one is.
@@ -153,6 +234,34 @@ impl Crews {
         at: Point,
         riding: VehicleId,
     ) -> PartyId {
+        self.add(office, heads, at, Some(riding), None)
+    }
+
+    /// Foreign labour, set down at the frontier post it arrived through.
+    ///
+    /// They start **stranded**, which is not a special case: a gang with
+    /// nowhere to be and no lift is exactly what asks an office for a bus, and
+    /// it is the same path a crew standing beside a finished building takes. A
+    /// hired worker who could not be collected would be a hired worker standing
+    /// at the border being paid, which is a consequence rather than a bug.
+    pub(crate) fn arrive(
+        &mut self,
+        office: BuildingId,
+        market: Market,
+        heads: u32,
+        at: Point,
+    ) -> PartyId {
+        self.add(office, heads, at, None, Some(market))
+    }
+
+    fn add(
+        &mut self,
+        office: BuildingId,
+        heads: u32,
+        at: Point,
+        riding: Option<VehicleId>,
+        hired_from: Option<Market>,
+    ) -> PartyId {
         let id = PartyId(self.next_id);
         self.next_id += 1;
         self.list.push(Party {
@@ -161,7 +270,8 @@ impl Crews {
             heads,
             at,
             working: None,
-            riding: Some(riding),
+            riding,
+            hired_from,
         });
         id
     }

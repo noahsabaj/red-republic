@@ -73,7 +73,10 @@ use serde::{Deserialize, Serialize};
 /// 10: the build policy, and what has already been bought on each site's
 /// account. The second half is what makes a reloaded republic stop buying a
 /// wall it has already paid for.
-pub const SAVE_VERSION: u32 = 10;
+///
+/// 11: foreign labour. Who a republic has hired, from which bloc, and which
+/// gangs are still travelling in from a frontier post.
+pub const SAVE_VERSION: u32 = 11;
 
 /// The first version the format ever carried.
 ///
@@ -762,6 +765,39 @@ impl World {
                 } else {
                     Err(Refused::NoSuchPolicy)
                 }
+            }
+
+            // Hiring is a transaction at a genuine boundary: the fee leaves and
+            // the workers set out, and neither happens without the other.
+            Command::HireForeign {
+                market,
+                office,
+                heads,
+            } => {
+                if heads == 0 {
+                    return Err(Refused::NobodyToHire);
+                }
+                let Some(b) = self.buildings.get(office) else {
+                    return Err(Refused::NoSuchBuilding(office));
+                };
+                if b.kind != crate::building::BuildingKind::ConstructionOffice || !b.is_built() {
+                    return Err(Refused::NotAConstructionOffice);
+                }
+                // They arrive at their own bloc's post, which is what makes
+                // hiring from the far bloc a haulage decision rather than a
+                // dropdown — the same geography a dollar already has.
+                let Some(post) = self.frontier.nearest_crossing(b.centre, Some(market)) else {
+                    return Err(Refused::NoPostOfThatBloc(market));
+                };
+                let at = post.at;
+                let fee = f64::from(heads) * crate::crews::HIRING_FEE;
+                let held = self.treasury.of(market);
+                if held + 1e-9 < fee {
+                    return Err(Refused::CannotAffordHiring { needed: fee, held });
+                }
+                self.treasury.debit(market, fee);
+                self.crews.arrive(office, market, heads, at);
+                Ok(Done::Nothing)
             }
 
             Command::AddTradeRule { .. }

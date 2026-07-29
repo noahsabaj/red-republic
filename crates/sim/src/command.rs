@@ -94,6 +94,21 @@ pub enum Command {
     /// Put a site back under the republic's default policy.
     ClearImportPolicy { site: Destination },
 
+    /// Hire builders from a bloc, for one Construction Office.
+    ///
+    /// They cost a placement fee now and a wage every day thereafter, both in
+    /// that bloc's own currency — which is the whole trade against training
+    /// your own, who cost the republic no money at all.
+    ///
+    /// **They arrive at a frontier post, not in the yard.** A bus has to go and
+    /// fetch them, over the roads the republic has built, exactly as a crew
+    /// coming off a finished site does.
+    HireForeign {
+        market: Market,
+        office: BuildingId,
+        heads: u32,
+    },
+
     /// Take a tender the Foreign Trade Directorate has offered.
     AcceptContract { contract: ContractId },
 
@@ -136,7 +151,12 @@ pub enum Done {
 }
 
 /// Why a command was refused, in words a panel can print.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `PartialEq` but not `Eq`, because a refusal carries the numbers that make it
+/// actionable — what a thing costs against what the treasury holds — and money
+/// is a float. A refusal a player cannot act on is the failure this whole type
+/// exists to avoid, so the numbers win.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Refused {
     /// The ground, the geology or the border said no.
     Placement(PlacementError),
@@ -161,6 +181,14 @@ pub enum Refused {
     NoSuchCrossing(crate::trade::CrossingId),
     /// That site had no instruction of its own to clear.
     NoSuchPolicy,
+    /// Builders are hired to a Construction Office, and that is not one.
+    NotAConstructionOffice,
+    /// The treasury cannot cover the placement fee in that bloc's currency.
+    CannotAffordHiring { needed: f64, held: f64 },
+    /// That bloc holds no frontier post, so its workers have nowhere to arrive.
+    NoPostOfThatBloc(Market),
+    /// Hiring nobody.
+    NobodyToHire,
 }
 
 impl std::fmt::Display for Refused {
@@ -185,6 +213,19 @@ impl std::fmt::Display for Refused {
             Refused::NoSuchPolicy => {
                 write!(f, "this site already follows the republic's import policy")
             }
+            Refused::NotAConstructionOffice => {
+                write!(f, "builders are hired to a Construction Office")
+            }
+            Refused::CannotAffordHiring { needed, held } => write!(
+                f,
+                "placing them costs {needed:.0} and the treasury holds {held:.0}"
+            ),
+            Refused::NoPostOfThatBloc(market) => write!(
+                f,
+                "the {} holds no frontier post here, so its workers have nowhere to arrive",
+                market.name()
+            ),
+            Refused::NobodyToHire => write!(f, "no workers were asked for"),
             Refused::NoSuchRule { index, rules } => match rules {
                 0 => write!(f, "there are no trade rules to change"),
                 1 => write!(f, "there is only one trade rule, and it is not {index}"),
