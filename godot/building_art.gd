@@ -95,6 +95,25 @@ static func table() -> Dictionary:
 		"Ten-Year School": Art.new(3, 3.6, F, 0, 0, false, Tone.RENDER),
 		"Polytechnic Institute": Art.new(4, 3.8, F, 0, 0, true, Tone.CONCRETE),
 
+		# The services. Civic, so rendered rather than industrial, and low
+		# except where the real thing is not: a district hospital is a slab
+		# block and a sports hall is one tall room. The prison is the only
+		# concrete one, and that is the whole of its character.
+		"Kindergarten": Art.new(1, 3.4, P, 0, 0, false, Tone.RENDER),
+		"District Hospital": Art.new(6, 3.4, F, 1, 0, false, Tone.RENDER),
+		"Pharmacy": Art.new(1, 4.0, F, 0, 0, false, Tone.RENDER),
+		"Fire Station": Art.new(1, 6.5, F, 0, 0, true, Tone.BRICK),
+		"Militia Station": Art.new(2, 3.6, F, 0, 0, false, Tone.RENDER),
+		"People's Court": Art.new(2, 5.5, F, 0, 0, false, Tone.RENDER),
+		"Corrective Labour Colony": Art.new(2, 3.4, F, 0, 0, false, Tone.CONCRETE),
+		"Sports Hall": Art.new(1, 12.0, F, 0, 0, false, Tone.CONCRETE),
+		"Cinema": Art.new(1, 9.0, F, 0, 0, false, Tone.RENDER),
+		# The only building whose mast is the point of it. No stack and no
+		# silo will read as an aerial, so the gantry stands in for the tower.
+		"State Radio Centre": Art.new(2, 4.0, F, 0, 0, true, Tone.RENDER),
+		# Almost nothing above ground, which is correct.
+		"Cemetery": Art.new(1, 2.5, P, 0, 0, false, Tone.BRICK),
+
 		# Utilities. The station is a low box with a gantry -- switchgear reads
 		# as a frame rather than as a building -- and the two ways of dealing
 		# with rubbish are told apart by the incinerator's stack.

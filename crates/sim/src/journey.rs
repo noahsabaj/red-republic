@@ -289,14 +289,23 @@ impl Journey {
     /// The cap is the whole reason a grade is a decision. Without it a road is
     /// worth exactly what any other road is worth, and there is nothing to
     /// choose between a dirt track and tarmac.
-    /// `drag` is what the going costs off road — one on firm ground, more in
-    /// mud. It is passed in rather than looked up because it is a property of
-    /// *today*, not of the plan: a leg planned in August is timed in April at
-    /// April's drag, which is what lets the weather turn under a lorry that is
-    /// already out.
+    /// `drag` is what today's conditions cost this leg — one on firm dry
+    /// ground, more in mud off road and more under snow on it. It is passed in
+    /// rather than looked up because it is a property of *today*, not of the
+    /// plan: a leg planned in August is timed in April at April's drag, which is
+    /// what lets the weather turn under a lorry that is already out.
+    ///
+    /// **It applies to a road leg too, and that is what makes snow clearance a
+    /// mechanic.** A road used to be immune to the weather entirely — the leg
+    /// took the grade's speed limit and nothing else was consulted — so a
+    /// republic under half a metre of snow drove at exactly the pace it drove in
+    /// June, and a plough would have had nothing to buy back. What the caller
+    /// must pass is the drag for *this kind of leg*, which is why
+    /// [`crate::ground::Crossing::drag_for`] exists rather than two functions a
+    /// call site can pick the wrong one of.
     pub fn speed_on(&self, leg: u32, on_road: Speed, cross_country: Speed, drag: f64) -> Speed {
         match self.limit[leg as usize] {
-            Some(limit) => on_road.min(limit),
+            Some(limit) => on_road.min(limit) / drag.max(1.0),
             None => cross_country / drag.max(1.0),
         }
     }
@@ -495,9 +504,13 @@ pub fn plan(
             .windows(2)
             .zip(&b.limit)
             .map(|(pair, &limit)| {
+                // Costed with snow on the road as well as mud off it, so the
+                // planner takes a buried road against open ground on the merits
+                // rather than because roads used to be free of the weather.
+                let drag = crossing.drag_for(limit.is_some(), pair[0], pair[1]);
                 let speed = match limit {
-                    Some(limit) => on_road.min(limit),
-                    None => cross_country / crossing.drag_along(pair[0], pair[1]),
+                    Some(limit) => on_road.min(limit) / drag.max(1.0),
+                    None => cross_country / drag,
                 };
                 leg_ticks(pair[0].distance_to(pair[1]), speed)
             })
@@ -520,11 +533,12 @@ pub fn plan(
         (chosen.path, chosen.limit)
     };
 
+    let first_drag = crossing.drag_for(limit[0].is_some(), path[0], path[1]);
     let first = leg_ticks(
         path[0].distance_to(path[1]),
         match limit[0] {
-            Some(limit) => on_road.min(limit),
-            None => cross_country / crossing.drag_along(path[0], path[1]),
+            Some(limit) => on_road.min(limit) / first_drag.max(1.0),
+            None => cross_country / first_drag,
         },
     );
     Journey::begin(path, limit, now, first)
@@ -740,6 +754,7 @@ mod tests {
         let crossing = Crossing {
             lattice: &lattice,
             softness: 0.0,
+            snow: 0.0,
         };
         let j = plan(
             at(0.0, 0.0),
@@ -766,6 +781,7 @@ mod tests {
         let crossing = Crossing {
             lattice: &lattice,
             softness: 0.0,
+            snow: 0.0,
         };
         let cross_country = plan(
             from,
@@ -836,6 +852,7 @@ mod tests {
         let crossing = Crossing {
             lattice: &lattice,
             softness: 0.0,
+            snow: 0.0,
         };
         let a = plan(
             ends.0,
@@ -903,6 +920,7 @@ mod tests {
         let crossing = Crossing {
             lattice: &lattice,
             softness: 0.0,
+            snow: 0.0,
         };
         let j = plan(
             at(0.0, 0.0),
@@ -962,6 +980,7 @@ mod tests {
         let crossing = Crossing {
             lattice: &lattice,
             softness: 0.0,
+            snow: 0.0,
         };
         let j = plan(
             at(0.0, 0.0),
@@ -997,6 +1016,7 @@ mod tests {
         let crossing = Crossing {
             lattice: &lattice,
             softness: 0.0,
+            snow: 0.0,
         };
         let j = plan(
             at(0.0, 0.0),
@@ -1018,6 +1038,7 @@ mod tests {
         let crossing = Crossing {
             lattice: &lattice,
             softness: 0.0,
+            snow: 0.0,
         };
         let j = plan(
             at(0.0, 0.0),
@@ -1041,6 +1062,7 @@ mod tests {
         let crossing = Crossing {
             lattice: &lattice,
             softness: 0.0,
+            snow: 0.0,
         };
         let j = plan(
             at(500.0, 500.0),

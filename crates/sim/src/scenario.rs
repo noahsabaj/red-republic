@@ -128,7 +128,7 @@ fn found_crossing(world: &mut World, near: Point) -> Option<BuildingId> {
 /// Guarded by `the_founding_hand_can_staff_itself`, because this number drifts
 /// every time a building's worker count changes and the failure is silent: the
 /// tail of the founding order simply stops being manned.
-pub const SETTLERS: usize = 139;
+pub const SETTLERS: usize = 143;
 
 /// Found a town: housing, a mine on the nearest coal, a plant to feed it, and
 /// the beginnings of a timber chain.
@@ -364,12 +364,32 @@ pub fn found(world: &mut World, citizens: usize) -> StartingBase {
         b.stock.add(Resource::Clothes, Tonnes(40.0));
         b.stock.add(Resource::Planks, Tonnes(80.0));
         b.stock.add(Resource::Bricks, Tonnes(80.0));
-        // Diesel, because a republic with no refinery yet still has to move
-        // things. It is a grant and not an allowance: it runs out, and what
-        // replaces it is an oil chain or a trade rule that buys fuel. That
-        // deadline is the point of granting a finite amount rather than
-        // waiving the cost.
-        b.stock.add(Resource::Fuel, Tonnes(20.0));
+    }
+    // Diesel, because a republic with no refinery yet still has to move things.
+    // It is a grant and not an allowance: it runs out, and what replaces it is
+    // an oil chain or a trade rule that buys fuel. That deadline is the point of
+    // granting a finite amount rather than waiving the cost.
+    //
+    // **Split between the two garages, in their own tanks**, and that is forced
+    // by a rule in `serve`: a supplier is anyone holding a resource who does not
+    // *consume* it. Both depots burn diesel, so neither can pass any to the
+    // other — a republic with no refinery has no fuel supplier at all, and
+    // whichever yard the grant landed in was the only one with any.
+    //
+    // Measured, on a taiga trajectory: with the whole grant in the motor depot
+    // the council depot's ploughs never turned a wheel, and the roads sat 89%
+    // unswept through a winter with the mechanic working perfectly well. Moscow
+    // fuels the vehicles it sends, which is what this now says.
+    //
+    // It is still a grant and not an allowance: it runs out, and what replaces
+    // it is an oil chain or a trade rule that buys fuel. Imports land at a
+    // customs house, which consumes nothing and can therefore supply both.
+    for (yard, tonnes) in [(base.motor_depot, 14.0), (base.depot, 6.0)] {
+        if let Some(id) = yard
+            && let Some(b) = world.buildings.get_mut(id)
+        {
+            b.stock.add(Resource::Fuel, Tonnes(tonnes));
+        }
     }
 
     // Settlers, spread evenly over what housing exists.

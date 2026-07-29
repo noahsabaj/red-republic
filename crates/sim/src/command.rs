@@ -227,6 +227,16 @@ pub enum Refused {
     /// instruction to fetch coal to the coal, and a house told to keep steel
     /// would send lorries to a doorstep for ever.
     NotAStore,
+    /// A standing order for goods of a shape the place will not take.
+    ///
+    /// A storage tank told to keep coal, a grain silo told to keep steel. The
+    /// order would stand for ever and never fill a tonne, because
+    /// `Building::intake_capacity` returns zero for a form the building does not
+    /// admit — so this is refused at the door rather than left to be a mystery.
+    WillNotHold {
+        place: &'static str,
+        goods: &'static str,
+    },
     /// A standing order larger than the place could hold.
     OverCapacity { asked: f64, holds: f64 },
 }
@@ -268,8 +278,11 @@ impl std::fmt::Display for Refused {
             ),
             Refused::NotAStore => write!(
                 f,
-                "only a terminal or a distribution office keeps goods to order"
+                "only a terminal, a store or a distribution office keeps goods to order"
             ),
+            Refused::WillNotHold { place, goods } => {
+                write!(f, "{goods} will not go in a {place}")
+            }
             Refused::OverCapacity { asked, holds } => {
                 write!(f, "asked for {asked:.0} t where only {holds:.0} t will fit")
             }

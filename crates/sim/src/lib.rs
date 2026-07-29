@@ -45,6 +45,7 @@ pub mod scenario;
 pub mod systems;
 pub mod terrain;
 pub mod time;
+pub mod tourism;
 pub mod trade;
 pub mod transport;
 pub mod units;
@@ -75,6 +76,7 @@ pub use roadworks::{Grade, RoadError, RoadSite, RoadSiteId, RoadWorks};
 pub use systems::{Mutation, Stall};
 pub use terrain::{Surface, Terrain};
 pub use time::{Date, Season, SimClock};
+pub use tourism::{Tourism, Visit, VisitId};
 pub use trade::{
     BorderCrossing, CrossingId, Frontier, FrontierArc, Market, TradeAction, TradePolicy, TradeRule,
     Treasury,

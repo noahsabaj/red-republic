@@ -122,6 +122,14 @@ pub const BOG_STREAM: u64 = 6;
 /// queue.
 pub const LIFE_STREAM: u64 = 7;
 
+/// Whether visitors turn up today.
+///
+/// Its own stream for the reason every other one has: drawing tourism out of
+/// the same sequence as births would make how many people are born depend on
+/// whether the republic has a hotel, which is not a relationship anybody
+/// designed.
+pub const TOURIST_STREAM: u64 = 8;
+
 /// Mix a seed with a stream identifier.
 ///
 /// The same derivation [`World::substream`] uses, available before a `World`
@@ -292,6 +300,7 @@ pub struct World {
     /// People standing at the frontier waiting to be let in, and the running
     /// tally of everyone who has come and gone.
     pub(crate) migration: crate::migration::Migration,
+    pub(crate) tourism: crate::tourism::Tourism,
     /// The republic's energised power lines and heat mains, and who is plugged
     /// into them.
     pub(crate) utilities: crate::utility::Networks,
@@ -362,6 +371,7 @@ impl World {
             crews: Crews::new(),
             build_policy: BuildPolicy::new(),
             migration: crate::migration::Migration::new(),
+            tourism: crate::tourism::Tourism::new(),
             utilities: crate::utility::Networks::new(),
             lineworks: crate::utility::LineWorks::new(),
             climate: spec.climate,
@@ -493,6 +503,7 @@ impl World {
         Crossing {
             lattice: &self.lattice,
             softness: self.ground.softness(),
+            snow: self.ground.snow_load(),
         }
     }
 
@@ -989,6 +1000,17 @@ impl World {
                 if !b.def().stores_to_order {
                     return Err(Refused::NotAStore);
                 }
+                // A tank is not a coal bunker, and this is where the player is
+                // told so. Refusing here rather than letting the order stand and
+                // quietly never fill is the whole difference between a rule and
+                // a mystery: `intake_capacity` would return zero for ever and
+                // the panel would show an order nothing was ever sent for.
+                if !b.def().admits.contains(&resource.form()) {
+                    return Err(Refused::WillNotHold {
+                        place: b.def().name,
+                        goods: resource.name(),
+                    });
+                }
                 let holds = b.storage_cap();
                 if tonnes.0 > holds.0 {
                     return Err(Refused::OverCapacity {
@@ -1116,8 +1138,82 @@ impl World {
             .collect()
     }
 
+    /// What this place will take delivery of at all.
+    ///
+    /// The other half of the order panel: a list of what may be ordered here,
+    /// so a player is never offered a choice the simulation would refuse. A
+    /// storage tank offers five liquids and a grain silo offers two granular
+    /// goods, and neither offers coal.
+    ///
+    /// Empty for anything that is not a store, which is what the panel reads to
+    /// decide whether to show an order section at all.
+    pub fn orderable(&self, building: crate::building::BuildingId) -> Vec<Resource> {
+        let Some(b) = self.buildings.get(building) else {
+            return Vec::new();
+        };
+        if !b.def().stores_to_order {
+            return Vec::new();
+        }
+        Resource::ALL
+            .into_iter()
+            .filter(|r| b.def().admits.contains(&r.form()))
+            .collect()
+    }
+
+    /// What shape each resource comes in, in `Resource::ALL` order.
+    ///
+    /// A label rather than a rule: the stockpile table says *Liquid* beside
+    /// fuel so a player reading "a tank will not hold that" already knows why,
+    /// without having to discover the taxonomy by being refused.
+    pub fn resource_forms(&self) -> Vec<&'static str> {
+        Resource::ALL.into_iter().map(|r| r.form().name()).collect()
+    }
+
     pub fn ground(&self) -> Ground {
         self.ground
+    }
+
+    /// How deep the snow is, as a share of what stops a vehicle.
+    ///
+    /// The republic-wide figure. Where it has been pushed aside is a place and
+    /// is read off the lattice — see [`World::buried_share`] for the summary and
+    /// the snow overlay for the map.
+    pub fn snow_cover(&self) -> f64 {
+        self.ground.snow_load()
+    }
+
+    /// How much of the **road network** is under unswept snow, `0.0` to `1.0`.
+    ///
+    /// Snow is the one piece of weather the player can *do* something about, and
+    /// this is the number that says whether they are keeping up with it.
+    ///
+    /// **Roads and not the map, and that distinction was found by measuring.**
+    /// The whole-lattice figure sat at 94% through a taiga winter with the
+    /// ploughs working perfectly well, because a 6 km republic is three and a
+    /// half thousand cells of empty countryside and nine kilometres of road.
+    /// Nobody ploughs a field, so a map-wide average reports a republic losing
+    /// whatever it does — which is a number that cannot be acted on and would
+    /// have read as a broken mechanic.
+    pub fn roads_unswept(&self) -> f64 {
+        let lying = self.ground.snow_load();
+        if lying <= 0.0 {
+            return 0.0;
+        }
+        let mut buried = 0.0;
+        let mut counted = 0usize;
+        for segment in self.roads.segments() {
+            let Some((from, to)) = self.roads.segment_ends(segment) else {
+                continue;
+            };
+            for cell in self.lattice.cells_along(from, to) {
+                buried += 1.0 - self.lattice.cleared_at(cell);
+                counted += 1;
+            }
+        }
+        if counted == 0 {
+            return 0.0;
+        }
+        lying * buried / counted as f64
     }
 
     pub fn lattice(&self) -> &Lattice {
@@ -1159,6 +1255,39 @@ impl World {
     /// everyone who has arrived, left, or given up waiting.
     pub fn migration(&self) -> &crate::migration::Migration {
         &self.migration
+    }
+
+    /// Who is visiting, and what they have been worth in hard currency.
+    pub fn tourism(&self) -> &crate::tourism::Tourism {
+        &self.tourism
+    }
+
+    /// What a hotel here is worth to a visitor, `0.0..=1.0`.
+    ///
+    /// Culture the republic built and air it has kept clean, both read off
+    /// machinery that already existed — the same `serves` cover the contentment
+    /// pass uses and the same pollution lattice. A visitor and a resident are
+    /// asking a similar question about a place, so they read a similar answer.
+    ///
+    /// **Shown rather than merely used.** A player who cannot see why one hotel
+    /// earns three times another has a building with a random yield, and the
+    /// whole point of siting one is that it is a decision.
+    pub fn appeal_at(&self, at: Point) -> f64 {
+        crate::systems::appeal(self, at)
+    }
+
+    /// Beds nobody is sleeping in tonight, across every open hotel.
+    ///
+    /// The bound on arrivals: nobody comes to a republic with nowhere to sleep,
+    /// so a republic with no hotel has no tourism, and one whose hotels are full
+    /// is turning money away.
+    pub fn free_beds(&self) -> u32 {
+        self.buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().beds > 0 && b.staffing() > 0.0)
+            .map(|b| b.def().beds.saturating_sub(self.tourism.booked_at(b.id)))
+            .sum()
     }
 
     /// The energised power lines and heat mains, and who is plugged into them.

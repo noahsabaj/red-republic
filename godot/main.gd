@@ -76,12 +76,13 @@ func _ready() -> void:
 		"tracks": _overlay = Overlays.Mode.WEAR
 		"survey": _overlay = Overlays.Mode.SURVEY
 		"pollution": _overlay = Overlays.Mode.POLLUTION
-	hud.set_resource_names(republic.resource_names())
+		"snow": _overlay = Overlays.Mode.SNOW
+	hud.set_resource_names(republic.resource_names(), republic.resource_forms())
 	hud.set_contentment_names(republic.contentment_names())
 	hud.set_utility_names(republic.utility_names())
 	hud.set_way_names(republic.way_names())
 	hud.set_hint(
-		"0-5 speed  ·  space pause  ·  F none  G going  T tracks  R survey  P smoke  ·  "
+		"0-5 speed  ·  space pause  ·  F none  G going  T tracks  R survey  P smoke  N snow  ·  "
 		+ "WASD pan  ·  right-drag orbit  ·  wheel zoom"
 	)
 	_refresh_buildings()
@@ -187,6 +188,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				KEY_T: Overlays.Mode.WEAR,
 				KEY_R: Overlays.Mode.SURVEY,
 				KEY_P: Overlays.Mode.POLLUTION,
+				KEY_N: Overlays.Mode.SNOW,
 			}
 			if modes.has(event.keycode):
 				_overlay = modes[event.keycode]
@@ -389,7 +391,7 @@ func _refresh_vehicles() -> void:
 ## The marker grows with the size of the group, so a crowd reads as a crowd.
 func _refresh_newcomers() -> void:
 	var flat: PackedFloat32Array = republic.newcomers()
-	var stride := 4
+	var stride := 5
 	var count := flat.size() / stride
 	var mm := newcomers_node.multimesh
 	if mm.instance_count != count:
@@ -398,7 +400,12 @@ func _refresh_newcomers() -> void:
 		var x := flat[i * stride]
 		var z := flat[i * stride + 1]
 		var heads := flat[i * stride + 2]
-		var scale := clampf(0.6 + heads / 40.0, 0.6, 2.0)
+		# Visitors stand a little lower than settlers, which is the only thing
+		# separating them here on purpose: from six hundred metres up they are
+		# the same fact -- a crowd at a post waiting for a coach -- and they draw
+		# on the same pool of coaches, which is the decision they share.
+		var visiting := flat[i * stride + 4] > 0.5
+		var scale := clampf(0.6 + heads / 40.0, 0.6, 2.0) * (0.75 if visiting else 1.0)
 		var at := Vector3(x, republic.ground_height(x, z) + 35.0 * scale, z)
 		mm.set_instance_transform(
 			i, Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * scale), at)

@@ -360,16 +360,24 @@ pub fn migration_totals(world: &World) -> PackedInt32Array {
     out
 }
 
-/// Floats per group in [`newcomers`].
-pub const NEWCOMER_STRIDE: usize = 4;
+/// Floats per party in [`newcomers`].
+pub const NEWCOMER_STRIDE: usize = 5;
 
-/// Settlers standing at the frontier: `[x, y, heads, days_waited]`.
+/// People standing at the frontier: `[x, y, heads, days_waited, visiting]`,
+/// where `visiting` is 0 for settlers and 1 for tourists.
 ///
 /// They have to be **on the map**. An immigrant who materialised in an
 /// apartment block would be the click-a-button-and-it-happens shape this build
 /// exists to refuse — and a group standing at a post that the republic has
 /// built no road to is a decision the player can see and act on, but only if it
 /// is drawn.
+///
+/// **One view for both, because on the map they are one thing**: people at a
+/// post waiting for a coach that may never come. They differ in why they came
+/// and in what happens when they arrive, and neither of those is visible from
+/// six hundred metres up. What is visible is a crowd at the border, and they
+/// draw on the same pool of coaches — so showing them apart would hide the one
+/// decision they actually share.
 pub fn newcomers(world: &World) -> PackedFloat32Array {
     let today = world.clock().day_index();
     let mut out = PackedFloat32Array::new();
@@ -378,7 +386,42 @@ pub fn newcomers(world: &World) -> PackedFloat32Array {
         out.push(group.at.y.0 as f32);
         out.push(group.heads as f32);
         out.push(group.waited(today) as f32);
+        out.push(0.0);
     }
+    for visit in world.tourism().all() {
+        // Only the ones still at the border. A party asleep in a hotel is
+        // inside a building, and drawing it on the roof would be a lie.
+        if visit.is_staying() {
+            continue;
+        }
+        out.push(visit.at.x.0 as f32);
+        out.push(visit.at.y.0 as f32);
+        out.push(visit.heads as f32);
+        out.push(visit.waited(today) as f32);
+        out.push(1.0);
+    }
+    out
+}
+
+/// Tourism at a glance:
+/// `[staying, waiting, visited, turned_away, free_beds, roubles, dollars]`.
+///
+/// The tallies are cumulative and they are the only way the mechanic is visible
+/// at all — a hotel that earned nine hundred dollars last year looks exactly
+/// like a hotel that earned nothing unless somebody counts. `turned_away` is the
+/// friction number, in the same sense migration's is: visitors the republic was
+/// offered and could not reach.
+pub fn tourism_totals(world: &World) -> PackedFloat32Array {
+    use red_republic_sim::trade::Market;
+    let tourism = world.tourism();
+    let mut out = PackedFloat32Array::new();
+    out.push(tourism.staying_heads() as f32);
+    out.push(tourism.waiting_heads() as f32);
+    out.push(tourism.visited() as f32);
+    out.push(tourism.turned_away() as f32);
+    out.push(world.free_beds() as f32);
+    out.push(tourism.earned(Market::East) as f32);
+    out.push(tourism.earned(Market::West) as f32);
     out
 }
 
@@ -484,6 +527,30 @@ pub fn pollution_field(world: &World) -> PackedFloat32Array {
     for y in 0..cells {
         for x in 0..cells {
             out.push(lattice.pollution_at((y * cells + x) as usize) as f32);
+        }
+    }
+    out
+}
+
+/// How buried each lattice cell is, row-major, `0.0` swept to `1.0` under snow.
+///
+/// **A badness, like going and unlike wear** — the same trap that painted a
+/// bone-dry map entirely red once already, so the direction is stated here and
+/// the ramp is built from it. The simulation stores the opposite (`cleared`,
+/// where one is swept), and it is inverted *here* rather than in the shader so
+/// there is one place to check it against the source.
+///
+/// Snow is why a republic keeps ploughs, and where the snow is *not* is the
+/// only thing on the map that says whether the ploughs are winning.
+pub fn snow_field(world: &World) -> PackedFloat32Array {
+    let lattice = world.lattice();
+    let cells = lattice.cells();
+    let mut out = PackedFloat32Array::new();
+    let lying = world.snow_cover();
+    for y in 0..cells {
+        for x in 0..cells {
+            let index = (y * cells + x) as usize;
+            out.push((lying * (1.0 - lattice.cleared_at(index))) as f32);
         }
     }
     out

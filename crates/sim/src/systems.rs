@@ -85,7 +85,21 @@ pub enum Mutation {
     /// falls below freezing becomes snow instead of moisture, and snow that
     /// melts becomes moisture instead of snow. Splitting them would make
     /// "it snowed and the ground got wetter" representable.
-    Weather(crate::ground::Ground),
+    /// The day's weather, and what it did to the snow lying on the ground.
+    ///
+    /// **One kind carrying both**, because they are one transaction: the day's
+    /// snowfall IS what buries the roads, and a republic whose ground had
+    /// advanced without its cover changing would be a republic where the
+    /// clearance field and the weather disagreed about what month it was.
+    ///
+    /// `snowfall` is the share of the republic's clearance that the day's fall
+    /// undoes, zero on a day nothing fell. When the pack has gone entirely the
+    /// whole field is reset rather than decayed, so a road ploughed last
+    /// February is not still credited for it next December.
+    Weather {
+        ground: crate::ground::Ground,
+        snowfall: f64,
+    },
     /// A garage takes delivery of a vehicle its establishment allows.
     Commission {
         garage: BuildingId,
@@ -391,6 +405,55 @@ pub enum Mutation {
         journey: Journey,
         burn: Tonnes,
     },
+    /// Visitors from abroad walking up to a frontier post.
+    ///
+    /// They are at the border and nowhere else — the same shape as
+    /// [`Mutation::Immigrate`], and for the same reason: somebody who appeared
+    /// in a hotel would be the click-a-button shape this build refuses.
+    Arrive {
+        at: Point,
+        heads: u32,
+        market: Market,
+    },
+    /// A coach reached a party of visitors; they boarded, and it turns for the
+    /// hotel it was sent to.
+    Fetch {
+        vehicle: VehicleId,
+        visit: crate::tourism::VisitId,
+        journey: Journey,
+        burn: Tonnes,
+    },
+    /// A coach set its party down at a hotel, and their stay began.
+    ///
+    /// One kind for both halves, for the reason [`Mutation::Settle`] is one: a
+    /// party that had left the coach without checking in would be people
+    /// standing in a lobby that nothing in the simulation can see.
+    CheckIn {
+        vehicle: VehicleId,
+        visit: crate::tourism::VisitId,
+        hotel: BuildingId,
+        at: Point,
+        journey: Journey,
+        burn: Tonnes,
+    },
+    /// A day of hard currency from visitors, and whose stay ended.
+    ///
+    /// **Coarse on purpose**: the sweep that counts the money is the sweep that
+    /// ends a stay, and a party that went home without its last day's takings
+    /// would be money the republic earned and did not get. `leaving` also
+    /// carries parties that gave up at a post, because from the republic's side
+    /// both are visitors it no longer has.
+    Takings {
+        market: Market,
+        amount: f64,
+        leaving: Vec<crate::tourism::VisitId>,
+    },
+    /// A plough went through: these cells are swept.
+    ///
+    /// The same shape as [`Mutation::Wear`] and emitted at the same moment for
+    /// the same reason — work happens at leg boundaries, and what a leg did to
+    /// the ground it crossed is known only once it has crossed it.
+    Clear { cells: Vec<usize> },
     /// A coach set its group down at housing, and they became citizens.
     ///
     /// One kind for both halves, because a group that had left the coach
@@ -460,6 +523,11 @@ pub enum MutationKind {
     Emigrate,
     Immigrate,
     GiveUp,
+    Clear,
+    Arrive,
+    Fetch,
+    CheckIn,
+    Takings,
     Board,
     Settle,
 }
@@ -497,7 +565,7 @@ impl Mutation {
             Mutation::Build { .. } => MutationKind::Build,
             Mutation::Lay { .. } => MutationKind::Lay,
             Mutation::String { .. } => MutationKind::String,
-            Mutation::Weather(_) => MutationKind::Weather,
+            Mutation::Weather { .. } => MutationKind::Weather,
             Mutation::Offer(_) => MutationKind::Offer,
             Mutation::CloseContract { .. } => MutationKind::CloseContract,
             Mutation::DropContract { .. } => MutationKind::DropContract,
@@ -515,6 +583,11 @@ impl Mutation {
             Mutation::Immigrate { .. } => MutationKind::Immigrate,
             Mutation::GiveUp { .. } => MutationKind::GiveUp,
             Mutation::Board { .. } => MutationKind::Board,
+            Mutation::Clear { .. } => MutationKind::Clear,
+            Mutation::Arrive { .. } => MutationKind::Arrive,
+            Mutation::Fetch { .. } => MutationKind::Fetch,
+            Mutation::CheckIn { .. } => MutationKind::CheckIn,
+            Mutation::Takings { .. } => MutationKind::Takings,
             Mutation::Settle { .. } => MutationKind::Settle,
         }
     }
@@ -595,8 +668,11 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
             MutationKind::Free,
             MutationKind::Recover,
             MutationKind::Wear,
+            MutationKind::Clear,
             MutationKind::Board,
             MutationKind::Settle,
+            MutationKind::Fetch,
+            MutationKind::CheckIn,
         ],
     ),
     ("tracks", &[MutationKind::Fade, MutationKind::Promote]),
@@ -638,6 +714,25 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
     // different vehicles: a bus depot's coaches must never be spent on
     // foundations, nor a construction office's buses on immigrants.
     ("settling", &[MutationKind::Dispatch, MutationKind::Bog]),
+    // The fourth pool, and the fourth dispatcher. What it ranks is a stretch of
+    // buried road rather than a consignee, which is why it is not a branch of
+    // `dispatch`.
+    //
+    // **No `Bog`, and that is a consequence of the vehicle rather than an
+    // omission.** A plough's ground capability is a recovery vehicle's — above
+    // the whole scale — so the roll can never come up against it, exactly as
+    // intended: a machine that got stuck in the snow it was sent to shift would
+    // need a machine sent after it. Declaring `Bog` here would have been a
+    // declaration nothing could reach, which constrains nothing and looks fine.
+    ("clearing", &[MutationKind::Dispatch]),
+    // Visitors turning up, spending and going home. Daily, for the reason
+    // wages and contracts are: a night in a hotel is a day's takings, and a
+    // per-tick sweep would charge a party 1,440 times for one.
+    ("tourism", &[MutationKind::Arrive, MutationKind::Takings]),
+    // And the coach that fetches them. It shares the passenger pool with
+    // `settling` and runs after it, which is what says a settler outranks a
+    // visitor for the last coach.
+    ("touring", &[MutationKind::Dispatch, MutationKind::Bog]),
     (
         "contracts",
         &[
@@ -702,6 +797,11 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                 if let Some(b) = world.buildings.get_mut(building) {
                     let room = b.storage_cap().saturating_sub(b.stock.get(resource));
                     b.stock.add(resource, tonnes.min(room));
+                }
+            }
+            Mutation::Clear { cells } => {
+                for &cell in cells {
+                    world.lattice.clear(cell);
                 }
             }
             &Mutation::Provision { building, fraction } => {
@@ -842,8 +942,13 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     }
                 }
             }
-            &Mutation::Weather(ground) => {
+            &Mutation::Weather { ground, snowfall } => {
                 world.ground = ground;
+                if ground.snow <= 0.0 {
+                    world.lattice.thaw();
+                } else if snowfall > 0.0 {
+                    world.lattice.bury(snowfall);
+                }
             }
             &Mutation::Lay { site, builder_days } => {
                 let Some(road) = world.roadworks.get(site) else {
@@ -1291,6 +1396,84 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
             }
             &Mutation::GiveUp { group } => {
                 world.migration.give_up(group);
+            }
+            &Mutation::Arrive { at, heads, market } => {
+                world
+                    .tourism
+                    .arrive(at, heads, market, world.clock.day_index());
+            }
+            Mutation::Fetch {
+                vehicle,
+                visit,
+                journey,
+                burn,
+            } => {
+                let boarded = world.tourism.get_mut(*visit).map(|v| {
+                    v.riding = Some(*vehicle);
+                    v.at
+                });
+                if let Some(v) = world.fleet.get_mut(*vehicle) {
+                    v.fuel = v.fuel.saturating_sub(*burn);
+                    if let Some(at) = boarded {
+                        v.at = at;
+                    }
+                    v.journey = Some(journey.clone());
+                    v.state = VehicleState::Delivering;
+                }
+            }
+            Mutation::CheckIn {
+                vehicle,
+                visit,
+                hotel,
+                at,
+                journey,
+                burn,
+            } => {
+                // A hotel pulled down or filled while the coach was in the air
+                // is the same case a demolished estate is: the party has
+                // nowhere to go and goes home, and the ledger records it rather
+                // than losing them quietly.
+                let room = world
+                    .buildings
+                    .get(*hotel)
+                    .filter(|b| b.is_built())
+                    .map(|b| b.def().beds.saturating_sub(world.tourism.booked_at(*hotel)))
+                    .unwrap_or(0);
+                let heads = world.tourism.get(*visit).map_or(0, |v| v.heads);
+                if room >= heads && heads > 0 {
+                    world
+                        .tourism
+                        .check_in(*visit, *hotel, *at, world.clock.day_index());
+                } else {
+                    world.tourism.end(*visit);
+                }
+                let yard = world
+                    .fleet
+                    .get(*vehicle)
+                    .and_then(|v| world.buildings.get(v.home))
+                    .map(|b| b.centre);
+                if let Some(v) = world.fleet.get_mut(*vehicle) {
+                    v.fuel = v.fuel.saturating_sub(*burn);
+                    if let Some(at) = yard {
+                        let _ = at;
+                    }
+                    v.at = *at;
+                    v.journey = Some(journey.clone());
+                    v.state = VehicleState::Returning;
+                }
+            }
+            Mutation::Takings {
+                market,
+                amount,
+                leaving,
+            } => {
+                if *amount > 0.0 {
+                    world.treasury.credit(*market, *amount);
+                    world.tourism.take(*market, *amount);
+                }
+                for visit in leaving {
+                    world.tourism.end(*visit);
+                }
             }
             Mutation::Board {
                 vehicle,
@@ -3382,7 +3565,16 @@ fn serve(
     }
 
     // A supplier is anyone holding this who does not consume it, less whatever
-    // another lorry is already on its way to collect.
+    // another lorry is already on its way to collect, **and less whatever the
+    // player told it to keep**.
+    //
+    // That last clause is what makes a standing order an order. Without it an
+    // order was a target with no floor: the goods arrived and the very next
+    // pass took them straight out again, because a store holds what it does not
+    // consume and that is the definition of a supplier. A distribution office
+    // asked to keep fifty tonnes of coal in the north was a lorry park, and a
+    // filling station was a building that could be delivered diesel all day and
+    // never have any — which is how this was found.
     let mut suppliers: Vec<(f64, BuildingId, Tonnes)> = world
         .buildings
         .all()
@@ -3391,12 +3583,18 @@ fn serve(
         .filter(|b| !b.def().inputs.iter().any(|(r, _)| *r == resource))
         .filter(|b| !b.def().sells.contains(&resource))
         .map(|b| {
+            let kept = if b.def().stores_to_order {
+                b.orders.get(resource)
+            } else {
+                Tonnes::ZERO
+            };
             (
                 b.centre.distance_to(to.at).0,
                 b.id,
                 b.stock
                     .get(resource)
-                    .saturating_sub(booked.promised(b.id, resource)),
+                    .saturating_sub(booked.promised(b.id, resource))
+                    .saturating_sub(kept),
             )
         })
         .filter(|(_, _, spare)| spare.is_positive())
@@ -3681,7 +3879,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                         .next_f64()
                         < odds);
             if out_by_itself {
-                let drag = crossing.drag_along(from, to);
+                let drag = crossing.drag_for(journey.leg_on_road(), from, to);
                 let speed = journey.speed_on(leg, def.on_road, def.cross_country, drag);
                 // It starts the crossing again rather than picking up where it
                 // stopped: it is at a standstill in a field, not idling at a
@@ -3747,7 +3945,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
         if !journey.on_last_leg() {
             let ahead = journey.leg + 1;
             let (from, to) = journey.leg_ends(ahead);
-            let drag = crossing.drag_along(from, to);
+            let drag = crossing.drag_for(journey.limit[ahead as usize].is_some(), from, to);
             let speed = journey.speed_on(ahead, def.on_road, def.cross_country, drag);
             let (leg, leg_start, leg_end) = journey.next_leg(speed);
             // The leg just finished did happen, so it moved the lorry and burnt
@@ -3762,6 +3960,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                 burn,
             });
             out.extend(wore(world, v, journey.leg));
+            out.extend(swept(world, v, journey.leg));
             // The crossing about to be attempted, evaluated against the ground
             // as it is *now* rather than as it was when the plan was made.
             if sticks(world, &crossing, v.id, v.capability(), journey, ahead, day) {
@@ -3795,8 +3994,10 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
             continue;
         };
 
-        // Whatever it just drove over, it packed down a little.
+        // Whatever it just drove over, it packed down a little -- and if it
+        // had a blade on the front, it swept clear.
         out.extend(wore(world, v, journey.leg));
+        out.extend(swept(world, v, journey.leg));
 
         match v.state {
             VehicleState::Returning => out.push(Mutation::Park {
@@ -3835,7 +4036,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                     let leg = plan.leg;
                     let (a, b) = plan.leg_ends(leg);
                     let stuck_def = stuck.def();
-                    let drag = crossing.drag_along(a, b);
+                    let drag = crossing.drag_for(plan.leg_on_road(), a, b);
                     let speed =
                         plan.speed_on(leg, stuck_def.on_road, stuck_def.cross_country, drag);
                     out.push(Mutation::Recover {
@@ -3947,6 +4148,42 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                         }),
                     }
                 }
+                // Arrived at a post where visitors are standing. They get on
+                // and the coach turns for the hotel it was sent to.
+                Some(Job::Tour { visit, to }) => {
+                    match world.buildings.get(to).map(|b| b.centre) {
+                        Some(door) if onward(door).is_some() => out.push(Mutation::Fetch {
+                            vehicle: v.id,
+                            visit,
+                            journey: onward(door).expect("just checked"),
+                            burn,
+                        }),
+                        // Either nobody is here or the hotel has gone. Go home
+                        // rather than stand in a field holding a job that can
+                        // never finish.
+                        _ => out.push(Mutation::Load {
+                            vehicle: v.id,
+                            from: v.home,
+                            resource: Resource::Fuel,
+                            tonnes: Tonnes::ZERO,
+                            journey: home_run.clone(),
+                            state: VehicleState::Returning,
+                            burn,
+                        }),
+                    }
+                }
+                // Reached the far end of what it was sent to clear. There is
+                // nothing to pick up: it turns round, and the way home is
+                // swept exactly as the way out was.
+                Some(Job::Plough { .. }) => out.push(Mutation::Load {
+                    vehicle: v.id,
+                    from: v.home,
+                    resource: Resource::Fuel,
+                    tonnes: Tonnes::ZERO,
+                    journey: home_run.clone(),
+                    state: VehicleState::Returning,
+                    burn,
+                }),
                 Some(Job::Ferry { .. }) | None => {}
             },
             // A bus is `Delivering` from the moment it leaves the office,
@@ -3985,6 +4222,26 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                     vehicle: v.id,
                     group,
                     home,
+                    journey: plan,
+                    burn,
+                });
+                if stuck {
+                    out.push(Mutation::Bog { vehicle: v.id, day });
+                }
+            }
+            // A coach with visitors aboard, arriving at the hotel. They check
+            // in and start spending; the coach turns for its depot.
+            VehicleState::Delivering if matches!(v.job, Some(Job::Tour { .. })) => {
+                let Some(Job::Tour { visit, to }) = v.job else {
+                    continue;
+                };
+                let plan = home_run.clone();
+                let stuck = sticks(world, &crossing, v.id, def.ground, &plan, 0, day);
+                out.push(Mutation::CheckIn {
+                    vehicle: v.id,
+                    visit,
+                    hotel: to,
+                    at: arrived,
                     journey: plan,
                     burn,
                 });
@@ -4066,6 +4323,27 @@ fn wore(world: &World, v: &crate::fleet::Vehicle, leg: u32) -> Option<Mutation> 
         // A laden lorry leaves more of a line than an empty one.
         by: crate::ground::WEAR_PER_PASS * (0.4 + 0.6 * v.load_fraction()),
     })
+}
+
+/// The snow a plough just pushed off the leg it finished.
+///
+/// The counterpart of [`wore`], and the mirror image of it in one telling way:
+/// wear is refused **on** a road because tarmac does not rut, and clearing is
+/// wanted on a road above all, because that is what a plough is for. It clears
+/// off-road legs too — the machine has a blade on the front and the snow does
+/// not care what is underneath — which is what lets a plough open the way to an
+/// outlying works that has no road yet.
+fn swept(world: &World, v: &crate::fleet::Vehicle, leg: u32) -> Option<Mutation> {
+    if v.def().role != crate::fleet::Role::Clearance {
+        return None;
+    }
+    let journey = v.journey.as_ref()?;
+    let (from, to) = journey.leg_ends(leg);
+    let cells = world.lattice.cells_along(from, to);
+    if cells.is_empty() {
+        return None;
+    }
+    Some(Mutation::Clear { cells })
 }
 
 /// Whether a vehicle sticks setting out on a given leg today.
@@ -4159,8 +4437,16 @@ pub fn tracks(world: &World) -> Vec<Mutation> {
 pub fn weather(world: &World) -> Vec<Mutation> {
     let (temperature, rain) = world.weather_on_day(world.clock.day_index());
     let mut ground = world.ground;
+    let before = ground.snow;
     ground.advance(temperature, rain);
-    vec![Mutation::Weather(ground)]
+    // What fell today, as a share of a stopping depth. A day that melted snow
+    // buries nothing: the pack shrinking does not undo a plough's work, and
+    // taking the absolute difference would have had a thaw covering the roads.
+    let fell = (ground.snow - before).max(0.0);
+    vec![Mutation::Weather {
+        ground,
+        snowfall: (fell / crate::ground::SNOW_BLOCKS_MM).clamp(0.0, 1.0),
+    }]
 }
 
 /// Vehicles arriving on a garage's strength.
@@ -4277,15 +4563,23 @@ fn staffed_service(world: &World, kind: BuildingKind) -> Vec<Point> {
 /// of its establishment is a third of a polyclinic, and rounding that to "you
 /// have healthcare" would hide exactly the kind of quiet failure this whole
 /// section of the goal exists to make visible.
-fn service_cover(world: &World, home: Point, kind: BuildingKind) -> f64 {
+fn service_cover(world: &World, home: Point, need: crate::building::Need) -> f64 {
     world
         .buildings
         .all()
         .iter()
-        .filter(|b| b.kind == kind && b.is_built())
+        .filter(|b| b.is_built())
         .filter(|b| b.centre.distance_to(home).0 <= SERVICE_RADIUS.0)
-        .map(|b| b.staffing())
-        .fold(0.0f64, f64::max)
+        .map(|b| {
+            b.def()
+                .serves
+                .iter()
+                .filter(|&&(what, _)| what == need)
+                .map(|&(_, share)| share * b.staffing())
+                .sum::<f64>()
+        })
+        .sum::<f64>()
+        .min(1.0)
 }
 
 /// How well the republic is serving the people in it, and how they feel about
@@ -4329,14 +4623,14 @@ pub fn contentment(world: &World) -> Vec<Mutation> {
             } else {
                 f64::from(u8::from(home.heated))
             },
-            health: service_cover(world, home.centre, BuildingKind::Clinic),
-            culture: service_cover(world, home.centre, BuildingKind::CultureClub),
+            health: service_cover(world, home.centre, crate::building::Need::Health),
+            culture: service_cover(world, home.centre, crate::building::Need::Culture),
             // A block with no children is not unhappy about the lack of a
             // school, and a block full of them very much is.
             schooling: if here.pupils == 0 {
                 1.0
             } else {
-                service_cover(world, home.centre, BuildingKind::School)
+                service_cover(world, home.centre, crate::building::Need::Schooling)
             },
             work: if here.working_age == 0 {
                 1.0
@@ -4346,6 +4640,10 @@ pub fn contentment(world: &World) -> Vec<Mutation> {
             // Bins that nobody has emptied, and the air the works upwind is
             // making. Both are "this is not a pleasant place to live", and a
             // resident cannot tell them apart, so they are one number.
+            // Fire, police and the courts. Unlike the others this is **not**
+            // waived when nobody needs it today, because the point of a fire
+            // station is the day you do.
+            safety: service_cover(world, home.centre, crate::building::Need::Safety),
             cleanliness: {
                 let bin = home.storage_cap();
                 let rubbish = if bin.is_positive() {
@@ -4855,6 +5153,428 @@ pub fn settling(world: &World) -> Vec<Mutation> {
     out
 }
 
+/// What a place is worth to somebody who came to look at it, `0.0..=1.0`.
+///
+/// Culture within walking distance, and air worth breathing. Both are read off
+/// machinery that already existed rather than authored again — `serves` cover
+/// and the pollution lattice — because a visitor and a resident are asking a
+/// similar question about a place and should get a consistent answer.
+///
+/// **Weighted toward culture**, because that is the half the player builds on
+/// purpose. Clean air is mostly a matter of not putting the hotel downwind of
+/// the steel works, which is a siting decision rather than a construction one,
+/// and the two should not be worth the same.
+///
+/// [`crate::tourism::APPEAL_FLOOR`] is why an empty steppe posting with a hotel
+/// still earns something: a multiplier reaching zero would make the mechanic
+/// unreachable until some other building existed, which is a lock wearing a
+/// balance curve's clothes.
+pub fn appeal(world: &World, at: Point) -> f64 {
+    let culture = service_cover(world, at, crate::building::Need::Culture);
+    let clean = 1.0 - world.lattice.pollution_near(at);
+    let raw = 0.65 * culture + 0.35 * clean.clamp(0.0, 1.0);
+    (crate::tourism::APPEAL_FLOOR + (1.0 - crate::tourism::APPEAL_FLOOR) * raw).clamp(0.0, 1.0)
+}
+
+/// Visitors turning up, spending, and going home.
+///
+/// **Daily**, for the reason contracts and wages are: a night in a hotel is a
+/// day's takings, and a per-tick sweep would charge a party 1,440 times for one.
+///
+/// Three things in one pass, and they belong together: who arrives is decided by
+/// how many beds are free, which is decided by who left this morning.
+pub fn tourism(world: &World) -> Vec<Mutation> {
+    let day = world.clock.day_index();
+    let mut out = Vec::new();
+
+    // The day's takings, and whose stay ended. One mutation carrying both,
+    // because they are one transaction: a party whose fortnight ended without
+    // its last day's money would be a republic that earned something and did
+    // not get it.
+    let mut takings: BTreeMap<Market, f64> = BTreeMap::new();
+    let mut leaving: Vec<crate::tourism::VisitId> = Vec::new();
+    for visit in world.tourism.all() {
+        if visit.has_given_up(day) {
+            leaving.push(visit.id);
+            continue;
+        }
+        let Some(hotel) = visit.staying_at else {
+            continue;
+        };
+        // A hotel that has lost its staff stops earning. It does not throw
+        // anybody out — they are already asleep in it — but nobody is being
+        // served, and a republic should not be paid for a building it cannot
+        // run.
+        let open = world
+            .buildings
+            .get(hotel)
+            .is_some_and(|b| b.is_built() && b.staffing() > 0.0);
+        if open {
+            let spend = f64::from(visit.heads)
+                * crate::tourism::SPEND_PER_HEAD_PER_DAY
+                * appeal(world, visit.at);
+            *takings.entry(visit.market).or_default() += spend;
+        }
+        if visit.is_done(day) {
+            leaving.push(visit.id);
+        }
+    }
+    for (market, amount) in takings {
+        out.push(Mutation::Takings {
+            market,
+            amount,
+            leaving: if out.is_empty() {
+                std::mem::take(&mut leaving)
+            } else {
+                Vec::new()
+            },
+        });
+    }
+    // Nobody spent anything but somebody still went home.
+    if !leaving.is_empty() {
+        out.push(Mutation::Takings {
+            market: Market::East,
+            amount: 0.0,
+            leaving,
+        });
+    }
+
+    // And who turns up. Bounded by beds that will actually be free, counting
+    // the parties already on their way to them — the lesson `crews` learnt
+    // twice, and the reason nobody arrives for a bed somebody else has.
+    let free = world.free_beds();
+    if free >= PARTY_FLOOR {
+        let heads = free.min(crate::tourism::PARTY);
+        // Keyed by day so the stream is reproducible and does not depend on how
+        // many times anything was asked.
+        let roll = world
+            .substream(crate::world::TOURIST_STREAM, day)
+            .next_f64();
+        // How attractive the republic is decides how *often* a party comes
+        // rather than how large it is, so a republic with one culture club gets
+        // visitors occasionally and one with a full town gets them steadily.
+        let best = world
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().beds > 0)
+            .map(|b| appeal(world, b.centre))
+            .fold(0.0f64, f64::max);
+        if roll < best * ARRIVALS_PER_DAY {
+            // From whichever bloc holds a post, and their money is that bloc's.
+            // Which posts a republic can reach is what decides whether its
+            // tourism earns dollars or roubles, exactly as it decides that for
+            // its coal.
+            let market = if roll < best * ARRIVALS_PER_DAY * 0.5 {
+                Market::West
+            } else {
+                Market::East
+            };
+            if let Some(post) = world
+                .frontier
+                .crossings()
+                .iter()
+                .filter(|c| c.bloc == market)
+                .min_by_key(|c| c.id)
+            {
+                out.push(Mutation::Arrive {
+                    at: post.at,
+                    heads,
+                    market,
+                });
+            }
+        }
+    }
+
+    out
+}
+
+/// The fewest free beds worth sending a party to.
+///
+/// A coach's worth, near enough. A party of two would cost the same journey as
+/// a party of twenty, and a republic sending a bus across the map for two
+/// visitors is one whose coaches are doing nothing better — which, if true, it
+/// can fix by building another hotel.
+const PARTY_FLOOR: u32 = 6;
+
+/// The chance per day that a party turns up at a republic worth visiting.
+///
+/// About one every four days at full appeal, so a fortnight's stay overlaps
+/// several parties and a hotel is busy rather than occasionally occupied.
+const ARRIVALS_PER_DAY: f64 = 0.25;
+
+/// Fetching visitors in from a frontier post.
+///
+/// **Shares the coach pool with `settling`, and runs after it.** That is a
+/// decision rather than an accident: both are people standing at a border
+/// waiting to be driven in, a republic that has decided to move people has
+/// decided it once, and which one gets the last coach is a judgement — settlers
+/// first, because somebody who wants to live here outranks somebody visiting.
+/// Being second in the schedule is what says so.
+pub fn touring(world: &World) -> Vec<Mutation> {
+    let mut coaches = available(world, Role::Passenger);
+    if coaches.is_empty() {
+        return Vec::new();
+    }
+
+    let coming: Vec<crate::tourism::VisitId> = world
+        .fleet
+        .all()
+        .iter()
+        .filter_map(|v| match v.job {
+            Some(Job::Tour { visit, .. }) => Some(visit),
+            _ => None,
+        })
+        .collect();
+
+    let crossing = world.crossing();
+    let now = world.clock.ticks() as f64;
+    let day = world.clock.day_index();
+    let mut drawn: BTreeMap<BuildingId, Tonnes> = BTreeMap::new();
+    let mut booked: BTreeMap<BuildingId, u32> = BTreeMap::new();
+    let mut out = Vec::new();
+
+    let waiting: Vec<(crate::tourism::VisitId, Point, u32)> = world
+        .tourism
+        .unfetched()
+        .filter(|v| !coming.contains(&v.id))
+        .map(|v| (v.id, v.at, v.heads))
+        .collect();
+
+    for (visit, at, heads) in waiting {
+        if coaches.is_empty() {
+            break;
+        }
+        // The emptiest hotel with room, ties on id — the same ranking settling
+        // uses for housing, and for the same reason.
+        let mut hotels: Vec<(u32, BuildingId, Point)> = world
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().beds > 0 && b.staffing() > 0.0)
+            .filter_map(|b| {
+                let taken = world.tourism.booked_at(b.id) + booked.get(&b.id).copied().unwrap_or(0);
+                let room = b.def().beds.saturating_sub(taken);
+                (room > 0).then_some((room, b.id, b.centre))
+            })
+            .collect();
+        hotels.sort_by(|(ra, ia, _), (rb, ib, _)| rb.cmp(ra).then_with(|| ia.cmp(ib)));
+        let Some(&(room, hotel, door)) = hotels.first() else {
+            continue;
+        };
+
+        let mut nearest: Vec<(f64, usize)> = coaches
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| {
+                let v = world.fleet.get(*id)?;
+                Some((v.at.distance_to(at).0, i))
+            })
+            .collect();
+        nearest.sort_by(|(da, ia), (db, ib)| da.total_cmp(db).then_with(|| ia.cmp(ib)));
+
+        for (_, index) in nearest {
+            let id = coaches[index];
+            let (Some(v), Some(yard)) = (
+                world.fleet.get(id),
+                world
+                    .fleet
+                    .get(id)
+                    .and_then(|v| world.buildings.get(v.home))
+                    .map(|b| b.centre),
+            ) else {
+                continue;
+            };
+            let def = v.def();
+            let leg = |a: Point, b: Point| plan_leg(world, &crossing, def, a, b, now);
+            let (Some(outbound), Some(carrying), Some(home_run)) =
+                (leg(v.at, at), leg(at, door), leg(door, yard))
+            else {
+                continue;
+            };
+            let whole = outbound.distance() + carrying.distance() + home_run.distance();
+            let held = world
+                .buildings
+                .get(v.home)
+                .map(|b| b.stock.get(Resource::Fuel))
+                .unwrap_or(Tonnes::ZERO)
+                .saturating_sub(drawn.get(&v.home).copied().unwrap_or(Tonnes::ZERO));
+            let top_up = def.tank.saturating_sub(v.fuel).min(held);
+            if (v.fuel + top_up).0 < v.fuel_for(whole).0 {
+                continue;
+            }
+
+            let stuck = sticks(world, &crossing, id, v.capability(), &outbound, 0, day);
+            out.push(Mutation::Dispatch {
+                vehicle: id,
+                job: Job::Tour { visit, to: hotel },
+                journey: outbound,
+                refuel: top_up,
+            });
+            if stuck {
+                out.push(Mutation::Bog { vehicle: id, day });
+            }
+            *drawn.entry(v.home).or_default() += top_up;
+            *booked.entry(hotel).or_default() += heads.min(room);
+            coaches.remove(index);
+            break;
+        }
+    }
+    out
+}
+
+/// How buried a stretch has to be before a plough is worth sending.
+///
+/// Below this the snow is a nuisance rather than a problem and the diesel is
+/// better spent elsewhere — a republic that sent a machine out for a dusting
+/// would spend its winter driving ploughs around empty roads.
+pub const PLOUGH_AT: f64 = 0.25;
+
+/// Pushing the winter off the roads.
+///
+/// **Its own dispatcher rather than a branch of `dispatch`**, for the reason
+/// every other pool here has one: what it ranks is nothing like a haul. Freight
+/// ranks by downtime averted, crews by the commissioning order, settling by who
+/// has waited longest — and this ranks by how buried a stretch of road is and
+/// how much traffic it carries, which is a question about the map rather than
+/// about a consignee.
+///
+/// It sends a plough to the far end of the worst-buried road it can reach and
+/// lets it come home again. Nothing is loaded and nothing is delivered: the work
+/// happens under the wheels at every leg boundary, which is why this needs no
+/// arrival machinery beyond turning the machine round. See [`swept`].
+///
+/// **A road is picked over open ground deliberately.** A plough could clear
+/// anything, and clearing a field helps nobody: what a republic loses to snow is
+/// the roads it built, and those are the thing worth the diesel.
+pub fn clearing(world: &World) -> Vec<Mutation> {
+    // Nothing lying, nothing to do. The cheap exit matters: this runs every
+    // tick and for most of the year the answer is no.
+    if world.ground.snow_load() <= 0.0 {
+        return Vec::new();
+    }
+    let mut ploughs = available(world, crate::fleet::Role::Clearance);
+    if ploughs.is_empty() {
+        return Vec::new();
+    }
+
+    let crossing = world.crossing();
+    let now = world.clock.ticks() as f64;
+    let mut drawn: BTreeMap<BuildingId, Tonnes> = BTreeMap::new();
+    let mut out = Vec::new();
+
+    // Where a plough is already headed, so two are not sent to the same drift.
+    // The lesson `crews` learnt twice, applied before it could be relearnt here.
+    let mut coming: Vec<Point> = world
+        .fleet
+        .all()
+        .iter()
+        .filter_map(|v| match v.job {
+            Some(Job::Plough { to }) => Some(to),
+            _ => None,
+        })
+        .collect();
+
+    // Every road segment, worst buried first. Ties on the segment's own ends so
+    // the answer does not depend on how the network happens to be ordered.
+    let mut buried: Vec<(f64, Point, Point)> = world
+        .roads
+        .segments()
+        .iter()
+        .filter_map(|segment| {
+            let (from, to) = world.roads.segment_ends(segment)?;
+            let cells = world.lattice.cells_along(from, to);
+            if cells.is_empty() {
+                return None;
+            }
+            let cover: f64 = cells
+                .iter()
+                .map(|&c| world.ground.snow_load() * (1.0 - world.lattice.cleared_at(c)))
+                .sum::<f64>()
+                / cells.len() as f64;
+            (cover >= PLOUGH_AT).then_some((cover, from, to))
+        })
+        .collect();
+    buried.sort_by(|(ca, fa, ta), (cb, fb, tb)| {
+        cb.total_cmp(ca)
+            .then_with(|| fa.x.0.total_cmp(&fb.x.0))
+            .then_with(|| fa.y.0.total_cmp(&fb.y.0))
+            .then_with(|| ta.x.0.total_cmp(&tb.x.0))
+            .then_with(|| ta.y.0.total_cmp(&tb.y.0))
+    });
+
+    for (_, from, to) in buried {
+        if ploughs.is_empty() {
+            break;
+        }
+        // The far end from whichever plough takes it, so the machine drives the
+        // whole segment rather than touching one end of it.
+        if coming
+            .iter()
+            .any(|at| at.distance_to(to).0 < crate::ground::GROUND_CELL.0)
+        {
+            continue;
+        }
+
+        let mut nearest: Vec<(f64, usize)> = ploughs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| {
+                let v = world.fleet.get(*id)?;
+                Some((v.at.distance_to(from).0, i))
+            })
+            .collect();
+        nearest.sort_by(|(da, ia), (db, ib)| da.total_cmp(db).then_with(|| ia.cmp(ib)));
+
+        for (_, index) in nearest {
+            let id = ploughs[index];
+            let (Some(v), Some(yard)) = (
+                world.fleet.get(id),
+                world
+                    .fleet
+                    .get(id)
+                    .and_then(|v| world.buildings.get(v.home))
+                    .map(|b| b.centre),
+            ) else {
+                continue;
+            };
+            let def = v.def();
+            let leg = |a: Point, b: Point| plan_leg(world, &crossing, def, a, b, now);
+            let (Some(outbound), Some(home_run)) = (leg(v.at, to), leg(to, yard)) else {
+                continue;
+            };
+            // The rule that does not bend: a vehicle never accepts a job it
+            // cannot finish. A plough stranded in a drift is the one thing worse
+            // than a buried road.
+            let whole = outbound.distance() + home_run.distance();
+            let held = world
+                .buildings
+                .get(v.home)
+                .map(|b| b.stock.get(Resource::Fuel))
+                .unwrap_or(Tonnes::ZERO)
+                .saturating_sub(drawn.get(&v.home).copied().unwrap_or(Tonnes::ZERO));
+            let top_up = def.tank.saturating_sub(v.fuel).min(held);
+            if (v.fuel + top_up).0 < v.fuel_for(whole).0 {
+                continue;
+            }
+
+            // No bogging roll, deliberately: see the write set. A plough is
+            // above the scale by construction.
+            out.push(Mutation::Dispatch {
+                vehicle: id,
+                job: Job::Plough { to },
+                journey: outbound,
+                refuel: top_up,
+            });
+            *drawn.entry(v.home).or_default() += top_up;
+            coming.push(to);
+            ploughs.remove(index);
+            break;
+        }
+    }
+    out
+}
+
 /// Goods moving along a belt or a pipe, without a lorry.
 ///
 /// **Per tick, like the fleet**, because a belt runs continuously and the point
@@ -5153,6 +5873,10 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
             // it read state the four above have just written: loyalty for who
             // leaves, contentment for who wants to come.
             |w: &mut World| migration(w),
+            // And tourism last, because who arrives depends on how many beds
+            // are free, which depends on who left this morning — and because
+            // it reads the pollution and culture the passes above have settled.
+            |w: &mut World| tourism(w),
         ] {
             let mutations = system(world);
             apply(world, &mutations);
@@ -5179,6 +5903,10 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
         // systems happened to be listed the other way round.
         crews,
         settling,
+        // After settling and sharing its pool: somebody who wants to live here
+        // outranks somebody visiting, and the schedule is what says so.
+        touring,
+        clearing,
     ] {
         let mutations = system(world);
         apply(world, &mutations);
@@ -8210,6 +8938,11 @@ mod tests {
             && let Some(b) = world.buildings.get_mut(pump)
         {
             b.stock.add(Resource::Fuel, Tonnes(40.0));
+            // And a standing order, because that is how a pump is kept filled
+            // now — see `a_filling_point_is_kept_filled`. Without it this
+            // fixture observes a filling station that can only run down.
+            let cap = b.storage_cap();
+            b.orders.set(Resource::Fuel, cap);
         }
         if let Some(site) =
             crate::scenario::find_site(&world, BuildingKind::BusDepot, centre, Metres(800.0))
@@ -8366,6 +9099,18 @@ mod tests {
             }
         }
 
+        // A hotel and a culture club, so `tourism` and `touring` have a whole
+        // path to run: visitors only arrive where there are beds, and what they
+        // pay for is what is near them. Both in town, because a hotel out at the
+        // far end would be unstaffed and an unstaffed hotel takes nobody.
+        for kind in [BuildingKind::Hotel, BuildingKind::CultureClub] {
+            if let Some(site) = crate::scenario::find_site(&world, kind, centre, Metres(600.0)) {
+                let _ = world
+                    .buildings
+                    .place_built(kind, site, &world.terrain, &world.geology);
+            }
+        }
+
         // A foreign gang on the books, so the wage bill is a thing that
         // happens. Issued as a command rather than written in, because the
         // whole path — fee, arrival at a post, the bus that fetches them — is
@@ -8440,6 +9185,9 @@ mod tests {
                     let m = migration(&world);
                     note("migration", &m);
                     apply(&mut world, &m);
+                    let m = tourism(&world);
+                    note("tourism", &m);
+                    apply(&mut world, &m);
                     // Accept everything, so deliveries and failures both happen.
                     let offers: Vec<_> = world.contracts.offers().map(|c| c.id).collect();
                     for id in offers {
@@ -8458,6 +9206,8 @@ mod tests {
                     ("dispatch", dispatch),
                     ("crews", crews),
                     ("settling", settling),
+                    ("touring", touring),
+                    ("clearing", clearing),
                 ] {
                     let m = system(&world);
                     note(name, &m);
@@ -9768,6 +10518,40 @@ mod tests {
         home
     }
 
+    /// One building for each thing the people need, built and staffed in reach
+    /// of a town. What it takes to be a place people actually want to move to.
+    ///
+    /// **Separate from `contented_town` on purpose**, and the reason is a bug
+    /// this nearly caused. Fed and warm was enough to attract settlers until
+    /// `Safety` became a contentment component; after that a town with no fire
+    /// station fell below the threshold, nobody arrived, and every migration
+    /// test built on the old fixture passed by having nothing to measure.
+    /// Folding the services into `contented_town` fixed that and broke
+    /// something worse -- tests that assert a republic has *no* school or *no*
+    /// clinic were suddenly given both.
+    ///
+    /// **The cheapest server per need, not the whole roster.** Building all
+    /// thirteen wants about a hundred and forty workers, and housing them put
+    /// the republic over its own capacity -- at which point nobody is offered
+    /// a place and not one settler arrives, which is the same vacuum by a
+    /// different route. Needs are walked off `Need::ALL` rather than listed
+    /// here, so a new one does not hollow these tests out again.
+    fn with_services(world: &mut World, near: Point) {
+        let mut ring = 0.0;
+        for need in crate::building::Need::ALL {
+            let cheapest = crate::building::BUILDINGS
+                .iter()
+                .filter(|d| d.serves.iter().any(|&(what, _)| what == need))
+                .min_by_key(|d| d.workers);
+            let Some(def) = cheapest else { continue };
+            ring += 140.0;
+            let spot = Point::new(near.x + Metres(ring), near.y + Metres(260.0));
+            if let Ok(id) = world.place_built(def.kind, spot) {
+                world.buildings.get_mut(id).expect("just placed").staff = def.workers;
+            }
+        }
+    }
+
     /// The first thing in this simulation that pushes back on the player.
     ///
     /// `provisioned` and `heated` were computed every tick for months with
@@ -9861,7 +10645,24 @@ mod tests {
         let m = contentment(&w);
         apply(&mut w, &m);
         let content = w.buildings.get(home).unwrap().content;
-        assert_eq!(content.health, 1.0, "the clinic is staffed and in reach");
+        // **A clinic is not a hospital**, and the share it supplies says so.
+        // This asserted `1.0` when the Polyclinic was the only health building
+        // in the game, which made "complete healthcare" an artefact of the
+        // roster rather than a decision. A republic that wants its people fully
+        // looked after builds the hospital and the pharmacy as well.
+        let share = BuildingKind::Clinic
+            .def()
+            .serves
+            .iter()
+            .find(|&&(need, _)| need == crate::building::Need::Health)
+            .map(|&(_, share)| share)
+            .expect("a polyclinic serves health");
+        assert!(
+            (content.health - share).abs() < 1e-9,
+            "the clinic is staffed and in reach, so health should be {share}, not {}",
+            content.health
+        );
+        assert!(share < 1.0, "a clinic alone is complete healthcare again");
         assert_ne!(
             content.worst(),
             Some("Health"),
@@ -10027,11 +10828,14 @@ mod tests {
     /// up, which is the click-a-button shape this build refuses.
     #[test]
     fn settlers_arrive_at_a_post_and_have_to_be_fetched() {
+        // Services, or the town is not attractive enough for anybody to come
+        // and the test has nothing to measure. See `with_services`.
         let mut w = bare();
         let home = contented_town(&mut w, at(1_000.0, 1_000.0), 40);
         // Empty housing for them to be brought to, and work so the republic
         // reads as somewhere worth coming.
         contented_town(&mut w, at(1_400.0, 1_000.0), 0);
+        with_services(&mut w, at(1_000.0, 1_000.0));
         place(&mut w, BuildingKind::Sawmill, at(1_150.0, 1_100.0));
         let depot = place(&mut w, BuildingKind::BusDepot, at(1_000.0, 1_300.0));
         w.buildings.get_mut(depot).unwrap().staff = BuildingKind::BusDepot.def().workers;
@@ -10102,6 +10906,7 @@ mod tests {
         let mut w = bare();
         contented_town(&mut w, at(1_000.0, 1_000.0), 40);
         contented_town(&mut w, at(1_400.0, 1_000.0), 0);
+        with_services(&mut w, at(1_000.0, 1_000.0));
         place(&mut w, BuildingKind::Sawmill, at(1_150.0, 1_100.0));
         let m = labour(&mut w);
         apply(&mut w, &m);
@@ -10291,6 +11096,168 @@ mod tests {
         assert!(
             filling_point(&w, at_pump).is_none(),
             "an empty pump is still offering to fill you up"
+        );
+    }
+
+    /// A pump that runs dry and is never refilled is a building that works
+    /// once — and that is what this was.
+    ///
+    /// `cover_days` reads `inputs` and a `GasStation` has none, so the resupply
+    /// ranking had no reason to bring one a tonne of diesel ever. The founding
+    /// hand-stocked forty tonnes, the test above hand-stocked forty tonnes, and
+    /// between them they hid a filling station that could only ever run down.
+    /// The fix is `orders: true` — a standing order is what makes a place a
+    /// destination — and this is the test that watches a lorry turn up.
+    ///
+    /// Run against a *drained* pump, because a full one proves nothing: the
+    /// premise is asserted before the tick loop for exactly that reason.
+    #[test]
+    fn a_filling_point_is_kept_filled() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let depot = base.depot.expect("the founding sites a council depot");
+        let near_depot = w.buildings.get(depot).unwrap().centre;
+        let site =
+            crate::scenario::find_site(&w, BuildingKind::GasStation, near_depot, Metres(600.0))
+                .expect("somewhere for a pump");
+        let pump = w
+            .place_built(BuildingKind::GasStation, site)
+            .expect("a pump");
+
+        // Imported diesel standing at the border, which is where a republic
+        // with no refinery gets it. The pump is empty; before the standing
+        // order existed, that stayed true for ever.
+        let customs = base.customs.expect("the founding opens a crossing");
+        w.buildings
+            .get_mut(customs)
+            .unwrap()
+            .stock
+            .add(Resource::Fuel, Tonnes(60.0));
+
+        assert!(
+            !w.buildings
+                .get(pump)
+                .unwrap()
+                .stock
+                .get(Resource::Fuel)
+                .is_positive(),
+            "the premise: a pump with fuel in it would pass without a delivery"
+        );
+        assert!(
+            cover_days(&w, pump, Resource::Fuel).is_none(),
+            "the premise: a pump has no appetite, which is exactly why the \
+             ordinary resupply ranking never looked at it"
+        );
+
+        let cap = w.buildings.get(pump).unwrap().storage_cap();
+        w.issue(crate::command::Command::SetStandingOrder {
+            building: pump,
+            resource: Resource::Fuel,
+            tonnes: cap,
+        })
+        .expect("a filling station is a place the player may stock");
+
+        for _ in 0..(TICKS_PER_DAY * 4) {
+            w.tick();
+        }
+
+        assert!(
+            w.buildings
+                .get(pump)
+                .unwrap()
+                .stock
+                .get(Resource::Fuel)
+                .is_positive(),
+            "four days and no lorry brought the filling station any diesel"
+        );
+    }
+
+    /// A standing order is an order, not a suggestion.
+    ///
+    /// **Found by watching a pump that was being delivered to and never had
+    /// any.** A store holds goods it does not consume, which is exactly the
+    /// definition of a supplier in `serve` — so an order used to set a target
+    /// with no floor under it. Freight brought the diesel in and the next pass
+    /// took it straight back out to whatever burnt fuel nearby, five times over
+    /// four days, and the building ended each one empty.
+    ///
+    /// The premise is asserted first, because a republic with nothing that
+    /// wants the goods would pass this without the rule existing.
+    #[test]
+    fn what_a_store_is_told_to_keep_is_not_taken_out_again() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        // A founded republic burns coal in its boiler and its power plant, so
+        // there is always somebody who would like this stock.
+        let plant = base.plant.expect("the founding lights a power plant");
+        let near = w.buildings.get(plant).unwrap().centre;
+        let site =
+            crate::scenario::find_site(&w, BuildingKind::DistributionOffice, near, Metres(900.0))
+                .expect("somewhere for an office");
+        let office = w
+            .place_built(BuildingKind::DistributionOffice, site)
+            .expect("an office");
+        assert!(
+            BuildingKind::PowerPlant
+                .def()
+                .inputs
+                .iter()
+                .any(|&(r, _)| r == Resource::Coal),
+            "the premise: this test needs something nearby that wants the coal"
+        );
+
+        let keep = Tonnes(50.0);
+        w.issue(crate::command::Command::SetStandingOrder {
+            building: office,
+            resource: Resource::Coal,
+            tonnes: keep,
+        })
+        .expect("a distribution office is a store");
+        w.buildings
+            .get_mut(office)
+            .unwrap()
+            .stock
+            .set(Resource::Coal, keep);
+        // Empty the plant's bunker so its appetite is real and pressing.
+        w.buildings
+            .get_mut(plant)
+            .unwrap()
+            .stock
+            .take(Resource::Coal, Tonnes(1e9));
+
+        for _ in 0..(TICKS_PER_DAY * 3) {
+            w.tick();
+        }
+
+        let left = w.buildings.get(office).unwrap().stock.get(Resource::Coal);
+        assert!(
+            left.0 >= keep.0 - 1e-6,
+            "the office was told to keep {keep:?} and has {left:?} — an order \
+             that does not hold anything back is a target, not an order"
+        );
+
+        // And the other half: a surplus **above** the order is still fair game,
+        // or a store would be a hole goods fall into.
+        w.buildings
+            .get_mut(office)
+            .unwrap()
+            .stock
+            .add(Resource::Coal, Tonnes(30.0));
+        for _ in 0..(TICKS_PER_DAY * 3) {
+            w.tick();
+        }
+        let after = w.buildings.get(office).unwrap().stock.get(Resource::Coal);
+        assert!(
+            after.0 < keep.0 + 30.0 - 1e-6,
+            "nothing drew on the surplus, so a store hoards whatever it is given"
         );
     }
 
@@ -10742,6 +11709,318 @@ mod tests {
             ordered.0 <= 60.0 + 1e-6,
             "the order was for 60 t and {:.1} t turned up",
             ordered.0
+        );
+    }
+
+    /// Visitors arrive at a post, are driven to a hotel, and leave money.
+    ///
+    /// The whole mechanic end to end, and every premise is asserted first
+    /// because each is a way this could pass while doing nothing: no beds, no
+    /// coach, or a republic already rich enough that the takings vanish in the
+    /// noise.
+    #[test]
+    fn visitors_are_fetched_from_the_border_and_pay_in_their_own_money() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let centre = base.centre;
+
+        // Hands to spare. The founding sends **exactly** enough people for its
+        // own jobs, so anything commissioned afterwards stands unstaffed for
+        // ever — which is the staffing order working, and would make this a test
+        // of that rather than of tourism. An estate and sixty people is what
+        // lets the buildings below actually open.
+        let estate = crate::scenario::find_site(&w, BuildingKind::Apartment, centre, Metres(900.0))
+            .expect("somewhere for another block");
+        let block = w
+            .place_built(BuildingKind::Apartment, estate)
+            .expect("a block");
+        for _ in 0..60 {
+            w.population.spawn_citizen(block, 30);
+        }
+
+        // A hotel, a coach depot to fetch with, and something worth coming for.
+        let mut opened = Vec::new();
+        for kind in [
+            BuildingKind::Hotel,
+            BuildingKind::BusDepot,
+            BuildingKind::CultureClub,
+        ] {
+            let site = crate::scenario::find_site(&w, kind, centre, Metres(900.0))
+                .unwrap_or_else(|| panic!("somewhere for a {kind:?}"));
+            let id = w.place_built(kind, site).expect("open ground");
+            let b = w.buildings.get_mut(id).unwrap();
+            b.staff = kind.def().workers;
+            b.stock.add(Resource::Fuel, Tonnes(30.0));
+            opened.push(id);
+        }
+        for &(kind, n) in BuildingKind::BusDepot.def().vehicles {
+            for _ in 0..n {
+                w.fleet.commission(kind, opened[1], centre);
+            }
+        }
+
+        assert!(
+            w.free_beds() > 0,
+            "the premise: nowhere for a visitor to sleep"
+        );
+        assert!(
+            w.fleet
+                .all()
+                .iter()
+                .any(|v| v.def().role == crate::fleet::Role::Passenger),
+            "the premise: nothing to fetch anybody with"
+        );
+        let hotel_at = w.buildings.get(opened[0]).unwrap().centre;
+        assert!(
+            w.appeal_at(hotel_at) > crate::tourism::APPEAL_FLOOR,
+            "the premise: a hotel beside nothing earns the floor, and this test \
+             wants to see the culture club counted"
+        );
+
+        let before = (w.treasury.rubles, w.treasury.dollars);
+        for _ in 0..(TICKS_PER_DAY * 60) {
+            w.tick();
+        }
+
+        assert!(
+            w.tourism.visited() > 0,
+            "sixty days and nobody ever reached a hotel"
+        );
+        let earned = w.tourism.earned(Market::East) + w.tourism.earned(Market::West);
+        assert!(earned > 0.0, "visitors stayed and spent nothing");
+        let after = (w.treasury.rubles, w.treasury.dollars);
+        assert!(
+            after.0 > before.0 || after.1 > before.1,
+            "the takings never reached the treasury"
+        );
+
+        // Their money is their bloc's. A republic whose only reachable posts are
+        // Western earns dollars from tourism exactly as it does from coal, which
+        // is the whole reason this is geographic rather than a flat income.
+        for market in [Market::East, Market::West] {
+            if w.tourism.earned(market) > 0.0 {
+                let posts = w
+                    .frontier
+                    .crossings()
+                    .iter()
+                    .filter(|c| c.bloc == market)
+                    .count();
+                assert!(posts > 0, "{market:?} money from a bloc with no post here");
+            }
+        }
+    }
+
+    /// What a hotel is worth is what is near it, and it is showable.
+    ///
+    /// A player who cannot see why one hotel earns three times another has a
+    /// building with a random yield. The floor is asserted too, because a
+    /// multiplier that reached zero would make the whole mechanic unreachable
+    /// on an empty posting — a lock wearing a balance curve's clothes.
+    #[test]
+    fn a_hotel_is_worth_what_stands_around_it() {
+        let mut w = bare();
+        let bare_spot = at(3_000.0, 500.0);
+        let town = at(1_000.0, 1_000.0);
+        staff_up(&mut w, town, 40);
+
+        let empty = w.appeal_at(bare_spot);
+        assert!(
+            empty >= crate::tourism::APPEAL_FLOOR,
+            "an empty posting earns nothing at all for having built a hotel"
+        );
+
+        let club = crate::scenario::find_site(&w, BuildingKind::CultureClub, town, Metres(300.0))
+            .expect("somewhere for a club");
+        let id = w
+            .place_built(BuildingKind::CultureClub, club)
+            .expect("a club");
+        w.buildings.get_mut(id).unwrap().staff = BuildingKind::CultureClub.def().workers;
+
+        let with_culture = w.appeal_at(town);
+        assert!(
+            with_culture > empty,
+            "a culture club next door was worth nothing: {empty:.2} then {with_culture:.2}"
+        );
+
+        // And smoke takes it back off, which is why siting a hotel downwind of
+        // the works is a decision rather than a detail.
+        for cell in w.lattice.cells_within(town, Metres(150.0)) {
+            w.lattice.foul(cell, 1.0);
+        }
+        let in_a_smog = w.appeal_at(town);
+        assert!(
+            in_a_smog < with_culture,
+            "a hotel in a smog is worth as much as one in clean air: \
+             {with_culture:.2} then {in_a_smog:.2}"
+        );
+    }
+
+    /// The winter arrives, a plough goes out, and the road comes back.
+    ///
+    /// The whole mechanic end to end, and the premises are asserted first
+    /// because every one of them is a way this could pass while doing nothing:
+    /// a republic with no snow, no ploughs or no roads would sail through a test
+    /// that only looked at the end state.
+    #[test]
+    fn a_republic_ploughs_its_own_roads_out() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Taiga,
+        });
+        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+
+        // Road out to the crossing. The founding does not lay one — the
+        // trajectory runner orders it, and so does a player — so it is ordered
+        // here rather than assumed, and finished outright because six weeks of
+        // waiting for a crew would make this a construction test.
+        let depot = base.depot.expect("a council depot");
+        let yard = w.buildings.get(depot).unwrap().centre;
+        let house = base.customs.expect("a crossing");
+        let border = w.buildings.get(house).unwrap().centre;
+        lay(&mut w, crate::roadworks::Grade::Gravel, yard, border);
+
+        // A day for the founding to staff itself and put the ploughs on the
+        // depot's strength.
+        for _ in 0..(TICKS_PER_DAY * 2) {
+            w.tick();
+        }
+
+        let ploughs = w
+            .fleet
+            .all()
+            .iter()
+            .filter(|v| v.def().role == crate::fleet::Role::Clearance)
+            .count();
+        assert!(
+            ploughs > 0,
+            "the premise: the council depot keeps ploughs, and without one \
+             nothing below is testing anything"
+        );
+        assert!(
+            !w.roads.segments().is_empty(),
+            "the premise: the founding lays a track to its crossing, and a \
+             republic with no roads has nothing to clear"
+        );
+
+        // Midwinter, laid on rather than waited for: this test is about the
+        // plough, and driving it there through six simulated months would make
+        // it a test of the taiga calendar.
+        w.ground.snow = crate::ground::SNOW_BLOCKS_MM * 2.0;
+        w.ground.frost = 1.0;
+        w.lattice.bury(1.0);
+        let before = w.roads_unswept();
+        assert!(
+            before > 0.9,
+            "the premise: the republic has to actually be under snow, and it is \
+             {before:.2} buried"
+        );
+
+        let road = w.roads.segments()[0].clone();
+        let (from, to) = w.roads.segment_ends(&road).expect("a segment has ends");
+        let buried_leg = w.crossing().road_drag_along(from, to);
+        assert!(
+            buried_leg > 1.0,
+            "the premise: a buried road has to cost something, and this one \
+             drags {buried_leg:.2}"
+        );
+
+        let mut went_out = 0;
+        for _ in 0..(TICKS_PER_DAY * 5) {
+            for m in w.tick() {
+                if let Mutation::Dispatch { job, .. } = &m
+                    && matches!(job, Job::Plough { .. })
+                {
+                    went_out += 1;
+                }
+            }
+            // Hold the winter: `weather` would otherwise melt the pack and the
+            // thaw would clear the lattice for reasons that are not a plough.
+            w.ground.snow = crate::ground::SNOW_BLOCKS_MM * 2.0;
+        }
+
+        assert!(went_out > 0, "nothing was sent out into the snow");
+        let after = w.roads_unswept();
+        assert!(
+            after < before,
+            "ploughs went out {went_out} times and the republic is as buried as \
+             it was: {before:.3} then {after:.3}"
+        );
+        let swept_leg = w.crossing().road_drag_along(from, to);
+        assert!(
+            swept_leg < buried_leg,
+            "the road was ploughed and a lorry is no quicker on it: {buried_leg:.2} \
+             then {swept_leg:.2}"
+        );
+    }
+
+    /// A store takes the shapes it was built for, and says so at the door.
+    ///
+    /// The refusal matters as much as the rule. Letting the order stand and
+    /// quietly never fill would be indistinguishable, from the panel, from a
+    /// republic with no lorries — and the player would have no way to find out
+    /// which, because `intake_capacity` returns zero silently.
+    #[test]
+    fn a_store_refuses_an_order_it_could_never_fill() {
+        let mut w = bare();
+        let tank = place(&mut w, BuildingKind::StorageTank, at(1_000.0, 1_000.0));
+        let silo = place(&mut w, BuildingKind::GrainSilo, at(1_400.0, 1_000.0));
+
+        w.issue(crate::command::Command::SetStandingOrder {
+            building: tank,
+            resource: Resource::Fuel,
+            tonnes: Tonnes(100.0),
+        })
+        .expect("a tank holds fuel");
+
+        let refused = w
+            .issue(crate::command::Command::SetStandingOrder {
+                building: tank,
+                resource: Resource::Coal,
+                tonnes: Tonnes(100.0),
+            })
+            .expect_err("a tank is not a coal bunker");
+        assert_eq!(
+            refused.to_string(),
+            "Coal will not go in a Storage Tank",
+            "the reason has to be a sentence a tooltip can print"
+        );
+
+        w.issue(crate::command::Command::SetStandingOrder {
+            building: silo,
+            resource: Resource::Crops,
+            tonnes: Tonnes(100.0),
+        })
+        .expect("a silo holds grain");
+        assert!(
+            w.issue(crate::command::Command::SetStandingOrder {
+                building: silo,
+                resource: Resource::Steel,
+                tonnes: Tonnes(100.0),
+            })
+            .is_err(),
+            "a silo took delivery of steel beams"
+        );
+
+        // And the panel is offered exactly what would be accepted, so a player
+        // is never shown a choice the simulation would refuse.
+        let offered = w.orderable(tank);
+        assert!(offered.contains(&Resource::Fuel));
+        assert!(!offered.contains(&Resource::Coal));
+        assert!(
+            offered
+                .iter()
+                .all(|r| r.form() == crate::resource::Form::Liquid),
+            "a tank offered something that is not a liquid"
+        );
+        let home = place(&mut w, BuildingKind::Apartment, at(1_800.0, 1_000.0));
+        assert!(
+            w.orderable(home).is_empty(),
+            "a block of flats was offered a stockpile to keep"
         );
     }
 
@@ -11224,5 +12503,149 @@ mod tests {
                 grade.def().name
             );
         }
+    }
+
+    // ---- The services roster -----------------------------------------------
+
+    /// **Every need has somebody who can meet it.** A component of contentment
+    /// that no building in the table serves is a component the player is
+    /// marked down for and can do nothing about — which is the opposite of the
+    /// goal's first condition, where everything modelled is not only visible
+    /// but controllable wherever it is a decision.
+    #[test]
+    fn every_need_can_be_met_by_something_the_republic_can_build() {
+        for need in crate::building::Need::ALL {
+            let servers: Vec<&'static str> = crate::building::BUILDINGS
+                .iter()
+                .filter(|d| d.serves.iter().any(|&(what, _)| what == need))
+                .map(|d| d.name)
+                .collect();
+            assert!(
+                !servers.is_empty(),
+                "nothing in the republic serves {need:?}, so the people are \
+                 marked down for something they cannot be given"
+            );
+            // And enough of them to reach full cover, or the need is a
+            // permanent deduction wearing a service's clothes.
+            let best: f64 = crate::building::BUILDINGS
+                .iter()
+                .flat_map(|d| d.serves.iter())
+                .filter(|&&(what, _)| what == need)
+                .map(|&(_, share)| share)
+                .sum();
+            assert!(
+                best >= 1.0,
+                "{need:?} tops out at {best:.2} with everything built — \
+                 a republic can never fully meet it"
+            );
+        }
+    }
+
+    /// A share, not a flag. No single building is complete provision of
+    /// anything, and the cover from several adds up.
+    ///
+    /// This is a **deliberate change** to a figure that was an artefact: the
+    /// Polyclinic used to supply complete health cover because it was the only
+    /// health building in the game.
+    #[test]
+    fn services_add_up_and_no_one_building_is_all_of_anything() {
+        for def in crate::building::BUILDINGS {
+            for &(need, share) in def.serves {
+                assert!(
+                    share > 0.0 && share < 1.0,
+                    "{} supplies {share} of {need:?} on its own",
+                    def.name
+                );
+            }
+        }
+
+        let mut w = bare();
+        let home = staff_up(&mut w, at(1_000.0, 1_000.0), 40);
+        let clinic = place(&mut w, BuildingKind::Clinic, at(1_000.0, 1_200.0));
+        w.buildings.get_mut(clinic).unwrap().staff = BuildingKind::Clinic.def().workers;
+        let m = contentment(&w);
+        apply(&mut w, &m);
+        let with_clinic = w.buildings.get(home).unwrap().content.health;
+
+        let pharmacy = place(&mut w, BuildingKind::Pharmacy, at(1_180.0, 1_200.0));
+        w.buildings.get_mut(pharmacy).unwrap().staff = BuildingKind::Pharmacy.def().workers;
+        let m = contentment(&w);
+        apply(&mut w, &m);
+        let with_both = w.buildings.get(home).unwrap().content.health;
+
+        assert!(
+            with_both > with_clinic,
+            "a pharmacy beside a clinic added nothing: {with_clinic} then {with_both}"
+        );
+        assert!(with_both <= 1.0, "cover ran past complete");
+    }
+
+    /// An unstaffed service serves nobody. A hospital with no doctors is a
+    /// building, and the whole reason staffing is a fraction is so that
+    /// questions like this have an answer rather than a yes.
+    #[test]
+    fn a_service_nobody_works_at_covers_nobody() {
+        let mut w = bare();
+        let home = staff_up(&mut w, at(1_000.0, 1_000.0), 40);
+        let station = place(&mut w, BuildingKind::FireStation, at(1_000.0, 1_200.0));
+
+        let m = contentment(&w);
+        apply(&mut w, &m);
+        assert_eq!(
+            w.buildings.get(home).unwrap().content.safety,
+            0.0,
+            "an empty fire station made the estate feel safe"
+        );
+
+        w.buildings.get_mut(station).unwrap().staff = BuildingKind::FireStation.def().workers;
+        let m = contentment(&w);
+        apply(&mut w, &m);
+        assert!(
+            w.buildings.get(home).unwrap().content.safety > 0.0,
+            "a staffed fire station covered nobody"
+        );
+    }
+
+    /// Out of reach is out of mind. A hospital on the far side of the republic
+    /// is not this estate's hospital.
+    #[test]
+    fn a_service_out_of_reach_covers_nobody() {
+        let mut w = bare();
+        let home = staff_up(&mut w, at(600.0, 600.0), 40);
+        let far = at(600.0 + SERVICE_RADIUS.0 + 400.0, 600.0);
+        let hospital = place(&mut w, BuildingKind::Hospital, far);
+        w.buildings.get_mut(hospital).unwrap().staff = BuildingKind::Hospital.def().workers;
+
+        let m = contentment(&w);
+        apply(&mut w, &m);
+        assert_eq!(
+            w.buildings.get(home).unwrap().content.health,
+            0.0,
+            "a hospital {} m away covered the estate",
+            SERVICE_RADIUS.0 + 400.0
+        );
+    }
+
+    /// **Safety is never waived for want of demand**, unlike warmth on a warm
+    /// day or schooling in a block with no children. The point of a fire
+    /// station is the day you need it, not the average day — so a republic
+    /// without one is marked down on the first day and every day after.
+    #[test]
+    fn safety_is_not_waived_the_way_warmth_and_schooling_are() {
+        let mut w = bare();
+        // A block of adults in high summer: nothing is asking for heat and
+        // there are no children to school, so both of those come back full.
+        let home = staff_up(&mut w, at(1_000.0, 1_000.0), 20);
+        let m = contentment(&w);
+        apply(&mut w, &m);
+        let content = w.buildings.get(home).unwrap().content;
+        assert_eq!(
+            content.schooling, 1.0,
+            "a block with no children was marked down for schools"
+        );
+        assert_eq!(
+            content.safety, 0.0,
+            "a republic with no fire station, no militia and no court was not marked down"
+        );
     }
 }
