@@ -123,22 +123,30 @@ impl Resource {
         }
     }
 
-    /// Whether this is something the republic sells rather than something its
-    /// people are judged on having.
+    /// Whether this is something people are glad of rather than something they
+    /// need.
     ///
-    /// **The distinction is deliberate and it is a balance decision, not a
-    /// taxonomy.** Alcohol and electronics are made from domestic chains and
-    /// are worth a great deal per tonne abroad, which is what makes them the
-    /// answer to "how does a republic earn dollars without digging coal". Making
-    /// them *wants* instead would have been the other obvious design, and it
-    /// was rejected: every existing republic's `provisions` score would have
-    /// fallen the day this landed, for a shortfall in goods that did not exist
-    /// the day before. Deepening the economy must not quietly re-mark work the
-    /// player already did.
+    /// Drink and household electrics — radios, televisions, the things that
+    /// make a flat somewhere to live rather than somewhere to sleep. **A
+    /// comfort is worth having and nobody's life is ruined without it**, and
+    /// that sentence is the whole model: [`crate::wellbeing::Contentment`]
+    /// applies them as a lift on top of the needs rather than as one more thing
+    /// to be short of.
+    ///
+    /// **The first version of this made them exports only, and that was wrong.**
+    /// The reasoning was sound as far as it went — modelling them as ordinary
+    /// wants would have dropped every standing republic's score the day the
+    /// goods were invented — but the fix for that is to make them *additive*,
+    /// not to keep them out of people's hands. They are both now: worth a great
+    /// deal per tonne at a frontier post, and worth something to the people who
+    /// live here, which is a genuine decision about where the lorry goes.
+    ///
+    /// Alcohol carries a cost with it — see
+    /// [`crate::wellbeing::ALCOHOL_HEALTH_COST`] — and electronics do not.
     ///
     /// Authored as a property of the resource rather than as a list inside the
     /// trade or households systems, for the reason every other property here is.
-    pub fn is_luxury(self) -> bool {
+    pub fn is_comfort(self) -> bool {
         matches!(self, Resource::Alcohol | Resource::Electronics)
     }
 
@@ -436,18 +444,26 @@ mod tests {
         }
     }
 
-    /// The luxuries are the export answer, and the test that says so is the one
-    /// that stops somebody quietly turning them into a want later: a want would
-    /// re-mark every republic that had never heard of them.
+    /// A comfort is worth both things at once, and that is the decision.
+    ///
+    /// Dear enough abroad that carrying it to a post is a real use of a lorry,
+    /// and wanted at home — so where the tonnage goes is a choice rather than a
+    /// foregone conclusion. A comfort that was only worth one of the two would
+    /// collapse back into an export or into a chore.
     #[test]
-    fn the_luxuries_are_worth_carrying_to_a_border() {
-        for r in Resource::ALL.into_iter().filter(|r| r.is_luxury()) {
+    fn a_comfort_is_worth_selling_and_worth_keeping() {
+        let comforts: Vec<_> = Resource::ALL
+            .into_iter()
+            .filter(|r| r.is_comfort())
+            .collect();
+        assert!(!comforts.is_empty(), "nothing is a comfort");
+        for r in comforts {
             assert!(
                 r.price_west() > Resource::Steel.price_west(),
-                "{r:?} is a luxury nobody would haul"
+                "{r:?} is a comfort nobody would bother exporting"
             );
         }
-        assert!(!Resource::Food.is_luxury(), "food is a need");
-        assert!(!Resource::Clothes.is_luxury(), "clothes are a need");
+        assert!(!Resource::Food.is_comfort(), "food is a need, not a treat");
+        assert!(!Resource::Clothes.is_comfort(), "clothes are a need");
     }
 }

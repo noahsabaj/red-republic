@@ -67,6 +67,25 @@ pub struct Contentment {
     pub cleanliness: f64,
     /// Fire, police and courts within reach. See [`crate::building::Need`].
     pub safety: f64,
+    /// Drink and household electrics off a shelf within reach, `0.0..=1.0`.
+    ///
+    /// **Deliberately not one of the weighted components above, and that is the
+    /// whole design.** Everything in [`Contentment::parts`] is a way for a
+    /// republic to *fail* its people: absent, it costs. Comforts are the
+    /// opposite — they are worth having and nobody's life is ruined without
+    /// them — so they are applied as a **lift on top** in
+    /// [`Contentment::overall`] rather than as a ninth thing to be short of.
+    ///
+    /// That distinction is what makes them addable at all. Modelled as a want
+    /// they would have dropped the score of every republic already standing, on
+    /// the day the goods were invented, for a shortfall that did not exist the
+    /// day before — and a republic must never be re-marked for work it did
+    /// before the rules changed.
+    ///
+    /// It is also why [`Contentment::worst`] cannot name this: "your people's
+    /// biggest problem is no television" is not something a panel should ever
+    /// say to somebody whose estate is cold.
+    pub comforts: f64,
 }
 
 impl Contentment {
@@ -80,7 +99,17 @@ impl Contentment {
         work: 0.0,
         cleanliness: 0.0,
         safety: 0.0,
+        comforts: 0.0,
     };
+
+    /// The most that fully-stocked comforts add to a home's score.
+    ///
+    /// **It certainly helps and it is not a dealbreaker**, which is the whole
+    /// brief. Twelve points is enough to carry a republic sitting just under
+    /// [`CONTENT_ATTRACTS`] over it — so a distillery and an electronics works
+    /// are a real way to start attracting people — and nowhere near enough to
+    /// rescue one that is cold, hungry or out of work.
+    pub const COMFORT_LIFT: f64 = 0.12;
 
     /// What each component is worth, in the same order as [`Contentment::parts`].
     ///
@@ -117,8 +146,12 @@ impl Contentment {
         ]
     }
 
-    /// The weighted mean, `0.0..=1.0`.
-    pub fn overall(&self) -> f64 {
+    /// The weighted mean of the needs, before comforts are added.
+    ///
+    /// Kept separate from [`Contentment::overall`] so a panel can show what the
+    /// republic is doing about the things that matter and what the extras are
+    /// worth on top, rather than one number that mixes the two.
+    pub fn needs_met(&self) -> f64 {
         let total: f64 = Self::WEIGHTS.iter().sum();
         let scored: f64 = self
             .parts()
@@ -127,6 +160,21 @@ impl Contentment {
             .map(|(v, w)| v.clamp(0.0, 1.0) * w)
             .sum();
         (scored / total).clamp(0.0, 1.0)
+    }
+
+    /// What the comforts are adding today, `0.0..=COMFORT_LIFT`.
+    pub fn lift(&self) -> f64 {
+        Self::COMFORT_LIFT * self.comforts.clamp(0.0, 1.0)
+    }
+
+    /// The weighted mean of the needs, lifted by whatever comforts reached the
+    /// shelves, `0.0..=1.0`.
+    ///
+    /// **Additive rather than weighted**, so a republic that has never heard of
+    /// vodka scores exactly what it scored before either good existed. See
+    /// [`Contentment::comforts`] for why that is load-bearing rather than tidy.
+    pub fn overall(&self) -> f64 {
+        (self.needs_met() + self.lift()).clamp(0.0, 1.0)
     }
 
     /// The component that is dragging this home down hardest — value times
@@ -175,6 +223,22 @@ pub const EMIGRATION_ODDS: f64 = 0.02;
 /// How fast health follows the medical care available, per day.
 pub const HEALTH_DRIFT: f64 = 0.01;
 
+/// What a fully-stocked republic's drinking takes off its people's health.
+///
+/// **The trade the player is being asked to think about.** Drink lifts a home's
+/// contentment and it costs the people in it something, and both halves are
+/// real: at full supply a citizen with a clinic next door targets 0.90 health
+/// rather than 1.00, which tells on mortality without being a catastrophe.
+///
+/// It is scaled by what the shops in reach actually *had*, so a republic that
+/// makes no alcohol pays nothing and one that supplies it everywhere pays in
+/// full — and a player who decides the contentment is worth the health is
+/// making exactly the decision this is for.
+///
+/// Electronics have no such cost, which is authored here by their absence and
+/// worth stating: a television is not bad for you.
+pub const ALCOHOL_HEALTH_COST: f64 = 0.10;
+
 /// The health a citizen tends toward with no clinic in reach.
 ///
 /// Not zero: people do not die of having no polyclinic, they are simply less
@@ -208,6 +272,7 @@ mod tests {
             work: 1.0,
             cleanliness: 1.0,
             safety: 1.0,
+            comforts: 0.0,
         };
         assert!((all.overall() - 1.0).abs() < 1e-12);
         assert!(all.worst().is_none(), "nothing is short");
@@ -229,6 +294,7 @@ mod tests {
             work: 1.0,
             cleanliness: 1.0,
             safety: 1.0,
+            comforts: 0.0,
         };
         // 0.2 x 3.0 = 0.6 against 1.0 x 0.75 = 0.75, so culture wins here...
         assert_eq!(hungry.worst(), Some("Culture"));
@@ -239,6 +305,75 @@ mod tests {
         };
         // ...and at half rations food does: 0.5 x 3.0 = 1.5.
         assert_eq!(hungrier.worst(), Some("Provisions"));
+    }
+
+    /// **Comforts may only ever add.** This is the guard the whole design exists
+    /// to make true: a republic that has never built a distillery must score
+    /// exactly what it scored before drink and electrics were invented, or the
+    /// act of deepening the economy silently re-marks work the player already
+    /// did.
+    ///
+    /// Checked across the whole range rather than at a point, because a
+    /// weighted-component implementation would pass a spot check at zero and
+    /// fail everywhere else.
+    #[test]
+    fn comforts_never_lower_a_score_and_a_full_shelf_lifts_it_by_the_stated_amount() {
+        for tenth in 0..=10 {
+            let base = Contentment {
+                provisions: f64::from(tenth) / 10.0,
+                warmth: 0.8,
+                health: 0.7,
+                culture: 0.3,
+                schooling: 1.0,
+                work: 0.9,
+                cleanliness: 0.6,
+                safety: 0.5,
+                comforts: 0.0,
+            };
+            let comforted = Contentment {
+                comforts: 1.0,
+                ..base
+            };
+            assert!(
+                comforted.overall() >= base.overall(),
+                "comforts made a republic worse off at provisions {tenth}/10"
+            );
+            // And the needs half is untouched by them, which is what lets a
+            // panel show the two apart.
+            assert_eq!(base.needs_met(), comforted.needs_met());
+            let expected = (base.overall() + Contentment::COMFORT_LIFT).min(1.0);
+            assert!(
+                (comforted.overall() - expected).abs() < 1e-12,
+                "a full shelf lifted {:.3} rather than {:.3}",
+                comforted.overall() - base.overall(),
+                Contentment::COMFORT_LIFT
+            );
+        }
+    }
+
+    /// A comfort is never the thing a panel tells you to go and fix.
+    ///
+    /// "Your people's biggest problem is no television" is not something to say
+    /// to somebody whose estate is cold, and `worst` reads `parts` — so this
+    /// also pins comforts out of that roster.
+    #[test]
+    fn no_estate_is_ever_told_its_worst_problem_is_a_missing_luxury() {
+        let cold_and_dry = Contentment {
+            provisions: 1.0,
+            warmth: 0.2,
+            health: 1.0,
+            culture: 1.0,
+            schooling: 1.0,
+            work: 1.0,
+            cleanliness: 1.0,
+            safety: 1.0,
+            comforts: 0.0,
+        };
+        assert_eq!(cold_and_dry.worst(), Some("Warmth"));
+        assert!(
+            !Contentment::NAMES.contains(&"Comforts"),
+            "comforts joined the weighted roster, which makes them a way to fail"
+        );
     }
 
     #[test]
@@ -264,6 +399,7 @@ mod tests {
             work: 1.0,
             cleanliness: 1.0,
             safety: 1.0,
+            comforts: 0.0,
         };
         assert!((over.overall() - 1.0).abs() < 1e-12);
     }

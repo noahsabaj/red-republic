@@ -76,9 +76,13 @@ func set_resource_names(names: PackedStringArray, forms: PackedStringArray) -> v
 
 func set_contentment_names(names: PackedStringArray) -> void:
 	_content_names = names
-	# Three headings, the life stages, the education levels, the components.
+	# Three headings, the life stages, the education levels, the components, and
+	# the comfort lift -- which is a row of its own because it is not one of the
+	# components. Counted rather than given slack: slack is a literal that has
+	# not been exceeded yet, and that is exactly how this table lost a row four
+	# times running.
 	_build_people_rows(
-		3 + STAGE_NAMES.size() + LEARNING_NAMES.size() + names.size()
+		3 + STAGE_NAMES.size() + LEARNING_NAMES.size() + names.size() + 1
 	)
 
 
@@ -188,16 +192,24 @@ func _refresh_people_lines(republic: Node) -> void:
 	# The overall score is the last entry, whatever the roster of components is.
 	# Indexing it by a hardcoded 6 is how a table quietly stops showing the
 	# component somebody added yesterday.
-	if content.size() != _content_names.size() + 1 or health.size() < 2:
+	# The components, then the overall, then the comfort lift -- so the two
+	# trailing figures are counted rather than indexed by a number typed here.
+	if content.size() != _content_names.size() + 2 or health.size() < 2:
 		people_line.text = ""
 		return
-	var overall: float = content[content.size() - 1]
+	var overall: float = content[content.size() - 2]
+	var lift: float = content[content.size() - 1]
 	people_line.text = "content %d%%  ·  health %d%%  ·  loyalty %d%%  ·  weakest: %s" % [
 		int(round(overall * 100.0)),
 		int(round(health[0] * 100.0)),
 		int(round(health[1] * 100.0)),
 		_weakest(content),
 	]
+	# Comforts add rather than deduct, so they are shown as what they are: a
+	# bonus the republic earned. Only when there is one, because a permanent
+	# "+0%" would read as a component that is failing.
+	if lift > 0.005:
+		people_line.text += "   ·   +%d%% comforts" % int(round(lift * 100.0))
 	# Below the threshold that attracts anybody is worth colouring: it is the
 	# line between a republic that grows and one that only shrinks.
 	people_line.modulate = Color(0.9, 0.55, 0.45) if overall < 0.6 else Color.WHITE
@@ -348,10 +360,14 @@ func _refresh_people(republic: Node) -> void:
 		for i in LEARNING_NAMES.size():
 			rows.append([LEARNING_NAMES[i], str(who[STAGE_NAMES.size() + i])])
 	var parts := _content_names.size()
-	if parts > 0 and content.size() == parts + 1:
+	if parts > 0 and content.size() == parts + 2:
 		rows.append(["CONTENTMENT", "%d%%" % int(round(content[parts] * 100.0))])
 		for i in parts:
 			rows.append([_content_names[i], "%d%%" % int(round(content[i] * 100.0))])
+		# Last, and signed, because it is not one of the components above: those
+		# are ways to fail and this is a bonus. A player reading down the column
+		# must not be invited to go and fix it.
+		rows.append(["Comforts", "+%d%%" % int(round(content[parts + 1] * 100.0))])
 
 	for row in _people_rows:
 		var name_label := _people_labels[row * 2]

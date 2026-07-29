@@ -821,6 +821,11 @@ impl Republic {
             out.push(part as f32);
         }
         out.push(b.content.overall() as f32);
+        // The comfort lift, between the score and the worst component, so the
+        // panel's layout matches `views::contentment`'s: components, overall,
+        // lift. It is not one of the components and it is never the worst thing
+        // about anywhere.
+        out.push(b.content.lift() as f32);
         let worst = b.content.worst().and_then(|name| {
             red_republic_sim::Contentment::NAMES
                 .iter()
