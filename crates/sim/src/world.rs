@@ -562,6 +562,14 @@ impl World {
                 return Err(RoadError::Unbuildable);
             }
         }
+        // And what it runs OVER, which nothing used to ask. A road across water
+        // is a bridge, and a bridge costs steel and concrete by the kilometre
+        // and months of a crew — so until this check existed a river was an
+        // obstacle the cheapest grade in the table crossed for the price of
+        // gravel, while the design said water was impassable.
+        if !grade.def().spans_water() && self.terrain.crosses_water(from, to) {
+            return Err(RoadError::NeedsABridge);
+        }
         // Where this sits in the republic's commissioning order. Buildings are
         // ranked by their own id, which counts the same sequence — so a road
         // takes the count as it stands, meaning "after everything standing

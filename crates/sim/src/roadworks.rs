@@ -55,6 +55,15 @@ pub enum Grade {
     Dirt,
     Gravel,
     Paved,
+    /// A road that can cross open water.
+    ///
+    /// Its own grade rather than a flag on the others, because what a bridge
+    /// costs has nothing to do with what a road costs: it is steel and concrete
+    /// by the kilometre and months of a crew, and pricing it as tarmac would
+    /// make a river a formality. It is also the *only* grade that may cross
+    /// water, which is what makes a river a real division of a republic until
+    /// somebody pays to span it.
+    Bridge,
 }
 
 /// What a grade costs and what it is worth.
@@ -106,7 +115,32 @@ pub const GRADES: &[GradeDef] = &[
         materials: &[(Resource::Gravel, 50.0), (Resource::Bricks, 30.0)],
         labour: 140.0,
     },
+    // The most expensive thing a republic can order per kilometre, by a long
+    // way, and slower than the tarmac it joins. That is deliberate on both
+    // counts: a bridge is a decision about the shape of the republic rather
+    // than a piece of road, and a lorry crosses one carefully.
+    GradeDef {
+        grade: Grade::Bridge,
+        name: "Bridge",
+        speed: Speed::from_kph(40.0),
+        materials: &[
+            (Resource::Steel, 120.0),
+            (Resource::Bricks, 90.0),
+            (Resource::Gravel, 60.0),
+        ],
+        labour: 520.0,
+    },
 ];
+
+impl GradeDef {
+    /// Whether this grade may be laid over open water.
+    ///
+    /// A property of the authored row rather than a match on the enum, for the
+    /// reason every other property in this crate is one.
+    pub fn spans_water(&self) -> bool {
+        matches!(self.grade, Grade::Bridge)
+    }
+}
 
 impl Grade {
     pub fn def(self) -> &'static GradeDef {
@@ -132,6 +166,14 @@ pub enum RoadError {
     TooShort,
     /// One end is off the map, or on ground that will not take a road.
     Unbuildable,
+    /// The line crosses open water and this grade cannot.
+    ///
+    /// The refusal that makes a river a real division of a republic. Before it
+    /// existed nothing checked what a road ran *over* — only its two ends — so
+    /// a gravel road could be laid straight across a river at the price of
+    /// gravel, and `CLAUDE.md` recorded water as impassable while the cheapest
+    /// grade in the table crossed it for nothing.
+    NeedsABridge,
 }
 
 /// What the player is told. Same reasoning as
@@ -150,6 +192,9 @@ impl std::fmt::Display for RoadError {
                     f,
                     "one end is off the map or on ground that will not take a road"
                 )
+            }
+            RoadError::NeedsABridge => {
+                write!(f, "this line crosses water; only a bridge can span it")
             }
         }
     }

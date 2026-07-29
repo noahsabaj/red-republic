@@ -432,7 +432,13 @@ pub fn utility_index(kind: red_republic_sim::Utility) -> usize {
         .unwrap_or(0)
 }
 
-/// The grid at a glance: `[power_km, heat_km, on_power, on_heat, dark, cold]`.
+/// The networks at a glance: kilometres of each kind, then how many buildings
+/// are plugged into each, then `dark` and `cold`.
+///
+/// Laid out by `Utility::ALL` rather than by naming power and heat, because
+/// the roster grew from two to four the moment belts existed and a view with
+/// two hardcoded entries is a view that silently stops mentioning half of what
+/// the republic has built.
 ///
 /// The last two are what the player acts on: buildings that want current or
 /// heat and are not getting it. A republic can be short of generation or short
@@ -441,10 +447,12 @@ pub fn utility_index(kind: red_republic_sim::Utility) -> usize {
 pub fn utility_totals(world: &World) -> PackedFloat32Array {
     use red_republic_sim::Utility;
     let mut out = PackedFloat32Array::new();
-    out.push(world.utilities().length_of(Utility::Power).as_km() as f32);
-    out.push(world.utilities().length_of(Utility::Heat).as_km() as f32);
-    out.push(world.utilities().connected_count(Utility::Power) as f32);
-    out.push(world.utilities().connected_count(Utility::Heat) as f32);
+    for kind in Utility::ALL {
+        out.push(world.utilities().length_of(kind).as_km() as f32);
+    }
+    for kind in Utility::ALL {
+        out.push(world.utilities().connected_count(kind) as f32);
+    }
     let dark = world
         .buildings()
         .all()
