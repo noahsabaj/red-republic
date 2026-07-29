@@ -1897,7 +1897,7 @@ fn importable(
         {
             continue;
         }
-        for (&resource, _) in wanted.iter() {
+        for &resource in wanted.keys() {
             *covered.entry(resource).or_default() += b.stock.get(resource);
         }
     }
