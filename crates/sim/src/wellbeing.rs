@@ -65,6 +65,8 @@ pub struct Contentment {
     /// both are the player's to fix, and splitting them would make the panel
     /// longer without making a decision clearer.
     pub cleanliness: f64,
+    /// Fire, police and courts within reach. See [`crate::building::Need`].
+    pub safety: f64,
 }
 
 impl Contentment {
@@ -77,6 +79,7 @@ impl Contentment {
         schooling: 0.0,
         work: 0.0,
         cleanliness: 0.0,
+        safety: 0.0,
     };
 
     /// What each component is worth, in the same order as [`Contentment::parts`].
@@ -84,13 +87,13 @@ impl Contentment {
     /// Food and warmth dominate because they are survival and the rest are
     /// quality of life. They are authored rather than buried in `overall` so
     /// that rebalancing what the republic is judged on is a data edit.
-    pub const WEIGHTS: [f64; 7] = [3.0, 2.0, 1.0, 0.75, 0.75, 1.5, 1.0];
+    pub const WEIGHTS: [f64; 8] = [3.0, 2.0, 1.0, 0.75, 0.75, 1.5, 1.0, 0.9];
 
     /// The components in a fixed order, each with the name a panel prints.
     ///
     /// Iteration order is part of the simulation's definition here: the shell
     /// reads these into a packed array and labels them by index.
-    pub const NAMES: [&'static str; 7] = [
+    pub const NAMES: [&'static str; 8] = [
         "Provisions",
         "Warmth",
         "Health",
@@ -98,9 +101,10 @@ impl Contentment {
         "Schooling",
         "Work",
         "Cleanliness",
+        "Safety",
     ];
 
-    pub fn parts(&self) -> [f64; 7] {
+    pub fn parts(&self) -> [f64; Self::NAMES.len()] {
         [
             self.provisions,
             self.warmth,
@@ -109,6 +113,7 @@ impl Contentment {
             self.schooling,
             self.work,
             self.cleanliness,
+            self.safety,
         ]
     }
 
@@ -202,6 +207,7 @@ mod tests {
             schooling: 1.0,
             work: 1.0,
             cleanliness: 1.0,
+            safety: 1.0,
         };
         assert!((all.overall() - 1.0).abs() < 1e-12);
         assert!(all.worst().is_none(), "nothing is short");
@@ -222,6 +228,7 @@ mod tests {
             schooling: 1.0,
             work: 1.0,
             cleanliness: 1.0,
+            safety: 1.0,
         };
         // 0.2 x 3.0 = 0.6 against 1.0 x 0.75 = 0.75, so culture wins here...
         assert_eq!(hungry.worst(), Some("Culture"));
@@ -256,6 +263,7 @@ mod tests {
             schooling: 1.0,
             work: 1.0,
             cleanliness: 1.0,
+            safety: 1.0,
         };
         assert!((over.overall() - 1.0).abs() < 1e-12);
     }

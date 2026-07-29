@@ -4277,15 +4277,23 @@ fn staffed_service(world: &World, kind: BuildingKind) -> Vec<Point> {
 /// of its establishment is a third of a polyclinic, and rounding that to "you
 /// have healthcare" would hide exactly the kind of quiet failure this whole
 /// section of the goal exists to make visible.
-fn service_cover(world: &World, home: Point, kind: BuildingKind) -> f64 {
+fn service_cover(world: &World, home: Point, need: crate::building::Need) -> f64 {
     world
         .buildings
         .all()
         .iter()
-        .filter(|b| b.kind == kind && b.is_built())
+        .filter(|b| b.is_built())
         .filter(|b| b.centre.distance_to(home).0 <= SERVICE_RADIUS.0)
-        .map(|b| b.staffing())
-        .fold(0.0f64, f64::max)
+        .map(|b| {
+            b.def()
+                .serves
+                .iter()
+                .filter(|&&(what, _)| what == need)
+                .map(|&(_, share)| share * b.staffing())
+                .sum::<f64>()
+        })
+        .sum::<f64>()
+        .min(1.0)
 }
 
 /// How well the republic is serving the people in it, and how they feel about
@@ -4329,14 +4337,14 @@ pub fn contentment(world: &World) -> Vec<Mutation> {
             } else {
                 f64::from(u8::from(home.heated))
             },
-            health: service_cover(world, home.centre, BuildingKind::Clinic),
-            culture: service_cover(world, home.centre, BuildingKind::CultureClub),
+            health: service_cover(world, home.centre, crate::building::Need::Health),
+            culture: service_cover(world, home.centre, crate::building::Need::Culture),
             // A block with no children is not unhappy about the lack of a
             // school, and a block full of them very much is.
             schooling: if here.pupils == 0 {
                 1.0
             } else {
-                service_cover(world, home.centre, BuildingKind::School)
+                service_cover(world, home.centre, crate::building::Need::Schooling)
             },
             work: if here.working_age == 0 {
                 1.0
@@ -4346,6 +4354,10 @@ pub fn contentment(world: &World) -> Vec<Mutation> {
             // Bins that nobody has emptied, and the air the works upwind is
             // making. Both are "this is not a pleasant place to live", and a
             // resident cannot tell them apart, so they are one number.
+            // Fire, police and the courts. Unlike the others this is **not**
+            // waived when nobody needs it today, because the point of a fire
+            // station is the day you do.
+            safety: service_cover(world, home.centre, crate::building::Need::Safety),
             cleanliness: {
                 let bin = home.storage_cap();
                 let rubbish = if bin.is_positive() {
@@ -9768,6 +9780,40 @@ mod tests {
         home
     }
 
+    /// One building for each thing the people need, built and staffed in reach
+    /// of a town. What it takes to be a place people actually want to move to.
+    ///
+    /// **Separate from `contented_town` on purpose**, and the reason is a bug
+    /// this nearly caused. Fed and warm was enough to attract settlers until
+    /// `Safety` became a contentment component; after that a town with no fire
+    /// station fell below the threshold, nobody arrived, and every migration
+    /// test built on the old fixture passed by having nothing to measure.
+    /// Folding the services into `contented_town` fixed that and broke
+    /// something worse -- tests that assert a republic has *no* school or *no*
+    /// clinic were suddenly given both.
+    ///
+    /// **The cheapest server per need, not the whole roster.** Building all
+    /// thirteen wants about a hundred and forty workers, and housing them put
+    /// the republic over its own capacity -- at which point nobody is offered
+    /// a place and not one settler arrives, which is the same vacuum by a
+    /// different route. Needs are walked off `Need::ALL` rather than listed
+    /// here, so a new one does not hollow these tests out again.
+    fn with_services(world: &mut World, near: Point) {
+        let mut ring = 0.0;
+        for need in crate::building::Need::ALL {
+            let cheapest = crate::building::BUILDINGS
+                .iter()
+                .filter(|d| d.serves.iter().any(|&(what, _)| what == need))
+                .min_by_key(|d| d.workers);
+            let Some(def) = cheapest else { continue };
+            ring += 140.0;
+            let spot = Point::new(near.x + Metres(ring), near.y + Metres(260.0));
+            if let Ok(id) = world.place_built(def.kind, spot) {
+                world.buildings.get_mut(id).expect("just placed").staff = def.workers;
+            }
+        }
+    }
+
     /// The first thing in this simulation that pushes back on the player.
     ///
     /// `provisioned` and `heated` were computed every tick for months with
@@ -9861,7 +9907,24 @@ mod tests {
         let m = contentment(&w);
         apply(&mut w, &m);
         let content = w.buildings.get(home).unwrap().content;
-        assert_eq!(content.health, 1.0, "the clinic is staffed and in reach");
+        // **A clinic is not a hospital**, and the share it supplies says so.
+        // This asserted `1.0` when the Polyclinic was the only health building
+        // in the game, which made "complete healthcare" an artefact of the
+        // roster rather than a decision. A republic that wants its people fully
+        // looked after builds the hospital and the pharmacy as well.
+        let share = BuildingKind::Clinic
+            .def()
+            .serves
+            .iter()
+            .find(|&&(need, _)| need == crate::building::Need::Health)
+            .map(|&(_, share)| share)
+            .expect("a polyclinic serves health");
+        assert!(
+            (content.health - share).abs() < 1e-9,
+            "the clinic is staffed and in reach, so health should be {share}, not {}",
+            content.health
+        );
+        assert!(share < 1.0, "a clinic alone is complete healthcare again");
         assert_ne!(
             content.worst(),
             Some("Health"),
@@ -10027,11 +10090,14 @@ mod tests {
     /// up, which is the click-a-button shape this build refuses.
     #[test]
     fn settlers_arrive_at_a_post_and_have_to_be_fetched() {
+        // Services, or the town is not attractive enough for anybody to come
+        // and the test has nothing to measure. See `with_services`.
         let mut w = bare();
         let home = contented_town(&mut w, at(1_000.0, 1_000.0), 40);
         // Empty housing for them to be brought to, and work so the republic
         // reads as somewhere worth coming.
         contented_town(&mut w, at(1_400.0, 1_000.0), 0);
+        with_services(&mut w, at(1_000.0, 1_000.0));
         place(&mut w, BuildingKind::Sawmill, at(1_150.0, 1_100.0));
         let depot = place(&mut w, BuildingKind::BusDepot, at(1_000.0, 1_300.0));
         w.buildings.get_mut(depot).unwrap().staff = BuildingKind::BusDepot.def().workers;
@@ -10102,6 +10168,7 @@ mod tests {
         let mut w = bare();
         contented_town(&mut w, at(1_000.0, 1_000.0), 40);
         contented_town(&mut w, at(1_400.0, 1_000.0), 0);
+        with_services(&mut w, at(1_000.0, 1_000.0));
         place(&mut w, BuildingKind::Sawmill, at(1_150.0, 1_100.0));
         let m = labour(&mut w);
         apply(&mut w, &m);
@@ -11224,5 +11291,149 @@ mod tests {
                 grade.def().name
             );
         }
+    }
+
+    // ---- The services roster -----------------------------------------------
+
+    /// **Every need has somebody who can meet it.** A component of contentment
+    /// that no building in the table serves is a component the player is
+    /// marked down for and can do nothing about — which is the opposite of the
+    /// goal's first condition, where everything modelled is not only visible
+    /// but controllable wherever it is a decision.
+    #[test]
+    fn every_need_can_be_met_by_something_the_republic_can_build() {
+        for need in crate::building::Need::ALL {
+            let servers: Vec<&'static str> = crate::building::BUILDINGS
+                .iter()
+                .filter(|d| d.serves.iter().any(|&(what, _)| what == need))
+                .map(|d| d.name)
+                .collect();
+            assert!(
+                !servers.is_empty(),
+                "nothing in the republic serves {need:?}, so the people are \
+                 marked down for something they cannot be given"
+            );
+            // And enough of them to reach full cover, or the need is a
+            // permanent deduction wearing a service's clothes.
+            let best: f64 = crate::building::BUILDINGS
+                .iter()
+                .flat_map(|d| d.serves.iter())
+                .filter(|&&(what, _)| what == need)
+                .map(|&(_, share)| share)
+                .sum();
+            assert!(
+                best >= 1.0,
+                "{need:?} tops out at {best:.2} with everything built — \
+                 a republic can never fully meet it"
+            );
+        }
+    }
+
+    /// A share, not a flag. No single building is complete provision of
+    /// anything, and the cover from several adds up.
+    ///
+    /// This is a **deliberate change** to a figure that was an artefact: the
+    /// Polyclinic used to supply complete health cover because it was the only
+    /// health building in the game.
+    #[test]
+    fn services_add_up_and_no_one_building_is_all_of_anything() {
+        for def in crate::building::BUILDINGS {
+            for &(need, share) in def.serves {
+                assert!(
+                    share > 0.0 && share < 1.0,
+                    "{} supplies {share} of {need:?} on its own",
+                    def.name
+                );
+            }
+        }
+
+        let mut w = bare();
+        let home = staff_up(&mut w, at(1_000.0, 1_000.0), 40);
+        let clinic = place(&mut w, BuildingKind::Clinic, at(1_000.0, 1_200.0));
+        w.buildings.get_mut(clinic).unwrap().staff = BuildingKind::Clinic.def().workers;
+        let m = contentment(&w);
+        apply(&mut w, &m);
+        let with_clinic = w.buildings.get(home).unwrap().content.health;
+
+        let pharmacy = place(&mut w, BuildingKind::Pharmacy, at(1_180.0, 1_200.0));
+        w.buildings.get_mut(pharmacy).unwrap().staff = BuildingKind::Pharmacy.def().workers;
+        let m = contentment(&w);
+        apply(&mut w, &m);
+        let with_both = w.buildings.get(home).unwrap().content.health;
+
+        assert!(
+            with_both > with_clinic,
+            "a pharmacy beside a clinic added nothing: {with_clinic} then {with_both}"
+        );
+        assert!(with_both <= 1.0, "cover ran past complete");
+    }
+
+    /// An unstaffed service serves nobody. A hospital with no doctors is a
+    /// building, and the whole reason staffing is a fraction is so that
+    /// questions like this have an answer rather than a yes.
+    #[test]
+    fn a_service_nobody_works_at_covers_nobody() {
+        let mut w = bare();
+        let home = staff_up(&mut w, at(1_000.0, 1_000.0), 40);
+        let station = place(&mut w, BuildingKind::FireStation, at(1_000.0, 1_200.0));
+
+        let m = contentment(&w);
+        apply(&mut w, &m);
+        assert_eq!(
+            w.buildings.get(home).unwrap().content.safety,
+            0.0,
+            "an empty fire station made the estate feel safe"
+        );
+
+        w.buildings.get_mut(station).unwrap().staff = BuildingKind::FireStation.def().workers;
+        let m = contentment(&w);
+        apply(&mut w, &m);
+        assert!(
+            w.buildings.get(home).unwrap().content.safety > 0.0,
+            "a staffed fire station covered nobody"
+        );
+    }
+
+    /// Out of reach is out of mind. A hospital on the far side of the republic
+    /// is not this estate's hospital.
+    #[test]
+    fn a_service_out_of_reach_covers_nobody() {
+        let mut w = bare();
+        let home = staff_up(&mut w, at(600.0, 600.0), 40);
+        let far = at(600.0 + SERVICE_RADIUS.0 + 400.0, 600.0);
+        let hospital = place(&mut w, BuildingKind::Hospital, far);
+        w.buildings.get_mut(hospital).unwrap().staff = BuildingKind::Hospital.def().workers;
+
+        let m = contentment(&w);
+        apply(&mut w, &m);
+        assert_eq!(
+            w.buildings.get(home).unwrap().content.health,
+            0.0,
+            "a hospital {} m away covered the estate",
+            SERVICE_RADIUS.0 + 400.0
+        );
+    }
+
+    /// **Safety is never waived for want of demand**, unlike warmth on a warm
+    /// day or schooling in a block with no children. The point of a fire
+    /// station is the day you need it, not the average day — so a republic
+    /// without one is marked down on the first day and every day after.
+    #[test]
+    fn safety_is_not_waived_the_way_warmth_and_schooling_are() {
+        let mut w = bare();
+        // A block of adults in high summer: nothing is asking for heat and
+        // there are no children to school, so both of those come back full.
+        let home = staff_up(&mut w, at(1_000.0, 1_000.0), 20);
+        let m = contentment(&w);
+        apply(&mut w, &m);
+        let content = w.buildings.get(home).unwrap().content;
+        assert_eq!(
+            content.schooling, 1.0,
+            "a block with no children was marked down for schools"
+        );
+        assert_eq!(
+            content.safety, 0.0,
+            "a republic with no fire station, no militia and no court was not marked down"
+        );
     }
 }

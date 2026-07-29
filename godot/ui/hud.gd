@@ -17,18 +17,23 @@ extends CanvasLayer
 
 const Overlays := preload("res://ui/overlays.gd")
 
-## Rows the stockpile table keeps alive. Thirteen resources, so the whole table
-## is visible and the pool never grows -- but it is a pool rather than a fresh
-## build, because the roster grows with parity and this is where that would hurt.
-const STOCK_ROWS := 16
-
-## Rows the people table keeps alive: five life stages, three education levels,
-## the contentment components, and the headings between them. A pool for the
-## same reason the stockpile table is one, and with slack because the roster of
-## components grows -- adding `Cleanliness` overflowed a table sized exactly to
-## what existed the day it was written, and the symptom was one row silently
-## missing rather than anything looking wrong.
-const PEOPLE_ROWS := 24
+## Both tables are pooled rather than rebuilt, because building a Label costs
+## about 165 times what updating one costs and a panel that rebuilds itself is a
+## visible hitch. What they are NOT any more is a typed length.
+##
+## A literal row count beside a roster is a second copy of that roster, and it
+## is the copy that fails silently: the table simply stops one row short and
+## nothing errors, nothing warns, and no test covers it because none of it is
+## simulation state. It has now happened four times. `Cleanliness` overflowed a
+## table sized to the day it was written; `Safety` overflowed the replacement,
+## which had been given "slack" instead of being derived -- and slack is just a
+## literal that has not been exceeded yet.
+##
+## The pools are therefore sized from the rosters themselves, which means they
+## cannot be built until the rosters arrive. `set_resource_names` and
+## `set_contentment_names` build them, and the shell calls both at startup.
+var _stock_rows := 0
+var _people_rows := 0
 
 @onready var clock_line: Label = $Panel/Margin/Rows/ClockLine
 @onready var weather_line: Label = $Panel/Margin/Rows/WeatherLine
@@ -60,17 +65,19 @@ const STAGE_NAMES := ["Infants", "Pupils", "Students", "Workers", "Retired"]
 const LEARNING_NAMES := ["Unschooled", "Schooled", "Graduates"]
 
 
-func _ready() -> void:
-	_build_stock_rows()
-	_build_people_rows()
-
-
 func set_resource_names(names: PackedStringArray) -> void:
 	_resource_names = names
+	# Headings and totals sit above the resources, hence the slack -- but it is
+	# slack over a *derived* count, not a typed one.
+	_build_stock_rows(names.size() + 3)
 
 
 func set_contentment_names(names: PackedStringArray) -> void:
 	_content_names = names
+	# Three headings, the life stages, the education levels, the components.
+	_build_people_rows(
+		3 + STAGE_NAMES.size() + LEARNING_NAMES.size() + names.size()
+	)
 
 
 func set_utility_names(names: PackedStringArray) -> void:
@@ -82,8 +89,14 @@ func set_way_names(names: PackedStringArray) -> void:
 
 
 ## Pooled rows, built once. See the virtualisation note above.
-func _build_stock_rows() -> void:
-	for i in STOCK_ROWS * 2:
+func _build_stock_rows(rows: int) -> void:
+	if rows <= _stock_rows:
+		return
+	for label in _stock_labels:
+		label.queue_free()
+	_stock_labels.clear()
+	_stock_rows = rows
+	for i in rows * 2:
 		var label := Label.new()
 		label.add_theme_font_size_override("font_size", 13)
 		if i % 2 == 1:
@@ -93,8 +106,14 @@ func _build_stock_rows() -> void:
 		_stock_labels.append(label)
 
 
-func _build_people_rows() -> void:
-	for i in PEOPLE_ROWS * 2:
+func _build_people_rows(rows: int) -> void:
+	if rows <= _people_rows:
+		return
+	for label in _people_labels:
+		label.queue_free()
+	_people_labels.clear()
+	_people_rows = rows
+	for i in rows * 2:
 		var label := Label.new()
 		label.add_theme_font_size_override("font_size", 13)
 		if i % 2 == 1:
@@ -266,7 +285,7 @@ func _import_policy_text(republic: Node) -> String:
 func _refresh_stock(republic: Node) -> void:
 	var held: PackedFloat32Array = republic.stockpiles()
 	stock_title.text = "STOCKPILES"
-	for row in STOCK_ROWS:
+	for row in _stock_rows:
 		var name_label := _stock_labels[row * 2]
 		var value_label := _stock_labels[row * 2 + 1]
 		if row < held.size() and row < _resource_names.size():
@@ -307,7 +326,7 @@ func _refresh_people(republic: Node) -> void:
 		for i in parts:
 			rows.append([_content_names[i], "%d%%" % int(round(content[i] * 100.0))])
 
-	for row in PEOPLE_ROWS:
+	for row in _people_rows:
 		var name_label := _people_labels[row * 2]
 		var value_label := _people_labels[row * 2 + 1]
 		if row < rows.size():
