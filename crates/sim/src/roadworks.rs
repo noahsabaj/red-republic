@@ -355,7 +355,19 @@ impl RoadWorks {
         grade: Grade,
         ordered: u64,
     ) -> Result<RoadSiteId, RoadError> {
-        if from.distance_to(to).0 < MIN_ROAD.0 {
+        // **A bridge is worth surveying at any length, and a road is not.**
+        // The minimum exists because a ten-metre road is a formality with no
+        // segment in it; a ten-metre bridge is a real structure and the only
+        // answer to a stream that width. Holding a bridge to the road minimum
+        // made the mechanic unusable in exactly the case it was built for —
+        // a river narrower than fifty metres could not be spanned at all, so
+        // the player's choice was a fifty-metre bridge over a ten-metre stream
+        // or no crossing. Found the day the map generator started making
+        // rivers, which is the day anything first tried to cross one.
+        if !grade.def().spans_water() && from.distance_to(to).0 < MIN_ROAD.0 {
+            return Err(RoadError::TooShort);
+        }
+        if from.distance_to(to).0 <= 0.0 {
             return Err(RoadError::TooShort);
         }
         let id = RoadSiteId(self.next_id);

@@ -8051,10 +8051,28 @@ mod tests {
         // send people, so seats get spent and a bus depot's fuel gets burnt —
         // without which `labour`'s declared Consume looks like a superset when
         // it is not.
-        let far = Point::new(centre.x + Metres(3_200.0), centre.y);
-        world
-            .order_road(centre, far, crate::roadworks::Grade::Dirt)
-            .expect("the town centre and the far end are both buildable");
+        //
+        // The bearing is *searched* rather than picked, because the map now has
+        // rivers in it and a dirt track may not cross one. A fixture that
+        // always drove due east would fail whenever a channel happened to run
+        // north-south through the republic — which is the mechanic working, and
+        // no reason for this test to stop being about write sets.
+        let far = [
+            (3_200.0, 0.0),
+            (0.0, 3_200.0),
+            (-3_200.0, 0.0),
+            (0.0, -3_200.0),
+            (2_260.0, 2_260.0),
+            (-2_260.0, -2_260.0),
+        ]
+        .into_iter()
+        .map(|(dx, dy)| Point::new(centre.x + Metres(dx), centre.y + Metres(dy)))
+        .find(|&far| {
+            world
+                .order_road(centre, far, crate::roadworks::Grade::Dirt)
+                .is_ok()
+        })
+        .expect("some direction out of town takes a dirt track");
         if let Some(site) =
             crate::scenario::find_site(&world, BuildingKind::Woodcutter, far, Metres(500.0))
         {
