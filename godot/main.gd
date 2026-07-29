@@ -30,6 +30,7 @@ const CLIMATE := 0  ## indexes ClimateId::ALL: plains, taiga, steppe, maritime
 @onready var terrain_node: MeshInstance3D = $Terrain
 @onready var buildings_node: MultiMeshInstance3D = $Buildings
 @onready var vehicles_node: MultiMeshInstance3D = $Vehicles
+@onready var newcomers_node: MultiMeshInstance3D = $Newcomers
 @onready var roads_node: MeshInstance3D = $Roads
 @onready var hud: CanvasLayer = $HUD
 @onready var survey_node: MeshInstance3D = $Survey
@@ -71,6 +72,7 @@ func _ready() -> void:
 		"tracks": _overlay = Overlays.Mode.WEAR
 		"survey": _overlay = Overlays.Mode.SURVEY
 	hud.set_resource_names(republic.resource_names())
+	hud.set_contentment_names(republic.contentment_names())
 	hud.set_hint(
 		"0-5 speed  ·  space pause  ·  F none  G going  T tracks  R survey  ·  "
 		+ "WASD pan  ·  right-drag orbit  ·  wheel zoom"
@@ -96,6 +98,7 @@ func _process(_delta: float) -> void:
 	_refresh_buildings()
 	_refresh_roads()
 	_refresh_vehicles()
+	_refresh_newcomers()
 	_refresh_overlay()
 	_refresh_status()
 	_maybe_bench(_delta)
@@ -310,6 +313,30 @@ func _build_instance_meshes() -> void:
 	vm.mesh = van
 	vehicles_node.multimesh = vm
 
+	# Settlers standing at a frontier post. A marker rather than figures: what
+	# matters is that they are somewhere on the map that a coach has to reach,
+	# and a republic with no road out to that post can see the problem it has.
+	var marker := CylinderMesh.new()
+	# A marker post rather than a pile of people: tall and thin, so it reads
+	# as a vertical mark at map zoom where a group-sized object would be a few
+	# pixels indistinguishable from a shed. Verified by looking -- at physical
+	# size it vanished into the terrain at the zoom a player actually watches
+	# their whole republic from.
+	marker.top_radius = 5.0
+	marker.bottom_radius = 14.0
+	marker.height = 70.0
+	var marker_mat := StandardMaterial3D.new()
+	marker_mat.albedo_color = Color(0.86, 0.62, 0.34)
+	marker_mat.emission_enabled = true
+	marker_mat.emission = Color(0.5, 0.28, 0.1)
+	marker_mat.emission_energy_multiplier = 0.4
+	marker.material = marker_mat
+
+	var nm := MultiMesh.new()
+	nm.transform_format = MultiMesh.TRANSFORM_3D
+	nm.mesh = marker
+	newcomers_node.multimesh = nm
+
 
 func _refresh_buildings() -> void:
 	# Event-driven rather than per-frame: a kind's transform buffer only changes
@@ -338,6 +365,32 @@ func _refresh_vehicles() -> void:
 	for i in count:
 		var at := Vector3(flat[i * 3], flat[i * 3 + 1] + 1.5, flat[i * 3 + 2])
 		mm.set_instance_transform(i, Transform3D(Basis.IDENTITY, at))
+
+
+## Settlers standing at the frontier, waiting for a coach.
+##
+## They have to be on the map. An immigrant who appeared inside an apartment
+## block would be exactly the click-a-button-and-it-happens shape this build
+## refuses -- and a group standing at a post with no road to it is a decision
+## the player can act on, but only if they can see it.
+##
+## The marker grows with the size of the group, so a crowd reads as a crowd.
+func _refresh_newcomers() -> void:
+	var flat: PackedFloat32Array = republic.newcomers()
+	var stride := 4
+	var count := flat.size() / stride
+	var mm := newcomers_node.multimesh
+	if mm.instance_count != count:
+		mm.instance_count = count
+	for i in count:
+		var x := flat[i * stride]
+		var z := flat[i * stride + 1]
+		var heads := flat[i * stride + 2]
+		var scale := clampf(0.6 + heads / 40.0, 0.6, 2.0)
+		var at := Vector3(x, republic.ground_height(x, z) + 35.0 * scale, z)
+		mm.set_instance_transform(
+			i, Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * scale), at)
+		)
 
 
 ## The frontier, drawn once: a coloured band around the whole perimeter with a

@@ -266,3 +266,122 @@ pub fn bloc_index(bloc: red_republic_sim::Market) -> usize {
         red_republic_sim::Market::West => 1,
     }
 }
+
+/// Who the republic is made of: life stages then education levels.
+///
+/// `[infants, pupils, students, workers, retired, unschooled, schooled,
+/// graduates]`, in the order `LifeStage::ALL` and `Education::ALL` declare.
+///
+/// This is the whole of the demographic model made visible in one read. A
+/// republic whose pupils outnumber its workers is a republic about to be short
+/// of hands, and a republic with no graduates is one that cannot open a
+/// refinery — neither of which is legible from a population count.
+pub fn demographics(world: &World) -> PackedInt32Array {
+    let mut out = PackedInt32Array::new();
+    for count in world.population().by_stage() {
+        out.push(count as i32);
+    }
+    for count in world.population().by_education() {
+        out.push(count as i32);
+    }
+    out
+}
+
+/// How the republic is treating its people, component by component.
+///
+/// `[provisions, warmth, health, culture, schooling, work, overall]`, each
+/// `0.0..=1.0`, averaged over homes and **weighted by how many people live in
+/// them** — one wretched outpost does not cancel a working city, and an equal
+/// average over blocks would say it did.
+///
+/// The breakdown rather than the score, because "your people are at 61%" is not
+/// something a player can act on and "fed, warm, no doctor, no work" is.
+pub fn contentment(world: &World) -> PackedFloat32Array {
+    let census = world.population().census_by_home();
+    let mut totals = [0.0f64; 6];
+    let mut overall = 0.0;
+    let mut heads = 0u32;
+    for building in world.buildings().all() {
+        if !building.is_built() || building.def().residents == 0 {
+            continue;
+        }
+        let here = census.get(&building.id).copied().unwrap_or_default();
+        if here.residents == 0 {
+            continue;
+        }
+        let weight = f64::from(here.residents);
+        for (total, part) in totals.iter_mut().zip(building.content.parts()) {
+            *total += part * weight;
+        }
+        overall += building.content.overall() * weight;
+        heads += here.residents;
+    }
+    let mut out = PackedFloat32Array::new();
+    if heads == 0 {
+        for _ in 0..7 {
+            out.push(0.0);
+        }
+        return out;
+    }
+    for total in totals {
+        out.push((total / f64::from(heads)) as f32);
+    }
+    out.push((overall / f64::from(heads)) as f32);
+    out
+}
+
+/// The names of the contentment components, in the same order.
+pub fn contentment_names() -> PackedStringArray {
+    let mut out = PackedStringArray::new();
+    for name in red_republic_sim::Contentment::NAMES {
+        out.push(name);
+    }
+    out
+}
+
+/// People coming and going: `[waiting_heads, groups, settled, left, gave_up]`.
+///
+/// The three tallies are cumulative and they are the only way a slow bleed is
+/// visible at all. A republic losing forty people a year looks exactly like a
+/// republic standing still unless somebody counts.
+pub fn migration_totals(world: &World) -> PackedInt32Array {
+    let migration = world.migration();
+    let mut out = PackedInt32Array::new();
+    out.push(migration.waiting_heads() as i32);
+    out.push(migration.all().len() as i32);
+    out.push(migration.settled() as i32);
+    out.push(migration.left() as i32);
+    out.push(migration.gave_up() as i32);
+    out
+}
+
+/// Floats per group in [`newcomers`].
+pub const NEWCOMER_STRIDE: usize = 4;
+
+/// Settlers standing at the frontier: `[x, y, heads, days_waited]`.
+///
+/// They have to be **on the map**. An immigrant who materialised in an
+/// apartment block would be the click-a-button-and-it-happens shape this build
+/// exists to refuse — and a group standing at a post that the republic has
+/// built no road to is a decision the player can see and act on, but only if it
+/// is drawn.
+pub fn newcomers(world: &World) -> PackedFloat32Array {
+    let today = world.clock().day_index();
+    let mut out = PackedFloat32Array::new();
+    for group in world.migration().all() {
+        out.push(group.at.x.0 as f32);
+        out.push(group.at.y.0 as f32);
+        out.push(group.heads as f32);
+        out.push(group.waited(today) as f32);
+    }
+    out
+}
+
+/// Mean health and mean loyalty across the republic, `[health, loyalty]`.
+pub fn wellbeing(world: &World) -> PackedFloat32Array {
+    let (health, loyalty) = world.population().mean_wellbeing();
+    let mut out = PackedFloat32Array::new();
+    out.push(health as f32);
+    out.push(loyalty as f32);
+    out
+}

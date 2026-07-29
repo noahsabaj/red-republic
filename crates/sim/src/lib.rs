@@ -35,6 +35,7 @@ pub mod ground;
 pub mod journey;
 pub mod loan;
 pub mod mapgen;
+pub mod migration;
 pub mod policy;
 pub mod resource;
 pub mod rng;
@@ -47,10 +48,13 @@ pub mod time;
 pub mod trade;
 pub mod transport;
 pub mod units;
+pub mod wellbeing;
 pub mod world;
 
-pub use building::{Building, BuildingId, BuildingKind, Buildings, PlacementError};
-pub use citizen::{CitizenId, CitizenRecord, Population};
+pub use building::{Building, BuildingId, BuildingKind, Buildings, PlacementError, Teaching};
+pub use citizen::{
+    CitizenId, CitizenRecord, Education, HomeCensus, Learning, LifeStage, Population, Wellbeing,
+};
 pub use climate::{Climate, ClimateId};
 pub use command::{Command, Done, Issued, Journal, Outcome, Refused};
 pub use contract::{Contract, ContractId, ContractState, Contracts};
@@ -61,6 +65,7 @@ pub use geology::{Deposit, DepositId, Geology, Layer, Mineral, SurveyReading};
 pub use ground::Ground;
 pub use journey::Journey;
 pub use loan::{Loan, LoanError, Loans, Tier};
+pub use migration::{Group, GroupId, Migration};
 pub use policy::BuildPolicy;
 pub use resource::{Resource, Stock};
 pub use rng::{Rng, RngState};
@@ -75,6 +80,7 @@ pub use trade::{
 };
 pub use transport::{Commute, Mode};
 pub use units::{Metres, Point, Seconds, Speed, Tonnes};
+pub use wellbeing::Contentment;
 pub use world::{SAVE_VERSION, Save, SaveError, World, WorldSpec};
 
 #[cfg(test)]

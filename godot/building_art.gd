@@ -89,6 +89,11 @@ static func table() -> Dictionary:
 		"State Store": Art.new(2, 4.2, F, 0, 0, false, Tone.RENDER),
 		"Polyclinic": Art.new(3, 3.4, F, 0, 0, false, Tone.RENDER),
 		"Culture Club": Art.new(2, 5.5, F, 0, 0, false, Tone.RENDER),
+		# Education. Three plain floors of classrooms for the school; the
+		# institute is taller and has the only civic gantry, which is what makes
+		# it read as somewhere technical rather than as a bigger school.
+		"Ten-Year School": Art.new(3, 3.6, F, 0, 0, false, Tone.RENDER),
+		"Polytechnic Institute": Art.new(4, 3.8, F, 0, 0, true, Tone.CONCRETE),
 
 		# Storage and logistics. Long, low, and mostly roof.
 		"Warehouse": Art.new(1, 11.0, F, 0, 0, false, Tone.CONCRETE),

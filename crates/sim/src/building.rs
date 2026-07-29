@@ -58,6 +58,8 @@ pub enum BuildingKind {
     Store,
     Clinic,
     CultureClub,
+    School,
+    University,
     Warehouse,
     Depot,
     ConstructionOffice,
@@ -141,6 +143,30 @@ pub struct BuildingDef {
     /// you forget lands silently in a fallback. See
     /// [`crate::systems::growing_conditions`].
     pub farms: bool,
+    /// The least somebody must have been taught to hold a job here.
+    ///
+    /// Authored on every row, including the ones with no jobs at all, for the
+    /// reason every other field is: a defaulted requirement is a decision
+    /// nobody made. It is what makes a school worth building — a republic that
+    /// never builds one raises a generation that cannot run its own mines.
+    pub schooling: crate::citizen::Education,
+    /// What this building teaches, and to whom.
+    ///
+    /// `None` on everything that is not a place of education. Authored beside
+    /// the rest rather than matched on by kind inside the schooling pass, for
+    /// the usual reason.
+    pub teaches: Option<Teaching>,
+}
+
+/// What a place of education does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Teaching {
+    /// Children of school age, up to [`crate::citizen::Education::Schooled`].
+    School,
+    /// Adults who finished school, up to
+    /// [`crate::citizen::Education::Graduate`] — and while they attend, they
+    /// are not available for work.
+    University,
 }
 
 macro_rules! def {
@@ -154,7 +180,8 @@ macro_rules! def {
         cost: [$(($cr:ident, $cq:expr)),* $(,)?], labour: $labour:expr,
         sells: [$($sr:ident),* $(,)?],
         taps: $taps:expr, residents: $residents:expr, storage: $storage:expr,
-        wear: $wear:expr, farms: $farms:expr $(,)?
+        wear: $wear:expr, farms: $farms:expr,
+        needs: $schooling:ident, teaches: $teaches:expr $(,)?
     ) => {
         BuildingDef {
             kind: BuildingKind::$kind,
@@ -178,6 +205,8 @@ macro_rules! def {
             storage: $storage,
             wear: $wear,
             farms: $farms,
+            schooling: crate::citizen::Education::$schooling,
+            teaches: $teaches,
         }
     };
 }
@@ -188,95 +217,136 @@ pub const BUILDINGS: &[BuildingDef] = &[
     def!(House, "Small House", 12.0, 10.0, workers: 0, draw: 0.0, out_mw: 0.0, heat: 0.5, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [],
         cost: [(Planks, 6.0), (Bricks, 4.0)], labour: 60.0, sells: [], taps: None, residents: 6, storage: 2.0,
-            wear: 0.0, farms: false),
+            wear: 0.0, farms: false,
+            needs: Unschooled, teaches: None),
     def!(Apartment, "Apartment Block", 62.0, 14.0, workers: 0, draw: 3.0, out_mw: 0.0, heat: 2.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [],
         cost: [(Planks, 10.0), (Bricks, 30.0), (Steel, 6.0), (Gravel, 8.0)], labour: 300.0, sells: [], taps: None, residents: 48, storage: 8.0,
-            wear: 0.0, farms: false),
+            wear: 0.0, farms: false,
+            needs: Unschooled, teaches: None),
     def!(Woodcutter, "Woodcutter Post", 20.0, 16.0, workers: 6, draw: 0.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [(Wood, 4.0)],
         cost: [(Planks, 4.0)], labour: 50.0, sells: [], taps: None, residents: 0, storage: 30.0,
-            wear: 0.01, farms: false),
+            wear: 0.01, farms: false,
+            needs: Unschooled, teaches: None),
     def!(Sawmill, "Sawmill", 34.0, 22.0, workers: 6, draw: 0.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [(Wood, 2.0)], out: [(Planks, 3.0)],
         cost: [(Bricks, 10.0), (Planks, 6.0), (Steel, 2.0)], labour: 120.0, sells: [], taps: None, residents: 0, storage: 40.0,
-            wear: 0.015, farms: false),
+            wear: 0.015, farms: false,
+            needs: Unschooled, teaches: None),
     def!(GravelQuarry, "Gravel Quarry", 60.0, 60.0, workers: 8, draw: 0.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [(Gravel, 5.0)],
         cost: [(Planks, 6.0), (Bricks, 4.0)], labour: 80.0, sells: [], taps: Some(Mineral::Gravel), residents: 0, storage: 60.0,
-            wear: 0.02, farms: false),
+            wear: 0.02, farms: false,
+            needs: Unschooled, teaches: None),
     def!(Brickworks, "Brickworks", 40.0, 28.0, workers: 10, draw: 0.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [(Gravel, 3.0)], out: [(Bricks, 4.0)],
         cost: [(Bricks, 12.0), (Steel, 4.0), (Planks, 4.0)], labour: 130.0, sells: [], taps: None, residents: 0, storage: 50.0,
-            wear: 0.015, farms: false),
+            wear: 0.015, farms: false,
+            needs: Unschooled, teaches: None),
     def!(CoalMine, "Coal Mine", 55.0, 45.0, workers: 14, draw: 6.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [(Coal, 6.0)],
         cost: [(Bricks, 15.0), (Steel, 6.0), (Planks, 4.0), (Machinery, 2.0)], labour: 200.0, sells: [], taps: Some(Mineral::Coal), residents: 0, storage: 60.0,
-            wear: 0.03, farms: false),
+            wear: 0.03, farms: false,
+            needs: Schooled, teaches: None),
     def!(IronMine, "Iron Ore Mine", 55.0, 45.0, workers: 14, draw: 6.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [(IronOre, 5.0)],
         cost: [(Bricks, 15.0), (Steel, 6.0), (Planks, 4.0), (Machinery, 2.0)], labour: 200.0, sells: [], taps: Some(Mineral::IronOre), residents: 0, storage: 60.0,
-            wear: 0.03, farms: false),
+            wear: 0.03, farms: false,
+            needs: Schooled, teaches: None),
     def!(SteelMill, "Steel Mill", 180.0, 140.0, workers: 20, draw: 40.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [(IronOre, 2.0), (Coal, 1.0)], out: [(Steel, 1.5)],
         cost: [(Bricks, 30.0), (Steel, 15.0), (Planks, 8.0), (Gravel, 16.0), (Machinery, 8.0)], labour: 220.0, sells: [], taps: None, residents: 0, storage: 40.0,
-            wear: 0.03, farms: false),
+            wear: 0.03, farms: false,
+            needs: Schooled, teaches: None),
     def!(OilPump, "Oil Pump", 24.0, 24.0, workers: 10, draw: 1.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [(Oil, 4.0)],
         cost: [(Bricks, 12.0), (Steel, 10.0), (Machinery, 3.0)], labour: 220.0, sells: [], taps: Some(Mineral::Oil), residents: 0, storage: 40.0,
-            wear: 0.025, farms: false),
+            wear: 0.025, farms: false,
+            needs: Schooled, teaches: None),
     def!(Refinery, "Oil Refinery", 160.0, 120.0, workers: 25, draw: 30.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [(Oil, 3.0)], out: [(Fuel, 2.0)],
         cost: [(Bricks, 30.0), (Steel, 18.0), (Planks, 6.0), (Gravel, 16.0), (Machinery, 6.0)], labour: 420.0, sells: [], taps: None, residents: 0, storage: 60.0,
-            wear: 0.03, farms: false),
+            wear: 0.03, farms: false,
+            needs: Graduate, teaches: None),
     def!(PowerPlant, "Coal Power Plant", 150.0, 110.0, workers: 15, draw: 0.0, out_mw: 60.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [(Coal, 4.0)], out: [],
         cost: [(Bricks, 25.0), (Steel, 12.0), (Planks, 6.0), (Gravel, 12.0), (Machinery, 5.0)], labour: 200.0, sells: [], taps: None, residents: 0, storage: 80.0,
-            wear: 0.025, farms: false),
+            wear: 0.025, farms: false,
+            needs: Schooled, teaches: None),
     def!(OilPowerPlant, "Oil Power Plant", 140.0, 100.0, workers: 16, draw: 0.0, out_mw: 70.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [(Oil, 4.0)], out: [],
         cost: [(Bricks, 30.0), (Steel, 18.0), (Planks, 6.0), (Gravel, 16.0), (Machinery, 8.0)], labour: 400.0, sells: [], taps: None, residents: 0, storage: 80.0,
-            wear: 0.025, farms: false),
+            wear: 0.025, farms: false,
+            needs: Schooled, teaches: None),
     def!(HeatingPlant, "Heating Plant", 45.0, 35.0, workers: 8, draw: 1.0, out_mw: 0.0, heat: 0.0, heat_out: 8.0, seats: 0, keeps: [],
         in: [(Coal, 1.0)], out: [],
         cost: [(Bricks, 18.0), (Steel, 8.0), (Planks, 4.0), (Machinery, 1.0)], labour: 180.0, sells: [], taps: None, residents: 0, storage: 40.0,
-            wear: 0.015, farms: false),
+            wear: 0.015, farms: false,
+            needs: Schooled, teaches: None),
     def!(Farm, "Collective Farm", 240.0, 240.0, workers: 10, draw: 0.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [(Crops, 6.0)],
         cost: [(Planks, 12.0), (Bricks, 8.0)], labour: 150.0, sells: [], taps: None, residents: 0, storage: 60.0,
-            wear: 0.02, farms: true),
+            wear: 0.02, farms: true,
+            needs: Unschooled, teaches: None),
     def!(FoodFactory, "Food Factory", 50.0, 35.0, workers: 12, draw: 4.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [(Crops, 2.5)], out: [(Food, 2.5)],
         cost: [(Bricks, 18.0), (Steel, 6.0), (Planks, 6.0), (Machinery, 1.0)], labour: 200.0, sells: [], taps: None, residents: 0, storage: 50.0,
-            wear: 0.015, farms: false),
+            wear: 0.015, farms: false,
+            needs: Schooled, teaches: None),
     def!(TextileMill, "Textile Mill", 55.0, 35.0, workers: 12, draw: 4.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [(Crops, 2.0)], out: [(Clothes, 1.2)],
         cost: [(Bricks, 16.0), (Steel, 5.0), (Planks, 6.0), (Machinery, 1.0)], labour: 180.0, sells: [], taps: None, residents: 0, storage: 50.0,
-            wear: 0.015, farms: false),
+            wear: 0.015, farms: false,
+            needs: Schooled, teaches: None),
     def!(MachineWorks, "Machine Works", 150.0, 110.0, workers: 22, draw: 20.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [(Steel, 3.0)], out: [(Machinery, 1.0)],
         cost: [(Bricks, 35.0), (Steel, 20.0), (Planks, 10.0), (Gravel, 16.0), (Machinery, 6.0)], labour: 250.0, sells: [], taps: None, residents: 0, storage: 40.0,
-            wear: 0.02, farms: false),
+            wear: 0.02, farms: false,
+            needs: Graduate, teaches: None),
     def!(Store, "State Store", 30.0, 20.0, workers: 3, draw: 1.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [],
         cost: [(Planks, 6.0), (Bricks, 8.0)], labour: 80.0, sells: [Food, Clothes], taps: None, residents: 0, storage: 30.0,
-            wear: 0.0, farms: false),
+            wear: 0.0, farms: false,
+            needs: Unschooled, teaches: None),
     def!(Clinic, "Polyclinic", 45.0, 30.0, workers: 6, draw: 2.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [],
         cost: [(Bricks, 14.0), (Steel, 4.0), (Planks, 6.0)], labour: 150.0, sells: [], taps: None, residents: 0, storage: 10.0,
-            wear: 0.0, farms: false),
+            wear: 0.0, farms: false,
+            needs: Schooled, teaches: None),
     def!(CultureClub, "Culture Club", 40.0, 30.0, workers: 4, draw: 1.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [],
         cost: [(Planks, 8.0), (Bricks, 10.0)], labour: 100.0, sells: [], taps: None, residents: 0, storage: 10.0,
-            wear: 0.0, farms: false),
+            wear: 0.0, farms: false,
+            needs: Schooled, teaches: None),
+    // Where the next generation gets what Moscow sent the first one out with.
+    // Its own staff need only to be schooled, which is what stops the chain
+    // being circular: a republic can always open a school with the people it
+    // was founded with, and everything else follows from that.
+    def!(School, "Ten-Year School", 55.0, 35.0, workers: 10, draw: 2.0, out_mw: 0.0, heat: 1.5, heat_out: 0.0, seats: 0, keeps: [],
+        in: [], out: [],
+        cost: [(Bricks, 16.0), (Planks, 10.0), (Steel, 4.0)], labour: 160.0, sells: [], taps: None, residents: 0, storage: 10.0,
+            wear: 0.0, farms: false,
+            needs: Schooled, teaches: Some(Teaching::School)),
+    // And what turns a schooled worker into somebody who can run a refinery.
+    // The cost is not only the building: a student is a working-age adult who
+    // is not working, so a republic putting people through this is three years
+    // short of their hands to be better off afterwards.
+    def!(University, "Polytechnic Institute", 90.0, 60.0, workers: 14, draw: 5.0, out_mw: 0.0, heat: 3.0, heat_out: 0.0, seats: 0, keeps: [],
+        in: [], out: [],
+        cost: [(Bricks, 30.0), (Planks, 14.0), (Steel, 10.0), (Gravel, 12.0)], labour: 320.0, sells: [], taps: None, residents: 0, storage: 20.0,
+            wear: 0.0, farms: false,
+            needs: Schooled, teaches: Some(Teaching::University)),
     def!(Warehouse, "Warehouse", 60.0, 30.0, workers: 2, draw: 1.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [],
         cost: [(Planks, 8.0), (Bricks, 10.0)], labour: 90.0, sells: [], taps: None, residents: 0, storage: 200.0,
-            wear: 0.0, farms: false),
+            wear: 0.0, farms: false,
+            needs: Unschooled, teaches: None),
     def!(Depot, "Council Depot", 80.0, 60.0, workers: 4, draw: 1.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [],
         cost: [(Bricks, 15.0), (Planks, 10.0)], labour: 120.0, sells: [], taps: None, residents: 0, storage: 300.0,
-            wear: 0.0, farms: false),
+            wear: 0.0, farms: false,
+            needs: Unschooled, teaches: None),
     // The republic's builders, and the machinery they build with. Nothing goes
     // up without one: an office employs the crews, owns the plant, and runs the
     // bus that puts a gang on a site.
@@ -306,7 +376,8 @@ pub const BUILDINGS: &[BuildingDef] = &[
         keeps: [(CrewBus, 2)],
         in: [(Machinery, 0.3), (Fuel, 0.12)], out: [],
         cost: [(Bricks, 10.0), (Planks, 8.0), (Machinery, 1.0)], labour: 110.0, sells: [], taps: None, residents: 0, storage: 40.0,
-            wear: 0.0, farms: false),
+            wear: 0.0, farms: false,
+            needs: Schooled, teaches: None),
     // The republic's haulage. Its establishment is where the fleet comes from —
     // wanting more lorries means another depot and sixteen more people for it,
     // never a number in a settings file. Its fuel is drawn by the vehicles
@@ -316,22 +387,32 @@ pub const BUILDINGS: &[BuildingDef] = &[
         keeps: [(Lorry, 4), (HeavyLorry, 2), (RecoveryVehicle, 1)],
         in: [(Fuel, 0.2)], out: [],
         cost: [(Bricks, 18.0), (Planks, 12.0), (Steel, 6.0), (Gravel, 8.0)], labour: 150.0, sells: [], taps: None, residents: 0, storage: 60.0,
-            wear: 0.02, farms: false),
+            wear: 0.02, farms: false,
+            needs: Schooled, teaches: None),
     def!(GasStation, "Gas Station", 30.0, 20.0, workers: 4, draw: 1.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [],
         cost: [(Bricks, 8.0), (Steel, 6.0), (Planks, 4.0)], labour: 90.0, sells: [], taps: None, residents: 0, storage: 40.0,
-            wear: 0.005, farms: false),
+            wear: 0.005, farms: false,
+            needs: Unschooled, teaches: None),
     // The one building that changes what "within reach" means. Its fuel is
     // burnt by the labour pass in proportion to seats actually filled, not by
     // production — see `crate::transport`.
-    def!(BusDepot, "Bus Depot", 70.0, 50.0, workers: 12, draw: 1.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 400, keeps: [],
+    //
+    // It also keeps the republic's coaches, which is what fetches settlers in
+    // from a frontier post. That is the same building doing two things people-
+    // shaped rather than a second depot: a republic that has decided to move
+    // people around has decided it once.
+    def!(BusDepot, "Bus Depot", 70.0, 50.0, workers: 12, draw: 1.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 400,
+        keeps: [(Coach, 2)],
         in: [(Fuel, 0.8)], out: [],
         cost: [(Bricks, 16.0), (Planks, 10.0), (Steel, 5.0), (Gravel, 8.0)], labour: 140.0, sells: [], taps: None, residents: 0, storage: 40.0,
-            wear: 0.02, farms: false),
+            wear: 0.02, farms: false,
+            needs: Schooled, teaches: None),
     def!(Customs, "Customs House", 90.0, 60.0, workers: 8, draw: 2.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [],
         cost: [(Bricks, 20.0), (Steel, 6.0), (Planks, 8.0), (Gravel, 10.0)], labour: 200.0, sells: [], taps: None, residents: 0, storage: 200.0,
-            wear: 0.0, farms: false),
+            wear: 0.0, farms: false,
+            needs: Schooled, teaches: None),
 ];
 
 impl BuildingDef {
@@ -386,6 +467,14 @@ pub struct Building {
     /// households system, never authored. Meaningless on anything that is not
     /// housing.
     pub provisioned: f64,
+    /// How well the republic is serving the people who live here, component by
+    /// component. Set by the contentment system, never authored. Meaningless on
+    /// anything that is not housing.
+    ///
+    /// Stored as the breakdown rather than the score, because "your people are
+    /// at 61%" is not something a player can act on and "fed, warm, no doctor,
+    /// no work" is.
+    pub content: crate::wellbeing::Contentment,
     /// Builder-days worked on this site so far. A building is a SITE until
     /// this reaches its def's `labour`, and a site produces nothing, employs
     /// nobody, and houses nobody.
@@ -636,6 +725,7 @@ impl Buildings {
             powered: false,
             heated: true,
             provisioned: 0.0,
+            content: crate::wellbeing::Contentment::NOTHING,
             work_done: 0.0,
             tapped: None,
         };
@@ -674,6 +764,7 @@ impl Buildings {
             powered: false,
             heated: true,
             provisioned: 0.0,
+            content: crate::wellbeing::Contentment::NOTHING,
             work_done: 0.0,
             tapped,
         });

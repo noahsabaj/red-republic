@@ -26,13 +26,14 @@
 //! fractional tonne is a real quantity rather than a rounding artefact.
 
 use crate::building::{BuildingId, BuildingKind};
-use crate::citizen::assign_labour;
+use crate::citizen::{CitizenId, assign_labour};
 use crate::climate;
 use crate::contract::{self, Contract, ContractId, ContractState};
 use crate::crews::PartyId;
 use crate::fleet::{Destination, Doing, Job, Role, VehicleId, VehicleKind, VehicleState, crewed};
 use crate::geology::DepositId;
 use crate::journey::{self, Journey};
+use crate::migration::GroupId;
 use crate::resource::Resource;
 use crate::resource::Stock;
 use crate::roadworks::{self, RoadSiteId};
@@ -301,6 +302,74 @@ pub enum Mutation {
     /// A penalty for undelivered goods. Separate from [`Mutation::Export`]
     /// because no goods move: this is money leaving and nothing coming back.
     Fine { market: Market, amount: f64 },
+    /// How well a home's people are being served, component by component.
+    ///
+    /// The counterpart of [`Mutation::Provision`], one level up: provisioning
+    /// is what came off the shelves, and this is what the whole republic adds
+    /// up to for the people living here.
+    Content {
+        building: BuildingId,
+        content: crate::wellbeing::Contentment,
+    },
+    /// The day's health and loyalty, for everybody.
+    ///
+    /// **One kind carrying the whole population**, deliberately. This is a
+    /// daily census rather than an event: everyone's health and loyalty move
+    /// every day, and emitting four thousand separate mutations to say so
+    /// would be four thousand allocations to express one pass.
+    Morale {
+        updates: Vec<(CitizenId, crate::citizen::Wellbeing)>,
+    },
+    /// A day of education: who sat in a classroom, and who is enrolled at a
+    /// university today.
+    ///
+    /// A census for the same reason [`Mutation::Morale`] is, and coarse for a
+    /// second one: enrolment has to be settable *and clearable* in one pass,
+    /// because a university that loses its staff stops having students the same
+    /// day. A mutation that could only enrol would leave students permanently
+    /// out of the workforce of a republic that no longer teaches them.
+    Schooling {
+        attended: Vec<CitizenId>,
+        enrolled: Vec<CitizenId>,
+    },
+    /// Birthdays. A year older, for everyone whose day it is.
+    Ageing { citizens: Vec<CitizenId> },
+    /// Who died.
+    Death { citizens: Vec<CitizenId> },
+    /// Who was born, and into which home.
+    Birth { homes: Vec<BuildingId> },
+    /// Who packed up and left the republic.
+    ///
+    /// Deliberately not a journey. Somebody who has decided to go does not need
+    /// the republic's transport, and making them queue for a coach out would
+    /// mean a failing republic *retained* people by failing harder.
+    Emigrate { citizens: Vec<CitizenId> },
+    /// People walking up to a frontier post, wanting in.
+    ///
+    /// They are at the border and nowhere else. Turning them into residents is
+    /// a coach's job — see [`Mutation::Settle`].
+    Immigrate { at: Point, heads: u32 },
+    /// A group that stood at a post until its patience ran out.
+    GiveUp { group: GroupId },
+    /// A coach reached a group; they boarded, and it turns for the housing.
+    Board {
+        vehicle: VehicleId,
+        group: GroupId,
+        journey: Journey,
+        burn: Tonnes,
+    },
+    /// A coach set its group down at housing, and they became citizens.
+    ///
+    /// One kind for both halves, because a group that had left the coach
+    /// without becoming residents would be people standing in a stairwell that
+    /// nothing in the simulation can see.
+    Settle {
+        vehicle: VehicleId,
+        group: GroupId,
+        home: BuildingId,
+        journey: Journey,
+        burn: Tonnes,
+    },
 }
 
 /// A [`Mutation`]'s kind, without its payload.
@@ -345,6 +414,17 @@ pub enum MutationKind {
     Fine,
     DefaultOnLoan,
     Wages,
+    Content,
+    Morale,
+    Schooling,
+    Ageing,
+    Death,
+    Birth,
+    Emigrate,
+    Immigrate,
+    GiveUp,
+    Board,
+    Settle,
 }
 
 impl Mutation {
@@ -384,6 +464,17 @@ impl Mutation {
             Mutation::DefaultOnLoan { .. } => MutationKind::DefaultOnLoan,
             Mutation::Fine { .. } => MutationKind::Fine,
             Mutation::Wages { .. } => MutationKind::Wages,
+            Mutation::Content { .. } => MutationKind::Content,
+            Mutation::Morale { .. } => MutationKind::Morale,
+            Mutation::Schooling { .. } => MutationKind::Schooling,
+            Mutation::Ageing { .. } => MutationKind::Ageing,
+            Mutation::Death { .. } => MutationKind::Death,
+            Mutation::Birth { .. } => MutationKind::Birth,
+            Mutation::Emigrate { .. } => MutationKind::Emigrate,
+            Mutation::Immigrate { .. } => MutationKind::Immigrate,
+            Mutation::GiveUp { .. } => MutationKind::GiveUp,
+            Mutation::Board { .. } => MutationKind::Board,
+            Mutation::Settle { .. } => MutationKind::Settle,
         }
     }
 }
@@ -462,10 +553,42 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
             MutationKind::Free,
             MutationKind::Recover,
             MutationKind::Wear,
+            MutationKind::Board,
+            MutationKind::Settle,
         ],
     ),
     ("tracks", &[MutationKind::Fade, MutationKind::Promote]),
     ("labour", &[MutationKind::Staff, MutationKind::Consume]),
+    // Daily. How a home is doing, and how each person in it feels about it —
+    // one system because the second is a drift toward the first, and computing
+    // them apart would mean walking the population twice to read the same
+    // answer.
+    (
+        "contentment",
+        &[MutationKind::Content, MutationKind::Morale],
+    ),
+    ("schooling", &[MutationKind::Schooling]),
+    (
+        "demography",
+        &[
+            MutationKind::Ageing,
+            MutationKind::Death,
+            MutationKind::Birth,
+        ],
+    ),
+    (
+        "migration",
+        &[
+            MutationKind::Emigrate,
+            MutationKind::Immigrate,
+            MutationKind::GiveUp,
+        ],
+    ),
+    // Fetching settlers in from a frontier post. Its own dispatcher rather than
+    // a branch of `crews`, because the two rank different things and draw on
+    // different vehicles: a bus depot's coaches must never be spent on
+    // foundations, nor a construction office's buses on immigrants.
+    ("settling", &[MutationKind::Dispatch, MutationKind::Bog]),
     (
         "contracts",
         &[
@@ -1008,6 +1131,115 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     v.state = VehicleState::Idle;
                     v.job = None;
                     v.journey = None;
+                }
+            }
+            &Mutation::Content { building, content } => {
+                if let Some(b) = world.buildings.get_mut(building) {
+                    b.content = content;
+                }
+            }
+            Mutation::Morale { updates } => {
+                world.population.set_wellbeing(updates);
+            }
+            Mutation::Schooling { attended, enrolled } => {
+                world.population.school(attended, enrolled);
+            }
+            Mutation::Ageing { citizens } => {
+                world.population.age_by_one(citizens);
+            }
+            Mutation::Death { citizens } => {
+                for id in citizens {
+                    world.population.remove(*id);
+                }
+            }
+            Mutation::Birth { homes } => {
+                for home in homes {
+                    world.population.spawn_citizen(*home, 0);
+                }
+            }
+            Mutation::Emigrate { citizens } => {
+                let mut gone = 0;
+                for id in citizens {
+                    if world.population.remove(*id) {
+                        gone += 1;
+                    }
+                }
+                world.migration.record_departures(gone);
+            }
+            &Mutation::Immigrate { at, heads } => {
+                world.migration.arrive(at, heads, world.clock.day_index());
+            }
+            &Mutation::GiveUp { group } => {
+                world.migration.give_up(group);
+            }
+            Mutation::Board {
+                vehicle,
+                group,
+                journey,
+                burn,
+            } => {
+                let boarded = world.migration.get_mut(*group).map(|g| {
+                    g.riding = Some(*vehicle);
+                    g.at
+                });
+                if let Some(v) = world.fleet.get_mut(*vehicle) {
+                    v.fuel = v.fuel.saturating_sub(*burn);
+                    if let Some(at) = boarded {
+                        v.at = at;
+                    }
+                    v.journey = Some(journey.clone());
+                    v.state = VehicleState::Delivering;
+                }
+            }
+            Mutation::Settle {
+                vehicle,
+                group,
+                home,
+                journey,
+                burn,
+            } => {
+                // How many the block can actually take, now. A coach that set
+                // out for an estate the player has since demolished — or filled
+                // with somebody else's settlers — sets down who fits, and the
+                // rest go home. That is a consequence of ordering a demolition
+                // with people in the air, and the ledger records it rather than
+                // losing them quietly.
+                let occupied = world
+                    .population
+                    .residents_by_home()
+                    .get(home)
+                    .copied()
+                    .unwrap_or(0);
+                let room = world
+                    .buildings
+                    .get(*home)
+                    .filter(|b| b.is_built())
+                    .map(|b| b.def().residents.saturating_sub(occupied))
+                    .unwrap_or(0);
+                if let Some(g) = world.migration.settle(*group) {
+                    let taken = g.heads.min(room);
+                    for _ in 0..taken {
+                        // Spread across working life so an intake is not a
+                        // cohort that retires together. They arrive schooled
+                        // because they were taught somewhere else — see
+                        // `Population::spawn_citizen`.
+                        let age = 20 + (world.population.count() as u32 % 30);
+                        world.population.spawn_citizen(*home, age);
+                    }
+                    world.migration.record_turned_away(g.heads - taken);
+                }
+                let yard = world
+                    .fleet
+                    .get(*vehicle)
+                    .and_then(|v| world.buildings.get(v.home))
+                    .map(|b| b.centre);
+                if let Some(v) = world.fleet.get_mut(*vehicle) {
+                    v.fuel = v.fuel.saturating_sub(*burn);
+                    if let Some(at) = world.buildings.get(*home).map(|b| b.centre).or(yard) {
+                        v.at = at;
+                    }
+                    v.journey = Some(journey.clone());
+                    v.state = VehicleState::Returning;
                 }
             }
         }
@@ -3342,6 +3574,35 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                         burn,
                     }),
                 },
+                // Arrived at a frontier post where settlers are standing. They
+                // get on and the coach turns for the housing it was sent to —
+                // not for its own yard, which is what makes this a two-hop
+                // journey rather than a collection.
+                Some(Job::Settle { group, to }) => {
+                    match (
+                        world.migration.get(group).map(|g| g.heads),
+                        world.buildings.get(to).map(|b| b.centre),
+                    ) {
+                        (Some(_), Some(estate)) => out.push(Mutation::Board {
+                            vehicle: v.id,
+                            group,
+                            journey: onward(estate),
+                            burn,
+                        }),
+                        // Either nobody is here or the estate has been pulled
+                        // down under them. Go home rather than stand in a field
+                        // holding a job that can never finish.
+                        _ => out.push(Mutation::Load {
+                            vehicle: v.id,
+                            from: v.home,
+                            resource: Resource::Fuel,
+                            tonnes: Tonnes::ZERO,
+                            journey: onward(yard),
+                            state: VehicleState::Returning,
+                            burn,
+                        }),
+                    }
+                }
                 Some(Job::Ferry { .. }) | None => {}
             },
             // A bus is `Delivering` from the moment it leaves the office,
@@ -3361,6 +3622,25 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                     party,
                     site,
                     at: arrived,
+                    journey: plan,
+                    burn,
+                });
+                if stuck {
+                    out.push(Mutation::Bog { vehicle: v.id, day });
+                }
+            }
+            // A coach with settlers aboard, arriving at the estate. They come
+            // off as residents; the coach turns for its depot.
+            VehicleState::Delivering if v.job.and_then(Job::settling).is_some() => {
+                let Some((group, home)) = v.job.and_then(Job::settling) else {
+                    continue;
+                };
+                let plan = onward(yard);
+                let stuck = sticks(world, &crossing, v.id, def.ground, &plan, 0, day);
+                out.push(Mutation::Settle {
+                    vehicle: v.id,
+                    group,
+                    home,
                     journey: plan,
                     burn,
                 });
@@ -3631,6 +3911,599 @@ pub fn wages(world: &World) -> Vec<Mutation> {
     out
 }
 
+/// Every built, staffed building of a kind, as positions.
+///
+/// A service with nobody in it serves nobody — a clinic with no doctors is a
+/// building, and the whole reason staffing is a fraction is so that questions
+/// like this have an answer.
+fn staffed_service(world: &World, kind: BuildingKind) -> Vec<Point> {
+    world
+        .buildings
+        .all()
+        .iter()
+        .filter(|b| b.kind == kind && b.is_built() && b.staffing() > 0.0)
+        .map(|b| b.centre)
+        .collect()
+}
+
+/// Whether any of these is within reach of a home, and how well staffed the
+/// nearest one is.
+///
+/// Returns `0.0..=1.0` rather than a boolean: a polyclinic running at a third
+/// of its establishment is a third of a polyclinic, and rounding that to "you
+/// have healthcare" would hide exactly the kind of quiet failure this whole
+/// section of the goal exists to make visible.
+fn service_cover(world: &World, home: Point, kind: BuildingKind) -> f64 {
+    world
+        .buildings
+        .all()
+        .iter()
+        .filter(|b| b.kind == kind && b.is_built())
+        .filter(|b| b.centre.distance_to(home).0 <= SERVICE_RADIUS.0)
+        .map(|b| b.staffing())
+        .fold(0.0f64, f64::max)
+}
+
+/// How well the republic is serving the people in it, and how they feel about
+/// it.
+///
+/// **Daily.** Contentment is a mood rather than an event, and a per-tick sweep
+/// would walk the whole population 1,440 times to compute the same answer.
+///
+/// Two things happen here and they are one pass on purpose: a home's
+/// [`crate::wellbeing::Contentment`] is computed from what is within reach of
+/// it, and every resident's loyalty then drifts toward that number. Splitting
+/// them would mean walking the population twice to read the same answer.
+pub fn contentment(world: &World) -> Vec<Mutation> {
+    let census = world.population.census_by_home();
+    // Whether today is cold enough for heating to mean anything. Today's
+    // temperature, never the month — the same rule the boilers answer to.
+    let cold = crate::climate::heating_required(world.temperature());
+
+    let mut out = Vec::new();
+    let mut scores: BTreeMap<BuildingId, f64> = BTreeMap::new();
+
+    let mut homes: Vec<_> = world
+        .buildings
+        .all()
+        .iter()
+        .filter(|b| b.is_built() && b.def().residents > 0)
+        .collect();
+    homes.sort_by_key(|b| b.id);
+
+    for home in homes {
+        let here = census.get(&home.id).copied().unwrap_or_default();
+        if here.residents == 0 {
+            continue;
+        }
+        let content = crate::wellbeing::Contentment {
+            provisions: home.provisioned,
+            // A warm day asks nothing of the boilers, so an estate is not
+            // unhappy about heat nobody is sending it in July.
+            warmth: if !cold || home.def().heat <= 0.0 {
+                1.0
+            } else {
+                f64::from(u8::from(home.heated))
+            },
+            health: service_cover(world, home.centre, BuildingKind::Clinic),
+            culture: service_cover(world, home.centre, BuildingKind::CultureClub),
+            // A block with no children is not unhappy about the lack of a
+            // school, and a block full of them very much is.
+            schooling: if here.pupils == 0 {
+                1.0
+            } else {
+                service_cover(world, home.centre, BuildingKind::School)
+            },
+            work: if here.working_age == 0 {
+                1.0
+            } else {
+                f64::from(here.employed) / f64::from(here.working_age)
+            },
+        };
+        scores.insert(home.id, content.overall());
+        out.push(Mutation::Content {
+            building: home.id,
+            content,
+        });
+    }
+
+    // What medical care is within reach of each home, computed once rather than
+    // once per resident.
+    let clinics = staffed_service(world, BuildingKind::Clinic);
+    let cover_at = |home: Point| -> f64 {
+        clinics
+            .iter()
+            .filter(|c| c.distance_to(home).0 <= SERVICE_RADIUS.0)
+            .count()
+            .min(1) as f64
+    };
+
+    let mut updates = Vec::new();
+    for record in world.population.records() {
+        let Some(home) = world.buildings.get(record.home.0) else {
+            continue;
+        };
+        let target_loyalty = scores.get(&record.home.0).copied().unwrap_or(0.0);
+        let loyalty = record.wellbeing.loyalty
+            + (target_loyalty - record.wellbeing.loyalty) * crate::wellbeing::LOYALTY_DRIFT;
+
+        let served = crate::wellbeing::HEALTH_UNSERVED
+            + (1.0 - crate::wellbeing::HEALTH_UNSERVED) * cover_at(home.centre);
+        // Age tells on people whatever the republic does about it. This is what
+        // makes an ageing population a problem rather than a statistic.
+        let wear = 1.0 - f64::from(record.age.0.saturating_sub(50)) * 0.012;
+        let target_health = (served * wear.max(0.25)).clamp(0.0, 1.0);
+        let health = record.wellbeing.health
+            + (target_health - record.wellbeing.health) * crate::wellbeing::HEALTH_DRIFT;
+
+        updates.push((
+            record.id,
+            crate::citizen::Wellbeing {
+                health: health.clamp(0.0, 1.0),
+                loyalty: loyalty.clamp(0.0, 1.0),
+            },
+        ));
+    }
+    if !updates.is_empty() {
+        out.push(Mutation::Morale { updates });
+    }
+    out
+}
+
+/// Who sat in a classroom today.
+///
+/// **Daily**, and attendance is only counted where there is a *staffed* school
+/// within reach: a school with no teachers teaches nobody, and a school on the
+/// other side of the republic teaches somebody else's children.
+///
+/// Attendance stops accruing once somebody has enough of it. Without that cap a
+/// child with a school for their whole childhood would bank ten years against a
+/// five-year requirement and walk out of school a graduate, which would make the
+/// university a building nobody had any reason to put up.
+pub fn schooling(world: &World) -> Vec<Mutation> {
+    let schools = staffed_service(world, BuildingKind::School);
+    let universities = staffed_service(world, BuildingKind::University);
+    let within = |places: &[Point], home: Point| {
+        places
+            .iter()
+            .any(|p| p.distance_to(home).0 <= SERVICE_RADIUS.0)
+    };
+
+    let mut attended = Vec::new();
+    let mut enrolled = Vec::new();
+    // Anyone the world currently believes is at university. Tracked so that
+    // enrolment can be *cleared*: a university that lost its staff has to stop
+    // having students today, and a pass that only ever enrolled would leave
+    // them permanently out of a workforce nobody was teaching.
+    let mut studying = false;
+    for record in world.population.records() {
+        studying |= record.learning.studying;
+        let Some(home) = world.buildings.get(record.home.0) else {
+            continue;
+        };
+        let days = record.learning.days;
+        if crate::citizen::SCHOOL_AGE.contains(&record.age.0) {
+            if days < crate::citizen::SCHOOL_DAYS && within(&schools, home.centre) {
+                attended.push(record.id);
+            }
+            continue;
+        }
+        // University: finished school, of an age to go, has not finished, and
+        // there is one within reach.
+        let degree = crate::citizen::SCHOOL_DAYS
+            ..crate::citizen::SCHOOL_DAYS + crate::citizen::UNIVERSITY_DAYS;
+        let wants =
+            crate::citizen::UNIVERSITY_AGE.contains(&record.age.0) && degree.contains(&days);
+        if wants && within(&universities, home.centre) {
+            enrolled.push(record.id);
+            attended.push(record.id);
+        }
+    }
+
+    // Nothing taught and nobody to un-enrol. Emitting an empty census every day
+    // would be noise, and worse: it would let the write-set guard pass for a
+    // republic in which no child has ever sat in a classroom.
+    if attended.is_empty() && enrolled.is_empty() && !studying {
+        return Vec::new();
+    }
+    // Both lists are already in id order because `records` is, which is what
+    // the binary searches on the applying side rely on.
+    vec![Mutation::Schooling { attended, enrolled }]
+}
+
+/// The annual chance of dying at a given age and state of health.
+///
+/// A Gompertz-shaped curve: near flat through working life and steepening hard
+/// after sixty, which is what an age pyramid actually looks like. Health
+/// divides it, so a republic with polyclinics keeps its old people longer —
+/// which is the entire argument for building one.
+///
+/// Exposed rather than private because it is showable: a panel that can say
+/// "this district's people are dying at four times the republic's rate" is
+/// worth more than one that reports a population going down.
+pub fn mortality(age: u32, health: f64) -> f64 {
+    let base = 0.002 + (f64::from(age) / 100.0).powi(8) * 2.0;
+    (base / (0.5 + health.clamp(0.0, 1.0))).clamp(0.0, 1.0)
+}
+
+/// Nobody lives past this. A bound rather than a balance figure: without one a
+/// citizen whose mortality roll keeps coming up safe lives for ever, and an
+/// unbounded age walks straight into the `powi(8)` above.
+pub const OLDEST: u32 = 105;
+
+/// Children per fertile pair per year, at a home whose people are content.
+///
+/// First-pass, and deliberately below replacement on its own: a republic grows
+/// mainly by attracting people, and births are what stop it hollowing out.
+pub const BIRTHS_PER_PAIR_YEAR: f64 = 0.22;
+
+/// Below this contentment, a household does not start a family.
+pub const BIRTHS_NEED: f64 = 0.45;
+
+/// Birthdays, deaths and births.
+///
+/// **Daily**, and birthdays are spread across the year by citizen id — see
+/// [`crate::citizen::CitizenRecord::birthday`]. A republic where everybody aged
+/// on the same day would be a republic where a whole cohort died on the same
+/// day, and a population graph with that sawtooth in it would read as a bug
+/// because it would be one.
+pub fn demography(world: &World) -> Vec<Mutation> {
+    let today = world.clock.day_of_year();
+    let day = world.clock.day_index();
+    let mut aged = Vec::new();
+    let mut died = Vec::new();
+
+    // Walked unsorted: every roll below is keyed by `(citizen, day)` from its
+    // own substream, so who ages and who dies does not depend on the order they
+    // were considered in. Only the payload does, and a day's birthdays are a
+    // few hundredths of the republic — cheaper to sort than to sort everybody
+    // to find them.
+    for record in world.population.walk() {
+        if record.birthday() != today {
+            continue;
+        }
+        let turning = record.age.0 + 1;
+        if turning > OLDEST {
+            died.push(record.id);
+            continue;
+        }
+        let odds = mortality(turning, record.wellbeing.health);
+        let mut rng = world.substream(crate::world::LIFE_STREAM, life_key(record.id, day));
+        if rng.next_f64() < odds {
+            died.push(record.id);
+        } else {
+            aged.push(record.id);
+        }
+    }
+
+    // Births. A home with room in it, a couple of an age to start a family, and
+    // a life worth bringing somebody into.
+    let census = world.population.census_by_home();
+    let mut born = Vec::new();
+    let mut homes: Vec<_> = world
+        .buildings
+        .all()
+        .iter()
+        .filter(|b| b.is_built() && b.def().residents > 0)
+        .collect();
+    homes.sort_by_key(|b| b.id);
+    for home in homes {
+        let here = census.get(&home.id).copied().unwrap_or_default();
+        let pairs = here.fertile / 2;
+        if pairs == 0 || here.residents >= home.def().residents {
+            continue;
+        }
+        let content = home.content.overall();
+        if content < BIRTHS_NEED {
+            continue;
+        }
+        let odds = BIRTHS_PER_PAIR_YEAR * f64::from(pairs) * content
+            / f64::from(crate::time::DAYS_PER_YEAR);
+        let mut rng = world.substream(crate::world::LIFE_STREAM, birth_key(home.id, day));
+        if rng.next_f64() < odds {
+            born.push(home.id);
+        }
+    }
+
+    let mut out = Vec::new();
+    // Sorted here rather than by walking sorted, and it has to be: the applying
+    // side binary-searches these.
+    aged.sort_unstable();
+    died.sort_unstable();
+    if !aged.is_empty() {
+        out.push(Mutation::Ageing { citizens: aged });
+    }
+    if !died.is_empty() {
+        out.push(Mutation::Death { citizens: died });
+    }
+    if !born.is_empty() {
+        out.push(Mutation::Birth { homes: born });
+    }
+    out
+}
+
+/// A key for one citizen's yearly roll. Keyed by the day so the same person
+/// gets a different draw every birthday.
+fn life_key(citizen: CitizenId, day: u64) -> u64 {
+    u64::from(citizen.0)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(day)
+}
+
+fn birth_key(home: BuildingId, day: u64) -> u64 {
+    u64::from(home.0)
+        .wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+        .wrapping_add(day)
+        .wrapping_add(1)
+}
+
+fn leaving_key(citizen: CitizenId, day: u64) -> u64 {
+    u64::from(citizen.0)
+        .wrapping_mul(0x27D4_EB2F_1656_67C5)
+        .wrapping_add(day)
+        .wrapping_add(2)
+}
+
+/// People coming and people going.
+///
+/// **Daily.** Emigration is per person and reads loyalty; immigration is a
+/// property of the whole republic and reads how content it is on average.
+///
+/// The asymmetry is deliberate and it is the mechanic: leaving needs nothing
+/// from the republic, and arriving needs a coach, a road and somewhere to live.
+pub fn migration(world: &World) -> Vec<Mutation> {
+    let day = world.clock.day_index();
+    let mut out = Vec::new();
+
+    // Who has had enough. Unsorted for the reason `demography` is: the roll is
+    // keyed by `(citizen, day)`, so who goes is the same whatever order they
+    // were asked in.
+    let mut leaving = Vec::new();
+    for record in world.population.walk() {
+        let loyalty = record.wellbeing.loyalty;
+        if loyalty >= crate::wellbeing::LOYALTY_LEAVES {
+            continue;
+        }
+        // Children do not emigrate on their own. They go when the republic
+        // stops housing anybody, which is what the rest of this models.
+        if record.age.0 < crate::citizen::WORKING_AGE.start {
+            continue;
+        }
+        let short = (crate::wellbeing::LOYALTY_LEAVES - loyalty) / crate::wellbeing::LOYALTY_LEAVES;
+        let odds = crate::wellbeing::EMIGRATION_ODDS * short;
+        let mut rng = world.substream(crate::world::LIFE_STREAM, leaving_key(record.id, day));
+        if rng.next_f64() < odds {
+            leaving.push(record.id);
+        }
+    }
+    if !leaving.is_empty() {
+        // Ordered so the mutation is the same every run, which is what the
+        // journal and the save round-trip are entitled to assume.
+        leaving.sort_unstable();
+        out.push(Mutation::Emigrate { citizens: leaving });
+    }
+
+    // People who stood at the border until their patience ran out.
+    for group in world.migration.all() {
+        if group.has_given_up(day) {
+            out.push(Mutation::GiveUp { group: group.id });
+        }
+    }
+
+    // And people who want in. A republic is attractive on the average of what
+    // it offers the people already living in it, weighted by how many that is —
+    // one wretched outpost does not cancel a working city.
+    let census = world.population.census_by_home();
+    let (mut scored, mut heads) = (0.0, 0u32);
+    let mut centre = (0.0, 0.0);
+    for home in world.buildings.all() {
+        if !home.is_built() || home.def().residents == 0 {
+            continue;
+        }
+        let here = census.get(&home.id).copied().unwrap_or_default();
+        if here.residents == 0 {
+            continue;
+        }
+        scored += home.content.overall() * f64::from(here.residents);
+        heads += here.residents;
+        centre.0 += home.centre.x.0 * f64::from(here.residents);
+        centre.1 += home.centre.y.0 * f64::from(here.residents);
+    }
+    if heads == 0 {
+        return out;
+    }
+    let average = scored / f64::from(heads);
+    if average < crate::wellbeing::CONTENT_ATTRACTS {
+        return out;
+    }
+
+    // Somewhere for them to live, counting everyone already on their way in.
+    let spare = world
+        .buildings
+        .housing()
+        .saturating_sub(world.population.count() as u32)
+        .saturating_sub(world.migration.waiting_heads());
+    if spare == 0 {
+        return out;
+    }
+
+    // How keen they are: how far past the threshold the republic is, so a
+    // barely-adequate republic gets a trickle and a good one a stream.
+    let keenness = ((average - crate::wellbeing::CONTENT_ATTRACTS)
+        / (1.0 - crate::wellbeing::CONTENT_ATTRACTS))
+        .clamp(0.0, 1.0);
+    let mut rng = world.substream(crate::world::LIFE_STREAM, day.wrapping_add(3));
+    if rng.next_f64() >= keenness * ARRIVAL_ODDS {
+        return out;
+    }
+
+    let town = Point::new(
+        Metres(centre.0 / f64::from(heads)),
+        Metres(centre.1 / f64::from(heads)),
+    );
+    let Some(post) = world.frontier.nearest_crossing(town, None) else {
+        return out;
+    };
+    out.push(Mutation::Immigrate {
+        at: post.at,
+        heads: spare.min(crate::wellbeing::ARRIVAL_PARTY),
+    });
+    out
+}
+
+/// The daily chance a fully content republic gets a group at its border.
+///
+/// About one a week at the top of the scale. First-pass, and the knob to feel
+/// out against the trajectory runner: too high and a republic grows faster than
+/// it can build housing, too low and migration is a mechanic nobody notices.
+pub const ARRIVAL_ODDS: f64 = 0.15;
+
+/// Fetching settlers in from a frontier post.
+///
+/// Its own dispatcher rather than a branch of [`crews`], because the pools must
+/// never compete: a republic that stopped building because its buses were
+/// fetching immigrants, or that stranded a hundred people at the border because
+/// a foundation wanted a gang, would have two unrelated decisions sharing one
+/// budget for no reason anybody chose.
+///
+/// The round trip priced here is the **whole** trip — post, then estate, then
+/// yard — because a coach that ran dry with two dozen people aboard is the
+/// stranded-gang failure with more people in it.
+pub fn settling(world: &World) -> Vec<Mutation> {
+    let mut coaches = available(world, Role::Passenger);
+    if coaches.is_empty() {
+        return Vec::new();
+    }
+
+    // Groups a coach is already on its way to. The lesson `crews` learnt twice:
+    // a journey is a commitment, and a dispatcher that only reads arrivals will
+    // make it twice.
+    let coming: Vec<crate::migration::GroupId> = world
+        .fleet
+        .all()
+        .iter()
+        .filter_map(|v| v.job.and_then(Job::settling))
+        .map(|(group, _)| group)
+        .collect();
+    // And housing somebody else's coach is already filling.
+    let mut booked: BTreeMap<BuildingId, u32> = BTreeMap::new();
+    for (group, home) in world
+        .fleet
+        .all()
+        .iter()
+        .filter_map(|v| v.job.and_then(Job::settling))
+    {
+        let heads = world.migration.get(group).map_or(0, |g| g.heads);
+        *booked.entry(home).or_default() += heads;
+    }
+
+    let occupants = world.population.residents_by_home();
+    let crossing = world.crossing();
+    let now = world.clock.ticks() as f64;
+    let day = world.clock.day_index();
+    let mut drawn: BTreeMap<BuildingId, Tonnes> = BTreeMap::new();
+    let mut out = Vec::new();
+
+    let waiting: Vec<(crate::migration::GroupId, Point, u32)> = world
+        .migration
+        .unfetched()
+        .filter(|g| !coming.contains(&g.id))
+        .map(|g| (g.id, g.at, g.heads))
+        .collect();
+
+    for (group, at, heads) in waiting {
+        if coaches.is_empty() {
+            break;
+        }
+        // Where they are going. The emptiest block with room for them, ties on
+        // id — an intake goes where there is most room rather than filling one
+        // stairwell and leaving the next estate empty.
+        let mut housing: Vec<(u32, BuildingId, Point)> = world
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().residents > 0)
+            .filter_map(|b| {
+                let taken = occupants.get(&b.id).copied().unwrap_or(0)
+                    + booked.get(&b.id).copied().unwrap_or(0);
+                let room = b.def().residents.saturating_sub(taken);
+                (room > 0).then_some((room, b.id, b.centre))
+            })
+            .collect();
+        housing.sort_by(|(ra, ia, _), (rb, ib, _)| rb.cmp(ra).then_with(|| ia.cmp(ib)));
+        let Some(&(room, home, yard_of_home)) = housing.first() else {
+            continue;
+        };
+
+        // The nearest coach that can make post → estate → its own yard.
+        let mut nearest: Vec<(f64, usize)> = coaches
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| {
+                let v = world.fleet.get(*id)?;
+                Some((v.at.distance_to(at).0, i))
+            })
+            .collect();
+        nearest.sort_by(|(da, ia), (db, ib)| da.total_cmp(db).then_with(|| ia.cmp(ib)));
+
+        for (_, index) in nearest {
+            let id = coaches[index];
+            let (Some(v), Some(yard)) = (
+                world.fleet.get(id),
+                world
+                    .fleet
+                    .get(id)
+                    .and_then(|v| world.buildings.get(v.home))
+                    .map(|b| b.centre),
+            ) else {
+                continue;
+            };
+            let def = v.def();
+            let leg = |a: Point, b: Point| {
+                journey::plan(
+                    a,
+                    b,
+                    &world.roads,
+                    &crossing,
+                    def.on_road,
+                    def.cross_country,
+                    now,
+                )
+            };
+            let outbound = leg(v.at, at);
+            let whole = outbound.distance()
+                + leg(at, yard_of_home).distance()
+                + leg(yard_of_home, yard).distance();
+            let held = world
+                .buildings
+                .get(v.home)
+                .map(|b| b.stock.get(Resource::Fuel))
+                .unwrap_or(Tonnes::ZERO)
+                .saturating_sub(drawn.get(&v.home).copied().unwrap_or(Tonnes::ZERO));
+            let top_up = def.tank.saturating_sub(v.fuel).min(held);
+            if (v.fuel + top_up).0 < v.fuel_for(whole).0 {
+                continue;
+            }
+
+            let stuck = sticks(world, &crossing, id, v.capability(), &outbound, 0, day);
+            out.push(Mutation::Dispatch {
+                vehicle: id,
+                job: Job::Settle { group, to: home },
+                journey: outbound,
+                refuel: top_up,
+            });
+            if stuck {
+                out.push(Mutation::Bog { vehicle: id, day });
+            }
+            *drawn.entry(v.home).or_default() += top_up;
+            *booked.entry(home).or_default() += heads.min(room);
+            coaches.remove(index);
+            break;
+        }
+    }
+    out
+}
+
 pub fn commissioning(world: &World) -> Vec<Mutation> {
     let mut out = Vec::new();
     for garage in world.buildings.all() {
@@ -3688,6 +4561,18 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
             // come second: an advance falling due is a deadline the republic
             // agreed to, and a day's pay is not.
             |w: &mut World| wages(w),
+            // People, after labour: contentment reads how many of a home's
+            // working-age residents hold a job, and that is what the labour
+            // pass has just decided.
+            |w: &mut World| contentment(w),
+            |w: &mut World| schooling(w),
+            // Demography after contentment, because a household decides whether
+            // to have a child by how the republic is treating it today.
+            |w: &mut World| demography(w),
+            // And migration last of the daily systems, because both halves of
+            // it read state the four above have just written: loyalty for who
+            // leaves, contentment for who wants to come.
+            |w: &mut World| migration(w),
         ] {
             let mutations = system(world);
             apply(world, &mutations);
@@ -3709,6 +4594,7 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
         // the same tick rather than standing in it for a minute because two
         // systems happened to be listed the other way round.
         crews,
+        settling,
     ] {
         let mutations = system(world);
         apply(world, &mutations);
@@ -6695,6 +7581,31 @@ mod tests {
             d.stock.add(Resource::Fuel, Tonnes(40.0));
         }
 
+        // Empty housing, so the republic has somewhere to put people it
+        // attracts. Without spare room nobody is offered a place, and `Board`
+        // and `Settle` go unreached — which is the state a declaration stops
+        // constraining anything in.
+        //
+        // A founding puts up three blocks and this fixture fills them past
+        // capacity with 240 settlers, so this is not decoration: it is the
+        // difference between a republic that can grow and one that cannot.
+        for i in 0..5 {
+            let want = Point::new(
+                centre.x - Metres(400.0) - Metres(f64::from(i) * 120.0),
+                centre.y + Metres(600.0),
+            );
+            if let Some(site) =
+                crate::scenario::find_site(&world, BuildingKind::Apartment, want, Metres(700.0))
+            {
+                let _ = world.buildings.place_built(
+                    BuildingKind::Apartment,
+                    site,
+                    &world.terrain,
+                    &world.geology,
+                );
+            }
+        }
+
         // A refinery in town and its crude four kilometres out, joined to the
         // road above by a spur at each end.
         //
@@ -6738,6 +7649,31 @@ mod tests {
             // ends of a spur land on a junction the main road will lay, so the
             // three roads become one network rather than three islands.
             let _ = world.order_road(yard, join, crate::roadworks::Grade::Dirt);
+        }
+
+        // A school, and children to fill it.
+        //
+        // The children are put there directly, and that is not laziness: a
+        // child born inside this fixture is nought years old when it ends, and
+        // school starts at six. Waiting for one would mean simulating twenty
+        // republic-years to check a declaration. What is being reached is the
+        // schooling pass, and it needs a pupil rather than a plausible
+        // biography.
+        if let Some(site) =
+            crate::scenario::find_site(&world, BuildingKind::School, centre, Metres(600.0))
+            && let Ok(school) = world.buildings.place_built(
+                BuildingKind::School,
+                site,
+                &world.terrain,
+                &world.geology,
+            )
+        {
+            let _ = school;
+            if let Some(home) = base.housing.first() {
+                for age in [7, 9, 11, 13] {
+                    world.population.spawn_citizen(*home, age);
+                }
+            }
         }
 
         // A foreign gang on the books, so the wage bill is a thing that
@@ -6796,6 +7732,18 @@ mod tests {
                     let m = tracks(&world);
                     note("tracks", &m);
                     apply(&mut world, &m);
+                    let m = contentment(&world);
+                    note("contentment", &m);
+                    apply(&mut world, &m);
+                    let m = schooling(&world);
+                    note("schooling", &m);
+                    apply(&mut world, &m);
+                    let m = demography(&world);
+                    note("demography", &m);
+                    apply(&mut world, &m);
+                    let m = migration(&world);
+                    note("migration", &m);
+                    apply(&mut world, &m);
                     // Accept everything, so deliveries and failures both happen.
                     let offers: Vec<_> = world.contracts.offers().map(|c| c.id).collect();
                     for id in offers {
@@ -6812,6 +7760,7 @@ mod tests {
                     ("fleet", fleet),
                     ("dispatch", dispatch),
                     ("crews", crews),
+                    ("settling", settling),
                 ] {
                     let m = system(&world);
                     note(name, &m);
@@ -6918,6 +7867,142 @@ mod tests {
             }
             let m = crews(&world);
             note("crews", &m);
+            apply(&mut world, &m);
+            let m = fleet(&world);
+            note("fleet", &m);
+            apply(&mut world, &m);
+            world.clock.advance();
+        }
+
+        // And a season in which nobody comes for the people at the border.
+        //
+        // `GiveUp` is the one migration outcome a working republic never
+        // reaches, which is exactly why it needs reaching here: it is the bound
+        // that stops a republic with no transport hoarding an unbounded crowd,
+        // and a bound nobody has watched fire is a bound nobody knows works.
+        // The depots are emptied and unstaffed so no coach can set out, and
+        // only the daily systems are run — a hundred days of full ticks to
+        // check one declaration would be the most expensive line in this file.
+        let depots: Vec<BuildingId> = world
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.kind == BuildingKind::BusDepot)
+            .map(|b| b.id)
+            .collect();
+        for id in depots {
+            if let Some(b) = world.buildings.get_mut(id) {
+                b.staff = 0;
+                b.stock.take(Resource::Fuel, Tonnes(1_000.0));
+            }
+        }
+        // A republic worth coming to. Measured before it was written: at the
+        // end of the run above the occupied blocks sit at 32-47% content, well
+        // under the threshold that attracts anybody, so a group would never
+        // arrive to give up in the first place. Provisioning and heat are set
+        // directly because the systems that write them are not run in this
+        // tail — what is being reached is migration, and paying for a year of
+        // full ticks to get there would be the most expensive line in the file.
+        let homes: Vec<BuildingId> = world
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().residents > 0)
+            .map(|b| b.id)
+            .collect();
+        for id in homes {
+            if let Some(b) = world.buildings.get_mut(id) {
+                b.provisioned = 1.0;
+                b.heated = true;
+            }
+        }
+        // Fresh empty housing, because four hundred days of a republic worth
+        // living in fills everything that was spare — and with nowhere to put
+        // anybody, nobody is offered a place and no group ever stands at the
+        // border to give up.
+        for i in 0..4 {
+            let want = Point::new(
+                centre.x + Metres(500.0) + Metres(f64::from(i) * 120.0),
+                centre.y + Metres(800.0),
+            );
+            if let Some(site) =
+                crate::scenario::find_site(&world, BuildingKind::Apartment, want, Metres(900.0))
+            {
+                let _ = world.buildings.place_built(
+                    BuildingKind::Apartment,
+                    site,
+                    &world.terrain,
+                    &world.geology,
+                );
+            }
+        }
+        for _ in 0..(crate::migration::PATIENCE * 2 + 5) {
+            let m = contentment(&world);
+            note("contentment", &m);
+            apply(&mut world, &m);
+            let m = migration(&world);
+            note("migration", &m);
+            apply(&mut world, &m);
+            world.clock.advance_by(TICKS_PER_DAY);
+        }
+        // And a wet fortnight with coaches running, which is the only way this
+        // fixture reaches `settling`'s bog roll.
+        //
+        // Same shape as the crew-bus phase above and for the same reason: a
+        // coach is an empty road vehicle and the crossing almost always comes
+        // up safe, so the declaration would look like a superset for ever.
+        // Three things are needed together and each was found by needing it —
+        // ground no coach can cross, groups to be sent for, and **separate
+        // days**, because the roll is keyed by `(vehicle, leg, day)` and two
+        // dispatches on one day are one draw asked twice.
+        let depots: Vec<BuildingId> = world
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.kind == BuildingKind::BusDepot)
+            .map(|b| b.id)
+            .collect();
+        for id in &depots {
+            if let Some(b) = world.buildings.get_mut(*id) {
+                b.staff = BuildingKind::BusDepot.def().workers;
+                b.stock.add(Resource::Fuel, Tonnes(60.0));
+            }
+        }
+        // Unworn ground, and this is the fourth thing it took. Four hundred
+        // days of traffic packs the lattice around a town into made track, and
+        // `going_in` multiplies the softness by that relief — so saturating the
+        // weather over a corridor the republic has been driving on all year
+        // still gives good going. Rebuilding the lattice from the same terrain
+        // is what puts the field back to a field.
+        let unworn = world.terrain.clone();
+        world.set_terrain(unworn);
+        world.ground.moisture = 1.0;
+        world.ground.water = 1.0;
+        world.ground.frost = 0.0;
+        world.ground.snow = 0.0;
+        // Standing a short way off the depot rather than at the frontier post,
+        // and that is the third thing this took. A post is reachable by road
+        // from town, and **a road leg carries a speed limit and never bogs** —
+        // so leg zero was tarmac every time and the roll was never even
+        // reached. A short hop is quicker straight than round by the network,
+        // which is what makes it the cross-country leg this declaration is
+        // about: a vehicle that sticks on the *first* crossing out of the yard,
+        // where there is no later leg boundary for `fleet` to catch it at.
+        let start = depots
+            .first()
+            .and_then(|id| world.buildings.get(*id))
+            .map(|b| Point::new(b.centre.x, b.centre.y + Metres(400.0)));
+        if let Some(start) = start {
+            let today = world.clock.day_index();
+            // Small groups, because what has to fit is the republic's spare
+            // housing rather than a plausible wave of migration.
+            for _ in 0..40 {
+                world.migration.arrive(start, 4, today);
+            }
+        }
+        for _ in 0..(30 * TICKS_PER_DAY) {
+            let m = settling(&world);
+            note("settling", &m);
             apply(&mut world, &m);
             let m = fleet(&world);
             note("fleet", &m);
@@ -7267,7 +8352,9 @@ mod tests {
             coal_body(&mut w, far, 10_000.0);
             let mine = place(&mut w, BuildingKind::CoalMine, far);
             let camp = staff_up(&mut w, at(9_300.0, 9_000.0), 40);
-            let works = place(&mut w, BuildingKind::MachineWorks, at(1_500.0, 1_000.0));
+            // A steel mill rather than a machine works: the latter is graduate
+            // work, and this test is about buses rather than about schools.
+            let works = place(&mut w, BuildingKind::SteelMill, at(1_500.0, 1_000.0));
 
             if with_transport {
                 // Road all the way, and a fuelled depot to run buses on it.
@@ -7351,7 +8438,9 @@ mod tests {
             previous = next;
         }
         staff_up(&mut w, at(1_000.0, 1_100.0), 30);
-        place(&mut w, BuildingKind::MachineWorks, at(6_500.0, 1_100.0));
+        // Schooled work, not graduate work: what is being tested is the
+        // ride, and staff_up sends people who finished school.
+        place(&mut w, BuildingKind::SteelMill, at(6_500.0, 1_100.0));
         let depot = place(&mut w, BuildingKind::BusDepot, at(1_000.0, 1_400.0));
         {
             let d = w.buildings.get_mut(depot).unwrap();
@@ -7366,6 +8455,438 @@ mod tests {
 
         assert!(w.population.riders() > 0, "nobody rode");
         assert!(after.0 < before.0, "carrying people cost no fuel");
+    }
+
+    // ---- People ----
+
+    /// Run the daily people systems for a stretch, without paying for the whole
+    /// simulation.
+    ///
+    /// Everything in this section is about a mechanic that moves on the day
+    /// boundary, so 1,440 ticks per day would be 1,440 times the cost for the
+    /// same answer. What the caller loses is production and freight, which is
+    /// why these fixtures set `provisioned` and `heated` directly.
+    fn live_days(world: &mut World, days: u64) {
+        for _ in 0..days {
+            for system in [
+                contentment as fn(&World) -> Vec<Mutation>,
+                schooling,
+                demography,
+                migration,
+            ] {
+                let m = system(world);
+                apply(world, &m);
+            }
+            world.clock.advance_by(TICKS_PER_DAY);
+        }
+    }
+
+    /// A town that is fed, warm and employed, with the services it wants.
+    fn contented_town(world: &mut World, at_point: Point, people: usize) -> BuildingId {
+        let home = staff_up(world, at_point, people);
+        if let Some(b) = world.buildings.get_mut(home) {
+            b.provisioned = 1.0;
+            b.heated = true;
+        }
+        home
+    }
+
+    /// The first thing in this simulation that pushes back on the player.
+    ///
+    /// `provisioned` and `heated` were computed every tick for months with
+    /// nothing reading either one — a republic could starve its estates and
+    /// freeze them and lose nothing by it. This is what they were waiting for.
+    #[test]
+    fn a_republic_that_fails_its_people_loses_them() {
+        let run = |fed: bool| -> (usize, f64) {
+            let mut w = bare();
+            let home = staff_up(&mut w, at(1_000.0, 1_000.0), 40);
+            place(&mut w, BuildingKind::Sawmill, at(1_150.0, 1_000.0));
+            let m = labour(&mut w);
+            apply(&mut w, &m);
+            if let Some(b) = w.buildings.get_mut(home) {
+                b.provisioned = if fed { 1.0 } else { 0.0 };
+                b.heated = fed;
+            }
+            // Winter, so warmth is a thing the republic is being asked for.
+            move_to_month(&mut w, 1);
+            // Households and heating are not run here, so what was set above
+            // stays set — this is a test about the consequence, not about the
+            // supply chain that produces it.
+            for _ in 0..600 {
+                let m = contentment(&w);
+                apply(&mut w, &m);
+                let m = migration(&w);
+                apply(&mut w, &m);
+                w.clock.advance_by(TICKS_PER_DAY);
+            }
+            let (_, loyalty) = w.population.mean_wellbeing();
+            (w.population.count(), loyalty)
+        };
+
+        let (kept, loyal) = run(true);
+        let (lost, disaffected) = run(false);
+        assert_eq!(kept, 40, "a republic that serves its people keeps them");
+        assert!(
+            loyal > crate::wellbeing::LOYALTY_LEAVES,
+            "a well-run republic should not be losing anyone: loyalty {loyal:.2}"
+        );
+        assert!(
+            disaffected < crate::wellbeing::LOYALTY_LEAVES,
+            "a starving, freezing republic held its people's loyalty at {disaffected:.2}"
+        );
+        assert!(
+            lost < kept,
+            "nobody left a republic with no food and no heat"
+        );
+    }
+
+    /// An estate can say what it is short of, and the answer is weighted.
+    ///
+    /// The whole reason contentment is stored as a breakdown rather than a
+    /// score: "your people are at 61%" is not something a player can act on.
+    #[test]
+    fn an_estate_says_which_thing_is_costing_it_most() {
+        let mut w = bare();
+        let home = contented_town(&mut w, at(1_000.0, 1_000.0), 40);
+        // Work for exactly half of them, so `work` is genuinely partial rather
+        // than a zero that would swamp everything else.
+        place(&mut w, BuildingKind::SteelMill, at(1_200.0, 1_000.0));
+        let m = labour(&mut w);
+        apply(&mut w, &m);
+        let m = contentment(&w);
+        apply(&mut w, &m);
+
+        let content = w.buildings.get(home).unwrap().content;
+        assert_eq!(content.provisions, 1.0);
+        assert_eq!(content.health, 0.0, "there is no clinic");
+        assert_eq!(content.culture, 0.0, "there is no culture club");
+        assert!(
+            content.work > 0.0 && content.work < 1.0,
+            "half of them work"
+        );
+        // Health is worth more than culture, so it is health that is named.
+        assert_eq!(content.worst(), Some("Health"));
+
+        // Build the clinic and the answer changes to what is now worst.
+        let clinic = place(&mut w, BuildingKind::Clinic, at(1_000.0, 1_200.0));
+        w.buildings.get_mut(clinic).unwrap().staff = BuildingKind::Clinic.def().workers;
+        let m = contentment(&w);
+        apply(&mut w, &m);
+        let content = w.buildings.get(home).unwrap().content;
+        assert_eq!(content.health, 1.0, "the clinic is staffed and in reach");
+        assert_ne!(
+            content.worst(),
+            Some("Health"),
+            "the clinic was built and the panel still blames the clinic"
+        );
+    }
+
+    /// A clinic keeps people alive, and that is measurable rather than asserted.
+    #[test]
+    fn a_polyclinic_makes_an_old_republic_survivable() {
+        // The same person, the same age, with and without care.
+        let served = mortality(75, 0.95);
+        let unserved = mortality(75, crate::wellbeing::HEALTH_UNSERVED);
+        assert!(
+            served < unserved,
+            "healthcare made no difference to mortality: {served:.4} against {unserved:.4}"
+        );
+        // And age is what dominates it, not health.
+        assert!(
+            mortality(30, 0.2) < mortality(80, 1.0),
+            "a sickly thirty-year-old is more likely to die than a healthy eighty-year-old"
+        );
+        assert!(mortality(OLDEST + 1, 1.0) <= 1.0, "odds stay odds");
+    }
+
+    /// The next generation is only employable if the republic taught them.
+    ///
+    /// This is what makes a school a building worth putting up rather than
+    /// decoration: without one, a republic's own children cannot run its mines.
+    #[test]
+    fn a_school_is_what_makes_the_next_generation_employable() {
+        use crate::citizen::Education;
+        let taught = |with_school: bool| -> Education {
+            let mut w = bare();
+            let home = contented_town(&mut w, at(1_000.0, 1_000.0), 4);
+            if with_school {
+                let school = place(&mut w, BuildingKind::School, at(1_200.0, 1_000.0));
+                w.buildings.get_mut(school).unwrap().staff = BuildingKind::School.def().workers;
+            }
+            // One child, born here rather than conjured as an adult — an adult
+            // arrives schooled by construction, so a conjured one would prove
+            // nothing at all.
+            let child = w.population.spawn_citizen(home, 6);
+            // The ten years between starting school and leaving it.
+            live_days(&mut w, u64::from(crate::time::DAYS_PER_YEAR) * 10);
+            w.population
+                .records()
+                .into_iter()
+                .find(|c| c.id == child)
+                .expect("the child is still alive")
+                .education()
+        };
+
+        assert_eq!(
+            taught(false),
+            Education::Unschooled,
+            "a republic with no school taught somebody anyway"
+        );
+        assert_eq!(
+            taught(true),
+            Education::Schooled,
+            "ten years beside a staffed school and the child learnt nothing"
+        );
+    }
+
+    /// A job nobody is qualified for goes unfilled, however many people are out
+    /// of work — the education half of the same rule reach already enforces.
+    #[test]
+    fn a_refinery_will_not_open_without_graduates() {
+        let mut w = bare();
+        let home = staff_up(&mut w, at(1_000.0, 1_000.0), 60);
+        let refinery = place(&mut w, BuildingKind::Refinery, at(1_300.0, 1_000.0));
+        let m = labour(&mut w);
+        apply(&mut w, &m);
+        assert_eq!(
+            w.population.staff_of(refinery),
+            0,
+            "sixty schooled workers staffed a refinery that wants graduates"
+        );
+
+        // Give the same people the schooling and the same building fills.
+        let ids: Vec<CitizenId> = w.population.records().iter().map(|c| c.id).collect();
+        let graduated: Vec<CitizenId> = ids.clone();
+        for _ in 0..(crate::citizen::UNIVERSITY_DAYS) {
+            w.population.school(&graduated, &[]);
+        }
+        let m = labour(&mut w);
+        apply(&mut w, &m);
+        assert_eq!(
+            w.population.staff_of(refinery),
+            BuildingKind::Refinery.def().workers,
+            "graduates could not staff the refinery either"
+        );
+        let _ = home;
+    }
+
+    /// A student is a working-age adult who is not working, and that is the
+    /// cost of a university rather than a side effect of one.
+    #[test]
+    fn a_university_takes_its_students_out_of_the_workforce() {
+        let mut w = bare();
+        let home = contented_town(&mut w, at(1_000.0, 1_000.0), 4);
+        let works = place(&mut w, BuildingKind::Sawmill, at(1_150.0, 1_000.0));
+        let university = place(&mut w, BuildingKind::University, at(1_000.0, 1_250.0));
+        w.buildings.get_mut(university).unwrap().staff = BuildingKind::University.def().workers;
+
+        // Six of them, of an age to go and schooled enough to be taken.
+        let students: Vec<CitizenId> = (0..6)
+            .map(|_| w.population.spawn_citizen(home, 17))
+            .collect();
+        let m = schooling(&w);
+        apply(&mut w, &m);
+        let m = labour(&mut w);
+        apply(&mut w, &m);
+
+        let enrolled = w
+            .population
+            .records()
+            .into_iter()
+            .filter(|c| students.contains(&c.id))
+            .collect::<Vec<_>>();
+        assert!(
+            enrolled.iter().all(|c| c.learning.studying),
+            "nobody enrolled at a staffed university within reach"
+        );
+        assert!(
+            enrolled.iter().all(|c| c.workplace.0.is_none()),
+            "a student took a job at the sawmill"
+        );
+        assert_eq!(
+            w.population.by_stage()[3],
+            4,
+            "the four adults work and the six students do not"
+        );
+
+        // And an unstaffed university stops having students the same day —
+        // the half a set-only flag would get wrong.
+        w.buildings.get_mut(university).unwrap().staff = 0;
+        let m = schooling(&w);
+        apply(&mut w, &m);
+        assert!(
+            w.population
+                .records()
+                .iter()
+                .filter(|c| students.contains(&c.id))
+                .all(|c| !c.learning.studying),
+            "a university with no staff still has students"
+        );
+        let m = labour(&mut w);
+        apply(&mut w, &m);
+        assert!(
+            w.population.staff_of(works) > 0,
+            "they never went back to work"
+        );
+    }
+
+    /// The acceptance scenario for migration: a republic worth living in
+    /// attracts people, and they arrive **at the border** and have to be
+    /// carried in.
+    ///
+    /// Both halves matter. Without the first the population is whatever it was
+    /// founded with for ever; without the second an immigrant is a number going
+    /// up, which is the click-a-button shape this build refuses.
+    #[test]
+    fn settlers_arrive_at_a_post_and_have_to_be_fetched() {
+        let mut w = bare();
+        let home = contented_town(&mut w, at(1_000.0, 1_000.0), 40);
+        // Empty housing for them to be brought to, and work so the republic
+        // reads as somewhere worth coming.
+        contented_town(&mut w, at(1_400.0, 1_000.0), 0);
+        place(&mut w, BuildingKind::Sawmill, at(1_150.0, 1_100.0));
+        let depot = place(&mut w, BuildingKind::BusDepot, at(1_000.0, 1_300.0));
+        w.buildings.get_mut(depot).unwrap().staff = BuildingKind::BusDepot.def().workers;
+        w.buildings
+            .get_mut(depot)
+            .unwrap()
+            .stock
+            .add(Resource::Fuel, Tonnes(20.0));
+        let m = labour(&mut w);
+        apply(&mut w, &m);
+        let m = commissioning(&w);
+        apply(&mut w, &m);
+        let m = contentment(&w);
+        apply(&mut w, &m);
+
+        let before = w.population.count();
+        assert!(
+            w.buildings.get(home).unwrap().content.overall() >= crate::wellbeing::CONTENT_ATTRACTS,
+            "the fixture republic is not attractive, so this proves nothing"
+        );
+
+        // A season, running the daily people systems and the coaches.
+        // Sampled **inside** the tick loop, and that took a run to learn: the
+        // post is two kilometres out and a coach does the round trip in under
+        // half an hour of simulated time, so a group that arrives at the end of
+        // one day is housed before the end of the next. Sampling once a day saw
+        // an empty border every single time and reported that nobody had ever
+        // come. The same peak-versus-instant trap the crew panel hit.
+        let mut ever_standing = 0u32;
+        for _ in 0..120 {
+            for _ in 0..TICKS_PER_DAY {
+                ever_standing =
+                    ever_standing.max(w.migration.unfetched().map(|g| g.heads).sum::<u32>());
+                let m = settling(&w);
+                apply(&mut w, &m);
+                let m = fleet(&w);
+                apply(&mut w, &m);
+                w.clock.advance();
+            }
+            for system in [contentment as fn(&World) -> Vec<Mutation>, migration] {
+                let m = system(&w);
+                apply(&mut w, &m);
+            }
+        }
+
+        assert!(
+            ever_standing > 0,
+            "nobody ever stood at the frontier, so nothing was fetched"
+        );
+        assert!(
+            w.migration.settled() > 0,
+            "settlers arrived at the border and no coach ever brought one in"
+        );
+        assert_eq!(
+            w.population.count(),
+            before + w.migration.settled() as usize,
+            "the head count does not match what was carried in"
+        );
+    }
+
+    /// And a republic that cannot reach them does not accumulate a crowd.
+    ///
+    /// The bound that makes the mechanic safe: a republic with no coaches is
+    /// told it cannot house people rather than quietly hoarding a queue at the
+    /// border for ever.
+    #[test]
+    fn settlers_nobody_fetches_go_home() {
+        let mut w = bare();
+        contented_town(&mut w, at(1_000.0, 1_000.0), 40);
+        contented_town(&mut w, at(1_400.0, 1_000.0), 0);
+        place(&mut w, BuildingKind::Sawmill, at(1_150.0, 1_100.0));
+        let m = labour(&mut w);
+        apply(&mut w, &m);
+
+        live_days(&mut w, crate::migration::PATIENCE * 2);
+        assert!(
+            w.migration.gave_up() > 0,
+            "a republic with no coaches held people at its border indefinitely"
+        );
+        assert!(
+            w.migration.all().len() < 20,
+            "{} groups are still standing there — the bound is not bounding",
+            w.migration.all().len()
+        );
+    }
+
+    /// People are born, they age, and they die — and the republic's shape
+    /// changes because of it.
+    #[test]
+    fn a_republic_ages_and_renews_itself() {
+        let mut w = bare();
+        let home = contented_town(&mut w, at(1_000.0, 1_000.0), 40);
+        place(&mut w, BuildingKind::Sawmill, at(1_150.0, 1_000.0));
+        let m = labour(&mut w);
+        apply(&mut w, &m);
+        let m = contentment(&w);
+        apply(&mut w, &m);
+
+        let oldest_before = w
+            .population
+            .records()
+            .iter()
+            .map(|c| c.age.0)
+            .max()
+            .expect("somebody lives here");
+        assert_eq!(w.population.by_stage()[0], 0, "no infants at founding");
+
+        live_days(&mut w, u64::from(crate::time::DAYS_PER_YEAR) * 3);
+
+        let records = w.population.records();
+        let oldest_after = records.iter().map(|c| c.age.0).max().expect("still alive");
+        assert!(
+            oldest_after > oldest_before,
+            "three years passed and nobody got any older"
+        );
+        assert!(
+            w.population.by_stage()[0] > 0,
+            "a content republic with room in its blocks had no children in three years"
+        );
+        assert!(
+            records.iter().any(|c| c.home.0 == home),
+            "everybody left the only home there is"
+        );
+    }
+
+    /// Deaths and births are a pure function of who and when, so a republic
+    /// replays identically. The determinism rule applied to the one system in
+    /// here that rolls dice about people.
+    #[test]
+    fn demography_is_reproducible() {
+        let build = || {
+            let mut w = bare();
+            contented_town(&mut w, at(1_000.0, 1_000.0), 40);
+            place(&mut w, BuildingKind::Sawmill, at(1_150.0, 1_000.0));
+            let m = labour(&mut w);
+            apply(&mut w, &m);
+            live_days(&mut w, u64::from(crate::time::DAYS_PER_YEAR) * 2);
+            w
+        };
+        let (a, b) = (build(), build());
+        assert_eq!(a.population.records(), b.population.records());
+        assert_eq!(a.migration, b.migration);
     }
 
     // ---- Contracts ----

@@ -490,6 +490,82 @@ impl Republic {
             .map_or_else(PackedFloat32Array::new, views::crew_parties)
     }
 
+    /// Who the republic is made of: `[infants, pupils, students, workers,
+    /// retired, unschooled, schooled, graduates]`.
+    #[func]
+    fn demographics(&self) -> PackedInt32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedInt32Array::new, views::demographics)
+    }
+
+    /// How the republic is treating its people: `[provisions, warmth, health,
+    /// culture, schooling, work, overall]`, each `0.0..=1.0`.
+    #[func]
+    fn contentment(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::contentment)
+    }
+
+    /// The names of those components, in the same order.
+    #[func]
+    fn contentment_names(&self) -> PackedStringArray {
+        views::contentment_names()
+    }
+
+    /// Mean health and mean loyalty, `[health, loyalty]`.
+    #[func]
+    fn wellbeing(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::wellbeing)
+    }
+
+    /// People coming and going: `[waiting, groups, settled, left, gave_up]`.
+    #[func]
+    fn migration_totals(&self) -> PackedInt32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedInt32Array::new, views::migration_totals)
+    }
+
+    /// Settlers standing at the frontier: `[x, y, heads, days_waited]`.
+    #[func]
+    fn newcomers(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::newcomers)
+    }
+
+    /// One home's contentment, component by component, then its overall — and
+    /// then the index of the component costing it most, or `-1` if nothing is.
+    ///
+    /// What a panel prints when the player asks why an estate is unhappy. The
+    /// worst component is the simulation's own answer rather than the shell
+    /// working it out, because a weighted loss is balance and balance does not
+    /// belong in a panel.
+    #[func]
+    fn home_contentment(&self, building: i64) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        let Some(w) = &self.world else { return out };
+        let id = red_republic_sim::BuildingId(building.max(0) as u32);
+        let Some(b) = w.buildings().get(id) else {
+            return out;
+        };
+        for part in b.content.parts() {
+            out.push(part as f32);
+        }
+        out.push(b.content.overall() as f32);
+        let worst = b.content.worst().and_then(|name| {
+            red_republic_sim::Contentment::NAMES
+                .iter()
+                .position(|n| *n == name)
+        });
+        out.push(worst.map_or(-1.0, |i| i as f32));
+        out
+    }
+
     /// How many builders are standing on a site, and how many its office still
     /// has to send. What a site panel needs to answer the only two questions
     /// worth asking of a half-built thing: is anyone on it, and if not, why not.
