@@ -48,6 +48,7 @@ pub mod time;
 pub mod trade;
 pub mod transport;
 pub mod units;
+pub mod utility;
 pub mod wellbeing;
 pub mod world;
 
@@ -80,6 +81,7 @@ pub use trade::{
 };
 pub use transport::{Commute, Mode};
 pub use units::{Metres, Point, Seconds, Speed, Tonnes};
+pub use utility::{Line, LineId, LineSite, LineSiteId, LineWorks, Networks, Utility};
 pub use wellbeing::Contentment;
 pub use world::{SAVE_VERSION, Save, SaveError, World, WorldSpec};
 

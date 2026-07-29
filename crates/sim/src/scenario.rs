@@ -13,7 +13,24 @@ use crate::citizen::MAX_WALK;
 use crate::geology::Mineral;
 use crate::resource::Resource;
 use crate::units::{Metres, Point, Tonnes};
+use crate::utility::Utility;
 use crate::world::World;
+
+/// Order a span and energise it there and then.
+///
+/// The founding grant arrives finished — buildings and grid alike — so this
+/// goes round the construction queue in exactly the way `place_built` does.
+/// Every other span in the republic's life is ordered, materialled and strung
+/// by the crew.
+fn string_up(world: &mut World, kind: Utility, from: Point, to: Point) {
+    let Ok(id) = world.order_line(kind, from, to) else {
+        return; // shorter than a span worth surveying
+    };
+    let Some(site) = world.lineworks_mut().remove(id) else {
+        return;
+    };
+    world.energise_now(&site);
+}
 
 /// What the founding managed to put down.
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +51,9 @@ pub struct StartingBase {
     pub boiler: Option<BuildingId>,
     /// `None` when the border could not take a crossing on this seed.
     pub customs: Option<BuildingId>,
+    /// The transformer stations the town plugs into. Three of them, because a
+    /// station serves a radius and a founding is spread over a kilometre.
+    pub substations: Vec<BuildingId>,
     /// Where the town centre ended up.
     pub centre: Point,
 }
@@ -108,7 +128,7 @@ fn found_crossing(world: &mut World, near: Point) -> Option<BuildingId> {
 /// Guarded by `the_founding_hand_can_staff_itself`, because this number drifts
 /// every time a building's worker count changes and the failure is silent: the
 /// tail of the founding order simply stops being manned.
-pub const SETTLERS: usize = 130;
+pub const SETTLERS: usize = 139;
 
 /// Found a town: housing, a mine on the nearest coal, a plant to feed it, and
 /// the beginnings of a timber chain.
@@ -156,16 +176,17 @@ pub fn found(world: &mut World, citizens: usize) -> StartingBase {
         textile_mill: None,
         boiler: None,
         customs: None,
+        substations: Vec::new(),
         centre,
     };
 
+    // Through `World::place_built` rather than `Buildings::place_built`, which
+    // is not tidiness: the world's version applies the border rule *and* plugs
+    // the new building into whatever utilities run past it. A founding that
+    // went round the back of that would put its power station up unconnected to
+    // its own grid.
     let put = |world: &mut World, kind: BuildingKind, near: Point, reach: Metres| {
-        find_site(world, kind, near, reach).and_then(|at| {
-            world
-                .buildings
-                .place_built(kind, at, &world.terrain, &world.geology)
-                .ok()
-        })
+        find_site(world, kind, near, reach).and_then(|at| world.place_built(kind, at).ok())
     };
 
     base.mine = put(world, BuildingKind::CoalMine, centre, Metres(400.0));
@@ -200,6 +221,61 @@ pub fn found(world: &mut World, citizens: usize) -> StartingBase {
         Point::new(centre.x + Metres(200.0), centre.y - Metres(450.0)),
         Metres(MAX_WALK.0 / 2.0),
     );
+    // The grid, and the mains.
+    //
+    // **Moscow sends a working town, wired.** Power and heat stopped being
+    // quantities the moment `utility` landed: a plant lights only what is
+    // strung to it and a boiler warms only what a main runs past, so a founding
+    // that placed the buildings and no lines would be a founding that arrives
+    // dark and cold. That is not a hard start, it is half the game switched
+    // off — the same failure the customs house taught, and the reason
+    // `the_founding_hand_can_staff_itself` exists.
+    //
+    // Three transformer stations rather than one, because a station serves
+    // `TRANSFORMER_RANGE` and the founding is spread over about a kilometre.
+    // They are what the *consumers* plug into; the lines only join the stations
+    // to the plant.
+    base.substations = [
+        Point::new(centre.x - Metres(150.0), centre.y + Metres(180.0)),
+        Point::new(centre.x + Metres(400.0), centre.y + Metres(150.0)),
+        Point::new(centre.x - Metres(50.0), centre.y - Metres(400.0)),
+    ]
+    .into_iter()
+    .filter_map(|want| put(world, BuildingKind::TransformerStation, want, Metres(250.0)))
+    .collect();
+
+    let position = |world: &World, id: BuildingId| world.buildings.get(id).map(|b| b.centre);
+    if let Some(plant) = base.plant.and_then(|id| position(world, id)) {
+        // From the plant to the first station, then station to station. Every
+        // span is energised on the spot: the founding hand arrives finished,
+        // exactly as its buildings do.
+        let stations: Vec<Point> = base
+            .substations
+            .iter()
+            .filter_map(|&id| position(world, id))
+            .collect();
+        let mut previous = plant;
+        for station in stations {
+            string_up(world, Utility::Power, previous, station);
+            previous = station;
+        }
+    }
+
+    // And the heat main, chained boiler to block to block. A heat main reaches
+    // barely a hundred metres sideways, so it has to run *to* each block rather
+    // than past the row — which is the whole reason district heating is a
+    // town-scale thing and a remote camp wants its own boiler.
+    if let Some(boiler) = base.boiler.and_then(|id| position(world, id)) {
+        let mut previous = boiler;
+        for block in base.housing.clone() {
+            let Some(at) = position(world, block) else {
+                continue;
+            };
+            string_up(world, Utility::Heat, previous, at);
+            previous = at;
+        }
+    }
+
     // And haulage, for the same reason and in the same breath. Freight is
     // physical now: without a garage and its lorries, nothing reaches anything
     // and the republic starves beside its own full bins. That makes the motor

@@ -34,6 +34,8 @@ fov = 60.0
 
 [node name="Roads" type="MeshInstance3D" parent="."]
 
+[node name="Lines" type="MeshInstance3D" parent="."]
+
 [node name="Frontier" type="MeshInstance3D" parent="."]
 
 [node name="Survey" type="MeshInstance3D" parent="."]

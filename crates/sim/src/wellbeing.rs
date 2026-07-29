@@ -57,6 +57,14 @@ pub struct Contentment {
     pub schooling: f64,
     /// The share of working-age residents who hold a job.
     pub work: f64,
+    /// Whether the bins are emptied and the air is breathable.
+    ///
+    /// One component for two things that a resident cannot tell apart: rubbish
+    /// piling up in the yard because nobody drove it to a landfill, and smoke
+    /// from a works upwind. Both are "this is not a pleasant place to live",
+    /// both are the player's to fix, and splitting them would make the panel
+    /// longer without making a decision clearer.
+    pub cleanliness: f64,
 }
 
 impl Contentment {
@@ -68,6 +76,7 @@ impl Contentment {
         culture: 0.0,
         schooling: 0.0,
         work: 0.0,
+        cleanliness: 0.0,
     };
 
     /// What each component is worth, in the same order as [`Contentment::parts`].
@@ -75,22 +84,23 @@ impl Contentment {
     /// Food and warmth dominate because they are survival and the rest are
     /// quality of life. They are authored rather than buried in `overall` so
     /// that rebalancing what the republic is judged on is a data edit.
-    pub const WEIGHTS: [f64; 6] = [3.0, 2.0, 1.0, 0.75, 0.75, 1.5];
+    pub const WEIGHTS: [f64; 7] = [3.0, 2.0, 1.0, 0.75, 0.75, 1.5, 1.0];
 
     /// The components in a fixed order, each with the name a panel prints.
     ///
     /// Iteration order is part of the simulation's definition here: the shell
     /// reads these into a packed array and labels them by index.
-    pub const NAMES: [&'static str; 6] = [
+    pub const NAMES: [&'static str; 7] = [
         "Provisions",
         "Warmth",
         "Health",
         "Culture",
         "Schooling",
         "Work",
+        "Cleanliness",
     ];
 
-    pub fn parts(&self) -> [f64; 6] {
+    pub fn parts(&self) -> [f64; 7] {
         [
             self.provisions,
             self.warmth,
@@ -98,6 +108,7 @@ impl Contentment {
             self.culture,
             self.schooling,
             self.work,
+            self.cleanliness,
         ]
     }
 
@@ -190,6 +201,7 @@ mod tests {
             culture: 1.0,
             schooling: 1.0,
             work: 1.0,
+            cleanliness: 1.0,
         };
         assert!((all.overall() - 1.0).abs() < 1e-12);
         assert!(all.worst().is_none(), "nothing is short");
@@ -209,6 +221,7 @@ mod tests {
             culture: 0.0,
             schooling: 1.0,
             work: 1.0,
+            cleanliness: 1.0,
         };
         // 0.2 x 3.0 = 0.6 against 1.0 x 0.75 = 0.75, so culture wins here...
         assert_eq!(hungry.worst(), Some("Culture"));
@@ -242,6 +255,7 @@ mod tests {
             culture: 1.0,
             schooling: 1.0,
             work: 1.0,
+            cleanliness: 1.0,
         };
         assert!((over.overall() - 1.0).abs() < 1e-12);
     }

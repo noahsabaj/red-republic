@@ -313,6 +313,10 @@ impl VehicleState {
 pub enum Destination {
     Building(BuildingId),
     RoadSite(RoadSiteId),
+    /// A power line or a heat main under construction. Same reasoning as
+    /// a road site: it has a bill of materials and somebody has to drive
+    /// the steel out to it.
+    LineSite(crate::utility::LineSiteId),
 }
 
 /// What a vehicle has been sent out to do.

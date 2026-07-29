@@ -32,12 +32,14 @@ const CLIMATE := 0  ## indexes ClimateId::ALL: plains, taiga, steppe, maritime
 @onready var vehicles_node: MultiMeshInstance3D = $Vehicles
 @onready var newcomers_node: MultiMeshInstance3D = $Newcomers
 @onready var roads_node: MeshInstance3D = $Roads
+@onready var lines_node: MeshInstance3D = $Lines
 @onready var hud: CanvasLayer = $HUD
 @onready var survey_node: MeshInstance3D = $Survey
 @onready var frontier_node: MeshInstance3D = $Frontier
 
 var _buildings_shown := -1
 var _roads_shown := -1
+var _lines_shown := -1
 var _shot_path := ""
 var _shot_after := 90
 var _frames := 0
@@ -71,14 +73,16 @@ func _ready() -> void:
 		"going": _overlay = Overlays.Mode.GOING
 		"tracks": _overlay = Overlays.Mode.WEAR
 		"survey": _overlay = Overlays.Mode.SURVEY
+		"pollution": _overlay = Overlays.Mode.POLLUTION
 	hud.set_resource_names(republic.resource_names())
 	hud.set_contentment_names(republic.contentment_names())
 	hud.set_hint(
-		"0-5 speed  ·  space pause  ·  F none  G going  T tracks  R survey  ·  "
+		"0-5 speed  ·  space pause  ·  F none  G going  T tracks  R survey  P smoke  ·  "
 		+ "WASD pan  ·  right-drag orbit  ·  wheel zoom"
 	)
 	_refresh_buildings()
 	_refresh_roads()
+	_refresh_lines()
 	_build_frontier()
 	# Founded paused. The first thing a posting should do is let you look at it.
 	republic.set_speed(_start_speed)
@@ -97,6 +101,7 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	_refresh_buildings()
 	_refresh_roads()
+	_refresh_lines()
 	_refresh_vehicles()
 	_refresh_newcomers()
 	_refresh_overlay()
@@ -175,6 +180,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				KEY_G: Overlays.Mode.GOING,
 				KEY_T: Overlays.Mode.WEAR,
 				KEY_R: Overlays.Mode.SURVEY,
+				KEY_P: Overlays.Mode.POLLUTION,
 			}
 			if modes.has(event.keycode):
 				_overlay = modes[event.keycode]
@@ -516,6 +522,83 @@ func _refresh_roads() -> void:
 				mesh.surface_add_vertex(v)
 		mesh.surface_end()
 	roads_node.mesh = mesh
+
+
+## Power lines and heat mains, drawn as thin ribbons above the ground.
+##
+## They have to be on the map. A plant lights only what it is strung to and a
+## boiler warms only what a main runs past, so "why is this block cold" is a
+## question about a line the player either drew or did not -- which is
+## unanswerable if the lines are invisible.
+##
+## Event-driven like the roads: a span changes only when one is ordered or
+## energised, which is rare.
+func _refresh_lines() -> void:
+	var built: PackedFloat32Array = republic.utility_lines()
+	var sites: PackedFloat32Array = republic.utility_sites()
+	@warning_ignore("integer_division")
+	var count: int = built.size() / 5 + sites.size() / 6
+	if count == _lines_shown:
+		return
+	_lines_shown = count
+	var mesh := ImmediateMesh.new()
+	if count > 0:
+		var mat := StandardMaterial3D.new()
+		mat.vertex_color_use_as_albedo = true
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, mat)
+		@warning_ignore("integer_division")
+		var spans: int = built.size() / 5
+		for i in spans:
+			var o := i * 5
+			var tone: Color = _utility_tone(int(built[o + 4]))
+			_span(mesh, built[o], built[o + 1], built[o + 2], built[o + 3], tone, 1.8, 9.0)
+		@warning_ignore("integer_division")
+		var pending: int = sites.size() / 6
+		for i in pending:
+			var o := i * 6
+			# A site is thinner and paler, and fills in as it is strung -- the
+			# same rule a road site answers to: a half-built thing must look
+			# half-built rather than leave the player wondering why the lights
+			# are still out.
+			var tone: Color = _utility_tone(int(sites[o + 5]))
+			tone.a = lerpf(0.25, 0.8, sites[o + 4])
+			_span(mesh, sites[o], sites[o + 1], sites[o + 2], sites[o + 3], tone, 1.0, 5.0)
+		mesh.surface_end()
+	lines_node.mesh = mesh
+
+
+## 0 power, 1 heat -- the order `Utility::ALL` declares.
+func _utility_tone(kind: int) -> Color:
+	return Color(0.86, 0.80, 0.42) if kind == 0 else Color(0.78, 0.42, 0.32)
+
+
+## One ribbon between two ground positions, lifted clear and wound to face up.
+##
+## Wound so the ribbon faces UP. Getting this backwards is the third time in
+## this scene that correct-looking geometry would render as nothing at all --
+## Godot culls back faces, and a flat quad seen from the wrong side is invisible
+## rather than wrong-looking.
+func _span(
+	mesh: ImmediateMesh, ax: float, az: float, bx: float, bz: float,
+	tone: Color, half: float, lift: float
+) -> void:
+	var a := Vector3(ax, republic.ground_height(ax, az) + lift, az)
+	var b := Vector3(bx, republic.ground_height(bx, bz) + lift, bz)
+	var along := b - a
+	along.y = 0.0
+	if along.length() < 0.01:
+		return
+	var side := along.normalized().cross(Vector3.UP).normalized() * half
+	var p0 := a - side
+	var p1 := a + side
+	var p2 := b + side
+	var p3 := b - side
+	for v in [p0, p3, p2, p0, p2, p1]:
+		mesh.surface_set_color(tone)
+		mesh.surface_add_vertex(v)
 
 
 const SPEED_NAMES := ["paused", "real time", "1 h/s", "2 h/s", "4 h/s", "8 h/s"]

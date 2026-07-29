@@ -159,6 +159,13 @@ pub enum Mutation {
     /// A day of the ground coming back. Without it every line ever driven is
     /// permanent and a map fills with the ghosts of routes nobody uses.
     Fade { by: f64 },
+    /// Smoke settling on a cell of the traversal lattice.
+    Foul { cell: usize, by: f64 },
+    /// A day of weather carrying it away. The counterpart of [`Mutation::Fade`]
+    /// and needed for the same reason: without it every chimney the republic
+    /// ever lit is permanent, and pulling a works down would leave its smoke
+    /// behind for ever.
+    Disperse { by: f64 },
     /// A worn corridor becomes a dirt track on the map: proper segments in
     /// the road network, which anything can then route over as a road.
     ///
@@ -259,6 +266,19 @@ pub enum Mutation {
     /// One kind: work and materials are the same transaction, and a site that
     /// advanced without consuming would be building itself out of nothing.
     Build { site: BuildingId, builder_days: f64 },
+    /// The same, on a power line or a heat main.
+    ///
+    /// Separate from [`Mutation::Lay`] for the reason that one is separate from
+    /// [`Mutation::Build`]: it writes to a different structure, and its last
+    /// builder-day **energises** the span — the line enters the network, every
+    /// building already standing within reach of it is plugged in, and the site
+    /// stops existing, all in one transaction. A finished span that carried
+    /// nothing until somebody happened to place a building would be a grid that
+    /// came alive for no reason the player could see.
+    String {
+        site: crate::utility::LineSiteId,
+        builder_days: f64,
+    },
     /// The same, on a road.
     ///
     /// Separate from [`Mutation::Build`] because it writes to a different
@@ -400,12 +420,15 @@ pub enum MutationKind {
     Recover,
     Wear,
     Fade,
+    Foul,
+    Disperse,
     Promote,
     Provision,
     Export,
     Import,
     Build,
     Lay,
+    String,
     Weather,
     Offer,
     CloseContract,
@@ -447,6 +470,8 @@ impl Mutation {
             Mutation::Embark { .. } => MutationKind::Embark,
             Mutation::Wear { .. } => MutationKind::Wear,
             Mutation::Fade { .. } => MutationKind::Fade,
+            Mutation::Foul { .. } => MutationKind::Foul,
+            Mutation::Disperse { .. } => MutationKind::Disperse,
             Mutation::Promote { .. } => MutationKind::Promote,
             Mutation::Bog { .. } => MutationKind::Bog,
             Mutation::Free { .. } => MutationKind::Free,
@@ -456,6 +481,7 @@ impl Mutation {
             Mutation::Import { .. } => MutationKind::Import,
             Mutation::Build { .. } => MutationKind::Build,
             Mutation::Lay { .. } => MutationKind::Lay,
+            Mutation::String { .. } => MutationKind::String,
             Mutation::Weather(_) => MutationKind::Weather,
             Mutation::Offer(_) => MutationKind::Offer,
             Mutation::CloseContract { .. } => MutationKind::CloseContract,
@@ -498,6 +524,7 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
         &[
             MutationKind::Build,
             MutationKind::Lay,
+            MutationKind::String,
             MutationKind::Consume,
         ],
     ),
@@ -558,6 +585,9 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
         ],
     ),
     ("tracks", &[MutationKind::Fade, MutationKind::Promote]),
+    // Daily. What the republic throws away, and what it breathes.
+    ("sanitation", &[MutationKind::Produce]),
+    ("pollution", &[MutationKind::Foul, MutationKind::Disperse]),
     ("labour", &[MutationKind::Staff, MutationKind::Consume]),
     // Daily. How a home is doing, and how each person in it feels about it —
     // one system because the second is a drift toward the first, and computing
@@ -821,6 +851,39 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     roadworks::open(&mut world.roads, &opened);
                 }
             }
+            &Mutation::String { site, builder_days } => {
+                let Some(line) = world.lineworks.get(site) else {
+                    continue;
+                };
+                let labour = line.labour();
+                if labour <= 0.0 {
+                    continue;
+                }
+                let worked = builder_days.min((labour - line.work_done).max(0.0));
+                let bill = line.materials();
+                let share = worked / labour;
+                if let Some(line) = world.lineworks.get_mut(site) {
+                    for (resource, quantity) in bill {
+                        line.stock.take(resource, Tonnes(quantity.0 * share));
+                    }
+                    line.work_done += worked;
+                }
+                // The last builder-day energises it, and everything already
+                // standing within reach is plugged in on the same transaction.
+                // A span that existed but connected nobody until the next
+                // placement would be a grid that came alive for no reason the
+                // player could see.
+                if world.lineworks.get(site).is_some_and(|l| l.is_finished())
+                    && let Some(strung) = world.lineworks.remove(site)
+                {
+                    world
+                        .crews
+                        .release(Destination::LineSite(site), strung.depot());
+                    world.build_policy.forget(Destination::LineSite(site));
+                    world.utilities.energise(&strung);
+                    world.wire_up(strung.kind);
+                }
+            }
             &Mutation::Commission { garage, kind } => {
                 if let Some(yard) = world.buildings.get(garage).map(|b| b.centre) {
                     world.fleet.commission(kind, garage, yard);
@@ -980,6 +1043,11 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                             road.stock.add(*resource, landed);
                         }
                     }
+                    Destination::LineSite(id) => {
+                        if let Some(line) = world.lineworks.get_mut(id) {
+                            line.stock.add(*resource, landed);
+                        }
+                    }
                 }
                 let bay = Some(consignee.at);
                 if let Some(v) = world.fleet.get_mut(*vehicle) {
@@ -998,6 +1066,8 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                 }
             }
             &Mutation::Fade { by } => world.lattice.fade(by),
+            &Mutation::Foul { cell, by } => world.lattice.foul(cell, by),
+            &Mutation::Disperse { by } => world.lattice.disperse(by),
             Mutation::Promote { cells } => {
                 // Each worn cell joins the worn cells beside it. A corridor is
                 // one or two cells wide, so what comes out is a chain rather
@@ -1259,26 +1329,87 @@ fn tick_days() -> f64 {
 /// ordering over build categories, and that control belongs here too once
 /// there is a screen to express it. Ordering by id at least makes the answer
 /// reproducible rather than arbitrary.
+/// How far a Transformer Station serves.
+///
+/// It is what a *consumer* connects to, and the reason there are two hops
+/// rather than one: high-voltage line to a station, low-voltage station to the
+/// street. Modelling it as one hop would make a pylon strung past a factory
+/// enough to run it, which is not how electricity works and would make the
+/// station a building with nothing to do.
+pub const TRANSFORMER_RANGE: Metres = Metres(450.0);
+
+/// What generation and demand one network sees.
+#[derive(Debug, Clone, Copy, Default)]
+struct Supply {
+    /// Megawatts arriving after line losses.
+    available: f64,
+    /// Megawatts already committed on this pass.
+    drawn: f64,
+}
+
+/// Who the grid can feed.
+///
+/// **Per network, not per republic.** Until the utility module existed a plant
+/// anywhere on the map lit every building on it — the same free thing freight
+/// was before lorries. Now a generator feeds only the network it is strung to,
+/// and a consumer draws only from a **Transformer Station** within
+/// [`TRANSFORMER_RANGE`] that is itself on a network with generation on it.
+///
+/// Losses are charged on the **span** of the network, so a grid that sprawls
+/// across the map delivers less of what it makes than a compact one. That is
+/// the argument for siting a plant near what it serves, and it is the only
+/// thing that makes a long line a real trade rather than a formality.
+///
+/// Demand is still met in commissioning order within a network, which is
+/// deliberate but **provisional**: who goes dark when there is not enough is
+/// the player's decision, and the ordering at least makes the answer
+/// reproducible until there is a screen to make it on.
 pub fn power(world: &World) -> Vec<Mutation> {
-    let mut available = 0.0;
+    use crate::utility::Utility;
+
+    let mut supply: BTreeMap<u32, Supply> = BTreeMap::new();
     for b in world.buildings.all() {
         if !b.is_built() {
             continue; // a half-built plant generates nothing
         }
         let def = b.def();
-        if def.power_output > 0.0 && b.staffing() > 0.0 {
-            let fuelled = def
-                .inputs
-                .iter()
-                .all(|&(r, _)| b.stock.get(r).is_positive());
-            if fuelled {
-                available += def.power_output * b.staffing();
-            }
+        if def.power_output <= 0.0 || b.staffing() <= 0.0 {
+            continue;
         }
+        let fuelled = def
+            .inputs
+            .iter()
+            .all(|&(r, _)| b.stock.get(r).is_positive());
+        if !fuelled {
+            continue;
+        }
+        // A plant that is not strung to anything lights nothing — including
+        // itself, which is correct: an isolated power station is a shed full of
+        // turbines with nowhere to send the current.
+        let Some(network) = world.utilities.network_of(b.id, Utility::Power) else {
+            continue;
+        };
+        let span = world.utilities.span_of(network, Utility::Power);
+        let kept = (1.0 - Utility::Power.def().loss_per_km * span.as_km()).clamp(0.0, 1.0);
+        supply.entry(network).or_default().available += def.power_output * b.staffing() * kept;
     }
 
+    // The stations that actually serve anybody: built, staffed, and on a
+    // network. Collected once rather than searched per consumer.
+    let stations: Vec<(Point, u32)> = world
+        .buildings
+        .all()
+        .iter()
+        .filter(|b| b.is_built() && b.def().transforms && b.staffing() > 0.0)
+        .filter_map(|b| {
+            world
+                .utilities
+                .network_of(b.id, Utility::Power)
+                .map(|n| (b.centre, n))
+        })
+        .collect();
+
     let mut out = Vec::new();
-    let mut drawn = 0.0;
     let mut consumers: Vec<_> = world
         .buildings
         .all()
@@ -1289,10 +1420,24 @@ pub fn power(world: &World) -> Vec<Mutation> {
 
     for b in consumers {
         let draw = b.def().power_draw;
-        let on = drawn + draw <= available;
-        if on {
-            drawn += draw;
-        }
+        // The nearest station in reach, and through it the network it is on.
+        let network = stations
+            .iter()
+            .filter(|(at, _)| at.distance_to(b.centre).0 <= TRANSFORMER_RANGE.0)
+            .min_by(|(a, na), (c, nc)| {
+                a.distance_to(b.centre)
+                    .0
+                    .total_cmp(&c.distance_to(b.centre).0)
+                    .then_with(|| na.cmp(nc))
+            })
+            .map(|(_, n)| *n);
+        let on = match network.and_then(|n| supply.get_mut(&n).map(|s| (n, s))) {
+            Some((_, s)) if s.drawn + draw <= s.available => {
+                s.drawn += draw;
+                true
+            }
+            _ => false,
+        };
         out.push(Mutation::Powered { building: b.id, on });
     }
     out
@@ -1336,16 +1481,27 @@ pub fn heating(world: &World) -> Vec<Mutation> {
             .collect();
     }
 
-    let mut demand: f64 = world
-        .buildings
-        .all()
-        .iter()
-        .filter(|b| b.is_built())
-        .map(|b| b.def().heat * factor)
-        .sum();
+    use crate::utility::Utility;
+
+    // Heat is a **network** quantity, not a republic-wide one. A block is warm
+    // only if a main runs past it and something on the *same* main is burning
+    // coal — which is what makes district heating a town-scale decision rather
+    // than a number that covers the map.
+    let network_of =
+        |b: &crate::building::Building| world.utilities.network_of(b.id, Utility::Heat);
+
+    let mut demand: BTreeMap<u32, f64> = BTreeMap::new();
+    for b in world.buildings.all() {
+        if !b.is_built() || b.def().heat <= 0.0 {
+            continue;
+        }
+        if let Some(n) = network_of(b) {
+            *demand.entry(n).or_default() += b.def().heat * factor;
+        }
+    }
 
     let mut out = Vec::new();
-    let mut produced = 0.0;
+    let mut produced: BTreeMap<u32, f64> = BTreeMap::new();
     let mut boilers: Vec<_> = world
         .buildings
         .all()
@@ -1355,6 +1511,12 @@ pub fn heating(world: &World) -> Vec<Mutation> {
     boilers.sort_by_key(|b| b.id);
 
     for boiler in boilers {
+        // A boiler house with no main out of it heats nothing but itself, and
+        // the simulation says so rather than quietly warming the republic.
+        let Some(network) = network_of(boiler) else {
+            continue;
+        };
+        let wanted = demand.get(&network).copied().unwrap_or(0.0);
         let def = boiler.def();
         // A boiler house is a building like any other: no crew or no
         // electricity for its pumps and it makes nothing. Exempting it would
@@ -1366,19 +1528,38 @@ pub fn heating(world: &World) -> Vec<Mutation> {
         if capacity <= 0.0 {
             continue;
         }
-        // Throttle to what is still wanted. A boiler serving a mild day does
-        // not burn a cold day's coal.
-        let throttle = (demand / capacity).clamp(0.0, 1.0);
+        // What survives the pipes. Heat leaks badly — seven per cent a
+        // kilometre — so a main strung across the map delivers a fraction of
+        // what the boiler burnt for, which is the whole reason heating is a
+        // town-scale thing.
+        let span = world.utilities.span_of(network, Utility::Heat);
+        let kept = (1.0 - Utility::Heat.def().loss_per_km * span.as_km()).clamp(0.0, 1.0);
+
+        // Throttle to what is still wanted **at the far end of the main**. A
+        // boiler serving a mild day does not burn a cold day's coal, and a
+        // boiler on a main that serves three blocks does not burn a city's
+        // worth — but it must burn enough to cover what the pipes lose.
+        //
+        // Getting this wrong was the first bug this network produced, and only
+        // a measurement found it: throttling to `wanted / capacity` and *then*
+        // taking the loss out means the boiler is deliberately short by exactly
+        // the loss, every time. The founding's third block went cold in January
+        // with the boiler running at 71% and coal in the bunker.
+        let throttle = if kept <= 0.0 {
+            0.0
+        } else {
+            (wanted / (capacity * kept)).clamp(0.0, 1.0)
+        };
         if throttle <= 0.0 {
             continue;
         }
         // And burn only in proportion to what it actually manages to make.
         let mut fuel_factor: f64 = 1.0;
         for &(resource, rate) in def.inputs {
-            let wanted = rate * day * boiler.staffing() * throttle;
-            if wanted > 0.0 {
+            let needed = rate * day * boiler.staffing() * throttle;
+            if needed > 0.0 {
                 fuel_factor =
-                    fuel_factor.min((boiler.stock.get(resource).0 / wanted).clamp(0.0, 1.0));
+                    fuel_factor.min((boiler.stock.get(resource).0 / needed).clamp(0.0, 1.0));
             }
         }
         let running = throttle * fuel_factor;
@@ -1392,9 +1573,11 @@ pub fn heating(world: &World) -> Vec<Mutation> {
                 tonnes: Tonnes(rate * day * boiler.staffing() * running),
             });
         }
-        let made = capacity * running;
-        produced += made;
-        demand = (demand - made).max(0.0);
+        let made = capacity * running * kept;
+        *produced.entry(network).or_default() += made;
+        if let Some(left) = demand.get_mut(&network) {
+            *left = (*left - made).max(0.0);
+        }
     }
 
     // Allocate in commissioning order, the same tie-break power uses and for
@@ -1412,6 +1595,17 @@ pub fn heating(world: &World) -> Vec<Mutation> {
     let mut budget = produced;
     for b in consumers {
         let need = b.def().heat * factor;
+        // A block with no main past it is cold, whatever the republic is
+        // burning elsewhere. This is the state the whole network exists to make
+        // representable, and it is why heating is no longer a number.
+        let Some(network) = network_of(b) else {
+            out.push(Mutation::Heated {
+                building: b.id,
+                on: false,
+            });
+            continue;
+        };
+        let budget = budget.entry(network).or_default();
         // The epsilon is load-bearing, and the trajectory runner is what found
         // it: a boiler throttled to demand produces *exactly* demand, but
         // `demand` was accumulated by summing and `budget` is spent by
@@ -1419,9 +1613,9 @@ pub fn heating(world: &World) -> Vec<Mutation> {
         // slack the last block on the list came up a few ulps short and went
         // cold on mild days — 67% warm housing in November while a January at
         // -15 was fine, which is the wrong way round and is what gave it away.
-        let on = budget >= need - 1e-9;
+        let on = *budget >= need - 1e-9;
         if on {
-            budget -= need;
+            *budget -= need;
         }
         out.push(Mutation::Heated { building: b.id, on });
     }
@@ -1525,6 +1719,10 @@ pub fn construction(world: &World) -> Vec<Mutation> {
                 site: id,
                 builder_days: days,
             },
+            Destination::LineSite(id) => Mutation::String {
+                site: id,
+                builder_days: days,
+            },
         });
     }
     out
@@ -1551,6 +1749,13 @@ fn sites_in_order(world: &World) -> Vec<(u64, Destination, f64)> {
         }
         let remaining = (road.labour() - road.work_done).max(0.0);
         sites.push((road.ordered, Destination::RoadSite(road.id), remaining));
+    }
+    for line in world.lineworks.all() {
+        if !line.has_materials() {
+            continue;
+        }
+        let remaining = (line.labour() - line.work_done).max(0.0);
+        sites.push((line.ordered, Destination::LineSite(line.id), remaining));
     }
     sites.sort_by(|(oa, da, _), (ob, db, _)| oa.cmp(ob).then_with(|| da.cmp(db)));
     sites
@@ -2475,9 +2680,17 @@ pub fn production(world: &World) -> Vec<Mutation> {
             continue;
         }
 
-        // A farm answers to the ground and the air, not to the calendar.
+        // A farm answers to the ground and the air, not to the calendar — and
+        // "the air" is now literal. Smoke on the fields costs yield, which is
+        // what makes siting a steel works upwind of the collective farm a
+        // decision with a price rather than a matter of taste.
+        //
+        // Applied here rather than folded into `growing_conditions`, because
+        // that function is about the *weather* and is the same everywhere,
+        // while pollution is a property of where this particular farm stands.
         if def.farms {
-            efficiency *= growing_conditions(world);
+            let dirt = world.lattice.pollution_near(b.centre);
+            efficiency *= growing_conditions(world) * (1.0 - dirt * SMOKE_YIELD_COST);
             if efficiency <= 0.0 {
                 continue;
             }
@@ -3999,6 +4212,19 @@ pub fn contentment(world: &World) -> Vec<Mutation> {
             } else {
                 f64::from(here.employed) / f64::from(here.working_age)
             },
+            // Bins that nobody has emptied, and the air the works upwind is
+            // making. Both are "this is not a pleasant place to live", and a
+            // resident cannot tell them apart, so they are one number.
+            cleanliness: {
+                let bin = home.storage_cap();
+                let rubbish = if bin.is_positive() {
+                    (home.stock.get(Resource::Waste).0 / bin.0).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let smoke = world.lattice.pollution_near(home.centre);
+                (1.0 - rubbish.max(smoke)).clamp(0.0, 1.0)
+            },
         };
         scores.insert(home.id, content.overall());
         out.push(Mutation::Content {
@@ -4504,6 +4730,124 @@ pub fn settling(world: &World) -> Vec<Mutation> {
     out
 }
 
+/// How far a building's smoke carries.
+///
+/// A generous radius on a hundred-metre lattice: a steel works fouls the valley
+/// it stands in rather than the square it occupies, which is what makes zoning
+/// a decision rather than a formality.
+pub const SMOKE_RADIUS: Metres = Metres(600.0);
+
+/// How much of a day's emission lands on each cell within that radius, at the
+/// source. Falls off with distance.
+pub const SMOKE_PER_UNIT: f64 = 0.02;
+
+/// What a fully fouled field costs a harvest.
+///
+/// Not total: crops grow in industrial valleys, badly. A curve that reached
+/// zero would make one steel works able to make agriculture impossible, which
+/// is the shape the drought floor already exists to refuse.
+pub const SMOKE_YIELD_COST: f64 = 0.6;
+
+/// How much of the dirt the weather carries off each day.
+///
+/// First-pass, and the knob to feel out: too fast and a steel works is free,
+/// too slow and a republic can never clean anything up. A share rather than a
+/// quantity — see [`crate::ground::Lattice::disperse`] — so a source settles at
+/// `emission / rate` and heavy industry saturates its own valley while light
+/// industry merely smudges it. About eight weeks to bring a fully fouled cell
+/// back to clean with nothing adding to it.
+pub const DISPERSAL_PER_DAY: f64 = 0.12;
+
+/// What the republic throws away, and what it burns and digs.
+///
+/// **Daily**, because rubbish is a rate rather than an event and a per-tick
+/// pass would emit 1,440 mutations to say the same thing.
+///
+/// Housing produces per resident and everything else per unit of activity, so
+/// an idle factory throws nothing away and an empty block fills no bins. Both
+/// are authored on [`crate::building::BuildingDef`] rather than matched on by
+/// kind, for the reason every table in this crate is.
+pub fn sanitation(world: &World) -> Vec<Mutation> {
+    let residents = world.population.residents_by_home();
+    let mut out = Vec::new();
+    for b in world.buildings.all() {
+        if !b.is_built() {
+            continue;
+        }
+        let def = b.def();
+        if def.waste <= 0.0 {
+            continue;
+        }
+        // A block's rubbish is a function of how many people live in it, not of
+        // how large it is; a works' is a function of how hard it is working.
+        let made = if def.residents > 0 {
+            def.waste * f64::from(residents.get(&b.id).copied().unwrap_or(0))
+        } else {
+            def.waste * b.staffing()
+        };
+        if made <= 0.0 {
+            continue;
+        }
+        out.push(Mutation::Produce {
+            building: b.id,
+            resource: Resource::Waste,
+            tonnes: Tonnes(made),
+        });
+    }
+    out
+}
+
+/// Smoke, and the weather taking it away.
+///
+/// **Daily**, on the same traversal lattice wear rides on and for the same
+/// reason: what varies at ten metres is where a building can stand, and what
+/// varies at a hundred is where the smoke goes.
+///
+/// Emission scales with activity, so a stalled works fouls nothing — which
+/// means a republic that has run out of coal is at least breathing. Dispersal
+/// is unconditional, which is what makes cleaning up something the player can
+/// actually do rather than a state they are stuck in.
+pub fn pollution(world: &World) -> Vec<Mutation> {
+    let mut cells: BTreeMap<usize, f64> = BTreeMap::new();
+    for b in world.buildings.all() {
+        if !b.is_built() {
+            continue;
+        }
+        let def = b.def();
+        if def.pollution <= 0.0 {
+            continue;
+        }
+        // Activity, not establishment: a works standing idle for want of ore
+        // makes no smoke, and a republic can see that in the overlay.
+        let running = b.staffing()
+            * if def.power_draw > 0.0 && !b.powered {
+                0.0
+            } else {
+                1.0
+            };
+        let emitted = def.pollution * running;
+        if emitted <= 0.0 {
+            continue;
+        }
+        for cell in world.lattice.cells_within(b.centre, SMOKE_RADIUS) {
+            // Inverse-square-ish falloff, floored so the far edge of the radius
+            // still counts for something rather than stepping to nothing.
+            let away = world.lattice.centre_of(cell).distance_to(b.centre).0 / SMOKE_RADIUS.0;
+            let share = (1.0 - away).clamp(0.0, 1.0).powi(2);
+            *cells.entry(cell).or_default() += emitted * SMOKE_PER_UNIT * share;
+        }
+    }
+
+    let mut out = Vec::new();
+    for (cell, by) in cells {
+        out.push(Mutation::Foul { cell, by });
+    }
+    out.push(Mutation::Disperse {
+        by: DISPERSAL_PER_DAY,
+    });
+    out
+}
+
 pub fn commissioning(world: &World) -> Vec<Mutation> {
     let mut out = Vec::new();
     for garage in world.buildings.all() {
@@ -4549,6 +4893,8 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
         for system in [
             |w: &mut World| weather(w),
             |w: &mut World| tracks(w),
+            |w: &mut World| sanitation(w),
+            |w: &mut World| pollution(w),
             labour,
             |w: &mut World| contracts(w),
             // After contracts, because a default sours relations the same way a
@@ -4717,13 +5063,7 @@ mod tests {
     /// House enough people beside a spot to staff what is there.
     fn staff_up(world: &mut World, beside: Point, count: usize) -> BuildingId {
         let home = world
-            .buildings
-            .place_built(
-                BuildingKind::Apartment,
-                beside,
-                &world.terrain,
-                &world.geology,
-            )
+            .place_built(BuildingKind::Apartment, beside)
             .expect("housing goes up");
         for _ in 0..count {
             world.population.spawn_citizen(home, 30);
@@ -4734,10 +5074,27 @@ mod tests {
     /// Most tests here are about running an economy, not about building one,
     /// so they put finished buildings up. Construction has its own tests.
     fn place(world: &mut World, kind: BuildingKind, at: Point) -> BuildingId {
-        world
-            .buildings
-            .place_built(kind, at, &world.terrain, &world.geology)
-            .expect("open ground")
+        world.place_built(kind, at).expect("open ground")
+    }
+
+    /// String a span and energise it there and then.
+    ///
+    /// Most tests here are about running a republic rather than about building
+    /// one, so they get their grid the way they get their buildings: finished.
+    /// The construction of a line has its own tests.
+    fn energise(world: &mut World, kind: crate::utility::Utility, from: Point, to: Point) {
+        let id = world.order_line(kind, from, to).expect("long enough");
+        let site = world.lineworks.remove(id).expect("just ordered");
+        world.utilities.energise(&site);
+        world.wire_up(kind);
+    }
+
+    /// A staffed transformer station: what a consumer actually plugs into.
+    fn substation(world: &mut World, at: Point) -> BuildingId {
+        let id = place(world, BuildingKind::TransformerStation, at);
+        world.buildings.get_mut(id).expect("just placed").staff =
+            BuildingKind::TransformerStation.def().workers;
+        id
     }
 
     /// A staffed, fuelled garage with its lorries already on the strength.
@@ -4771,13 +5128,27 @@ mod tests {
         let site = at(1_000.0, 1_000.0);
         let deposit = coal_body(&mut w, site, 5_000.0);
         let mine = place(&mut w, BuildingKind::CoalMine, site);
-        staff_up(&mut w, at(1_200.0, 1_000.0), 20);
+        // Forty rather than twenty: the mine wants fourteen, the plant fifteen
+        // and the transformer station three, and the station is last in the
+        // commissioning order — so a short fixture leaves the one building the
+        // grid runs through unmanned and the mine dark for a reason that has
+        // nothing to do with the seam.
+        staff_up(&mut w, at(1_200.0, 1_000.0), 40);
         let plant = place(&mut w, BuildingKind::PowerPlant, at(1_700.0, 1_000.0));
         w.buildings
             .get_mut(plant)
             .unwrap()
             .stock
             .add(Resource::Coal, Tonnes(50.0));
+        // The mine draws six megawatts, so it needs a grid to draw them
+        // through. What is being tested is the seam, not the wiring.
+        energise(
+            &mut w,
+            crate::utility::Utility::Power,
+            at(1_700.0, 1_000.0),
+            at(1_300.0, 1_000.0),
+        );
+        substation(&mut w, at(1_300.0, 1_000.0));
 
         let before = w.geology.get(deposit).unwrap().remaining();
         let plant_coal_before = w.buildings.get(plant).unwrap().stock.get(Resource::Coal);
@@ -5458,6 +5829,7 @@ mod tests {
     /// A plant with nobody in it generates nothing, and the grid says so.
     #[test]
     fn an_unstaffed_plant_leaves_the_republic_dark() {
+        use crate::utility::Utility;
         let mut w = bare();
         let plant = place(&mut w, BuildingKind::PowerPlant, at(1_000.0, 1_000.0));
         w.buildings
@@ -5466,6 +5838,15 @@ mod tests {
             .stock
             .add(Resource::Coal, Tonnes(50.0));
         let factory = place(&mut w, BuildingKind::FoodFactory, at(1_400.0, 1_000.0));
+        // Strung, with a station between the two. What is being tested is the
+        // crew, so the grid is given rather than built.
+        energise(
+            &mut w,
+            Utility::Power,
+            at(1_000.0, 1_000.0),
+            at(1_250.0, 1_000.0),
+        );
+        substation(&mut w, at(1_250.0, 1_000.0));
 
         w.tick();
         assert!(
@@ -7651,6 +8032,29 @@ mod tests {
             let _ = world.order_road(yard, join, crate::roadworks::Grade::Dirt);
         }
 
+        // A power line ordered and left to the crew, so `construction`'s
+        // declared `String` is reachable. Ordered rather than energised: what
+        // is being watched is the crew stringing it and the steel being driven
+        // out, which is the whole reason a line is a site.
+        // Its steel goes straight in rather than being driven out, because a
+        // founded republic has no steel mill and never will inside this run —
+        // the site would sit unbuilt for ever and prove nothing. What is being
+        // reached is the stringing, not the supply chain.
+        if let Ok(crate::command::Done::Strung(line)) =
+            world.issue(crate::command::Command::OrderLine {
+                kind: crate::utility::Utility::Power,
+                from: centre,
+                to: Point::new(centre.x + Metres(900.0), centre.y - Metres(300.0)),
+            })
+        {
+            let bill = world.lineworks.get(line).map(|l| l.materials());
+            if let (Some(bill), Some(site)) = (bill, world.lineworks.get_mut(line)) {
+                for (resource, quantity) in bill {
+                    site.stock.add(resource, quantity);
+                }
+            }
+        }
+
         // A school, and children to fill it.
         //
         // The children are put there directly, and that is not laziness: a
@@ -7731,6 +8135,12 @@ mod tests {
                     apply(&mut world, &m);
                     let m = tracks(&world);
                     note("tracks", &m);
+                    apply(&mut world, &m);
+                    let m = sanitation(&world);
+                    note("sanitation", &m);
+                    apply(&mut world, &m);
+                    let m = pollution(&world);
+                    note("pollution", &m);
                     apply(&mut world, &m);
                     let m = contentment(&world);
                     note("contentment", &m);
@@ -8165,6 +8575,7 @@ mod tests {
     /// to staff both. A boiler is a building like any other — it needs a crew
     /// and electricity before it needs coal.
     fn heated_town(world: &mut World) -> (BuildingId, BuildingId) {
+        use crate::utility::Utility;
         let flats = staff_up(world, at(1_000.0, 1_000.0), 40);
         let boiler = place(world, BuildingKind::HeatingPlant, at(1_200.0, 1_000.0));
         let grid = place(world, BuildingKind::PowerPlant, at(1_000.0, 1_400.0));
@@ -8180,6 +8591,23 @@ mod tests {
             .unwrap()
             .stock
             .add(Resource::Coal, Tonnes(400.0));
+        // A grid and a main, because neither power nor heat is a quantity any
+        // more: a plant lights what it is strung to and a boiler warms what a
+        // main runs past. The station goes beside the boiler, which is what its
+        // pumps draw through.
+        energise(
+            world,
+            Utility::Power,
+            at(1_000.0, 1_400.0),
+            at(1_150.0, 1_100.0),
+        );
+        substation(world, at(1_150.0, 1_100.0));
+        energise(
+            world,
+            Utility::Heat,
+            at(1_200.0, 1_000.0),
+            at(1_000.0, 1_000.0),
+        );
         let mutations = labour(world);
         apply(world, &mutations);
         (flats, boiler)
@@ -8304,6 +8732,36 @@ mod tests {
             .unwrap()
             .stock
             .add(Resource::Coal, Tonnes(400.0));
+        // The grid the boiler's pumps run on, and a main from the boiler along
+        // the row of blocks. The main is what makes this a test about capacity
+        // rather than about connection: every block is on it, so what decides
+        // who is warm is how much the boiler can make.
+        energise(
+            &mut w,
+            crate::utility::Utility::Power,
+            at(900.0, 1_300.0),
+            at(600.0, 950.0),
+        );
+        substation(&mut w, at(600.0, 950.0));
+        energise(
+            &mut w,
+            crate::utility::Utility::Heat,
+            at(500.0, 900.0),
+            at(500.0, 500.0),
+        );
+        energise(
+            &mut w,
+            crate::utility::Utility::Heat,
+            at(500.0, 500.0),
+            at(1_200.0, 500.0),
+        );
+        // And the crew's own block, which wants its share like any other.
+        energise(
+            &mut w,
+            crate::utility::Utility::Heat,
+            at(500.0, 900.0),
+            at(700.0, 900.0),
+        );
         let mutations = labour(&mut w);
         apply(&mut w, &mutations);
         let mutations = power(&w);
@@ -8457,6 +8915,415 @@ mod tests {
         assert!(after.0 < before.0, "carrying people cost no fuel");
     }
 
+    // ---- Utilities ----
+
+    /// A grid with no generation on it feeds nothing, however much the
+    /// republic is making elsewhere.
+    ///
+    /// This is the whole milestone in one assertion, and it is deliberately
+    /// **two complete grids** rather than one grid and a building in a field.
+    /// The first version put the second factory four kilometres from any line
+    /// and passed for the wrong reason: what made it dark was having no
+    /// transformer station in reach, which is a different rule with its own
+    /// test. Sabotage found it — giving every plant a network regardless left
+    /// the test green — and that is exactly the shape of a check that has
+    /// stopped reaching its subject.
+    #[test]
+    fn a_grid_with_no_generation_on_it_feeds_nothing() {
+        use crate::utility::Utility;
+        let mut w = bare();
+        w.set_terrain(Terrain::flat(Metres(8_000.0)));
+        let plant = place(&mut w, BuildingKind::PowerPlant, at(1_000.0, 1_000.0));
+        w.buildings
+            .get_mut(plant)
+            .unwrap()
+            .stock
+            .add(Resource::Coal, Tonnes(400.0));
+        let wired = place(&mut w, BuildingKind::FoodFactory, at(1_600.0, 1_000.0));
+        // A second, complete grid — its own span and its own staffed station —
+        // with nothing generating on it.
+        let orphaned = place(&mut w, BuildingKind::TextileMill, at(5_000.0, 5_000.0));
+        staff_up(&mut w, at(1_300.0, 1_150.0), 60);
+        staff_up(&mut w, at(5_200.0, 5_200.0), 30);
+
+        energise(
+            &mut w,
+            Utility::Power,
+            at(1_000.0, 1_000.0),
+            at(1_400.0, 1_000.0),
+        );
+        substation(&mut w, at(1_400.0, 1_000.0));
+        energise(
+            &mut w,
+            Utility::Power,
+            at(5_000.0, 5_000.0),
+            at(5_300.0, 5_000.0),
+        );
+        let away = substation(&mut w, at(5_300.0, 5_000.0));
+
+        let m = labour(&mut w);
+        apply(&mut w, &m);
+        let m = power(&w);
+        apply(&mut w, &m);
+
+        // The premise: the far grid really is a grid, with a manned station on
+        // it, and it is a different grid from the plant's.
+        assert!(
+            w.utilities.network_of(away, Utility::Power).is_some(),
+            "the far station is not on a line, so this proves nothing"
+        );
+        assert!(
+            w.buildings.get(away).unwrap().staffing() > 0.0,
+            "the far station is unmanned, so this proves nothing"
+        );
+        assert_ne!(
+            w.utilities.network_of(away, Utility::Power),
+            w.utilities.network_of(plant, Utility::Power),
+            "the two grids are the same grid, so this proves nothing"
+        );
+
+        assert!(
+            w.buildings.get(wired).unwrap().powered,
+            "a factory on the grid with the plant on it should be lit"
+        );
+        assert!(
+            !w.buildings.get(orphaned).unwrap().powered,
+            "a mill on a grid with no generation on it was lit anyway — power \
+             is still a quantity rather than a network"
+        );
+    }
+
+    /// A pylon past the door is not a connection. What a consumer plugs into is
+    /// a transformer station, which is why that building exists at all.
+    #[test]
+    fn a_pylon_past_the_door_is_not_a_connection() {
+        use crate::utility::Utility;
+        let lit = |with_station: bool| {
+            let mut w = bare();
+            let plant = place(&mut w, BuildingKind::PowerPlant, at(1_000.0, 1_000.0));
+            w.buildings
+                .get_mut(plant)
+                .unwrap()
+                .stock
+                .add(Resource::Coal, Tonnes(400.0));
+            let works = place(&mut w, BuildingKind::FoodFactory, at(1_500.0, 1_000.0));
+            staff_up(&mut w, at(1_250.0, 1_200.0), 60);
+            // The line runs right past the factory either way.
+            energise(
+                &mut w,
+                Utility::Power,
+                at(1_000.0, 1_000.0),
+                at(1_800.0, 1_000.0),
+            );
+            if with_station {
+                substation(&mut w, at(1_300.0, 1_050.0));
+            }
+            let m = labour(&mut w);
+            apply(&mut w, &m);
+            let m = power(&w);
+            apply(&mut w, &m);
+            w.buildings.get(works).unwrap().powered
+        };
+        assert!(!lit(false), "a bare pylon ran a food factory");
+        assert!(lit(true), "a staffed station in reach did not");
+    }
+
+    /// Losses are charged on the span of the network, so a grid strung across
+    /// the map delivers less than a compact one. That is the argument for
+    /// siting a plant near what it serves, and without it a long line is a
+    /// formality.
+    #[test]
+    fn a_sprawling_grid_delivers_less_than_a_compact_one() {
+        use crate::utility::Utility;
+        // How many identical loads a plant can carry over a grid of a given
+        // length, read off the **power system's own answer** rather than by
+        // re-deriving the loss arithmetic here. The first version computed
+        // `1 - loss * span` itself and would have passed against a build that
+        // never applied it — a panel doing the simulation's maths, wearing a
+        // test's clothes. Sabotage is what found that.
+        let carried = |reach: f64| -> usize {
+            let mut w = bare();
+            w.set_terrain(Terrain::flat(Metres(40_000.0)));
+            let plant = place(&mut w, BuildingKind::PowerPlant, at(1_000.0, 1_000.0));
+            w.buildings
+                .get_mut(plant)
+                .unwrap()
+                .stock
+                .add(Resource::Coal, Tonnes(400.0));
+            energise(
+                &mut w,
+                Utility::Power,
+                at(1_000.0, 1_000.0),
+                at(1_000.0 + reach, 1_000.0),
+            );
+            let station = substation(&mut w, at(1_300.0, 1_000.0));
+            // Fifteen food factories at 4 MW is 60 MW, which is exactly what a
+            // coal plant makes — so any loss at all costs the last one its
+            // current, and a bigger loss costs more of them.
+            // Clustered round the station rather than in a line, because a
+            // consumer more than TRANSFORMER_RANGE from one is dark for a
+            // reason that has nothing to do with losses. A row of fifteen ran
+            // off the end of the station reach at the sixth and both grids
+            // carried exactly six.
+            let works: Vec<BuildingId> = (0..15)
+                .map(|i| {
+                    place(
+                        &mut w,
+                        BuildingKind::FoodFactory,
+                        at(
+                            1_300.0 + f64::from(i % 4) * 130.0 - 195.0,
+                            1_000.0 + f64::from(i / 4) * 120.0 - 180.0,
+                        ),
+                    )
+                })
+                .collect();
+            for id in works.iter().chain(&[plant, station]) {
+                let full = w.buildings.get(*id).unwrap().def().workers;
+                w.buildings.get_mut(*id).unwrap().staff = full;
+            }
+            let m = power(&w);
+            apply(&mut w, &m);
+            works
+                .iter()
+                .filter(|id| w.buildings.get(**id).unwrap().powered)
+                .count()
+        };
+        let compact = carried(500.0);
+        let sprawling = carried(20_000.0);
+        assert!(
+            compact > 0,
+            "a compact grid carried nothing, so this proves nothing"
+        );
+        assert!(
+            sprawling < compact,
+            "twenty kilometres of line cost nothing: {sprawling} loads carried \
+             against {compact} over half a kilometre"
+        );
+    }
+
+    /// A block with no main past it is cold, whatever the republic is burning
+    /// elsewhere — and the boiler burns enough to cover what the pipes lose.
+    ///
+    /// The second half took a measurement to find: throttling to demand and
+    /// *then* taking the loss out leaves the boiler short by exactly the loss
+    /// every time, which put the founding's third block in the dark in January
+    /// with the boiler at 71% and coal in the bunker.
+    #[test]
+    fn a_main_is_what_makes_a_block_warm_and_the_boiler_covers_the_leak() {
+        use crate::utility::Utility;
+        let mut w = bare();
+        let on_the_main = place(&mut w, BuildingKind::Apartment, at(1_000.0, 1_000.0));
+        let off_it = place(&mut w, BuildingKind::Apartment, at(2_500.0, 2_500.0));
+        let boiler = place(&mut w, BuildingKind::HeatingPlant, at(1_000.0, 1_400.0));
+        let grid = place(&mut w, BuildingKind::PowerPlant, at(1_400.0, 1_400.0));
+        for id in [boiler, grid] {
+            w.buildings
+                .get_mut(id)
+                .unwrap()
+                .stock
+                .add(Resource::Coal, Tonnes(400.0));
+        }
+        staff_up(&mut w, at(1_200.0, 1_150.0), 60);
+        energise(
+            &mut w,
+            Utility::Power,
+            at(1_400.0, 1_400.0),
+            at(1_150.0, 1_400.0),
+        );
+        substation(&mut w, at(1_150.0, 1_400.0));
+        energise(
+            &mut w,
+            Utility::Heat,
+            at(1_000.0, 1_400.0),
+            at(1_000.0, 1_000.0),
+        );
+
+        let m = labour(&mut w);
+        apply(&mut w, &m);
+        move_to_month(&mut w, 1);
+        w.tick();
+
+        assert!(
+            crate::climate::heating_required(w.temperature()),
+            "January was not cold enough for this to be a test of anything"
+        );
+        assert!(
+            w.buildings.get(on_the_main).unwrap().heated,
+            "a block on the main went cold with the boiler running"
+        );
+        assert!(
+            !w.buildings.get(off_it).unwrap().heated,
+            "a block with no main within a kilometre and a half was warm anyway"
+        );
+    }
+
+    /// Ordered, materialled, strung, and only then carrying anything — the same
+    /// rule a road answers to, and the reason a line is a site.
+    #[test]
+    fn a_line_carries_nothing_until_the_crew_have_strung_it() {
+        use crate::utility::Utility;
+        let mut w = bare();
+        let plant = place(&mut w, BuildingKind::PowerPlant, at(1_000.0, 1_000.0));
+        w.buildings
+            .get_mut(plant)
+            .unwrap()
+            .stock
+            .add(Resource::Coal, Tonnes(400.0));
+        let works = place(&mut w, BuildingKind::FoodFactory, at(1_500.0, 1_000.0));
+        let station = substation(&mut w, at(1_300.0, 1_000.0));
+        place(
+            &mut w,
+            BuildingKind::ConstructionOffice,
+            at(1_100.0, 1_300.0),
+        );
+        staff_up(&mut w, at(1_250.0, 1_250.0), 90);
+
+        let ordered = w
+            .issue(crate::command::Command::OrderLine {
+                kind: Utility::Power,
+                from: at(1_000.0, 1_000.0),
+                to: at(1_300.0, 1_000.0),
+            })
+            .expect("a span worth surveying");
+        let crate::command::Done::Strung(site) = ordered else {
+            panic!("ordering a line should hand back the site");
+        };
+
+        let m = labour(&mut w);
+        apply(&mut w, &m);
+        let m = power(&w);
+        apply(&mut w, &m);
+        assert!(
+            !w.buildings.get(works).unwrap().powered,
+            "an ordered line carried current before anybody built it"
+        );
+        assert!(
+            w.utilities.network_of(station, Utility::Power).is_none(),
+            "the station is plugged into a site rather than a line"
+        );
+
+        // Its steel, then the crew.
+        let bill = w.lineworks.get(site).map(|l| l.materials()).unwrap();
+        for (resource, quantity) in bill {
+            w.lineworks
+                .get_mut(site)
+                .unwrap()
+                .stock
+                .add(resource, quantity);
+        }
+        for _ in 0..TICKS_PER_DAY * 40 {
+            w.tick();
+        }
+
+        assert!(
+            w.lineworks.get(site).is_none(),
+            "the span is still a site after forty days of a crew on it"
+        );
+        assert!(
+            w.utilities.network_of(station, Utility::Power).is_some(),
+            "the span was strung and the station was not plugged into it"
+        );
+        assert!(
+            w.buildings.get(works).unwrap().powered,
+            "the grid is built and the factory is still dark"
+        );
+    }
+
+    /// Rubbish piles up where nobody collects it, and that is what a landfill
+    /// is for. Both halves matter: without the first the building has no
+    /// purpose, and without the second the republic has no answer.
+    #[test]
+    fn rubbish_piles_up_and_a_landfill_is_what_pulls_it_away() {
+        let mut w = bare();
+        let home = staff_up(&mut w, at(1_000.0, 1_000.0), 48);
+        let m = labour(&mut w);
+        apply(&mut w, &m);
+
+        for _ in 0..60 {
+            let m = sanitation(&w);
+            apply(&mut w, &m);
+            w.clock.advance_by(TICKS_PER_DAY);
+        }
+        let piled = w.buildings.get(home).unwrap().stock.get(Resource::Waste);
+        assert!(
+            piled.0 > 3.0,
+            "two months of forty-eight people produced {piled:?} of rubbish"
+        );
+
+        // And it costs them: a full bin is a place people do not want to live.
+        let m = contentment(&w);
+        apply(&mut w, &m);
+        let dirty = w.buildings.get(home).unwrap().content.cleanliness;
+        assert!(
+            dirty < 1.0,
+            "a yard full of rubbish cost the block nothing at all"
+        );
+
+        // The landfill wants it, and the freight ranking already understands a
+        // consumer that has run out of its input.
+        let tip = place(&mut w, BuildingKind::Landfill, at(1_400.0, 1_000.0));
+        haulage(&mut w, at(1_150.0, 1_150.0));
+        for _ in 0..TICKS_PER_DAY * 20 {
+            w.tick();
+        }
+        assert!(
+            w.buildings.get(tip).unwrap().stock.get(Resource::Waste).0 > 0.0
+                || w.buildings.get(home).unwrap().stock.get(Resource::Waste) < piled,
+            "twenty days with a landfill and a garage and not a tonne moved"
+        );
+    }
+
+    /// Smoke costs a harvest, and the weather clears it. Neither half is worth
+    /// much without the other: permanent pollution is a state the player cannot
+    /// get out of, and pollution that costs nothing is decoration.
+    #[test]
+    fn smoke_costs_a_harvest_and_the_weather_clears_it() {
+        let mut w = bare();
+        let farm = place(&mut w, BuildingKind::Farm, at(1_000.0, 1_000.0));
+        assert_eq!(
+            w.lattice.pollution_near(at(1_000.0, 1_000.0)),
+            0.0,
+            "the fixture starts clean, or this proves nothing"
+        );
+
+        // A steel works beside the fields, running.
+        let works = place(&mut w, BuildingKind::SteelMill, at(1_300.0, 1_000.0));
+        w.buildings.get_mut(works).unwrap().staff = BuildingKind::SteelMill.def().workers;
+        w.buildings.get_mut(works).unwrap().powered = true;
+        for _ in 0..90 {
+            let m = pollution(&w);
+            apply(&mut w, &m);
+            w.clock.advance_by(TICKS_PER_DAY);
+        }
+        let fouled = w.lattice.pollution_near(at(1_000.0, 1_000.0));
+        assert!(
+            fouled > 0.1,
+            "a season beside a steel works left {fouled:.3}"
+        );
+
+        // And the yield it costs, read through the same path production reads.
+        let clean_yield = growing_conditions(&w);
+        let dirty_yield = clean_yield * (1.0 - fouled * SMOKE_YIELD_COST);
+        assert!(
+            dirty_yield < clean_yield,
+            "smoke on the fields cost the harvest nothing"
+        );
+        let _ = farm;
+
+        // Pull it down and the air comes back.
+        w.buildings.demolish(works);
+        for _ in 0..60 {
+            let m = pollution(&w);
+            apply(&mut w, &m);
+            w.clock.advance_by(TICKS_PER_DAY);
+        }
+        assert_eq!(
+            w.lattice.pollution_near(at(1_000.0, 1_000.0)),
+            0.0,
+            "the works came down two months ago and the valley is still filthy"
+        );
+    }
+
     // ---- People ----
 
     /// Run the daily people systems for a stretch, without paying for the whole
@@ -8513,15 +9380,25 @@ mod tests {
             // Households and heating are not run here, so what was set above
             // stays set — this is a test about the consequence, not about the
             // supply chain that produces it.
+            // The **lowest** loyalty the run ever reached, not the last one.
+            // Warmth is `1.0` on a warm day — a republic is not marked down for
+            // heat nobody is asking it for — so a run that starts in January
+            // and ends in September samples a summer, and a summer with no
+            // heating demand reads two whole points better than the winter that
+            // is actually breaking these people. Sampling the end of the run
+            // reported 0.39 for a republic that had spent every winter at 0.20.
+            // The same peak-versus-instant trap as everywhere else.
+            let mut lowest = 1.0f64;
             for _ in 0..600 {
                 let m = contentment(&w);
                 apply(&mut w, &m);
                 let m = migration(&w);
                 apply(&mut w, &m);
                 w.clock.advance_by(TICKS_PER_DAY);
+                let (_, loyalty) = w.population.mean_wellbeing();
+                lowest = lowest.min(loyalty);
             }
-            let (_, loyalty) = w.population.mean_wellbeing();
-            (w.population.count(), loyalty)
+            (w.population.count(), lowest)
         };
 
         let (kept, loyal) = run(true);

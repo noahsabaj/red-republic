@@ -32,12 +32,17 @@ pub enum Resource {
     Food,
     Clothes,
     Machinery,
+    /// What a republic throws away. A resource like any other, which is the
+    /// point: it accumulates in a bin, it has to be *driven* somewhere, and a
+    /// republic that has nowhere to drive it watches it pile up where people
+    /// live.
+    Waste,
 }
 
 impl Resource {
     /// Every resource, in a fixed order — iteration order is part of the
     /// simulation's definition wherever a draw or an accumulation follows it.
-    pub const ALL: [Resource; 13] = [
+    pub const ALL: [Resource; 14] = [
         Resource::Coal,
         Resource::IronOre,
         Resource::Steel,
@@ -51,6 +56,7 @@ impl Resource {
         Resource::Food,
         Resource::Clothes,
         Resource::Machinery,
+        Resource::Waste,
     ];
 
     pub fn name(self) -> &'static str {
@@ -68,6 +74,7 @@ impl Resource {
             Resource::Food => "Food",
             Resource::Clothes => "Clothes",
             Resource::Machinery => "Machinery",
+            Resource::Waste => "Waste",
         }
     }
 
@@ -87,6 +94,11 @@ impl Resource {
             Resource::Food => 4.5,
             Resource::Clothes => 9.0,
             Resource::Machinery => 80.0,
+            // Nobody buys your rubbish, and shipping it abroad costs. A price
+            // is authored anyway because every resource is priced on both
+            // sides — an unpriced one would be a hole in the trade table
+            // rather than a decision.
+            Resource::Waste => 0.2,
         }
     }
 
@@ -106,6 +118,7 @@ impl Resource {
             Resource::Food => 2.0,
             Resource::Clothes => 5.0,
             Resource::Machinery => 50.0,
+            Resource::Waste => 0.1,
         }
     }
 

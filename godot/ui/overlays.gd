@@ -22,13 +22,14 @@ extends RefCounted
 ## where the terrain is 10 m, so a 6 km map is a 60x60 texture — which is what
 ## makes rebuilding one whenever the ground changes free.
 
-enum Mode { NONE, SURVEY, GOING, WEAR }
+enum Mode { NONE, SURVEY, GOING, WEAR, POLLUTION }
 
 const NAMES := {
 	Mode.NONE: "",
 	Mode.SURVEY: "geological survey",
 	Mode.GOING: "going",
 	Mode.WEAR: "tracks",
+	Mode.POLLUTION: "pollution",
 }
 
 ## Low and high ends of each channel, chosen so the reading is unambiguous
@@ -43,6 +44,12 @@ const RAMPS := {
 	Mode.GOING: [Color(0.34, 0.58, 0.36), Color(0.74, 0.22, 0.16)],
 	Mode.WEAR: [Color(0.44, 0.50, 0.36), Color(0.30, 0.26, 0.22)],
 	Mode.SURVEY: [Color(0.30, 0.32, 0.36), Color(0.86, 0.72, 0.28)],
+	# Smoke is invisible on the ground by design -- it is in the air and in the
+	# soil -- so this overlay is the only way it is something a player can plan
+	# around. Clean reads as the land's own colour and foul as a sickly yellow
+	# rather than red, because red is already going and two overlays that mean
+	# different things must not look the same.
+	Mode.POLLUTION: [Color(0.40, 0.54, 0.38), Color(0.68, 0.62, 0.20)],
 }
 
 
@@ -58,9 +65,11 @@ static func field_texture(republic: Node, mode: int) -> ImageTexture:
 	var cells: int = republic.lattice_cells()
 	if cells <= 0:
 		return null
-	var flat: PackedFloat32Array = (
-		republic.going_field() if mode == Mode.GOING else republic.wear_field()
-	)
+	var flat: PackedFloat32Array
+	match mode:
+		Mode.GOING: flat = republic.going_field()
+		Mode.WEAR: flat = republic.wear_field()
+		_: flat = republic.pollution_field()
 	if flat.size() < cells * cells:
 		return null
 	var image := Image.create(cells, cells, false, Image.FORMAT_RF)

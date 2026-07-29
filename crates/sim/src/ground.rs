@@ -249,6 +249,13 @@ pub struct Lattice {
     surface: Vec<f32>,
     /// How worn each cell is, `0.0` untouched to `1.0` a made track.
     wear: Vec<f32>,
+    /// How dirty the air and ground are here, `0.0` clean to `1.0` foul.
+    ///
+    /// Rides on the same lattice as wear and for the same reason: what varies
+    /// at ten metres is where a building can stand, and what varies at a
+    /// hundred is where the smoke goes. A million-cell field would cost a
+    /// hundred times as much to sweep and say nothing more.
+    pollution: Vec<f32>,
 }
 
 impl Lattice {
@@ -305,6 +312,7 @@ impl Lattice {
             cell_size,
             surface,
             wear: vec![0.0; total],
+            pollution: vec![0.0; total],
         }
     }
 
@@ -350,6 +358,74 @@ impl Lattice {
 
     /// Let every cell recover a little. Without this, every route ever driven
     /// is permanent.
+    /// How foul a cell is, `0.0` clean to `1.0`.
+    pub fn pollution_at(&self, index: usize) -> f64 {
+        f64::from(self.pollution[index])
+    }
+
+    /// The dirt at a point, or clean off the map.
+    pub fn pollution_near(&self, at: Point) -> f64 {
+        self.cell_of(at).map_or(0.0, |c| self.pollution_at(c))
+    }
+
+    /// Foul a cell. Saturates at one: past a point more smoke changes nothing,
+    /// which is what stops one steel works making a whole valley uninhabitable
+    /// and then making it uninhabitable again.
+    pub fn foul(&mut self, index: usize, by: f64) {
+        let dirt = (f64::from(self.pollution[index]) + by).clamp(0.0, 1.0);
+        self.pollution[index] = dirt as f32;
+    }
+
+    /// A day of weather carrying it away.
+    ///
+    /// Without this every chimney the republic ever lit is permanent, and a
+    /// factory pulled down leaves its smoke behind for ever — which would make
+    /// cleaning up something the player cannot do.
+    ///
+    /// **Proportional, not a flat subtraction**, and that took a measurement to
+    /// get right. A flat rate makes the steady state a step function: a source
+    /// emitting less than the rate settles at exactly clean and one emitting
+    /// more settles at exactly filthy, with nothing in between — so a
+    /// brickworks and a steel works would look identical. Decaying by a share
+    /// gives every source its own level, which is the whole point of authoring
+    /// different figures.
+    ///
+    /// The floor is what lets a valley come genuinely clean rather than
+    /// approaching it for ever: an exponential never reaches zero, and a
+    /// player who pulled a works down two months ago should not still be
+    /// reading a trace of it.
+    pub fn disperse(&mut self, by: f64) {
+        for cell in &mut self.pollution {
+            let left = f64::from(*cell) * (1.0 - by.clamp(0.0, 1.0));
+            *cell = if left <= 1e-3 { 0.0 } else { left as f32 };
+        }
+    }
+
+    /// Cells within a radius of a point, for spreading something around a
+    /// source. Includes the cell the point is in.
+    pub fn cells_within(&self, at: Point, radius: Metres) -> Vec<usize> {
+        let Some(centre) = self.cell_of(at) else {
+            return Vec::new();
+        };
+        let reach = (radius.0 / self.cell_size.0).ceil() as i64;
+        let side = self.cells as i64;
+        let (cx, cy) = ((centre as i64) % side, (centre as i64) / side);
+        let mut out = Vec::new();
+        for dy in -reach..=reach {
+            for dx in -reach..=reach {
+                let (x, y) = (cx + dx, cy + dy);
+                if x < 0 || y < 0 || x >= side || y >= side {
+                    continue;
+                }
+                let index = (y * side + x) as usize;
+                if self.centre_of(index).distance_to(at).0 <= radius.0 {
+                    out.push(index);
+                }
+            }
+        }
+        out
+    }
+
     pub fn fade(&mut self, by: f64) {
         for cell in &mut self.wear {
             *cell = (f64::from(*cell) - by).max(0.0) as f32;

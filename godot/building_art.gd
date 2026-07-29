@@ -95,6 +95,13 @@ static func table() -> Dictionary:
 		"Ten-Year School": Art.new(3, 3.6, F, 0, 0, false, Tone.RENDER),
 		"Polytechnic Institute": Art.new(4, 3.8, F, 0, 0, true, Tone.CONCRETE),
 
+		# Utilities. The station is a low box with a gantry -- switchgear reads
+		# as a frame rather than as a building -- and the two ways of dealing
+		# with rubbish are told apart by the incinerator's stack.
+		"Transformer Station": Art.new(1, 5.0, F, 0, 0, true, Tone.CONCRETE),
+		"Landfill": Art.new(1, 4.0, F, 0, 0, false, Tone.CONCRETE),
+		"Refuse Incinerator": Art.new(2, 7.0, F, 2, 0, false, Tone.METAL),
+
 		# Storage and logistics. Long, low, and mostly roof.
 		"Warehouse": Art.new(1, 11.0, F, 0, 0, false, Tone.CONCRETE),
 		"Council Depot": Art.new(1, 8.0, F, 0, 0, false, Tone.CONCRETE),

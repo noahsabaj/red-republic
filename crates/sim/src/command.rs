@@ -66,6 +66,18 @@ pub enum Command {
         grade: Grade,
     },
 
+    /// Order a power line or a heat main.
+    ///
+    /// A site until the crew and the steel reach it, and it carries nothing
+    /// until then. Power and heat used to be quantities with no geography at
+    /// all — a plant anywhere lit everything — and this is the command that
+    /// makes both physical.
+    OrderLine {
+        kind: crate::utility::Utility,
+        from: Point,
+        to: Point,
+    },
+
     /// Call a building crew off a site.
     ///
     /// They down tools where they stand and wait for their office to send a bus.
@@ -148,6 +160,8 @@ pub enum Done {
     Commissioned(BuildingId),
     /// A road was ordered.
     Ordered(RoadSiteId),
+    /// A line was ordered.
+    Strung(crate::utility::LineSiteId),
 }
 
 /// Why a command was refused, in words a panel can print.
@@ -162,6 +176,8 @@ pub enum Refused {
     Placement(PlacementError),
     /// The road could not be ordered.
     Road(RoadError),
+    /// The line could not be ordered.
+    Line(crate::utility::LineError),
     /// There is no building with that id — it may have been demolished.
     NoSuchBuilding(BuildingId),
     /// There is no offer with that id. Includes one already accepted, so
@@ -196,6 +212,7 @@ impl std::fmt::Display for Refused {
         match self {
             Refused::Placement(why) => write!(f, "{why}"),
             Refused::Road(why) => write!(f, "{why}"),
+            Refused::Line(why) => write!(f, "{why}"),
             Refused::NoSuchBuilding(id) => write!(f, "there is no building {}", id.0),
             // The id is carried for the caller, never shown: a contract number
             // is not something a player has ever seen or could act on.
@@ -246,6 +263,12 @@ impl From<PlacementError> for Refused {
 impl From<RoadError> for Refused {
     fn from(why: RoadError) -> Self {
         Refused::Road(why)
+    }
+}
+
+impl From<crate::utility::LineError> for Refused {
+    fn from(why: crate::utility::LineError) -> Self {
+        Refused::Line(why)
     }
 }
 

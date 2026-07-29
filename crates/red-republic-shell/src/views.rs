@@ -298,7 +298,11 @@ pub fn demographics(world: &World) -> PackedInt32Array {
 /// something a player can act on and "fed, warm, no doctor, no work" is.
 pub fn contentment(world: &World) -> PackedFloat32Array {
     let census = world.population().census_by_home();
-    let mut totals = [0.0f64; 6];
+    // Sized from the roster rather than from a number typed here. A literal
+    // `6` outlived the sixth component by exactly one milestone: `zip` stopped
+    // at six, the array came back one short of what `contentment_names` said,
+    // and the panel that checked the two agreed showed nothing at all.
+    let mut totals = [0.0f64; red_republic_sim::Contentment::NAMES.len()];
     let mut overall = 0.0;
     let mut heads = 0u32;
     for building in world.buildings().all() {
@@ -373,6 +377,105 @@ pub fn newcomers(world: &World) -> PackedFloat32Array {
         out.push(group.at.y.0 as f32);
         out.push(group.heads as f32);
         out.push(group.waited(today) as f32);
+    }
+    out
+}
+
+/// Floats per span in [`utility_lines`].
+pub const LINE_STRIDE: usize = 5;
+
+/// Every energised span: `[ax, ay, bx, by, kind]`, kind 0 power, 1 heat.
+///
+/// The networks have to be on the map. A plant lights only what it is strung to
+/// and a boiler warms only what a main runs past, so "why is this block cold"
+/// is a question about a line the player either drew or did not — and that is
+/// unanswerable if the lines are invisible.
+pub fn utility_lines(world: &World) -> PackedFloat32Array {
+    let mut out = PackedFloat32Array::new();
+    for line in world.utilities().all() {
+        out.push(line.from.x.0 as f32);
+        out.push(line.from.y.0 as f32);
+        out.push(line.to.x.0 as f32);
+        out.push(line.to.y.0 as f32);
+        out.push(utility_index(line.kind) as f32);
+    }
+    out
+}
+
+/// Floats per span in [`utility_sites`].
+pub const LINE_SITE_STRIDE: usize = 6;
+
+/// Spans ordered and not yet carrying: `[ax, ay, bx, by, progress, kind]`.
+///
+/// Drawn differently from a finished one for the same reason a road site is: a
+/// player looking at a half-strung line needs to see that it is half-strung
+/// rather than wonder why the lights are still out.
+pub fn utility_sites(world: &World) -> PackedFloat32Array {
+    let mut out = PackedFloat32Array::new();
+    for site in world.lineworks().all() {
+        out.push(site.from.x.0 as f32);
+        out.push(site.from.y.0 as f32);
+        out.push(site.to.x.0 as f32);
+        out.push(site.to.y.0 as f32);
+        out.push(site.progress() as f32);
+        out.push(utility_index(site.kind) as f32);
+    }
+    out
+}
+
+/// 0 power, 1 heat. In one place so the shell never matches on a simulation
+/// enum.
+pub fn utility_index(kind: red_republic_sim::Utility) -> usize {
+    red_republic_sim::Utility::ALL
+        .iter()
+        .position(|&k| k == kind)
+        .unwrap_or(0)
+}
+
+/// The grid at a glance: `[power_km, heat_km, on_power, on_heat, dark, cold]`.
+///
+/// The last two are what the player acts on: buildings that want current or
+/// heat and are not getting it. A republic can be short of generation or short
+/// of wire, and those are different problems with the same symptom — which is
+/// why the kilometres are on the same line as the failures.
+pub fn utility_totals(world: &World) -> PackedFloat32Array {
+    use red_republic_sim::Utility;
+    let mut out = PackedFloat32Array::new();
+    out.push(world.utilities().length_of(Utility::Power).as_km() as f32);
+    out.push(world.utilities().length_of(Utility::Heat).as_km() as f32);
+    out.push(world.utilities().connected_count(Utility::Power) as f32);
+    out.push(world.utilities().connected_count(Utility::Heat) as f32);
+    let dark = world
+        .buildings()
+        .all()
+        .iter()
+        .filter(|b| b.is_built() && b.def().power_draw > 0.0 && !b.powered)
+        .count();
+    let cold = world
+        .buildings()
+        .all()
+        .iter()
+        .filter(|b| b.is_built() && b.def().heat > 0.0 && !b.heated)
+        .count();
+    out.push(dark as f32);
+    out.push(cold as f32);
+    out
+}
+
+/// How dirty each lattice cell is, row-major, `0.0` clean to `1.0` foul.
+///
+/// The same shape as the going and wear overlays, and on the same lattice.
+/// Pollution is invisible on the ground by design — it is smoke and it is in
+/// the soil — so an overlay is the only way it is a thing the player can be
+/// asked to plan around.
+pub fn pollution_field(world: &World) -> PackedFloat32Array {
+    let lattice = world.lattice();
+    let cells = lattice.cells();
+    let mut out = PackedFloat32Array::new();
+    for y in 0..cells {
+        for x in 0..cells {
+            out.push(lattice.pollution_at((y * cells + x) as usize) as f32);
+        }
     }
     out
 }
