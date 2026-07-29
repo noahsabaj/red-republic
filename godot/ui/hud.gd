@@ -85,7 +85,10 @@ func refresh(republic: Node, overlay_mode: int, speed_names: Array) -> void:
 	_refresh_crews(republic)
 
 	var name: String = Overlays.NAMES[overlay_mode]
-	overlay_line.text = "overlay:  %s" % (name if name != "" else "none")
+	overlay_line.text = "overlay:  %s        %s" % [
+		name if name != "" else "none",
+		_import_policy_text(republic),
+	]
 
 	_refresh_stock(republic)
 
@@ -119,6 +122,17 @@ func _refresh_crews(republic: Node) -> void:
 	# A gang with nowhere to be is the state worth colouring: it is idle people
 	# and a bus journey the republic still owes them.
 	crew_line.modulate = Color(0.9, 0.55, 0.45) if waiting > 0 else Color.WHITE
+
+
+## Where sites buy what the republic cannot make.
+##
+## Off until a post is named, because auto-import spends hard currency and a
+## default that spent it would be spending it before the player chose a bloc.
+func _import_policy_text(republic: Node) -> String:
+	var post: int = republic.import_post()
+	if post == 0:
+		return "imports:  none"
+	return "imports:  through post %d" % post
 
 
 func _refresh_stock(republic: Node) -> void:

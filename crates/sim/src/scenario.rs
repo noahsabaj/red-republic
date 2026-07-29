@@ -91,6 +91,25 @@ fn found_crossing(world: &mut World, near: Point) -> Option<BuildingId> {
     world.place_built(BuildingKind::Customs, at).ok()
 }
 
+/// The settlers Moscow sends with the posting.
+///
+/// **Enough to staff what it also sent, and not one more.** Moscow does not
+/// hand a republic a customs house and then withhold the eight people to run
+/// it — a founding that cannot open its own border is not a hard start, it is a
+/// republic with a whole half of the game switched off, and it looked exactly
+/// like a balance decision from the outside.
+///
+/// It is deliberately *exactly* enough. There is no slack: the first thing the
+/// player commissions stands unstaffed until the republic grows, which is a
+/// real pressure and the reason this is not a softening. `crate::building::
+/// Buildings::housing` is larger, so there is somewhere for those people to
+/// live when they arrive.
+///
+/// Guarded by `the_founding_hand_can_staff_itself`, because this number drifts
+/// every time a building's worker count changes and the failure is silent: the
+/// tail of the founding order simply stops being manned.
+pub const SETTLERS: usize = 130;
+
 /// Found a town: housing, a mine on the nearest coal, a plant to feed it, and
 /// the beginnings of a timber chain.
 ///
@@ -99,10 +118,12 @@ fn found_crossing(world: &mut World, near: Point) -> Option<BuildingId> {
 ///
 /// **The order below is a priority order.** Labour fills workplaces in
 /// commissioning order, so whatever is founded last is what goes unmanned when
-/// the republic is short of people. `citizens` is worth checking against
-/// [`crate::building::Buildings::jobs`] afterwards: a founding with fewer
-/// settlers than jobs is a legitimate hand, but it will be the tail of this
-/// list that stands idle.
+/// the republic is short of people. A founding with fewer settlers than jobs is
+/// a legitimate hand — but it will be the tail of this list that stands idle,
+/// and the tail is the customs house, which is the difference between a hard
+/// start and a republic that can never earn a rouble.
+///
+/// See [`SETTLERS`] and `the_founding_hand_can_staff_itself`.
 pub fn found(world: &mut World, citizens: usize) -> StartingBase {
     // Site the town on the shallowest coal body, since that is what a republic
     // would actually do.
@@ -303,6 +324,62 @@ mod tests {
         });
         let base = found(&mut w, 60);
         (w, base)
+    }
+
+    /// The founding hand can run the founding.
+    ///
+    /// **This exists because it drifted and nobody noticed.** Raising the
+    /// Construction Office from ten workers to twenty took the founding from
+    /// 124 jobs to 134 against 120 settlers, and because the customs house is
+    /// last in the priority order it went from half-staffed to *empty* — a
+    /// republic that could no longer clear a single tonne through its own
+    /// border, in a change that was about construction and said nothing about
+    /// trade. The trajectory runner had been printing a flat zero in the money
+    /// column and it read as balance.
+    ///
+    /// The rule is not that a republic must be comfortable. It is that Moscow
+    /// does not send a building and withhold the people to run it, and that a
+    /// change to a worker count somewhere else may not silently switch off half
+    /// the game.
+    #[test]
+    fn the_founding_hand_can_staff_itself() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        found(&mut w, SETTLERS);
+        assert!(
+            w.buildings().jobs() as usize <= SETTLERS,
+            "the founding offers {} jobs and Moscow sent {SETTLERS} settlers, so \
+             the tail of scenario::found stands idle — and the tail is the \
+             customs house. Either SETTLERS rises or the founding builds less.",
+            w.buildings().jobs()
+        );
+        assert!(
+            w.buildings().housing() as usize >= SETTLERS,
+            "there is nowhere for {SETTLERS} settlers to live"
+        );
+
+        // And a day later they are actually in the jobs, which is the half the
+        // arithmetic above cannot see: work has to be *reachable*, so a founding
+        // that counts up correctly can still leave a building unmanned because
+        // nobody can walk to it.
+        for _ in 0..crate::time::TICKS_PER_DAY {
+            w.tick();
+        }
+        let short: Vec<String> = w
+            .buildings()
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.staff < b.def().workers)
+            .map(|b| format!("{} {}/{}", b.def().name, b.staff, b.def().workers))
+            .collect();
+        assert!(
+            short.is_empty(),
+            "the founding hand could not fill: {}",
+            short.join(", ")
+        );
     }
 
     #[test]

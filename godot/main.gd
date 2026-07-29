@@ -21,7 +21,9 @@ const Overlays := preload("res://ui/overlays.gd")
 const SEED := 1961
 const EXTENT_M := 6000.0
 const CLIMATE := 0  ## indexes ClimateId::ALL: plains, taiga, steppe, maritime
-const SETTLERS := 120
+## How many settlers arrive is the simulation's to say, not this file's. It was
+## a constant here once and the two drifted, which is how a founding ended up
+## with more jobs than people and a customs house nobody ever worked.
 
 @onready var republic: Node = $Republic
 @onready var rig: Node3D = $CameraRig
@@ -56,7 +58,7 @@ func _ready() -> void:
 	_read_arguments()
 	_look = Looks.current()
 	_apply_look()
-	republic.found(SEED, EXTENT_M, CLIMATE, SETTLERS)
+	republic.found(SEED, EXTENT_M, CLIMATE, republic.founding_settlers())
 	_build_terrain()
 	_build_instance_meshes()
 	if _advance_days > 0:

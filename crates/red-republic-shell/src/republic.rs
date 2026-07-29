@@ -139,6 +139,16 @@ impl Republic {
         }
     }
 
+    /// The settlers Moscow sends with a posting.
+    ///
+    /// Read from the simulation rather than copied into GDScript. The shell held
+    /// its own number once and the two drifted apart, which is how a founding
+    /// ended up with more jobs than people and a customs house nobody worked.
+    #[func]
+    fn founding_settlers(&self) -> i64 {
+        red_republic_sim::scenario::SETTLERS as i64
+    }
+
     /// Whether a republic has been founded yet.
     #[func]
     fn is_founded(&self) -> bool {
@@ -518,6 +528,93 @@ impl Republic {
         match world.issue(Command::RecallCrew {
             site: red_republic_sim::Destination::Building(id),
         }) {
+            Ok(_) => GString::from(""),
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
+    /// The republic's import policy: which frontier post sites buy through.
+    ///
+    /// `0` means the republic imports nothing, which is the default — auto-import
+    /// spends hard currency, so it stays off until somebody names a post.
+    #[func]
+    fn import_post(&self) -> i64 {
+        self.world
+            .as_ref()
+            .and_then(|w| w.build_policy().global())
+            .map_or(0, |c| i64::from(c.0))
+    }
+
+    /// The post a single site buys through, `0` for none. Sites follow the
+    /// republic's policy unless they have been given one of their own.
+    #[func]
+    fn site_import_post(&self, building: i64) -> i64 {
+        let Some(w) = &self.world else { return 0 };
+        let site = red_republic_sim::Destination::Building(red_republic_sim::BuildingId(
+            building.max(0) as u32,
+        ));
+        w.build_policy()
+            .crossing_for(site)
+            .map_or(0, |c| i64::from(c.0))
+    }
+
+    /// Whether this site has an instruction of its own rather than following
+    /// the republic's. What greys the "same as the republic" control.
+    #[func]
+    fn site_has_own_import_policy(&self, building: i64) -> bool {
+        let Some(w) = &self.world else { return false };
+        let site = red_republic_sim::Destination::Building(red_republic_sim::BuildingId(
+            building.max(0) as u32,
+        ));
+        w.build_policy().is_overridden(site)
+    }
+
+    /// How much of a site's bill has already been bought abroad on its account.
+    ///
+    /// The Directorate buys a bill once. A site that is short *and* has spent
+    /// its allowance is a site whose materials were taken somewhere else, which
+    /// is a completely different problem from one that has not been bought for
+    /// yet — and without this the two look identical.
+    #[func]
+    fn site_bought_abroad(&self, building: i64, resource: i64) -> f64 {
+        let Some(w) = &self.world else { return 0.0 };
+        let Some(&resource) = red_republic_sim::Resource::ALL.get(resource.max(0) as usize) else {
+            return 0.0;
+        };
+        let site = red_republic_sim::Destination::Building(red_republic_sim::BuildingId(
+            building.max(0) as u32,
+        ));
+        w.build_policy().bought_for(site, resource).0
+    }
+
+    /// Set where sites import through. `building` of 0 sets the republic's
+    /// default; `crossing` of 0 means import nothing.
+    #[func]
+    fn set_import_post(&mut self, building: i64, crossing: i64) -> GString {
+        let Some(world) = self.world.as_mut() else {
+            return GString::from("no republic has been founded");
+        };
+        let site = (building > 0).then_some(red_republic_sim::Destination::Building(
+            red_republic_sim::BuildingId(building.max(0) as u32),
+        ));
+        let crossing =
+            (crossing > 0).then_some(red_republic_sim::CrossingId(crossing.max(0) as u32));
+        match world.issue(Command::SetImportPolicy { site, crossing }) {
+            Ok(_) => GString::from(""),
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
+    /// Put a site back under the republic's default policy.
+    #[func]
+    fn clear_import_post(&mut self, building: i64) -> GString {
+        let Some(world) = self.world.as_mut() else {
+            return GString::from("no republic has been founded");
+        };
+        let site = red_republic_sim::Destination::Building(red_republic_sim::BuildingId(
+            building.max(0) as u32,
+        ));
+        match world.issue(Command::ClearImportPolicy { site }) {
             Ok(_) => GString::from(""),
             Err(why) => GString::from(why.to_string().as_str()),
         }

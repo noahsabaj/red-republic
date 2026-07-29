@@ -279,10 +279,22 @@ pub const BUILDINGS: &[BuildingDef] = &[
             wear: 0.0, farms: false),
     // The republic's builders, and the machinery they build with. Nothing goes
     // up without one: an office employs the crews, owns the plant, and runs the
-    // buses that put a gang on a site. Its establishment of two buses at ten
-    // seats against twenty staff is what lets one office work two sites at
-    // once — a third site wants a third office, which is the shape every other
-    // capacity in this republic has.
+    // bus that puts a gang on a site.
+    //
+    // **Sixteen staff and two buses**, which is one full gang of ten with six
+    // in hand — enough that a bus can be fetching one crew home while the other
+    // is taking one out. Two full gangs at once wants a second office, which is
+    // the shape every other capacity in this republic has.
+    //
+    // Two numbers here were got wrong first and both are worth naming. Twenty
+    // staff and two buses made the founding offer 134 jobs against 120
+    // settlers, and since the customs house is last in the staffing order the
+    // default republic quietly lost the ability to trade at all —
+    // `the_founding_hand_can_staff_itself` is what stops that recurring. Then
+    // **one** bus turned out to be a cliff rather than a saving: `crewed`
+    // floors, so a single-vehicle establishment runs zero buses the moment the
+    // office is one person short, where a depot of seven degrades smoothly.
+    // An establishment of one is an on/off switch wearing a capacity's clothes.
     //
     // Its `wear` is zero and that is a decision rather than an omission: an
     // office's plant is worn by the builder-days its crews actually work, in
@@ -290,9 +302,9 @@ pub const BUILDINGS: &[BuildingDef] = &[
     // republic for diggers standing in the yard. The `Machinery` appetite
     // declared here is what the resupply ranking reads; it is spent out on the
     // sites.
-    def!(ConstructionOffice, "Construction Office", 35.0, 25.0, workers: 20, draw: 0.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0,
+    def!(ConstructionOffice, "Construction Office", 35.0, 25.0, workers: 16, draw: 0.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0,
         keeps: [(CrewBus, 2)],
-        in: [(Machinery, 0.4), (Fuel, 0.15)], out: [],
+        in: [(Machinery, 0.3), (Fuel, 0.12)], out: [],
         cost: [(Bricks, 10.0), (Planks, 8.0), (Machinery, 1.0)], labour: 110.0, sells: [], taps: None, residents: 0, storage: 40.0,
             wear: 0.0, farms: false),
     // The republic's haulage. Its establishment is where the fleet comes from —
