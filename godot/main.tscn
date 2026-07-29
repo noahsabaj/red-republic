@@ -1,7 +1,8 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://main.gd" id="1_main"]
 [ext_resource type="Script" path="res://camera_rig.gd" id="2_rig"]
+[ext_resource type="PackedScene" path="res://ui/hud.tscn" id="3_hud"]
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_main")
@@ -31,10 +32,6 @@ fov = 60.0
 
 [node name="Roads" type="MeshInstance3D" parent="."]
 
-[node name="HUD" type="CanvasLayer" parent="."]
+[node name="Survey" type="MeshInstance3D" parent="."]
 
-[node name="Status" type="Label" parent="HUD"]
-offset_left = 16.0
-offset_top = 12.0
-offset_right = 900.0
-offset_bottom = 40.0
+[node name="HUD" parent="." instance=ExtResource("3_hud")]

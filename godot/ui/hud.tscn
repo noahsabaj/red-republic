@@ -1,0 +1,100 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://ui/hud.gd" id="1_hud"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
+bg_color = Color(0.07, 0.08, 0.09, 0.82)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.62, 0.58, 0.42, 0.55)
+corner_radius_top_left = 2
+corner_radius_top_right = 2
+corner_radius_bottom_right = 2
+corner_radius_bottom_left = 2
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_stock"]
+bg_color = Color(0.07, 0.08, 0.09, 0.82)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.62, 0.58, 0.42, 0.55)
+
+[node name="HUD" type="CanvasLayer"]
+script = ExtResource("1_hud")
+
+[node name="Panel" type="PanelContainer" parent="."]
+offset_left = 14.0
+offset_top = 12.0
+offset_right = 700.0
+offset_bottom = 130.0
+theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
+
+[node name="Margin" type="MarginContainer" parent="Panel"]
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 10
+
+[node name="Rows" type="VBoxContainer" parent="Panel/Margin"]
+theme_override_constants/separation = 3
+
+[node name="ClockLine" type="Label" parent="Panel/Margin/Rows"]
+theme_override_font_sizes/font_size = 19
+
+[node name="WeatherLine" type="Label" parent="Panel/Margin/Rows"]
+theme_override_font_sizes/font_size = 14
+
+[node name="ForecastLine" type="Label" parent="Panel/Margin/Rows"]
+theme_override_font_sizes/font_size = 13
+theme_override_colors/font_color = Color(0.78, 0.79, 0.74, 1)
+
+[node name="RepublicLine" type="Label" parent="Panel/Margin/Rows"]
+theme_override_font_sizes/font_size = 14
+
+[node name="OverlayLine" type="Label" parent="Panel/Margin/Rows"]
+theme_override_font_sizes/font_size = 13
+theme_override_colors/font_color = Color(0.86, 0.78, 0.5, 1)
+
+[node name="Stock" type="PanelContainer" parent="."]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -260.0
+offset_top = 12.0
+offset_right = -14.0
+offset_bottom = 420.0
+grow_horizontal = 0
+theme_override_styles/panel = SubResource("StyleBoxFlat_stock")
+
+[node name="Margin" type="MarginContainer" parent="Stock"]
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 10
+
+[node name="Rows" type="VBoxContainer" parent="Stock/Margin"]
+theme_override_constants/separation = 5
+
+[node name="Title" type="Label" parent="Stock/Margin/Rows"]
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.86, 0.78, 0.5, 1)
+
+[node name="Grid" type="GridContainer" parent="Stock/Margin/Rows"]
+columns = 2
+theme_override_constants/h_separation = 18
+theme_override_constants/v_separation = 2
+
+[node name="Hint" type="Label" parent="."]
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 16.0
+offset_top = -34.0
+offset_right = 900.0
+offset_bottom = -12.0
+grow_vertical = 0
+theme_override_font_sizes/font_size = 13
+theme_override_colors/font_color = Color(0.8, 0.81, 0.77, 1)

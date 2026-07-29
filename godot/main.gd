@@ -16,6 +16,7 @@ extends Node3D
 const Looks := preload("res://looks.gd")
 const Kit := preload("res://building_kit.gd")
 const Art := preload("res://building_art.gd")
+const Overlays := preload("res://ui/overlays.gd")
 
 const SEED := 1961
 const EXTENT_M := 6000.0
@@ -28,7 +29,8 @@ const SETTLERS := 120
 @onready var buildings_node: MultiMeshInstance3D = $Buildings
 @onready var vehicles_node: MultiMeshInstance3D = $Vehicles
 @onready var roads_node: MeshInstance3D = $Roads
-@onready var status: Label = $HUD/Status
+@onready var hud: CanvasLayer = $HUD
+@onready var survey_node: MeshInstance3D = $Survey
 
 var _buildings_shown := -1
 var _roads_shown := -1
@@ -40,6 +42,11 @@ var _bench_frames := 0
 var _look: Looks.Look = null
 var _view_distance := 0.0
 var _kind_nodes: Array[MultiMeshInstance3D] = []
+var _overlay := Overlays.Mode.NONE
+var _start_overlay := ""
+var _terrain_material: ShaderMaterial = null
+var _overlay_dirty := true
+var _overlay_day := -1
 var _advance_days := 0
 var _bench_times: PackedFloat64Array = PackedFloat64Array()
 
@@ -56,6 +63,15 @@ func _ready() -> void:
 	rig.frame_map(EXTENT_M, republic.centre_x(), republic.centre_y())
 	if _view_distance > 0.0:
 		rig.set_distance(_view_distance)
+	match _start_overlay:
+		"going": _overlay = Overlays.Mode.GOING
+		"tracks": _overlay = Overlays.Mode.WEAR
+		"survey": _overlay = Overlays.Mode.SURVEY
+	hud.set_resource_names(republic.resource_names())
+	hud.set_hint(
+		"0-5 speed  ·  space pause  ·  F none  G going  T tracks  R survey  ·  "
+		+ "WASD pan  ·  right-drag orbit  ·  wheel zoom"
+	)
 	_refresh_buildings()
 	_refresh_roads()
 	# Founded paused. The first thing a posting should do is let you look at it.
@@ -76,6 +92,7 @@ func _process(_delta: float) -> void:
 	_refresh_buildings()
 	_refresh_roads()
 	_refresh_vehicles()
+	_refresh_overlay()
 	_refresh_status()
 	_maybe_bench(_delta)
 	_maybe_capture()
@@ -145,6 +162,16 @@ func _unhandled_input(event: InputEvent) -> void:
 			republic.set_speed(speeds[event.keycode])
 		elif event.keycode == KEY_SPACE:
 			republic.set_speed(0 if republic.speed() > 0 else 1)
+		else:
+			var modes := {
+				KEY_F: Overlays.Mode.NONE,
+				KEY_G: Overlays.Mode.GOING,
+				KEY_T: Overlays.Mode.WEAR,
+				KEY_R: Overlays.Mode.SURVEY,
+			}
+			if modes.has(event.keycode):
+				_overlay = modes[event.keycode]
+				_overlay_dirty = true
 
 
 ## Arguments after a bare `--` on the command line. Used for capture runs and
@@ -171,6 +198,9 @@ func _read_arguments() -> void:
 			"--advance":
 				if i + 1 < args.size():
 					_advance_days = int(args[i + 1])
+			"--overlay":
+				if i + 1 < args.size():
+					_start_overlay = args[i + 1]
 
 
 ## Sun, sky and air. Presentation only -- the weather the simulation models is a
@@ -231,6 +261,7 @@ func _build_terrain() -> void:
 	mat.set_shader_parameter("rock_colour", _look.rock)
 	mat.set_shader_parameter("water_colour", _look.water)
 	mat.set_shader_parameter("contour_strength", _look.contour_strength)
+	_terrain_material = mat
 	terrain_node.material_override = mat
 
 
@@ -359,25 +390,36 @@ func _refresh_roads() -> void:
 	roads_node.mesh = mesh
 
 
+const SPEED_NAMES := ["paused", "real time", "1 h/s", "2 h/s", "4 h/s", "8 h/s"]
+
+
 func _refresh_status() -> void:
-	var names := ["paused", "real time", "1 h/s", "2 h/s", "4 h/s", "8 h/s"]
-	status.text = "%s   %s   pop %d (%d at work)   %d buildings   %d lorries   %.1f degC   %s roubles" % [
-		republic.date_text(),
-		names[republic.speed()],
-		republic.population(),
-		republic.employed(),
-		republic.building_count(),
-		republic.vehicle_count(),
-		republic.temperature_c(),
-		_thousands(republic.rubles()),
-	]
+	hud.refresh(republic, _overlay, SPEED_NAMES)
 
 
-func _thousands(value: float) -> String:
-	var whole := int(abs(value))
-	var out := ""
-	while whole >= 1000:
-		out = " %03d%s" % [whole % 1000, out]
-		whole /= 1000
-	out = "%d%s" % [whole, out]
-	return ("-" + out) if value < 0.0 else out
+## Overlays are rebuilt on the day boundary rather than per frame.
+##
+## Going and wear are ground state and the ground changes daily, so a per-frame
+## rebuild would repaint an identical texture sixty times a second. This is the
+## same event-driven discipline the building buffer uses, for the same reason:
+## the marshalling boundary is affordable precisely because nothing bulk crosses
+## it on a schedule.
+func _refresh_overlay() -> void:
+	if _terrain_material == null:
+		return
+	var day: int = int(republic.date_text().replace("-", ""))
+	if not _overlay_dirty and day == _overlay_day:
+		return
+	_overlay_dirty = false
+	_overlay_day = day
+	Overlays.apply(_terrain_material, republic, _overlay, EXTENT_M)
+	if _overlay == Overlays.Mode.SURVEY:
+		survey_node.mesh = Overlays.survey_mesh(republic, _ground_height)
+	else:
+		survey_node.mesh = null
+
+
+func _ground_height(x: float, z: float) -> float:
+	# The terrain mesh is the ground, so a disc drawn on it has to sit on the
+	# same surface rather than on a plane at zero.
+	return republic.ground_height(x, z)

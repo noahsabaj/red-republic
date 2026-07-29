@@ -765,6 +765,52 @@ pub fn going(surface: Surface) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    /// Going is a **badness**, and this test exists because the name does not
+    /// say so.
+    ///
+    /// `going_in` runs 0.0 firm to 1.0 impassable. Reading it as a quality
+    /// inverts every consumer, and the failure does not look like a bug: the
+    /// shell's ground overlay painted a bone-dry July map entirely red and it
+    /// read as a balance problem rather than a sign error.
+    ///
+    /// Pinned here rather than in the shell because this is where the meaning
+    /// lives. If it is ever flipped, this goes red first and whoever flips it
+    /// is pointed at everything downstream.
+    #[test]
+    fn going_is_a_badness_and_not_a_quality() {
+        let dry = Ground {
+            moisture: 0.0,
+            water: 0.0,
+            snow: 0.0,
+            frost: 0.0,
+        };
+        let soaked = Ground {
+            moisture: 1.0,
+            water: 1.0,
+            snow: 0.0,
+            frost: 0.0,
+        };
+        let firm = dry.going_on(Surface::Grass);
+        let bog = soaked.going_on(Surface::Grass);
+        assert!(
+            firm < bog,
+            "dry ground reported {firm} and soaked ground {bog}; going must              rise as the ground gets worse"
+        );
+        assert_eq!(firm, 0.0, "bone-dry ground is perfectly firm");
+
+        // And frozen ground is hard however wet it is, which is the
+        // counter-intuitive half: midwinter is better going than the thaw.
+        let frozen = Ground {
+            frost: 1.0,
+            ..soaked
+        };
+        assert_eq!(
+            frozen.going_on(Surface::Grass),
+            0.0,
+            "a frozen bog is a road"
+        );
+    }
+
     use super::*;
     use crate::climate::{ClimateId, precipitation_on, temperature_on};
     use crate::rng::Rng;

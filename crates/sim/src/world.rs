@@ -347,7 +347,20 @@ impl World {
     /// lattice is a summary of it: setting one without the other leaves
     /// vehicles routing over a map that is no longer there, and the symptom is
     /// a republic where nothing can get anywhere for no visible reason.
-    pub fn set_terrain(&mut self, terrain: Terrain) {
+    /// `pub(crate)`, and it was still `pub` after the seal landed — the M2
+    /// sweep counted it as a verb and then forgot to close it. The exposure
+    /// guard found it, which is the second thing that guard has been worth.
+    ///
+    /// It is not a player action and never will be. `world::fixtures` reaches
+    /// it for benchmark setup and is inside the crate; a shell has no business
+    /// replacing the ground under a running republic.
+    // Only `world::fixtures` reaches it today, so it is dead in a build with
+    // that feature off. Kept rather than folded into the caller because it is
+    // the one place terrain and lattice are replaced together, and the rule
+    // that they must be is what stops a republic where nothing can get
+    // anywhere for no visible reason.
+    #[cfg_attr(not(feature = "fixtures"), allow(dead_code))]
+    pub(crate) fn set_terrain(&mut self, terrain: Terrain) {
         self.lattice = Lattice::from_terrain(&terrain);
         self.terrain = terrain;
     }
