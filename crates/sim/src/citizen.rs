@@ -31,7 +31,7 @@
 //!    stored one would be reading a different citizen after a reload.
 
 use crate::building::{BuildingId, Buildings};
-use crate::road::RoadNetwork;
+use crate::network::Network;
 use crate::transport::{self, Commute, Mode};
 use crate::units::{Metres, Point, Speed};
 use bevy_ecs::prelude::*;
@@ -291,7 +291,7 @@ impl CitizenRecord {
 
     /// Whether this person needs a seat on a bus to hold their job.
     pub fn rides(&self) -> bool {
-        self.commute.mode == Mode::Bus
+        self.commute.is_carried()
     }
 }
 
@@ -581,7 +581,7 @@ impl Population {
     pub fn riders(&self) -> u32 {
         self.query
             .iter_manual(&self.world)
-            .filter(|(_, _, _, _, commute, _, _)| commute.mode == Mode::Bus)
+            .filter(|(_, _, _, _, commute, _, _)| commute.is_carried())
             .count() as u32
     }
 
@@ -719,7 +719,7 @@ impl<'de> Deserialize<'de> for Population {
 /// a road is a real route, where the straight line through it is not. Falls
 /// back to the straight line otherwise, which is the right answer on open
 /// ground, and never claims a road is longer than walking directly.
-pub fn commute_distance(home: Point, work: Point, roads: &RoadNetwork) -> Metres {
+pub fn commute_distance(home: Point, work: Point, roads: &Network) -> Metres {
     let straight = home.distance_to(work);
     let by_road = (|| {
         let a = roads.nearest_node(home, ROAD_ACCESS)?;
@@ -741,7 +741,7 @@ pub fn commute_distance(home: Point, work: Point, roads: &RoadNetwork) -> Metres
 ///
 /// On foot only. Whether they could get there *at all* is
 /// [`crate::transport::reach`], which also knows about buses.
-pub fn is_reachable(home: Point, work: Point, roads: &RoadNetwork) -> bool {
+pub fn is_reachable(home: Point, work: Point, roads: &Network) -> bool {
     commute_distance(home, work, roads).0 <= MAX_WALK.0
 }
 
@@ -776,7 +776,7 @@ pub struct Labour {
 pub fn assign_labour(
     population: &mut Population,
     buildings: &Buildings,
-    roads: &RoadNetwork,
+    ways: crate::journey::Ways<'_>,
 ) -> Labour {
     let people = population.records();
     let home_of = |record: &CitizenRecord| {
@@ -800,7 +800,10 @@ pub fn assign_labour(
     // What the depots can carry today. Fixed for the whole pass rather than
     // recomputed per workplace, because it is one fleet serving the republic
     // and not a fresh allowance for every factory.
-    let mut seats_left = transport::seats(buildings);
+    // **A pool per way, not one pool.** A republic whose trams are full has not
+    // thereby run out of buses, and one pool would make the choice between
+    // laying tramway and buying more buses mean nothing.
+    let mut services = transport::services(buildings);
     let mut seats_used = 0u32;
 
     // Only finished buildings employ anyone. A site is worked by builders, who
@@ -826,10 +829,10 @@ pub fn assign_labour(
             .iter()
             .filter(|&&(_, _, taught)| taught >= needs)
             .filter_map(|&(id, home, _)| {
-                let commute = transport::reach(home, workplace.centre, roads)?;
+                let commute = transport::reach_by(home, workplace.centre, ways, &services)?;
                 let rank = match commute.mode {
                     Mode::Foot => 0,
-                    Mode::Bus => 1,
+                    Mode::Ride(_) => 1,
                     Mode::None => return None,
                 };
                 Some((rank, commute.time.0, id, commute))
@@ -846,15 +849,18 @@ pub fn assign_labour(
             if hired.len() == jobs {
                 break;
             }
-            if commute.mode == Mode::Bus {
-                if seats_left == 0 {
-                    // The bus is full. Everyone behind this candidate is either
-                    // also a rider or ranked worse, so keep scanning rather than
-                    // stopping — a nearer rider might still be a walker for a
-                    // later workplace.
+            if let Some(medium) = commute.medium() {
+                let Some(service) = services.iter_mut().find(|s| s.medium == medium) else {
+                    continue;
+                };
+                if service.seats == 0 {
+                    // That service is full. Everyone behind this candidate is
+                    // either also a rider or ranked worse, so keep scanning
+                    // rather than stopping — a nearer rider might still be a
+                    // walker for a later workplace.
                     continue;
                 }
-                seats_left -= 1;
+                service.seats -= 1;
                 seats_used += 1;
             }
             if let Ok(index) = assignment.binary_search_by_key(&id, |(i, _, _)| *i) {
@@ -974,7 +980,7 @@ mod tests {
             p.spawn_citizen(home, 30);
         }
 
-        let labour = assign_labour(&mut p, &b, &RoadNetwork::new());
+        let labour = assign_labour(&mut p, &b, crate::journey::Ways::on_roads(&Network::new()));
         assert_eq!(labour.staffing, vec![(mill, 4)]);
         assert_eq!(p.employed(), 4);
     }
@@ -998,7 +1004,7 @@ mod tests {
             p.spawn_citizen(home, 30);
         }
 
-        let labour = assign_labour(&mut p, &b, &RoadNetwork::new());
+        let labour = assign_labour(&mut p, &b, crate::journey::Ways::on_roads(&Network::new()));
         assert_eq!(
             labour.staffing,
             vec![(mine, 0)],
@@ -1023,7 +1029,7 @@ mod tests {
             p.spawn_citizen(camp, 30);
         }
 
-        let labour = assign_labour(&mut p, &b, &RoadNetwork::new());
+        let labour = assign_labour(&mut p, &b, crate::journey::Ways::on_roads(&Network::new()));
         assert_eq!(
             labour.staffing,
             vec![(mine, 14)],
@@ -1061,8 +1067,8 @@ mod tests {
             p.spawn_citizen(city, 30);
         }
 
-        let roads = RoadNetwork::new();
-        assign_labour(&mut p, &b, &roads);
+        let roads = Network::new();
+        assign_labour(&mut p, &b, crate::journey::Ways::on_roads(&roads));
         assert_eq!(p.staff_of(mine), 14, "the town works its mine");
 
         // The seam runs out and the mine closes.
@@ -1070,7 +1076,7 @@ mod tests {
         assert!(g.get(DepositId(1)).unwrap().is_exhausted());
         b.demolish(mine);
 
-        assign_labour(&mut p, &b, &roads);
+        assign_labour(&mut p, &b, crate::journey::Ways::on_roads(&roads));
         let stranded = p.residents_of(camp);
         assert_eq!(stranded.len(), 20, "they still live there");
         assert!(
@@ -1093,10 +1099,10 @@ mod tests {
     /// line only when it is genuinely shorter, never when it is longer.
     #[test]
     fn roads_shorten_a_commute_but_never_lengthen_one() {
-        let mut roads = RoadNetwork::new();
+        let mut roads = Network::new();
         let a = roads.add_node(at(0.0, 0.0));
         let b = roads.add_node(at(5_000.0, 0.0));
-        roads.connect(a, b, crate::road::default_road_speed());
+        roads.connect(a, b, crate::network::default_road_speed());
 
         // Both ends near the road: the road route is the same as the straight
         // line here, so the straight line must win or tie — never lose.
@@ -1135,8 +1141,16 @@ mod tests {
             p
         };
         let (mut first, mut second) = (build(), build());
-        let a = assign_labour(&mut first, &b, &RoadNetwork::new());
-        let c = assign_labour(&mut second, &b, &RoadNetwork::new());
+        let a = assign_labour(
+            &mut first,
+            &b,
+            crate::journey::Ways::on_roads(&Network::new()),
+        );
+        let c = assign_labour(
+            &mut second,
+            &b,
+            crate::journey::Ways::on_roads(&Network::new()),
+        );
         assert_eq!(a, c);
         assert_eq!(first.records(), second.records());
     }
@@ -1156,11 +1170,11 @@ mod tests {
         for _ in 0..6 {
             p.spawn_citizen(home, 30);
         }
-        assign_labour(&mut p, &b, &RoadNetwork::new());
+        assign_labour(&mut p, &b, crate::journey::Ways::on_roads(&Network::new()));
         assert_eq!(p.employed(), 6);
 
         b.demolish(home);
-        assign_labour(&mut p, &b, &RoadNetwork::new());
+        assign_labour(&mut p, &b, crate::journey::Ways::on_roads(&Network::new()));
         assert_eq!(
             p.employed(),
             0,
@@ -1192,7 +1206,7 @@ mod tests {
         for i in 0..12 {
             p.spawn_citizen(home, 20 + i);
         }
-        assign_labour(&mut p, &b, &RoadNetwork::new());
+        assign_labour(&mut p, &b, crate::journey::Ways::on_roads(&Network::new()));
 
         let records = p.records();
         assert_eq!(p.count(), records.len());

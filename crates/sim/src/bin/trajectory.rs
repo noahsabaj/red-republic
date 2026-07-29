@@ -294,11 +294,20 @@ fn main() {
             world.fleet().len(),
             stuck,
             if world.roadworks().is_empty() {
-                format!("{:.1}", world.roads().total_length().as_km())
+                format!(
+                    "{:.1}",
+                    world
+                        .network(red_republic_sim::journey::Medium::Road)
+                        .total_length()
+                        .as_km()
+                )
             } else {
                 format!(
                     "{:.1}+{}",
-                    world.roads().total_length().as_km(),
+                    world
+                        .network(red_republic_sim::journey::Medium::Road)
+                        .total_length()
+                        .as_km(),
                     world.roadworks().len()
                 )
             },
@@ -352,4 +361,27 @@ fn main() {
         world.population().riders(),
         world.population().employed()
     );
+    // The four ways through, and the fleet on each. Water is here beside the
+    // built ones on purpose: it is the one network nobody builds, so a run that
+    // reports "water 41 km, 0 vehicles" is reporting an asset the republic has
+    // and has not used — which is exactly the sort of thing a balance pass
+    // needs to be able to see and a column of production figures cannot say.
+    let ways: Vec<String> = red_republic_sim::journey::Medium::ALL
+        .into_iter()
+        .map(|medium| {
+            let fleet = world
+                .fleet()
+                .all()
+                .iter()
+                .filter(|v| v.def().medium == medium)
+                .count();
+            format!(
+                "{} {:.1} km / {} vehicles",
+                medium.name().to_lowercase(),
+                world.network(medium).total_length().as_km(),
+                fleet
+            )
+        })
+        .collect();
+    println!("ways: {}", ways.join(" · "));
 }

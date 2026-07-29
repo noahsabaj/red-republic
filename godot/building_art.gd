@@ -110,6 +110,25 @@ static func table() -> Dictionary:
 		"Gas Station": Art.new(1, 4.0, F, 0, 2, false, Tone.METAL),
 		"Bus Depot": Art.new(1, 9.5, S, 0, 0, false, Tone.METAL),
 
+		# Passenger depots. All three are a shed full of vehicles, so they share
+		# the bus depot's sawtooth-and-metal read; what tells them apart is size,
+		# which comes from the real footprint the simulation authors. The metro
+		# depot is the only one with a gantry, because most of it is underground
+		# and the surface building is a hoist over a shaft.
+		"Trolleybus Depot": Art.new(1, 9.0, S, 0, 0, false, Tone.METAL),
+		"Tram Depot": Art.new(1, 10.0, S, 0, 0, false, Tone.METAL),
+		"Metro Depot": Art.new(1, 11.0, F, 0, 0, true, Tone.CONCRETE),
+
+		# Terminals. Long, low and mostly canopy -- a station and a wharf are
+		# both a shed over a platform, and the gantry is what makes them read as
+		# places where something is craned rather than as another warehouse.
+		# The aerodrome is the flattest thing in the republic on purpose: it is
+		# almost all apron, and a tall one would read as a hangar estate.
+		"Railway Station": Art.new(2, 5.0, F, 0, 0, true, Tone.CONCRETE),
+		"River Port": Art.new(1, 7.0, F, 0, 1, true, Tone.CONCRETE),
+		"Aerodrome": Art.new(1, 6.0, F, 0, 0, false, Tone.CONCRETE),
+		"Distribution Office": Art.new(2, 4.0, F, 0, 0, false, Tone.RENDER),
+
 		# The frontier.
 		"Customs House": Art.new(2, 4.0, F, 0, 0, false, Tone.RENDER),
 	}

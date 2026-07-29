@@ -53,6 +53,14 @@ pub enum Utility {
     Conveyor,
     /// A pipe. Carries liquids, in quantity.
     Pipeline,
+    /// Overhead wire for trolleybuses.
+    ///
+    /// It carries nothing and reaches nowhere: what it does is make a
+    /// trolleybus depot able to run at all. That is a different shape from
+    /// the other four, and it is here rather than as its own module because
+    /// the *thing* is the same -- a span ordered, materialled, built by the
+    /// same crew in the same queue and useless until finished.
+    Trolleywire,
 }
 
 /// What a kind of line costs and what it is worth.
@@ -157,14 +165,29 @@ pub const UTILITIES: &[UtilityDef] = &[
         carries: &[Resource::Oil, Resource::Fuel],
         throughput: 180.0,
     },
+    // The cheapest span in the table by a wide margin: it is wire on poles
+    // beside a road that already exists. What it buys is a bus service that
+    // burns no oil, and what it costs is that the buses go where the wire goes
+    // and nowhere else.
+    UtilityDef {
+        kind: Utility::Trolleywire,
+        name: "Trolley Wire",
+        materials: &[(Resource::Steel, 4.0)],
+        labour: 30.0,
+        reach: Metres(200.0),
+        loss_per_km: 0.02,
+        carries: &[],
+        throughput: 0.0,
+    },
 ];
 
 impl Utility {
-    pub const ALL: [Utility; 4] = [
+    pub const ALL: [Utility; 5] = [
         Utility::Power,
         Utility::Heat,
         Utility::Conveyor,
         Utility::Pipeline,
+        Utility::Trolleywire,
     ];
 
     /// Whether this kind moves tonnage rather than current or hot water.

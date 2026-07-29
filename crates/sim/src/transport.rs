@@ -30,10 +30,11 @@
 //! speed and then subtracting stop dwell time separately would arrive at the
 //! same place with more machinery.
 
-use crate::building::{BuildingKind, Buildings};
+use crate::building::Buildings;
 use crate::citizen::{MAX_WALK, ROAD_ACCESS, walking_speed};
+use crate::journey::{Medium, Ways};
+use crate::network::Network;
 use crate::resource::Resource;
-use crate::road::RoadNetwork;
 use crate::units::{Metres, Point, Seconds, Speed, Tonnes};
 use bevy_ecs::prelude::Component;
 use serde::{Deserialize, Serialize};
@@ -46,8 +47,12 @@ use serde::{Deserialize, Serialize};
 pub const MAX_COMMUTE: Seconds = Seconds(45.0 * 60.0);
 
 /// A city bus's commercial speed — stops, boarding and waiting included.
+///
+/// Now one of six, read off [`Medium::commercial_speed`]. Kept as a named
+/// function because a good deal of this module's own testing is about the bus
+/// and reads better saying so.
 pub fn bus_speed() -> Speed {
-    Speed::from_kph(20.0)
+    Medium::Road.commercial_speed()
 }
 
 /// How far someone will walk to a stop at each end.
@@ -70,7 +75,14 @@ pub enum Mode {
     /// No job, so no journey.
     None,
     Foot,
-    Bus,
+    /// Carried, over the way named.
+    ///
+    /// This was `Bus`, and the moment there were five passenger modes a bare
+    /// `Bus` would have meant "carried by something" while claiming to name
+    /// what. Carrying the [`Medium`] is what lets a panel say *tram* and lets
+    /// the seat pools stay separate — a republic whose trams are full has not
+    /// thereby run out of buses.
+    Ride(Medium),
 }
 
 /// A citizen's journey to work — the ECS component the labour pass writes.
@@ -102,8 +114,12 @@ impl Commute {
     }
 
     pub fn by_bus(distance: Metres, time: Seconds) -> Self {
+        Self::carried(Medium::Road, distance, time)
+    }
+
+    pub fn carried(medium: Medium, distance: Metres, time: Seconds) -> Self {
         Self {
-            mode: Mode::Bus,
+            mode: Mode::Ride(medium),
             distance,
             time,
         }
@@ -111,6 +127,19 @@ impl Commute {
 
     pub fn is_travelling(&self) -> bool {
         self.mode != Mode::None
+    }
+
+    /// Whether somebody is carried rather than walking.
+    pub fn is_carried(&self) -> bool {
+        matches!(self.mode, Mode::Ride(_))
+    }
+
+    /// Which way they ride, if they ride.
+    pub fn medium(&self) -> Option<Medium> {
+        match self.mode {
+            Mode::Ride(medium) => Some(medium),
+            _ => None,
+        }
     }
 }
 
@@ -127,12 +156,72 @@ impl Default for Commute {
 /// not. That ordering is the entire allocation policy and it is deliberate: any
 /// cleverer scheme would be the simulation making a decision about who deserves
 /// a bus, which is not its call.
-pub fn reach(home: Point, work: Point, roads: &RoadNetwork) -> Option<Commute> {
+pub fn reach(home: Point, work: Point, roads: &Network) -> Option<Commute> {
     let straight = crate::citizen::commute_distance(home, work, roads);
     if straight.0 <= MAX_WALK.0 {
         return Some(Commute::on_foot(straight));
     }
     ride(home, work, roads)
+}
+
+/// [`reach`], over every way the republic actually runs a service on.
+///
+/// Walking still wins whenever it is possible, for the reason it always did: a
+/// seat spent on somebody who could have walked is a seat denied to somebody
+/// who could not. Beyond that the **quickest way that has a seat left** wins,
+/// which is the only ordering that does not amount to the simulation deciding
+/// who deserves the metro.
+pub fn reach_by(home: Point, work: Point, ways: Ways<'_>, services: &[Service]) -> Option<Commute> {
+    let straight = crate::citizen::commute_distance(home, work, ways.roads);
+    if straight.0 <= MAX_WALK.0 {
+        return Some(Commute::on_foot(straight));
+    }
+    let mut ranked: Vec<&Service> = services.iter().filter(|s| s.seats > 0).collect();
+    ranked.sort_by(|a, b| {
+        b.medium
+            .commercial_speed()
+            .as_mps()
+            .total_cmp(&a.medium.commercial_speed().as_mps())
+            .then_with(|| a.medium.cmp(&b.medium))
+    });
+    ranked
+        .into_iter()
+        .find_map(|service| ride_on(home, work, ways.of(service.medium), service.medium))
+}
+
+/// One passenger service the republic runs today: the way it rides and how
+/// many seats are left on it.
+///
+/// Separate pools per way, deliberately. One pool would mean a republic whose
+/// trams are full could not put anybody on a bus, and would make the choice
+/// between building a tramway and buying more buses meaningless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Service {
+    pub medium: Medium,
+    pub seats: u32,
+}
+
+/// The bus half of [`reach_by`], over any way.
+pub fn ride_on(home: Point, work: Point, net: &Network, medium: Medium) -> Option<Commute> {
+    let start = net.nearest_node(home, STOP_WALK)?;
+    let finish = net.nearest_node(work, STOP_WALK)?;
+    let route = net.route(start, finish)?;
+
+    let walk = walking_speed();
+    let to_stop = net.position_of(start)?.distance_to(home);
+    let from_stop = net.position_of(finish)?.distance_to(work);
+    let time = walk.time_to_cover(to_stop)
+        + medium.commercial_speed().time_to_cover(route.distance)
+        + walk.time_to_cover(from_stop);
+
+    if time.0 > MAX_COMMUTE.0 {
+        return None;
+    }
+    Some(Commute::carried(
+        medium,
+        to_stop + route.distance + from_stop,
+        time,
+    ))
 }
 
 /// The bus half of [`reach`], separated so a caller that has already spent a
@@ -141,7 +230,7 @@ pub fn reach(home: Point, work: Point, roads: &RoadNetwork) -> Option<Commute> {
 /// `None` when either end is out of walking range of the network, when the two
 /// are not connected by road, or when the whole journey would take longer than
 /// anyone will travel.
-pub fn ride(home: Point, work: Point, roads: &RoadNetwork) -> Option<Commute> {
+pub fn ride(home: Point, work: Point, roads: &Network) -> Option<Commute> {
     let start = roads.nearest_node(home, STOP_WALK)?;
     let finish = roads.nearest_node(work, STOP_WALK)?;
     let route = roads.route(start, finish)?;
@@ -166,15 +255,55 @@ pub fn ride(home: Point, work: Point, roads: &RoadNetwork) -> Option<Commute> {
 /// about to compute would be circular — a depot could staff itself by carrying
 /// its own drivers to work.
 pub fn seats(buildings: &Buildings) -> u32 {
-    buildings
-        .all()
+    services(buildings).iter().map(|s| s.seats).sum()
+}
+
+/// Every passenger service the republic runs today, one entry per way.
+///
+/// **Read off authored fields, not off a list of building kinds.** This used to
+/// filter on `kind == BusDepot`, which is exactly the smell the rest of the
+/// crate refuses: a list inside a system is a thing you must remember to edit,
+/// and what you forget lands silently in a fallback. A building runs a service
+/// when it has `seats`, and `medium` says over what — so a fifth passenger mode
+/// is a data row and nothing here changes.
+pub fn services(buildings: &Buildings) -> Vec<Service> {
+    let mut out: Vec<Service> = Vec::new();
+    for medium in Medium::ALL {
+        let seats: u32 = buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().seats > 0 && b.def().medium == Some(medium))
+            .map(|b| (f64::from(b.def().seats) * running_share(b)) as u32)
+            .sum();
+        if seats > 0 {
+            out.push(Service { medium, seats });
+        }
+    }
+    out
+}
+
+/// What share of a depot's vehicles can roll: its staffing, and whatever it
+/// runs on.
+///
+/// **A depot runs on one of two things and says which.** One with fuel among
+/// its inputs is limited by its tank; one without is electric and is limited by
+/// whether the grid is reaching it. Authored rather than matched on by kind —
+/// and it is the whole trolleybus trade, because a republic that strings wire
+/// runs its buses on its own generation instead of on oil it may have to buy.
+fn running_share(building: &crate::building::Building) -> f64 {
+    let staffing = building.staffing();
+    let burns_fuel = building
+        .def()
+        .inputs
         .iter()
-        .filter(|b| b.is_built() && b.kind == BuildingKind::BusDepot)
-        .map(|b| {
-            let running = b.staffing().min(fuel_fraction(b));
-            (f64::from(b.def().seats) * running) as u32
-        })
-        .sum()
+        .any(|&(r, _)| r == Resource::Fuel);
+    if burns_fuel {
+        staffing.min(fuel_fraction(building))
+    } else if building.powered {
+        staffing
+    } else {
+        0.0
+    }
 }
 
 /// What share of a depot's buses can actually roll, from what is in its tank.
@@ -205,10 +334,14 @@ pub fn fuel_burn(
     buildings: &Buildings,
     mut used: u32,
 ) -> Vec<(crate::building::BuildingId, Tonnes)> {
+    // Only the depots that actually burn something. An electric service draws
+    // its power through `power_draw` like every other building and has no fuel
+    // bill to book.
     let mut depots: Vec<_> = buildings
         .all()
         .iter()
-        .filter(|b| b.is_built() && b.kind == BuildingKind::BusDepot)
+        .filter(|b| b.is_built() && b.def().seats > 0)
+        .filter(|b| b.def().inputs.iter().any(|&(r, _)| r == Resource::Fuel))
         .collect();
     depots.sort_by_key(|b| b.id);
 
@@ -217,8 +350,7 @@ pub fn fuel_burn(
         if used == 0 {
             break;
         }
-        let running = depot.staffing().min(fuel_fraction(depot));
-        let capacity = (f64::from(depot.def().seats) * running) as u32;
+        let capacity = (f64::from(depot.def().seats) * running_share(depot)) as u32;
         let taken = used.min(capacity);
         if taken == 0 {
             continue;
@@ -230,15 +362,16 @@ pub fn fuel_burn(
 }
 
 /// Whether a building is close enough to a road to be served by freight.
-pub fn is_road_served(at: Point, roads: &RoadNetwork) -> bool {
+pub fn is_road_served(at: Point, roads: &Network) -> bool {
     roads.nearest_node(at, ROAD_ACCESS).is_some()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::building::BuildingKind;
     use crate::geology::Geology;
-    use crate::road::default_road_speed;
+    use crate::network::default_road_speed;
     use crate::terrain::Terrain;
 
     fn at(x: f64, y: f64) -> Point {
@@ -246,8 +379,8 @@ mod tests {
     }
 
     /// A road from one end to the other, with junctions every 500 m.
-    fn highway(length: f64) -> RoadNetwork {
-        let mut roads = RoadNetwork::new();
+    fn highway(length: f64) -> Network {
+        let mut roads = Network::new();
         let steps = (length / 500.0) as u32;
         let mut previous = roads.add_node(at(0.0, 0.0));
         for i in 1..=steps {
@@ -276,11 +409,11 @@ mod tests {
         let far_work = at(6_000.0, 50.0);
 
         // No roads at all: out of range, exactly as before transport existed.
-        assert!(reach(home, far_work, &RoadNetwork::new()).is_none());
+        assert!(reach(home, far_work, &Network::new()).is_none());
 
         let roads = highway(10_000.0);
         let commute = reach(home, far_work, &roads).expect("the bus should reach it");
-        assert_eq!(commute.mode, Mode::Bus);
+        assert_eq!(commute.mode, Mode::Ride(Medium::Road));
         assert!(commute.distance.0 >= 6_000.0);
         // 6 km at 20 km/h is eighteen minutes, plus a short walk at each end.
         assert!(

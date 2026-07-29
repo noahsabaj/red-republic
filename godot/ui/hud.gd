@@ -37,6 +37,7 @@ const PEOPLE_ROWS := 24
 @onready var crew_line: Label = $Panel/Margin/Rows/CrewLine
 @onready var people_line: Label = $Panel/Margin/Rows/PeopleLine
 @onready var migration_line: Label = $Panel/Margin/Rows/MigrationLine
+@onready var ways_line: Label = $Panel/Margin/Rows/WaysLine
 @onready var grid_line: Label = $Panel/Margin/Rows/GridLine
 @onready var overlay_line: Label = $Panel/Margin/Rows/OverlayLine
 @onready var stock_grid: GridContainer = $Stock/Margin/Rows/Grid
@@ -50,6 +51,7 @@ var _people_labels: Array[Label] = []
 var _resource_names := PackedStringArray()
 var _content_names := PackedStringArray()
 var _utility_names := PackedStringArray()
+var _way_names := PackedStringArray()
 
 ## The order `demographics()` hands them back in, which is the order
 ## `LifeStage::ALL` and `Education::ALL` declare. Named here rather than read
@@ -73,6 +75,10 @@ func set_contentment_names(names: PackedStringArray) -> void:
 
 func set_utility_names(names: PackedStringArray) -> void:
 	_utility_names = names
+
+
+func set_way_names(names: PackedStringArray) -> void:
+	_way_names = names
 
 
 ## Pooled rows, built once. See the virtualisation note above.
@@ -127,6 +133,7 @@ func refresh(republic: Node, overlay_mode: int, speed_names: Array) -> void:
 	_refresh_crews(republic)
 	_refresh_people_lines(republic)
 	_refresh_migration_line(republic)
+	_refresh_ways_line(republic)
 	_refresh_grid_line(republic)
 
 	var name: String = Overlays.NAMES[overlay_mode]
@@ -318,6 +325,34 @@ func _refresh_people(republic: Node) -> void:
 		else:
 			name_label.text = ""
 			value_label.text = ""
+
+
+## The four ways through the republic, and the fleet that rides each.
+##
+## Water is on this line beside the built ones for a reason that is easy to miss:
+## it is the one network nobody builds, so a republic that has forty kilometres
+## of navigable river and no port has an enormous asset it has not noticed. A
+## line saying "water 41 km (0)" is the whole prompt.
+##
+## Sized off `Medium::ALL` rather than off four names typed here. Three separate
+## things broke the last time a roster grew under a literal length.
+func _refresh_ways_line(republic: Node) -> void:
+	var lengths: PackedFloat32Array = republic.way_lengths()
+	var fleet: PackedFloat32Array = republic.fleet_by_medium()
+	var ways := _way_names.size()
+	if ways == 0 or lengths.size() != ways or fleet.size() != ways * 2:
+		ways_line.text = ""
+		return
+	var parts := PackedStringArray()
+	for i in ways:
+		# Air has no length worth printing -- it is a straight line between
+		# aerodromes -- so it earns its place on this line only once something
+		# flies.
+		if lengths[i] > 0.05 or fleet[i] > 0.0:
+			parts.append("%s %.1f km (%d/%d)" % [
+				_way_names[i].to_lower(), lengths[i], int(fleet[ways + i]), int(fleet[i]),
+			])
+	ways_line.text = "  ·  ".join(parts) if parts.size() > 0 else "no ways through"
 
 
 ## The two networks, and what is not on them.

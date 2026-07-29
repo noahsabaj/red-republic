@@ -19,7 +19,7 @@ use red_republic_sim::citizen::assign_labour;
 use red_republic_sim::climate::ClimateId;
 use red_republic_sim::founding::{SIZES, Shelf, ShelfFilter};
 use red_republic_sim::geology::Mineral;
-use red_republic_sim::road::{RoadNetwork, default_road_speed};
+use red_republic_sim::network::{Network, default_road_speed};
 use red_republic_sim::scenario;
 use red_republic_sim::terrain::{
     DEFAULT_CELL_SIZE, DEFAULT_TERRAIN, TerrainPlan, generate_terrain,
@@ -142,13 +142,13 @@ fn routing_cost() {
     // A 20x20 grid of junctions 300 m apart: 400 nodes, 760 segments, about
     // what a 6 km town with a proper road grid looks like.
     const SIDE: u32 = 20;
-    let mut roads = RoadNetwork::new();
+    let mut roads = Network::new();
     for y in 0..SIDE {
         for x in 0..SIDE {
             roads.add_node(at(f64::from(x) * 300.0, f64::from(y) * 300.0));
         }
     }
-    let id = |x: u32, y: u32| red_republic_sim::road::NodeId(y * SIDE + x);
+    let id = |x: u32, y: u32| red_republic_sim::network::NodeId(y * SIDE + x);
     for y in 0..SIDE {
         for x in 0..SIDE {
             if x + 1 < SIDE {
@@ -198,8 +198,17 @@ fn labour_scaling() {
         for _ in 0..PASSES {
             {
                 // Timed on its own: the axis is the labour pass, not a tick.
-                let (buildings, roads) = (world.buildings().clone(), world.roads().clone());
-                assign_labour(world.population_mut(), &buildings, &roads);
+                let (buildings, roads) = (
+                    world.buildings().clone(),
+                    world
+                        .network(red_republic_sim::journey::Medium::Road)
+                        .clone(),
+                );
+                assign_labour(
+                    world.population_mut(),
+                    &buildings,
+                    red_republic_sim::journey::Ways::on_roads(&roads),
+                );
             }
         }
         let each = start.elapsed().as_secs_f64() * 1000.0 / f64::from(PASSES);

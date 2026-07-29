@@ -36,7 +36,7 @@
 //! happen, so it is deliberately not prevented here.
 
 use crate::building::{Building, BuildingId};
-use crate::journey::Journey;
+use crate::journey::{Journey, Medium};
 use crate::resource::{Resource, Stock};
 use crate::roadworks::RoadSiteId;
 use crate::units::{Metres, Point, Speed, Tonnes};
@@ -54,6 +54,13 @@ pub enum VehicleKind {
     RecoveryVehicle,
     CrewBus,
     Coach,
+    Locomotive,
+    PassengerTrain,
+    Barge,
+    Freighter,
+    Trolleybus,
+    Tram,
+    MetroTrain,
 }
 
 /// What a vehicle is for.
@@ -100,6 +107,10 @@ pub struct VehicleDef {
     pub kind: VehicleKind,
     pub name: &'static str,
     pub role: Role,
+    /// The way it gets about. A lorry prefers roads; everything else is
+    /// **confined** to its own network and simply refuses work it cannot
+    /// reach — see [`crate::journey::Medium`].
+    pub medium: Medium,
     /// Tonnes it can carry in one load. Zero on anything that is not freight.
     pub capacity: Tonnes,
     /// Builders it can carry. Zero on anything that is not a crew bus.
@@ -138,6 +149,7 @@ impl VehicleDef {
 pub const VEHICLES: &[VehicleDef] = &[
     VehicleDef {
         kind: VehicleKind::Lorry,
+        medium: Medium::Road,
         name: "Lorry",
         role: Role::Freight,
         capacity: Tonnes(8.0),
@@ -152,6 +164,7 @@ pub const VEHICLES: &[VehicleDef] = &[
     },
     VehicleDef {
         kind: VehicleKind::HeavyLorry,
+        medium: Medium::Road,
         name: "Heavy Lorry",
         role: Role::Freight,
         capacity: Tonnes(20.0),
@@ -169,6 +182,7 @@ pub const VEHICLES: &[VehicleDef] = &[
     // one after the first.
     VehicleDef {
         kind: VehicleKind::RecoveryVehicle,
+        medium: Medium::Road,
         name: "Recovery Vehicle",
         role: Role::Recovery,
         capacity: Tonnes::ZERO,
@@ -191,6 +205,7 @@ pub const VEHICLES: &[VehicleDef] = &[
     // whose capability does not depend on what it is carrying.
     VehicleDef {
         kind: VehicleKind::CrewBus,
+        medium: Medium::Road,
         name: "Crew Bus",
         role: Role::Crew,
         capacity: Tonnes::ZERO,
@@ -209,6 +224,7 @@ pub const VEHICLES: &[VehicleDef] = &[
     // same answer trade already gives about the same posts.
     VehicleDef {
         kind: VehicleKind::Coach,
+        medium: Medium::Road,
         name: "Coach",
         role: Role::Passenger,
         capacity: Tonnes::ZERO,
@@ -218,6 +234,135 @@ pub const VEHICLES: &[VehicleDef] = &[
         fuel_per_km: 0.00035,
         tank: Tonnes(0.20),
         ground: 0.6,
+        load_penalty: 0.0,
+    },
+    // Everything below here is **confined**: it cannot leave its own network,
+    // and that is authored rather than enforced by a rule elsewhere. A zero
+    // `cross_country` and a zero `ground` say exactly that — a locomotive off
+    // the rails is not a slow locomotive, it is a locomotive that is not going
+    // anywhere. The planner never asks either question of them, because a
+    // journey that leaves the network is one it will not return at all.
+    //
+    // The trade against a lorry is the same in all three cases and it is a real
+    // one: an enormous load, moved for very little fuel, along a line that goes
+    // exactly where it was laid and nowhere else. A mine feeding one works
+    // across the republic wants rails. A mine feeding six things scattered over
+    // a valley wants lorries, and no amount of track will change that.
+    VehicleDef {
+        kind: VehicleKind::Locomotive,
+        medium: Medium::Rail,
+        name: "Locomotive",
+        role: Role::Freight,
+        // Fifteen lorries in one train, and the whole point of building rails.
+        capacity: Tonnes(120.0),
+        seats: 0,
+        on_road: Speed::from_kph(70.0),
+        cross_country: Speed::ZERO,
+        // Twice a heavy lorry's burn for six times its load: a third of the
+        // fuel per tonne-kilometre.
+        fuel_per_km: 0.0012,
+        tank: Tonnes(1.20),
+        ground: 0.0,
+        load_penalty: 0.0,
+    },
+    VehicleDef {
+        kind: VehicleKind::PassengerTrain,
+        medium: Medium::Rail,
+        name: "Passenger Train",
+        role: Role::Passenger,
+        capacity: Tonnes::ZERO,
+        seats: 240,
+        on_road: Speed::from_kph(80.0),
+        cross_country: Speed::ZERO,
+        fuel_per_km: 0.0009,
+        tank: Tonnes(0.90),
+        ground: 0.0,
+        load_penalty: 0.0,
+    },
+    // The cheapest tonne-kilometre in the republic by a wide margin, and the
+    // slowest. It also costs nothing to build the network it rides, because
+    // nobody built it — which is the whole character of water: an enormous
+    // asset that runs exactly where the land decided it runs.
+    VehicleDef {
+        kind: VehicleKind::Barge,
+        medium: Medium::Water,
+        name: "Barge",
+        role: Role::Freight,
+        capacity: Tonnes(200.0),
+        seats: 0,
+        on_road: Speed::from_kph(18.0),
+        cross_country: Speed::ZERO,
+        fuel_per_km: 0.0008,
+        tank: Tonnes(1.00),
+        ground: 0.0,
+        load_penalty: 0.0,
+    },
+    // Fast, small, and dear enough that it is for what cannot wait rather than
+    // for tonnage. A republic that hauls coal by air is a republic that has
+    // misunderstood something.
+    VehicleDef {
+        kind: VehicleKind::Freighter,
+        medium: Medium::Air,
+        name: "Freighter",
+        role: Role::Freight,
+        capacity: Tonnes(15.0),
+        seats: 0,
+        on_road: Speed::from_kph(320.0),
+        cross_country: Speed::ZERO,
+        fuel_per_km: 0.0090,
+        tank: Tonnes(4.00),
+        ground: 0.0,
+        load_penalty: 0.0,
+    },
+    // The one electric vehicle on the roads. It burns no diesel at all, which
+    // is the whole trade: a republic that strings wire runs its buses on
+    // domestic coal instead of on oil it may have to buy. What it costs is that
+    // it goes exactly where the wire goes.
+    //
+    // Its fuel figure is authored above zero and never charged, because the
+    // authoring guard asks every vehicle what it burns and "nothing" is not a
+    // thing a vehicle does -- the electricity is drawn by its depot, which is
+    // where the wire actually is.
+    VehicleDef {
+        kind: VehicleKind::Trolleybus,
+        medium: Medium::Road,
+        name: "Trolleybus",
+        role: Role::Passenger,
+        capacity: Tonnes::ZERO,
+        seats: 90,
+        on_road: Speed::from_kph(55.0),
+        cross_country: Speed::from_kph(6.0),
+        fuel_per_km: 0.00001,
+        tank: Tonnes(0.01),
+        ground: 0.35,
+        load_penalty: 0.0,
+    },
+    VehicleDef {
+        kind: VehicleKind::Tram,
+        medium: Medium::Tram,
+        name: "Tram",
+        role: Role::Passenger,
+        capacity: Tonnes::ZERO,
+        seats: 180,
+        on_road: Speed::from_kph(45.0),
+        cross_country: Speed::ZERO,
+        fuel_per_km: 0.00001,
+        tank: Tonnes(0.01),
+        ground: 0.0,
+        load_penalty: 0.0,
+    },
+    VehicleDef {
+        kind: VehicleKind::MetroTrain,
+        medium: Medium::Metro,
+        name: "Metro Train",
+        role: Role::Passenger,
+        capacity: Tonnes::ZERO,
+        seats: 600,
+        on_road: Speed::from_kph(80.0),
+        cross_country: Speed::ZERO,
+        fuel_per_km: 0.00001,
+        tank: Tonnes(0.02),
+        ground: 0.0,
         load_penalty: 0.0,
     },
 ];
@@ -585,7 +730,28 @@ pub fn crewed(garage: &Building) -> u32 {
         return 0;
     }
     let establishment: u32 = garage.def().vehicles.iter().map(|&(_, n)| n).sum();
-    (f64::from(establishment) * garage.staffing()).floor() as u32
+    (f64::from(establishment) * garage.staffing() * maintained(garage)).floor() as u32
+}
+
+/// What share of a garage's establishment is roadworthy.
+///
+/// **Maintenance was already half-built and had no consequence.** Every garage
+/// in the table authors `wear`, so a depot has been consuming machinery in
+/// proportion to how hard it works since machinery existed — and nothing
+/// anywhere read the result. A republic could run its whole fleet on an empty
+/// parts bin for ever, which made the wear a cost with no effect and the
+/// Machine Works a building with one customer instead of two.
+///
+/// It is [`crate::systems::WORN_EFFICIENCY`] and not a stall, for the reason
+/// that constant exists: a republic out of spares must limp rather than stop,
+/// because limping is recoverable and stopping is not. Half the depot's
+/// vehicles are in the shed; the other half are still working.
+pub fn maintained(garage: &Building) -> f64 {
+    if garage.def().wear > 0.0 && !garage.stock.get(Resource::Machinery).is_positive() {
+        crate::systems::WORN_EFFICIENCY
+    } else {
+        1.0
+    }
 }
 
 #[cfg(test)]
@@ -648,23 +814,47 @@ mod tests {
                     def.capacity
                 ),
             }
-            assert!(def.ground > 0.0, "{} cannot leave a road", def.name);
-            assert!(
-                def.load_penalty >= 0.0 && def.load_penalty < def.ground,
-                "{} cannot cross its own yard with a load on",
-                def.name
-            );
             assert!(def.on_road > Speed::ZERO, "{} cannot move", def.name);
-            assert!(
-                def.cross_country > Speed::ZERO,
-                "{} cannot leave the road",
-                def.name
-            );
-            assert!(
-                def.cross_country < def.on_road,
-                "{} is no slower off road, so no road is worth building",
-                def.name
-            );
+
+            // **Confinement is authored, not inferred.** A locomotive with a
+            // cross-country speed is a locomotive somebody forgot to think
+            // about, and a barge with a bogging capability is a barge that can
+            // get stuck in a field. Asserting both directions is what stops a
+            // new row being added with the road vehicle's fields copied over.
+            if def.medium.free_ranging() {
+                assert!(def.ground > 0.0, "{} cannot leave a road", def.name);
+                assert!(
+                    def.load_penalty >= 0.0 && def.load_penalty < def.ground,
+                    "{} cannot cross its own yard with a load on",
+                    def.name
+                );
+                assert!(
+                    def.cross_country > Speed::ZERO,
+                    "{} cannot leave the road",
+                    def.name
+                );
+                assert!(
+                    def.cross_country < def.on_road,
+                    "{} is no slower off road, so no road is worth building",
+                    def.name
+                );
+            } else {
+                assert_eq!(
+                    def.cross_country,
+                    Speed::ZERO,
+                    "{} rides {} and also drives across country",
+                    def.name,
+                    def.medium.name()
+                );
+                assert_eq!(
+                    def.ground,
+                    0.0,
+                    "{} rides {} and also has a view about mud",
+                    def.name,
+                    def.medium.name()
+                );
+                assert_eq!(def.load_penalty, 0.0, "{} sinks when laden", def.name);
+            }
             assert!(def.fuel_per_km > 0.0, "{} burns nothing", def.name);
             assert!(def.tank.is_positive(), "{} has no tank", def.name);
         }
@@ -676,6 +866,13 @@ mod tests {
     #[test]
     fn a_full_tank_crosses_a_republic_and_comes_back() {
         for def in VEHICLES {
+            // An electric vehicle takes its power from the wire it is under, so
+            // its tank is a formality and its range is the wire's. Excluded by
+            // the figure rather than by a list of kinds: anything burning
+            // essentially nothing is drawing its power from somewhere else.
+            if def.fuel_per_km < 0.0001 {
+                continue;
+            }
             let range = Metres::from_km(def.tank.0 / def.fuel_per_km);
             assert!(
                 range.as_km() >= 100.0,
@@ -728,7 +925,25 @@ mod tests {
         let def = BuildingKind::MotorDepot.def();
         let establishment: u32 = def.vehicles.iter().map(|&(_, n)| n).sum();
         b.get_mut(id).unwrap().staff = def.workers;
+        // Staffed and **stocked**. A depot with no spares runs half its fleet,
+        // which is the maintenance rule and a separate question from drivers.
+        b.get_mut(id)
+            .unwrap()
+            .stock
+            .add(Resource::Machinery, Tonnes(5.0));
         assert_eq!(crewed(b.get(id).unwrap()), establishment);
+
+        // And the other half of the same rule: take the spares away and the
+        // shed keeps half of them.
+        b.get_mut(id)
+            .unwrap()
+            .stock
+            .set(Resource::Machinery, Tonnes::ZERO);
+        assert_eq!(
+            crewed(b.get(id).unwrap()),
+            (f64::from(establishment) * crate::systems::WORN_EFFICIENCY).floor() as u32,
+            "a depot with an empty parts bin ran its whole fleet"
+        );
     }
 
     #[test]

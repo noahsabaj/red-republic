@@ -2,7 +2,7 @@
 //!
 //! # Why a road is a site and not a setting
 //!
-//! [`crate::road::RoadNetwork`] is the finished graph — junctions and segments,
+//! [`crate::network::Network`] is the finished graph — junctions and segments,
 //! and nothing about how they got there. Until now they got there by somebody
 //! calling `connect`, which is to say roads appeared. That is the last free
 //! thing left in the simulation: a road is one of the largest investments a
@@ -31,8 +31,9 @@
 //! spacing anything within about 280 m of the line can reach it, which is what
 //! [`crate::citizen::ROAD_ACCESS`] promises.
 
+use crate::journey::Medium;
+use crate::network::Network;
 use crate::resource::{Resource, Stock};
-use crate::road::RoadNetwork;
 use crate::units::{Metres, Point, Speed, Tonnes};
 use serde::{Deserialize, Serialize};
 
@@ -47,7 +48,14 @@ pub const JUNCTION_MERGE: Metres = Metres(20.0);
 /// segment in it.
 pub const MIN_ROAD: Metres = Metres(50.0);
 
-/// How a road is surfaced.
+/// How a stretch of way is laid.
+///
+/// Rails are grades rather than a parallel system, and that is the point: a
+/// railway is ordered, materialled, worked by the same crew in the same
+/// commissioning queue and undrivable until it is finished, exactly as a road
+/// is. What differs is the bill, the speed, and **which network the finished
+/// way joins** — and the last of those is one authored field
+/// ([`GradeDef::carries`]) rather than a second copy of this whole module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Grade {
     /// Graded earth. Free of materials and cheap in labour, and the grade a
@@ -64,6 +72,15 @@ pub enum Grade {
     /// water, which is what makes a river a real division of a republic until
     /// somebody pays to span it.
     Bridge,
+    /// Track. Dear to lay, cheap to run, and it goes exactly where it was put.
+    Railway,
+    /// Track over water. The single most expensive thing in the table.
+    RailBridge,
+    /// Street track, laid in a road somebody already built.
+    Tramway,
+    /// Underground. Dearer than anything else per kilometre, and it passes
+    /// beneath a river rather than needing a bridge over one.
+    MetroTunnel,
 }
 
 /// What a grade costs and what it is worth.
@@ -76,6 +93,9 @@ pub enum Grade {
 pub struct GradeDef {
     pub grade: Grade,
     pub name: &'static str,
+    /// Which network the finished way joins, and therefore what may ride it.
+    /// A lorry on a railway is not slow, it is impossible.
+    pub carries: Medium,
     /// What a vehicle may do on it. The vehicle's own road speed still applies,
     /// so a lorry limited to 50 km/h is not faster for a better surface than it
     /// is — but a dirt track holds everything back equally.
@@ -96,6 +116,7 @@ pub struct GradeDef {
 pub const GRADES: &[GradeDef] = &[
     GradeDef {
         grade: Grade::Dirt,
+        carries: Medium::Road,
         name: "Dirt Track",
         speed: Speed::from_kph(25.0),
         materials: &[],
@@ -103,6 +124,7 @@ pub const GRADES: &[GradeDef] = &[
     },
     GradeDef {
         grade: Grade::Gravel,
+        carries: Medium::Road,
         name: "Gravel Road",
         speed: Speed::from_kph(45.0),
         materials: &[(Resource::Gravel, 60.0)],
@@ -110,6 +132,7 @@ pub const GRADES: &[GradeDef] = &[
     },
     GradeDef {
         grade: Grade::Paved,
+        carries: Medium::Road,
         name: "Paved Road",
         speed: Speed::from_kph(60.0),
         materials: &[(Resource::Gravel, 50.0), (Resource::Bricks, 30.0)],
@@ -121,6 +144,7 @@ pub const GRADES: &[GradeDef] = &[
     // than a piece of road, and a lorry crosses one carefully.
     GradeDef {
         grade: Grade::Bridge,
+        carries: Medium::Road,
         name: "Bridge",
         speed: Speed::from_kph(40.0),
         materials: &[
@@ -130,6 +154,58 @@ pub const GRADES: &[GradeDef] = &[
         ],
         labour: 520.0,
     },
+    // A railway is roughly three gravel roads in materials and four in labour,
+    // and it carries a hundred and twenty tonnes behind one driver. That is the
+    // trade in one line: it costs a great deal and it goes one place.
+    GradeDef {
+        grade: Grade::Railway,
+        carries: Medium::Rail,
+        name: "Railway",
+        speed: Speed::from_kph(80.0),
+        materials: &[(Resource::Steel, 90.0), (Resource::Gravel, 140.0)],
+        labour: 260.0,
+    },
+    // The most expensive kilometre a republic can order, and deliberately: a
+    // railway bridge is the decision that a river is not going to stop the
+    // line, taken once and paid for in steel.
+    GradeDef {
+        grade: Grade::RailBridge,
+        carries: Medium::Rail,
+        name: "Railway Bridge",
+        speed: Speed::from_kph(50.0),
+        materials: &[
+            (Resource::Steel, 220.0),
+            (Resource::Bricks, 120.0),
+            (Resource::Gravel, 90.0),
+        ],
+        labour: 780.0,
+    },
+    // Street track. Half a railway's steel and no earthworks, because it is
+    // laid in a road somebody already built -- which is also why it is slow.
+    GradeDef {
+        grade: Grade::Tramway,
+        carries: Medium::Tram,
+        name: "Tramway",
+        speed: Speed::from_kph(30.0),
+        materials: &[(Resource::Steel, 45.0), (Resource::Gravel, 40.0)],
+        labour: 120.0,
+    },
+    // The most expensive kilometre in the republic, and the only way that
+    // crosses water without a bridge -- because it goes under the river rather
+    // than over it, which is exactly what a tunnel is for.
+    GradeDef {
+        grade: Grade::MetroTunnel,
+        carries: Medium::Metro,
+        name: "Metro Tunnel",
+        speed: Speed::from_kph(70.0),
+        materials: &[
+            (Resource::Steel, 180.0),
+            (Resource::Bricks, 320.0),
+            (Resource::Gravel, 240.0),
+            (Resource::Machinery, 12.0),
+        ],
+        labour: 1_400.0,
+    },
 ];
 
 impl GradeDef {
@@ -138,7 +214,10 @@ impl GradeDef {
     /// A property of the authored row rather than a match on the enum, for the
     /// reason every other property in this crate is one.
     pub fn spans_water(&self) -> bool {
-        matches!(self.grade, Grade::Bridge)
+        matches!(
+            self.grade,
+            Grade::Bridge | Grade::RailBridge | Grade::MetroTunnel
+        )
     }
 }
 
@@ -355,7 +434,19 @@ impl RoadWorks {
         grade: Grade,
         ordered: u64,
     ) -> Result<RoadSiteId, RoadError> {
-        if from.distance_to(to).0 < MIN_ROAD.0 {
+        // **A bridge is worth surveying at any length, and a road is not.**
+        // The minimum exists because a ten-metre road is a formality with no
+        // segment in it; a ten-metre bridge is a real structure and the only
+        // answer to a stream that width. Holding a bridge to the road minimum
+        // made the mechanic unusable in exactly the case it was built for —
+        // a river narrower than fifty metres could not be spanned at all, so
+        // the player's choice was a fifty-metre bridge over a ten-metre stream
+        // or no crossing. Found the day the map generator started making
+        // rivers, which is the day anything first tried to cross one.
+        if !grade.def().spans_water() && from.distance_to(to).0 < MIN_ROAD.0 {
+            return Err(RoadError::TooShort);
+        }
+        if from.distance_to(to).0 <= 0.0 {
             return Err(RoadError::TooShort);
         }
         let id = RoadSiteId(self.next_id);
@@ -378,7 +469,7 @@ impl RoadWorks {
 /// Subdivided at [`JUNCTION_SPACING`] so buildings along its length can reach
 /// it, and merged into whatever junctions already stand at its ends so two
 /// roads ordered end to end become one network rather than two islands.
-pub fn open(roads: &mut RoadNetwork, site: &RoadSite) {
+pub fn open(roads: &mut Network, site: &RoadSite) {
     let speed = site.def().speed;
     let length = site.length();
     let steps = (length.0 / JUNCTION_SPACING.0).ceil().max(1.0) as u32;
@@ -496,7 +587,7 @@ mod tests {
     /// length, not only at its ends.
     #[test]
     fn a_long_road_opens_with_junctions_all_the_way_along_it() {
-        let mut roads = RoadNetwork::new();
+        let mut roads = Network::new();
         let road = site(Grade::Gravel, 1_000.0);
         open(&mut roads, &road);
 
@@ -518,7 +609,7 @@ mod tests {
     /// Two roads ordered end to end are one network, not two islands.
     #[test]
     fn roads_that_meet_share_a_junction() {
-        let mut roads = RoadNetwork::new();
+        let mut roads = Network::new();
         let mut works = RoadWorks::new();
         let first = works
             .order(at(0.0, 0.0), at(600.0, 0.0), Grade::Gravel, 0)
@@ -543,7 +634,7 @@ mod tests {
     /// Ordering the same road twice does not lay two of it.
     #[test]
     fn a_road_laid_over_an_existing_one_adds_no_second_carriageway() {
-        let mut roads = RoadNetwork::new();
+        let mut roads = Network::new();
         let road = site(Grade::Gravel, 600.0);
         open(&mut roads, &road);
         let (nodes, segments) = (roads.node_count(), roads.segment_count());

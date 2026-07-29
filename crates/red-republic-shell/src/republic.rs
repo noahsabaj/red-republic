@@ -543,6 +543,127 @@ impl Republic {
         }
     }
 
+    // ---- The four ways through -------------------------------------------
+
+    /// Every span of one way as `[ax, ay, bx, by, speed_kph]`, indexed into
+    /// `Medium::ALL`. One call for all four rather than four calls, so a fifth
+    /// network draws itself without the shell being edited.
+    #[func]
+    fn ways(&self, medium: i64) -> PackedFloat32Array {
+        let Some(world) = self.world.as_ref() else {
+            return PackedFloat32Array::new();
+        };
+        let Some(&medium) = red_republic_sim::journey::Medium::ALL.get(medium.max(0) as usize)
+        else {
+            return PackedFloat32Array::new();
+        };
+        views::ways(world, medium)
+    }
+
+    /// Kilometres of each way, in `Medium::ALL` order.
+    #[func]
+    fn way_lengths(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::way_lengths)
+    }
+
+    /// The names of the ways, in `Medium::ALL` order.
+    #[func]
+    fn way_names(&self) -> PackedStringArray {
+        let mut out = PackedStringArray::new();
+        for medium in red_republic_sim::journey::Medium::ALL {
+            out.push(medium.name());
+        }
+        out
+    }
+
+    /// How many vehicles ride each way, then how many of those are out:
+    /// `Medium::ALL` order twice over.
+    #[func]
+    fn fleet_by_medium(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::fleet_by_medium)
+    }
+
+    /// Order a way of any grade — a road, a bridge or a railway. Empty string
+    /// on success, or the reason it was refused.
+    #[func]
+    fn order_way(&mut self, grade: i64, ax: f64, ay: f64, bx: f64, by: f64) -> GString {
+        let Some(world) = self.world.as_mut() else {
+            return GString::from("no republic has been founded");
+        };
+        let Some(&grade) = red_republic_sim::roadworks::GRADES
+            .get(grade.max(0) as usize)
+            .map(|d| &d.grade)
+        else {
+            return GString::from("no such grade");
+        };
+        match world.issue(Command::OrderRoad {
+            from: Point::new(Metres(ax), Metres(ay)),
+            to: Point::new(Metres(bx), Metres(by)),
+            grade,
+        }) {
+            Ok(_) => GString::from(""),
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
+    /// Every grade the republic can lay, in table order:
+    /// `name`, then `speed_kph|labour_per_km|medium_index` for each.
+    #[func]
+    fn grade_names(&self) -> PackedStringArray {
+        let mut out = PackedStringArray::new();
+        for def in red_republic_sim::roadworks::GRADES {
+            out.push(def.name);
+        }
+        out
+    }
+
+    // ---- Standing orders --------------------------------------------------
+
+    /// What a place has been told to keep: `[resource_index, held, ordered]`
+    /// per line. Empty for anything that does not keep goods to order.
+    #[func]
+    fn standing_orders(&self, building: i64) -> PackedFloat32Array {
+        let Some(world) = self.world.as_ref() else {
+            return PackedFloat32Array::new();
+        };
+        views::standing_orders(world, red_republic_sim::BuildingId(building.max(0) as u32))
+    }
+
+    /// Tell a terminal or a distribution office what to keep on hand. Zero
+    /// cancels the order. Empty string on success, or the reason it was
+    /// refused.
+    #[func]
+    fn set_standing_order(&mut self, building: i64, resource: i64, tonnes: f64) -> GString {
+        let Some(world) = self.world.as_mut() else {
+            return GString::from("no republic has been founded");
+        };
+        let Some(&resource) = red_republic_sim::Resource::ALL.get(resource.max(0) as usize) else {
+            return GString::from("no such resource");
+        };
+        match world.issue(Command::SetStandingOrder {
+            building: red_republic_sim::BuildingId(building.max(0) as u32),
+            resource,
+            tonnes: red_republic_sim::Tonnes(tonnes.max(0.0)),
+        }) {
+            Ok(_) => GString::from(""),
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
+    /// Whether this building keeps goods to order — what greys out the panel.
+    #[func]
+    fn keeps_to_order(&self, building: i64) -> bool {
+        self.world.as_ref().is_some_and(|w| {
+            w.buildings()
+                .get(red_republic_sim::BuildingId(building.max(0) as u32))
+                .is_some_and(|b| b.def().stores_to_order)
+        })
+    }
+
     /// The names of the two networks, in `Utility::ALL` order.
     #[func]
     fn utility_names(&self) -> PackedStringArray {
