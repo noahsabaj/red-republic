@@ -76,7 +76,22 @@ use serde::{Deserialize, Serialize};
 ///
 /// 11: foreign labour. Who a republic has hired, from which bloc, and which
 /// gangs are still travelling in from a frontier post.
-pub const SAVE_VERSION: u32 = 12;
+///
+/// 13: the republic's name. A posting is named by the player at founding, so
+/// the name is an input rather than a decoration — it arrives through
+/// [`Command::NameRepublic`], is recorded in the journal like every other
+/// input, and a replay reproduces it. A save written before it existed
+/// describes a republic with no name, and there is nowhere to invent one from.
+pub const SAVE_VERSION: u32 = 13;
+
+/// The longest a republic's name may be, in characters.
+///
+/// A limit rather than silent truncation, because a name the player typed and
+/// the game shortened is a name they did not choose. Counted in `char`s and not
+/// bytes: the register this game names things in is Cyrillic-adjacent, and a
+/// byte limit would let "Новосибирск" fail where a Latin name of the same
+/// length passed.
+pub const NAME_LIMIT: usize = 48;
 
 /// The first version the format ever carried.
 ///
@@ -181,7 +196,45 @@ impl std::error::Error for SaveError {}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Save {
     pub version: u32,
+    /// The few facts a load screen needs, ahead of the world.
+    ///
+    /// See [`SavePreview`] for why this is not a second copy of anything.
+    pub preview: SavePreview,
     pub world: World,
+}
+
+/// What a save says about itself without being loaded.
+///
+/// # Why this is not a second source of truth
+///
+/// It looks like one, and the rule against keeping a second copy is a rule this
+/// repository takes seriously — so the reason it is allowed is worth stating.
+/// This is **computed from the world at write time** by [`World::to_save`] and
+/// never authored, so there is no way to write a save whose preview disagrees
+/// with it. It is a cached index, not a parallel record, and
+/// `a_save_describes_itself_without_being_loaded` is what holds the two together.
+///
+/// # Why it has to exist at all
+///
+/// A load screen lists saves, and listing them by parsing them does not scale:
+/// `postcard` is not self-describing, so there is no way to reach a field near
+/// the end of [`World`] without decoding the terrain, the geology and the
+/// population on the way past. A republic's map alone is megabytes. The
+/// alternative considered and rejected was putting the name in the *filename* —
+/// which really would have been a second copy, and one the player could rename.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavePreview {
+    /// What the player called the republic. Empty only for a save written
+    /// before it was named, which the founding screen does not allow.
+    pub name: String,
+    /// The in-game date, as `(year, month, day)`.
+    pub date: (u32, u32, u32),
+    /// Days since founding. What orders a list of saves of the same republic.
+    pub day: u64,
+    pub population: u32,
+    /// So a load screen can say which posting this was, and show its weather.
+    pub climate: ClimateId,
+    pub extent_m: f64,
 }
 
 /// Somewhere a load can be put down, whatever kind of thing it is.
@@ -315,6 +368,14 @@ pub struct World {
     /// to be and not only what it currently is. It is what gives the
     /// determinism rule's *same inputs* half something to hold constant.
     pub(crate) journal: Journal,
+    /// What the player called this republic.
+    ///
+    /// Empty until [`Command::NameRepublic`] arrives, which is the second beat
+    /// of founding. It is deliberately **not** part of [`WorldSpec`]: the shelf
+    /// generates six candidate worlds before the player has named anything, and
+    /// a spec with a required name would have made the shelf invent five names
+    /// nobody chose.
+    pub(crate) name: String,
     /// The founding seed, kept so derived substreams can be recomputed from
     /// it at any time without disturbing `rng`.
     seed: u64,
@@ -376,12 +437,23 @@ impl World {
             lineworks: crate::utility::LineWorks::new(),
             climate: spec.climate,
             journal: Journal::new(),
+            name: String::new(),
             seed: spec.seed,
         }
     }
 
     pub fn seed(&self) -> u64 {
         self.seed
+    }
+
+    /// What the player called this republic, or empty if nobody has named it.
+    ///
+    /// Empty is a real state rather than a missing one — a world exists from the
+    /// moment it is generated and the naming is the beat after choosing the land
+    /// — so callers show the land's own identity until a name arrives instead of
+    /// printing a placeholder.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Today's outdoor temperature, in degrees Celsius.
@@ -1062,6 +1134,24 @@ impl World {
             | Command::MoveTradeRule { .. } => {
                 crate::command::edit_rules(&mut self.trade_policy.rules, command)
             }
+
+            // `ref name` rather than a move: `carry_out` borrows the command so
+            // that `issue` can journal exactly the one that succeeded.
+            Command::NameRepublic { ref name } => {
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err(Refused::Nameless);
+                }
+                let length = name.chars().count();
+                if length > NAME_LIMIT {
+                    return Err(Refused::NameTooLong {
+                        asked: length,
+                        limit: NAME_LIMIT,
+                    });
+                }
+                self.name = name.to_string();
+                Ok(Done::Nothing)
+            }
         }
     }
 
@@ -1330,7 +1420,24 @@ impl World {
     pub fn to_save(&self) -> Save {
         Save {
             version: SAVE_VERSION,
+            preview: self.preview(),
             world: self.clone(),
+        }
+    }
+
+    /// What this republic would say about itself in a list of saves.
+    ///
+    /// Read off the world rather than stored on it, which is what stops a
+    /// preview and the republic it describes from ever disagreeing.
+    pub fn preview(&self) -> SavePreview {
+        let date = self.clock.date();
+        SavePreview {
+            name: self.name.clone(),
+            date: (date.year, date.month, date.day),
+            day: self.clock.day_index(),
+            population: self.population.count() as u32,
+            climate: self.climate,
+            extent_m: self.terrain.extent().0,
         }
     }
 
@@ -1398,34 +1505,68 @@ impl World {
     /// not reliably an error — it can succeed on shifted bytes. Refusing on the
     /// version is the only check that happens before that can occur.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, SaveError> {
-        let (version, _) = postcard::take_from_bytes::<u32>(bytes)
-            .map_err(|e| SaveError::Corrupt(e.to_string()))?;
-        if version > SAVE_VERSION {
-            return Err(SaveError::FromTheFuture {
-                found: version,
-                supported: SAVE_VERSION,
-            });
-        }
-        if version < FIRST_SAVE_VERSION {
-            // Not an old save — not a save. Versions have started at
-            // FIRST_SAVE_VERSION since the format existed, so anything below it
-            // is arbitrary bytes whose first varint happened to decode, and
-            // calling that "from an older build" would be a worse lie than the
-            // one this check replaced. Three zero bytes are the worked example.
-            return Err(SaveError::Corrupt(format!(
-                "save format {version} has never existed"
-            )));
-        }
-        if version < SAVE_VERSION {
-            return Err(SaveError::FromThePast {
-                found: version,
-                supported: SAVE_VERSION,
-            });
-        }
+        // The version is re-read as part of the whole `Save` below. Checking it
+        // first is the point: an unreadable version must be reported before the
+        // bytes after it are interpreted as a world.
+        readable(bytes)?;
         let save: Save =
             postcard::from_bytes(bytes).map_err(|e| SaveError::Corrupt(e.to_string()))?;
         Self::from_save(save)
     }
+
+    /// What a save says about itself, without decoding the republic inside it.
+    ///
+    /// This is what a load screen lists. It decodes the version and the
+    /// [`SavePreview`] and stops, which is only possible because both sit ahead
+    /// of [`World`] in [`Save`] — `postcard` is a positional format, so "ahead"
+    /// is the whole mechanism and reordering those fields would silently turn
+    /// this into a full parse.
+    ///
+    /// It answers the same three version questions [`World::from_bytes`] does
+    /// and through the same code, so a save the list can describe is a save the
+    /// game can open. A listing that showed a republic the player then could not
+    /// load would be worse than not listing it.
+    pub fn preview_from_bytes(bytes: &[u8]) -> Result<SavePreview, SaveError> {
+        let rest = readable(bytes)?;
+        let (preview, _) = postcard::take_from_bytes::<SavePreview>(rest)
+            .map_err(|e| SaveError::Corrupt(e.to_string()))?;
+        Ok(preview)
+    }
+}
+
+/// Decide whether these bytes are a save this build can read, and hand back
+/// what follows the version.
+///
+/// One copy of the three version questions, because [`World::from_bytes`] and
+/// [`World::preview_from_bytes`] must answer them identically: a save the load
+/// screen lists and the game then refuses is a worse failure than one that never
+/// appeared.
+fn readable(bytes: &[u8]) -> Result<&[u8], SaveError> {
+    let (version, rest) =
+        postcard::take_from_bytes::<u32>(bytes).map_err(|e| SaveError::Corrupt(e.to_string()))?;
+    if version > SAVE_VERSION {
+        return Err(SaveError::FromTheFuture {
+            found: version,
+            supported: SAVE_VERSION,
+        });
+    }
+    if version < FIRST_SAVE_VERSION {
+        // Not an old save — not a save. Versions have started at
+        // FIRST_SAVE_VERSION since the format existed, so anything below it
+        // is arbitrary bytes whose first varint happened to decode, and
+        // calling that "from an older build" would be a worse lie than the
+        // one this check replaced. Three zero bytes are the worked example.
+        return Err(SaveError::Corrupt(format!(
+            "save format {version} has never existed"
+        )));
+    }
+    if version < SAVE_VERSION {
+        return Err(SaveError::FromThePast {
+            found: version,
+            supported: SAVE_VERSION,
+        });
+    }
+    Ok(rest)
 }
 
 /// Construction and measurement access for the benchmark harness.
@@ -1678,9 +1819,11 @@ mod tests {
 
     #[test]
     fn a_save_from_the_future_is_refused_rather_than_guessed_at() {
+        let world = World::new(spec(1));
         let save = Save {
             version: SAVE_VERSION + 1,
-            world: World::new(spec(1)),
+            preview: world.preview(),
+            world,
         };
         assert_eq!(
             World::from_save(save),
@@ -1872,6 +2015,16 @@ mod tests {
         // What a session looks like: commands landing on scattered ticks with
         // the world running in between.
         let script: Vec<(u64, Command)> = vec![
+            // Naming is the second beat of founding, so it belongs at tick zero
+            // in any script that looks like a real session — and it is here
+            // rather than only in its own test because what has to hold is that
+            // a *replayed* republic comes back called what the player called it.
+            (
+                0,
+                Command::NameRepublic {
+                    name: "Krasnogorsk".to_string(),
+                },
+            ),
             (
                 0,
                 Command::AddTradeRule {
@@ -1960,6 +2113,160 @@ mod tests {
             "same seed and same inputs did not produce the same world"
         );
         assert_eq!(played, replayed);
+        // Redundant against the equality above, and kept for what it says when
+        // it fails: the two assertions before this one report a hash that
+        // differs, which tells you the republics diverged and nothing about
+        // where. This one names the field.
+        assert_eq!(replayed.name(), "Krasnogorsk");
+    }
+
+    /// A republic is named by its player, and the name is not decoration.
+    ///
+    /// It has to survive a save, because a reloaded republic called nothing is a
+    /// republic whose title bar, save list and pause menu have all lost the one
+    /// thing the player wrote themselves.
+    #[test]
+    fn a_republic_keeps_the_name_it_was_given() {
+        use crate::command::Command;
+
+        let mut world = World::new(spec(1961));
+        assert_eq!(
+            world.name(),
+            "",
+            "a world nobody has named must report no name rather than invent one"
+        );
+
+        world
+            .issue(Command::NameRepublic {
+                name: "  Nizhny Zavod  ".to_string(),
+            })
+            .expect("a plain name is accepted");
+        // Trimmed, because trailing space is a typing accident rather than a
+        // decision, and it is the one edit to a name that changes nothing about
+        // what the player chose.
+        assert_eq!(world.name(), "Nizhny Zavod");
+
+        let reloaded =
+            World::from_bytes(&world.to_bytes()).expect("a save this build wrote is readable");
+        assert_eq!(
+            reloaded.name(),
+            "Nizhny Zavod",
+            "the name did not survive the save"
+        );
+    }
+
+    /// A save can be listed without being opened, and says the same thing
+    /// either way.
+    ///
+    /// A preview is a cached index, and the only thing separating a cached index
+    /// from a second source of truth is that it cannot disagree with what it
+    /// indexes. Two different failures do that, and it took watching both to
+    /// find out that one assertion cannot cover them:
+    ///
+    /// - a **wrong** preview, reporting something the world never said. Caught
+    ///   by the field assertions against `world` below. The whole-struct
+    ///   comparison at the end is blind to this, because both sides of it come
+    ///   from `preview()` and a bug inside that function produces two
+    ///   consistent wrong answers.
+    /// - a **stale** preview, written at a different moment than the world it
+    ///   ships with. Caught only by that final comparison.
+    ///
+    /// Both were verified by sabotage — a hardcoded name, and a preview backdated
+    /// seven days — and each got past the other's assertion.
+    #[test]
+    fn a_save_describes_itself_without_being_loaded() {
+        use crate::command::Command;
+
+        let mut world = World::new(spec(1961));
+        world
+            .issue(Command::NameRepublic {
+                name: "Zheleznogorsk".to_string(),
+            })
+            .expect("a plain name is accepted");
+        crate::scenario::found(&mut world, crate::scenario::SETTLERS);
+        for _ in 0..TICKS_PER_DAY * 40 {
+            world.tick();
+        }
+
+        let bytes = world.to_bytes();
+        let listed =
+            World::preview_from_bytes(&bytes).expect("a save this build wrote is listable");
+
+        // The premise: a republic that has actually run. A preview of an
+        // untouched world is all zeroes and day one, which every wrong answer
+        // also produces.
+        assert!(
+            listed.day >= 40 && listed.population > 0,
+            "the fixture never got going: day {} with {} people, so this test \
+             would pass on a preview that reported nothing at all",
+            listed.day,
+            listed.population
+        );
+
+        assert_eq!(listed.name, "Zheleznogorsk");
+        assert_eq!(listed.date, {
+            let d = world.clock().date();
+            (d.year, d.month, d.day)
+        });
+
+        let loaded = World::from_bytes(&bytes).expect("and openable");
+        assert_eq!(
+            listed,
+            loaded.preview(),
+            "the save's own summary disagrees with the republic inside it, which \
+             is what makes a cached index a second source of truth"
+        );
+    }
+
+    /// Neither empty nor overlong is silently fixed up.
+    ///
+    /// A default name would be a placeholder string in a build held to a release
+    /// standard, and a truncated one would be a name the player did not choose.
+    /// Both are refusals so the founding screen has something to print.
+    #[test]
+    fn a_republic_is_never_named_for_the_player() {
+        use crate::command::{Command, Refused};
+        use crate::world::NAME_LIMIT;
+
+        let mut world = World::new(spec(1961));
+
+        for blank in ["", "   ", "\t\n"] {
+            assert_eq!(
+                world.issue(Command::NameRepublic {
+                    name: blank.to_string()
+                }),
+                Err(Refused::Nameless),
+                "{blank:?} was accepted as a name"
+            );
+        }
+
+        let long: String = "я".repeat(NAME_LIMIT + 1);
+        assert_eq!(
+            world.issue(Command::NameRepublic { name: long }),
+            Err(Refused::NameTooLong {
+                asked: NAME_LIMIT + 1,
+                limit: NAME_LIMIT,
+            }),
+            "the limit counts characters, not bytes — a multi-byte name of the \
+             permitted length must not be refused for being too long"
+        );
+
+        // The premise the pair above rests on: a name of exactly the limit, in
+        // the same multi-byte script, is accepted. Without this the two
+        // refusals would be consistent with a command that refuses everything.
+        let exact: String = "я".repeat(NAME_LIMIT);
+        world
+            .issue(Command::NameRepublic {
+                name: exact.clone(),
+            })
+            .expect("a name of exactly the limit is accepted");
+        assert_eq!(world.name(), exact);
+
+        assert_eq!(
+            world.journal().len(),
+            1,
+            "refusals were written into the journal; only the accepted name should be"
+        );
     }
 
     /// A refusal changes nothing and is not written down.
@@ -2250,14 +2557,23 @@ mod tests {
         assert_eq!(
             World::from_save(Save {
                 version: older,
+                preview: world.preview(),
                 world: world.clone(),
             }),
             Err(expected.clone()),
         );
 
-        // And through the bytes, which is the path a shell actually uses.
+        // And through the bytes, which is the path a shell actually uses. Laid
+        // out exactly as a real save is — version, preview, world — so what is
+        // being refused is a well-formed save from an older build rather than a
+        // blob that would have failed to parse anyway.
         let mut bytes = postcard::to_stdvec(&older).expect("a u32 serializes");
+        bytes.extend_from_slice(&postcard::to_stdvec(&world.preview()).expect("a preview"));
         bytes.extend_from_slice(&postcard::to_stdvec(&world).expect("a world serializes"));
-        assert_eq!(World::from_bytes(&bytes), Err(expected));
+        assert_eq!(World::from_bytes(&bytes), Err(expected.clone()));
+
+        // The load screen must refuse it the same way. A list that describes a
+        // save the game will not open sends the player to click on it.
+        assert_eq!(World::preview_from_bytes(&bytes), Err(expected));
     }
 }

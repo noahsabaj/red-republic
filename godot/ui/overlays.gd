@@ -22,7 +22,7 @@ extends RefCounted
 ## where the terrain is 10 m, so a 6 km map is a 60x60 texture — which is what
 ## makes rebuilding one whenever the ground changes free.
 
-enum Mode { NONE, SURVEY, GOING, WEAR, POLLUTION }
+enum Mode { NONE, SURVEY, GOING, WEAR, POLLUTION, SNOW }
 
 const NAMES := {
 	Mode.NONE: "",
@@ -30,6 +30,7 @@ const NAMES := {
 	Mode.GOING: "going",
 	Mode.WEAR: "tracks",
 	Mode.POLLUTION: "pollution",
+	Mode.SNOW: "snow",
 }
 
 ## Low and high ends of each channel, chosen so the reading is unambiguous
@@ -50,6 +51,11 @@ const RAMPS := {
 	# rather than red, because red is already going and two overlays that mean
 	# different things must not look the same.
 	Mode.POLLUTION: [Color(0.40, 0.54, 0.38), Color(0.68, 0.62, 0.20)],
+	# How buried a stretch is: the land's own colour up to unbroken white. Snow
+	# is the one field a player can see out of the window as well as on the
+	# overlay, so the ramp ends where the ground actually looks -- anything
+	# stylised here would disagree with the terrain beside it.
+	Mode.SNOW: [Color(0.42, 0.48, 0.35), Color(0.94, 0.96, 0.98)],
 }
 
 

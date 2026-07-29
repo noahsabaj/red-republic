@@ -1,31 +1,61 @@
 extends Node3D
 
-## Wires the scene to the simulation.
+## Wires the scene to the simulation, and decides which screen is up.
 ##
-## Everything this script does is one of three things: hand Godot a mesh built
-## from simulation state, hand the camera the map's size, or read a handful of
-## numbers for the status line. It holds no simulation of its own, and it must
-## not start: if a value here would change how a republic turns out, it belongs
-## in crates/sim.
+## Everything this script does is one of four things: hand Godot a mesh built from
+## simulation state, hand the camera the map's size, read a handful of numbers for
+## the status line, or move between screens. It holds no simulation of its own, and
+## it must not start: if a value here would change how a republic turns out, it
+## belongs in crates/sim.
 ##
 ## The heavy transfers are one-off or event-driven, which is what makes the
-## marshalling boundary affordable. The terrain mesh is built once at load
-## (30 ms, measured). Buildings are uploaded only when the count changes.
+## marshalling boundary affordable. The terrain mesh is built once when a republic
+## arrives (30 ms, measured). Buildings are uploaded only when the count changes.
 ## Vehicles are the one per-frame read, and it is 0.9 microseconds.
+##
+## # One scene, one Republic, screens as layers
+##
+## The menu, the founding shelf, the settings and the game are all this scene with
+## different `CanvasLayer`s visible. The alternative -- a scene per screen with
+## `change_scene_to_file` -- would put the `Republic` node in whichever scene was
+## loaded, and the founding screen's whole job is to hand a world to the thing that
+## will play it. Two Republics means the world is generated in one and needed in
+## the other.
+##
+## # The command-line checks still boot straight into a republic
+##
+## `--shot`, `--bench` and `--advance` exist as permanent checks and predate the
+## menu; three bugs got past every number and were caught only by looking at a
+## rendered frame. So any of those flags skips the menu and founds the default
+## posting, and `--screen` renders a named screen instead -- which is how the menu
+## and the shelf get looked at too.
 
 const Looks := preload("res://looks.gd")
 const Kit := preload("res://building_kit.gd")
 const Art := preload("res://building_art.gd")
 const Overlays := preload("res://ui/overlays.gd")
+const Store := preload("res://settings_store.gd")
+const SaveFiles := preload("res://saves.gd")
 
+## The default posting, for a run that skips the founding screen.
+##
+## Only reachable from the command line now. A player chooses their land on the
+## founding screen, and these are what a capture or a benchmark opens.
 const SEED := 1961
 const EXTENT_M := 6000.0
 const CLIMATE := 0  ## indexes ClimateId::ALL: plains, taiga, steppe, maritime
+## What a command-line posting is called. A real player names their own.
+const DEFAULT_NAME := "Novo-Uralsk"
 ## How many settlers arrive is the simulation's to say, not this file's. It was
 ## a constant here once and the two drifted, which is how a founding ended up
 ## with more jobs than people and a customs house nobody ever worked.
 
+## Which screen is up. The republic keeps running underneath PAUSE only if the
+## player left it running -- see `_set_screen`.
+enum Screen { MENU, FOUNDING, PLAYING, PAUSED, SETTINGS, SAVES, REFERENCE, RADIO }
+
 @onready var republic: Node = $Republic
+@onready var sounds: Node = $Sounds
 @onready var rig: Node3D = $CameraRig
 @onready var terrain_node: MeshInstance3D = $Terrain
 @onready var buildings_node: MultiMeshInstance3D = $Buildings
@@ -37,6 +67,14 @@ const CLIMATE := 0  ## indexes ClimateId::ALL: plains, taiga, steppe, maritime
 @onready var hud: CanvasLayer = $HUD
 @onready var survey_node: MeshInstance3D = $Survey
 @onready var frontier_node: MeshInstance3D = $Frontier
+@onready var audio: Node = $Audio
+@onready var menu: CanvasLayer = $Menu
+@onready var founding: CanvasLayer = $Founding
+@onready var settings: CanvasLayer = $Settings
+@onready var saves: CanvasLayer = $Saves
+@onready var reference: CanvasLayer = $Reference
+@onready var radio: CanvasLayer = $Radio
+@onready var pause_menu: CanvasLayer = $Pause
 
 var _buildings_shown := -1
 var _roads_shown := -1
@@ -57,18 +95,61 @@ var _overlay_dirty := true
 var _overlay_day := -1
 var _advance_days := 0
 var _bench_times: PackedFloat64Array = PackedFloat64Array()
+var _start_screen := ""
+var _check_only := false
+
+var _store: RefCounted = null
+var _screen: int = Screen.MENU
+## What the speed was before something paused the republic, so resuming puts it
+## back rather than guessing. Speed is the republic's state; a screen only borrows
+## it.
+var _speed_before_pause := 1
+## Which screen to return to when a stacked one closes. Settings and the reference
+## open from both the menu and the pause overlay, and a hardcoded return would
+## drop a paused player back to the main menu.
+var _return_to: int = Screen.MENU
+var _last_autosave_day := -1
+var _extent := EXTENT_M
+## Set once a republic exists, so the meshes are only built for a real world.
+var _built := false
 
 
 func _ready() -> void:
 	_read_arguments()
 	_look = Looks.current()
 	_apply_look()
+
+	_store = Store.new()
+	_store.apply()
+	_apply_interface_scale()
+	audio.setup(sounds, _store)
+
+	_connect_screens()
+
+	# A capture or a benchmark run skips the menu: these flags are permanent
+	# checks and existed before there was a menu to get in their way.
+	var wants_republic := (_shot_path != "" or _bench_frames > 0
+		or _advance_days > 0 or _check_only)
+	if _start_screen != "" and _start_screen != "game":
+		_open_named_screen(_start_screen)
+	elif wants_republic or _start_screen == "game":
+		_found_default()
+	else:
+		_set_screen(Screen.MENU)
+
+
+## Found the constants above, for a run with no founding screen.
+func _found_default() -> void:
 	republic.found(SEED, EXTENT_M, CLIMATE, republic.founding_settlers())
-	_build_terrain()
-	_build_instance_meshes()
+	# Named, because an unnamed republic is a state nothing should be able to
+	# observe and a capture run would otherwise be the one place it is. It also
+	# means a screenshot of the HUD shows the name line doing its job rather than
+	# the empty fallback.
+	republic.rename(DEFAULT_NAME)
+	_extent = EXTENT_M
+	_enter_republic()
 	if _advance_days > 0:
 		republic.advance_days(_advance_days)
-	rig.frame_map(EXTENT_M, republic.centre_x(), republic.centre_y())
 	if _view_distance > 0.0:
 		rig.set_distance(_view_distance)
 	match _start_overlay:
@@ -77,20 +158,7 @@ func _ready() -> void:
 		"survey": _overlay = Overlays.Mode.SURVEY
 		"pollution": _overlay = Overlays.Mode.POLLUTION
 		"snow": _overlay = Overlays.Mode.SNOW
-	hud.set_resource_names(republic.resource_names(), republic.resource_forms())
-	hud.set_contentment_names(republic.contentment_names())
-	hud.set_utility_names(republic.utility_names())
-	hud.set_way_names(republic.way_names())
-	hud.set_hint(
-		"0-5 speed  ·  space pause  ·  F none  G going  T tracks  R survey  P smoke  N snow  ·  "
-		+ "WASD pan  ·  right-drag orbit  ·  wheel zoom"
-	)
-	_refresh_buildings()
-	_refresh_roads()
-	_refresh_lines()
-	_refresh_ways()
-	_build_frontier()
-	# Founded paused. The first thing a posting should do is let you look at it.
+	_set_screen(Screen.PLAYING)
 	republic.set_speed(_start_speed)
 
 	if OS.is_debug_build():
@@ -103,18 +171,376 @@ func _ready() -> void:
 			republic.vehicle_count(), republic.population(), republic.map_extent(),
 		])
 
+	# Everything a load can break has now run: the scripts parsed, the extension
+	# resolved, the art guard passed and a republic exists. Nothing further is
+	# worth a CI job's time.
+	if _check_only:
+		_check_saves()
+		get_tree().quit()
 
-func _process(_delta: float) -> void:
+
+## Write a save, list it, read it back, and check it is the same republic.
+##
+## The simulation's own round trip is tested in Rust and this is not that. What
+## this covers is the part only the shell can get wrong: the write-to-a-temporary
+## and rename, the preview marshalling, the listing, and the load path. A bug
+## anywhere in there costs a player their republic, which makes it the highest
+## stakes thing in this milestone and the one place a check is worth a CI job.
+##
+## Prints one line either way, because a check that quietly does nothing prints
+## exactly as much as one that worked.
+func _check_saves() -> void:
+	var before := {
+		"name": String(republic.republic_name()),
+		"date": String(republic.date_text()),
+		"population": republic.population(),
+		"buildings": republic.building_count(),
+	}
+
+	var file_name: String = SaveFiles.name_for(before["name"], before["date"])
+	var why: String = republic.save_to(SaveFiles.path_for(file_name))
+	if why != "":
+		printerr("save check FAILED to write: %s" % why)
+		return
+
+	# Through the listing rather than straight from the path, because the listing
+	# is what the load screen actually shows and it is where the preview
+	# marshalling is exercised.
+	var listing: Array = SaveFiles.listing(republic)
+	var found := {}
+	for row in listing:
+		if row["file"] == file_name:
+			found = row
+			break
+	if found.is_empty():
+		printerr("save check FAILED: %s was written and does not appear in the listing" % file_name)
+		return
+	if found["problem"] != "":
+		printerr("save check FAILED: this build cannot read its own save: %s" % found["problem"])
+		return
+	if found["name"] != before["name"] or found["date"] != before["date"]:
+		printerr("save check FAILED: listed as %s/%s, was %s/%s" % [
+			found["name"], found["date"], before["name"], before["date"],
+		])
+		return
+
+	why = republic.load_from(SaveFiles.path_for(file_name))
+	if why != "":
+		printerr("save check FAILED to load: %s" % why)
+		return
+	if String(republic.republic_name()) != before["name"] \
+			or String(republic.date_text()) != before["date"] \
+			or republic.population() != before["population"] \
+			or republic.building_count() != before["buildings"]:
+		printerr("save check FAILED: reloaded a different republic")
+		return
+
+	# Tidied up, so a CI run does not leave a save behind and a second run does
+	# not find a stale one and pass on it.
+	DirAccess.remove_absolute(SaveFiles.path_for(file_name))
+	print("save check ok: %s, %s, %d people, %d buildings" % [
+		before["name"], before["date"], before["population"], before["buildings"],
+	])
+
+
+## Everything that has to happen once a world exists, however it arrived.
+##
+## Founding and loading both come through here. They used to be the same code path
+## only because there was one way in; now there are two, and a second copy of the
+## mesh building is a second thing to forget to update.
+func _enter_republic() -> void:
+	_extent = republic.map_extent()
+	_reset_shown()
+	_build_terrain()
+	if not _built:
+		# The kit meshes are per building *kind*, not per world, so they survive a
+		# reload. Rebuilding them would leak a MultiMeshInstance3D per kind on
+		# every load.
+		_build_instance_meshes()
+		_built = true
+	rig.frame_map(_extent, republic.centre_x(), republic.centre_y())
+	hud.set_resource_names(republic.resource_names(), republic.resource_forms())
+	hud.set_contentment_names(republic.contentment_names())
+	hud.set_utility_names(republic.utility_names())
+	hud.set_way_names(republic.way_names())
+	hud.set_hint(
+		"0-5 speed  ·  space pause  ·  esc menu  ·  F none  G going  T tracks  "
+		+ "R survey  P smoke  N snow  ·  WASD pan  ·  right-drag orbit  ·  wheel zoom"
+	)
 	_refresh_buildings()
 	_refresh_roads()
 	_refresh_lines()
 	_refresh_ways()
-	_refresh_vehicles()
-	_refresh_newcomers()
-	_refresh_overlay()
-	_refresh_status()
-	_maybe_bench(_delta)
+	_build_frontier()
+	_overlay_dirty = true
+	_last_autosave_day = -1
+	republic.set_speed(0)
+
+
+## Forget what was drawn, so a loaded republic does not inherit the last one's
+## counts.
+##
+## Every one of these is an "only upload when it changes" cache, and a load is
+## exactly the case where the count can come back *the same* while the contents
+## are completely different -- two republics with sixteen buildings each. Without
+## this the new world would render as the old one.
+func _reset_shown() -> void:
+	_buildings_shown = -1
+	_roads_shown = -1
+	_lines_shown = -1
+	_ways_shown = -1
+	_overlay_day = -1
+
+
+func _connect_screens() -> void:
+	menu.new_posting_pressed.connect(_on_new_posting)
+	menu.continue_pressed.connect(_on_continue)
+	menu.load_pressed.connect(func(): _open_saves(SaveFiles, Screen.MENU))
+	menu.settings_pressed.connect(func(): _open_stacked(Screen.SETTINGS, Screen.MENU))
+	menu.reference_pressed.connect(func(): _open_stacked(Screen.REFERENCE, Screen.MENU))
+	menu.quit_pressed.connect(func(): get_tree().quit())
+
+	founding.posting_taken.connect(_on_posting_taken)
+	founding.cancelled.connect(func(): _set_screen(Screen.MENU))
+
+	settings.closed.connect(func(): _set_screen(_return_to))
+	reference.closed.connect(func(): _set_screen(_return_to))
+	radio.closed.connect(func(): _set_screen(_return_to))
+	saves.closed.connect(func(): _set_screen(_return_to))
+	saves.loaded.connect(_on_loaded)
+
+	pause_menu.resumed.connect(_on_resume)
+	pause_menu.save_pressed.connect(func(): _open_saves_to_write())
+	pause_menu.load_pressed.connect(func(): _open_saves(SaveFiles, Screen.PAUSED))
+	pause_menu.settings_pressed.connect(func(): _open_stacked(Screen.SETTINGS, Screen.PAUSED))
+	pause_menu.reference_pressed.connect(func(): _open_stacked(Screen.REFERENCE, Screen.PAUSED))
+	pause_menu.radio_pressed.connect(func(): _open_stacked(Screen.RADIO, Screen.PAUSED))
+	pause_menu.abandon_pressed.connect(_on_abandon)
+
+
+func _on_new_posting() -> void:
+	audio.play("click")
+	_set_screen(Screen.FOUNDING)
+	# The master seed comes from the clock, because a shelf is the one place a
+	# player wants a different hand each time they open it. Everything downstream
+	# of it is deterministic from that number, and the founding screen prints it.
+	founding.open(republic, int(Time.get_unix_time_from_system()) & 0x7FFFFFFF)
+
+
+func _on_posting_taken() -> void:
+	audio.play("confirm")
+	republic.close_shelf()
+	_enter_republic()
+	_set_screen(Screen.PLAYING)
+	republic.set_speed(1)
+
+
+## Open the most recent save.
+##
+## The newest by file time, which is what "continue" means to a player -- not the
+## furthest along in game time, because a player who went back to an earlier save
+## wants that one.
+func _on_continue() -> void:
+	var listing: Array = SaveFiles.listing(republic)
+	for row in listing:
+		if row["problem"] == "":
+			if republic.load_from(row["path"]) == "":
+				_on_loaded()
+				return
+	# Nothing openable. The button should have been disabled, so reaching here
+	# means a save was removed since the menu was drawn; re-checking is the
+	# honest response.
+	audio.play("refuse")
+	_refresh_continue()
+
+
+func _on_loaded() -> void:
+	audio.play("confirm")
+	_enter_republic()
+	_set_screen(Screen.PLAYING)
+
+
+func _on_resume() -> void:
+	audio.play("click")
+	_set_screen(Screen.PLAYING)
+	republic.set_speed(_speed_before_pause)
+
+
+func _on_abandon() -> void:
+	# The republic is not unloaded: there is no verb for that, and there does not
+	# need to be. Taking a new posting or loading a save replaces the world, and
+	# until then the menu simply does not show it.
+	audio.play("click")
+	_set_screen(Screen.MENU)
+
+
+func _open_stacked(screen: int, back_to: int) -> void:
+	audio.play("click")
+	_return_to = back_to
+	_set_screen(screen)
+
+
+func _open_saves(_files, back_to: int) -> void:
+	audio.play("click")
+	_return_to = back_to
+	_set_screen(Screen.SAVES)
+	saves.open(republic, saves.Mode.LOAD)
+
+
+func _open_saves_to_write() -> void:
+	audio.play("click")
+	_return_to = Screen.PAUSED
+	_set_screen(Screen.SAVES)
+	saves.open(republic, saves.Mode.SAVE)
+
+
+## Show exactly one screen, and put the clock where that screen wants it.
+##
+## The clock is handled here rather than in each screen because there is one
+## republic and one speed, and a screen that stopped time on its way in would have
+## to be trusted to start it again on its way out.
+func _set_screen(screen: int) -> void:
+	_screen = screen
+	menu.visible = screen == Screen.MENU
+	founding.visible = screen == Screen.FOUNDING
+	settings.visible = screen == Screen.SETTINGS
+	saves.visible = screen == Screen.SAVES
+	reference.visible = screen == Screen.REFERENCE
+	radio.visible = screen == Screen.RADIO
+	pause_menu.visible = screen == Screen.PAUSED
+	hud.visible = screen == Screen.PLAYING
+
+	if screen == Screen.PLAYING:
+		return
+
+	# Anything that is not the game stops the clock. Remembered once, so opening
+	# settings from the pause overlay does not overwrite the speed the player was
+	# actually running at with zero.
+	if republic.speed() > 0:
+		_speed_before_pause = republic.speed()
+	republic.set_speed(0)
+
+	match screen:
+		Screen.MENU:
+			audio.quieten()
+			_refresh_continue()
+		Screen.PAUSED:
+			pause_menu.show_for(republic)
+		Screen.SETTINGS:
+			settings.open(_store, republic.is_founded())
+		Screen.REFERENCE:
+			reference.open(republic)
+		Screen.RADIO:
+			radio.open()
+
+
+func _refresh_continue() -> void:
+	var listing: Array = SaveFiles.listing(republic)
+	for row in listing:
+		if row["problem"] == "":
+			menu.set_continuable(true, "%s  ·  %s  ·  %d people" % [
+				row["name"], row["date"], row["population"],
+			])
+			return
+	menu.set_continuable(false, "")
+
+
+## Open a screen named on the command line, for capture runs.
+##
+## The reason this exists: three bugs in this scene got past every number and were
+## caught only by looking at a rendered frame. Every screen M12 adds needs the same
+## treatment, and it cannot get it unless a script can ask for one by name.
+func _open_named_screen(name: String) -> void:
+	match name:
+		"menu":
+			_set_screen(Screen.MENU)
+		"founding":
+			_set_screen(Screen.FOUNDING)
+			founding.open(republic, SEED)
+		"settings":
+			_open_stacked(Screen.SETTINGS, Screen.MENU)
+		"reference":
+			_open_stacked(Screen.REFERENCE, Screen.MENU)
+		"radio":
+			_open_stacked(Screen.RADIO, Screen.MENU)
+		"saves":
+			_open_saves(SaveFiles, Screen.MENU)
+		"pause":
+			# A pause overlay over a real republic, which is the only way it is
+			# ever seen.
+			_found_default()
+			_set_screen(Screen.PAUSED)
+		_:
+			push_error("no screen called '%s'" % name)
+			_set_screen(Screen.MENU)
+
+
+func _apply_interface_scale() -> void:
+	# Applied to the whole viewport rather than per control, so one number moves
+	# every screen and nothing can be missed.
+	var scale: float = _store.interface_scale()
+	if not is_equal_approx(scale, 1.0):
+		get_window().content_scale_factor = scale
+
+
+func _process(delta: float) -> void:
+	if _screen == Screen.PLAYING:
+		_refresh_buildings()
+		_refresh_roads()
+		_refresh_lines()
+		_refresh_ways()
+		_refresh_vehicles()
+		_refresh_newcomers()
+		_refresh_overlay()
+		_refresh_status()
+		_follow_the_day()
+	_maybe_bench(delta)
 	_maybe_capture()
+
+
+## Things that happen once a simulated day has turned.
+##
+## The audio beds and the autosave both want a day boundary, and both read the
+## date. One place watching the clock, because two would be two chances to watch
+## it differently.
+func _follow_the_day() -> void:
+	if not audio.day_changed(republic.date_text()):
+		return
+	audio.follow(republic)
+	_maybe_autosave()
+
+
+func _maybe_autosave() -> void:
+	var interval: int = _store.autosave_interval_days()
+	if interval <= 0 or not republic.is_founded():
+		return
+	# Day index from the save preview would be a round trip through the disk; the
+	# journal length would not move on a quiet day. The date string is what is to
+	# hand, so days are counted from how many times this has been reached.
+	var day := _day_number()
+	if _last_autosave_day < 0:
+		_last_autosave_day = day
+		return
+	if day - _last_autosave_day < interval:
+		return
+	_last_autosave_day = day
+	var file_name: String = SaveFiles.autosave_name(String(republic.republic_name()))
+	var why: String = republic.save_to(SaveFiles.path_for(file_name))
+	if why != "":
+		push_warning("autosave failed: %s" % why)
+
+
+## A monotonically increasing day count, from the in-game date.
+##
+## Parsed from the date string rather than exposed as a number, because the shell
+## already reads the date for the overlays and adding a second view for the same
+## fact is the sort of duplication that drifts. Years are 360 days of 12 months,
+## which is the simulation's calendar.
+func _day_number() -> int:
+	var parts: PackedStringArray = String(republic.date_text()).split("-")
+	if parts.size() != 3:
+		return 0
+	return int(parts[0]) * 360 + (int(parts[1]) - 1) * 30 + int(parts[2])
 
 
 ## Time frames with the simulation genuinely running, then report and quit.
@@ -149,14 +575,18 @@ func _maybe_bench(delta: float) -> void:
 
 ## Capture the viewport and quit, when asked for on the command line:
 ##
-##     godot --path godot -- --shot out.png [--after 90] [--speed 2]
+##     godot --path godot -- --shot out.png [--after 90] [--speed 2] [--screen menu]
 ##
 ## In-process rather than an OS screenshot, so it captures exactly what was
 ## rendered with no window-focus or monitor guesswork, and it works the same
 ## from a script as from a hand. A rendered frame is the only way to check the
 ## things numbers cannot say -- that the terrain is the right way up, that
 ## buildings are standing on it rather than buried in it, that the camera is
-## pointed at the republic.
+## pointed at the republic, that a panel is not off the edge of the screen.
+##
+## **Never add `--headless` to a shot run.** The await below never returns with no
+## rendering driver, so the process spins at flat memory for ever and prints
+## nothing, which looks exactly like a simulation hang.
 func _maybe_capture() -> void:
 	if _shot_path == "":
 		return
@@ -171,28 +601,64 @@ func _maybe_capture() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and not event.echo:
-		# 0 pauses; 1 is real-time -- one real second is one in-game second --
-		# then a second buys 1, 2, 4 or 8 in-game hours.
-		var speeds := {
-			KEY_0: 0, KEY_1: 1, KEY_2: 2, KEY_3: 3, KEY_4: 4, KEY_5: 5,
+	if not (event is InputEventKey and event.pressed and not event.echo):
+		return
+
+	# Escape is the one key that means something on every screen, and what it
+	# means depends on where you are: out of the game into the pause overlay, and
+	# out of a stacked screen back to whatever opened it.
+	if event.keycode == KEY_ESCAPE:
+		match _screen:
+			Screen.PLAYING:
+				_set_screen(Screen.PAUSED)
+			Screen.PAUSED:
+				_on_resume()
+			Screen.MENU:
+				pass
+			Screen.FOUNDING:
+				_set_screen(Screen.MENU)
+			_:
+				_set_screen(_return_to)
+		return
+
+	if _screen != Screen.PLAYING:
+		return
+
+	# 0 pauses; 1 is real-time -- one real second is one in-game second --
+	# then a second buys 1, 2, 4 or 8 in-game hours.
+	var speeds := {
+		KEY_0: 0, KEY_1: 1, KEY_2: 2, KEY_3: 3, KEY_4: 4, KEY_5: 5,
+	}
+	if speeds.has(event.keycode):
+		republic.set_speed(speeds[event.keycode])
+	elif event.keycode == KEY_SPACE:
+		republic.set_speed(0 if republic.speed() > 0 else 1)
+	else:
+		var modes := {
+			KEY_F: Overlays.Mode.NONE,
+			KEY_G: Overlays.Mode.GOING,
+			KEY_T: Overlays.Mode.WEAR,
+			KEY_R: Overlays.Mode.SURVEY,
+			KEY_P: Overlays.Mode.POLLUTION,
+			KEY_N: Overlays.Mode.SNOW,
 		}
-		if speeds.has(event.keycode):
-			republic.set_speed(speeds[event.keycode])
-		elif event.keycode == KEY_SPACE:
-			republic.set_speed(0 if republic.speed() > 0 else 1)
-		else:
-			var modes := {
-				KEY_F: Overlays.Mode.NONE,
-				KEY_G: Overlays.Mode.GOING,
-				KEY_T: Overlays.Mode.WEAR,
-				KEY_R: Overlays.Mode.SURVEY,
-				KEY_P: Overlays.Mode.POLLUTION,
-				KEY_N: Overlays.Mode.SNOW,
-			}
-			if modes.has(event.keycode):
-				_overlay = modes[event.keycode]
-				_overlay_dirty = true
+		if modes.has(event.keycode):
+			_overlay = modes[event.keycode]
+			_overlay_dirty = true
+
+
+## Pause when the window loses focus, if the player asked for it.
+##
+## Off by default would be wrong for a game whose first speed is real time: a
+## republic left running while its player answered an email has had an hour of
+## unattended winter.
+func _notification(what: int) -> void:
+	if what != NOTIFICATION_APPLICATION_FOCUS_OUT:
+		return
+	if _screen != Screen.PLAYING or _store == null:
+		return
+	if bool(_store.get_value("play/pause_on_focus_loss")):
+		_set_screen(Screen.PAUSED)
 
 
 ## Arguments after a bare `--` on the command line. Used for capture runs and
@@ -222,6 +688,16 @@ func _read_arguments() -> void:
 			"--overlay":
 				if i + 1 < args.size():
 					_start_overlay = args[i + 1]
+			"--screen":
+				if i + 1 < args.size():
+					_start_screen = args[i + 1]
+			"--check":
+				# Found a republic, print the line that says so, and quit. What CI
+				# runs, and it exists because the alternatives are both bad: a
+				# `--shot` run needs a rendering driver and hangs for ever under
+				# `--headless`, and a plain `--advance` run never exits, so the job
+				# would depend on a timeout and report a failure for succeeding.
+				_check_only = true
 
 
 ## Sun, sky and air. Presentation only -- the weather the simulation models is a
@@ -415,10 +891,10 @@ func _refresh_newcomers() -> void:
 ## The frontier, drawn once: a coloured band around the whole perimeter with a
 ## marker at each post.
 ##
-## Built at load and never rebuilt, because a frontier does not move. The two
-## blocs hold different stretches and the colours are the only thing that says
-## which way is west -- which decides what currency this republic can earn, so
-## it is not decoration.
+## Built when a republic arrives and never rebuilt, because a frontier does not
+## move. The two blocs hold different stretches and the colours are the only thing
+## that says which way is west -- which decides what currency this republic can
+## earn, so it is not decoration.
 func _build_frontier() -> void:
 	var line: PackedFloat32Array = republic.frontier_line(240)
 	var stride := 4
@@ -429,14 +905,12 @@ func _build_frontier() -> void:
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	# Inward, so the band lies on the republic's own ground rather than off the
 	# edge of the mesh where there is nothing to draw on.
-	var mid := EXTENT_M * 0.5
+	var mid := _extent * 0.5
 	for i in count - 1:
 		var a := Vector3(line[i * stride], 0.0, line[i * stride + 1])
 		var b := Vector3(line[(i + 1) * stride], 0.0, line[(i + 1) * stride + 1])
 		var bloc := int(line[i * stride + 2])
 		var tone: Color = _look.bloc_east if bloc == 0 else _look.bloc_west
-		for p in [a, b]:
-			p.y = republic.ground_height(p.x, p.z) + 1.0
 		a.y = republic.ground_height(a.x, a.z) + 1.0
 		b.y = republic.ground_height(b.x, b.z) + 1.0
 		var inward_a := (Vector3(mid, a.y, mid) - a).normalized() * 26.0
@@ -717,7 +1191,7 @@ func _refresh_overlay() -> void:
 		return
 	_overlay_dirty = false
 	_overlay_day = day
-	Overlays.apply(_terrain_material, republic, _overlay, EXTENT_M)
+	Overlays.apply(_terrain_material, republic, _overlay, _extent)
 	if _overlay == Overlays.Mode.SURVEY:
 		survey_node.mesh = Overlays.survey_mesh(republic, _ground_height)
 	else:

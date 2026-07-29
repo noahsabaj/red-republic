@@ -80,6 +80,31 @@ pub fn building_transforms(world: &World) -> PackedFloat32Array {
     transforms_of(world, None)
 }
 
+/// Where the republic actually is, for a world that was loaded rather than
+/// founded.
+///
+/// The founding hands back the site it chose, but a save does not carry it — and
+/// it does not need to, because it was only ever an answer to "where should the
+/// camera open". A republic being resumed has buildings to aim at, so this is the
+/// mean of where they stand.
+///
+/// The map's centre is the wrong answer and is the bug this exists to avoid: a
+/// posting is sited on the shallowest coal body, so it is routinely nowhere near
+/// the middle, and framing the map means opening on empty ground. That was
+/// caught once already by looking at a rendered frame.
+pub fn centre_of(world: &World) -> Point {
+    let buildings = world.buildings().all();
+    if buildings.is_empty() {
+        let half = world.terrain().extent().0 * 0.5;
+        return Point::new(Metres(half), Metres(half));
+    }
+    let count = buildings.len() as f64;
+    let (x, y) = buildings
+        .iter()
+        .fold((0.0, 0.0), |(x, y), b| (x + b.centre.x.0, y + b.centre.y.0));
+    Point::new(Metres(x / count), Metres(y / count))
+}
+
 /// The same, for one kind only.
 ///
 /// The kit gives each kind its own mesh, so each needs its own `MultiMesh`.

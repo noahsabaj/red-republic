@@ -45,10 +45,10 @@ var _people_rows := 0
 @onready var ways_line: Label = $Panel/Margin/Rows/WaysLine
 @onready var grid_line: Label = $Panel/Margin/Rows/GridLine
 @onready var overlay_line: Label = $Panel/Margin/Rows/OverlayLine
-@onready var stock_grid: GridContainer = $Stock/Margin/Rows/Grid
-@onready var stock_title: Label = $Stock/Margin/Rows/Title
-@onready var people_grid: GridContainer = $People/Margin/Rows/Grid
-@onready var people_title: Label = $People/Margin/Rows/Title
+@onready var stock_grid: GridContainer = $Side/Stock/Margin/Rows/Scroll/Grid
+@onready var stock_title: Label = $Side/Stock/Margin/Rows/Title
+@onready var people_grid: GridContainer = $Side/People/Margin/Rows/Scroll/Grid
+@onready var people_title: Label = $Side/People/Margin/Rows/Title
 @onready var hint: Label = $Hint
 
 var _stock_labels: Array[Label] = []
@@ -130,7 +130,15 @@ func _build_people_rows(rows: int) -> void:
 
 
 func refresh(republic: Node, overlay_mode: int, speed_names: Array) -> void:
-	clock_line.text = "%s    %s" % [republic.date_text(), speed_names[republic.speed()]]
+	# The republic's own name leads the clock line. It is the one thing on this
+	# panel the player wrote themselves, and a game that forgets what you called
+	# your republic is a game that has not noticed you were there.
+	var title: String = republic.republic_name()
+	clock_line.text = "%s%s    %s" % [
+		("%s  ·  " % title) if title != "" else "",
+		republic.date_text(),
+		speed_names[republic.speed()],
+	]
 
 	var rain: float = republic.precipitation_mm()
 	# Snow goes on the weather line and only when there is any, because it is

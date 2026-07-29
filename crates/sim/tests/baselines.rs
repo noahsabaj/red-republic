@@ -277,10 +277,25 @@ fn founding_shelf_cost() {
         });
         let refilter = start.elapsed().as_secs_f64() * 1000.0;
 
+        // What the shelf is holding, now that a candidate keeps the land it was
+        // surveyed from rather than a spec to rebuild it from. Reported because
+        // the alternative to keeping it was regenerating, that trade was decided
+        // on this number, and six maps of the largest size is the worst case the
+        // screen can be put in. Serialized length rather than a heap probe: it
+        // is the actual byte count of the data retained, and it needs no
+        // allocator shim to read.
+        let held: usize = shelf
+            .candidates
+            .iter()
+            .map(|c| postcard::to_stdvec(&c.world).map_or(0, |v| v.len()))
+            .sum();
+
         println!(
-            "[BASELINE shelf] {label} ({:.0} km): {} candidates in {elapsed:.0} ms, refilter {refilter:.0} ms",
+            "[BASELINE shelf] {label} ({:.0} km): {} candidates in {elapsed:.0} ms, \
+             refilter {refilter:.0} ms, holding {:.1} MB",
             extent.as_km(),
-            shelf.candidates.len()
+            shelf.candidates.len(),
+            held as f64 / 1_048_576.0
         );
         assert!(elapsed < 10_000.0, "a shelf took {elapsed:.0} ms");
     }

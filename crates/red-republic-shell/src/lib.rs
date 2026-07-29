@@ -27,8 +27,11 @@
 
 use godot::prelude::*;
 
+pub mod audio;
 pub mod marshal;
+pub mod reference;
 pub mod republic;
+pub mod shelf;
 pub mod terrain_mesh;
 pub mod views;
 
