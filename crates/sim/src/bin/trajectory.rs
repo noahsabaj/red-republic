@@ -376,8 +376,12 @@ fn main() {
         world.free_beds(),
         world.tourism().visited(),
         world.tourism().turned_away(),
-        world.tourism().earned(red_republic_sim::trade::Market::East),
-        world.tourism().earned(red_republic_sim::trade::Market::West),
+        world
+            .tourism()
+            .earned(red_republic_sim::trade::Market::East),
+        world
+            .tourism()
+            .earned(red_republic_sim::trade::Market::West),
     );
     // The four ways through, and the fleet on each. Water is here beside the
     // built ones on purpose: it is the one network nobody builds, so a run that
