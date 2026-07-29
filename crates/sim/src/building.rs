@@ -277,10 +277,24 @@ pub const BUILDINGS: &[BuildingDef] = &[
         in: [], out: [],
         cost: [(Bricks, 15.0), (Planks, 10.0)], labour: 120.0, sells: [], taps: None, residents: 0, storage: 300.0,
             wear: 0.0, farms: false),
-    def!(ConstructionOffice, "Construction Office", 35.0, 25.0, workers: 10, draw: 0.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
-        in: [], out: [],
-        cost: [(Bricks, 10.0), (Planks, 8.0)], labour: 110.0, sells: [], taps: None, residents: 0, storage: 40.0,
-            wear: 0.01, farms: false),
+    // The republic's builders, and the machinery they build with. Nothing goes
+    // up without one: an office employs the crews, owns the plant, and runs the
+    // buses that put a gang on a site. Its establishment of two buses at ten
+    // seats against twenty staff is what lets one office work two sites at
+    // once — a third site wants a third office, which is the shape every other
+    // capacity in this republic has.
+    //
+    // Its `wear` is zero and that is a decision rather than an omission: an
+    // office's plant is worn by the builder-days its crews actually work, in
+    // `systems::construction`, and a flat daily rate on top would charge a
+    // republic for diggers standing in the yard. The `Machinery` appetite
+    // declared here is what the resupply ranking reads; it is spent out on the
+    // sites.
+    def!(ConstructionOffice, "Construction Office", 35.0, 25.0, workers: 20, draw: 0.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0,
+        keeps: [(CrewBus, 2)],
+        in: [(Machinery, 0.4), (Fuel, 0.15)], out: [],
+        cost: [(Bricks, 10.0), (Planks, 8.0), (Machinery, 1.0)], labour: 110.0, sells: [], taps: None, residents: 0, storage: 40.0,
+            wear: 0.0, farms: false),
     // The republic's haulage. Its establishment is where the fleet comes from —
     // wanting more lorries means another depot and sixteen more people for it,
     // never a number in a settings file. Its fuel is drawn by the vehicles

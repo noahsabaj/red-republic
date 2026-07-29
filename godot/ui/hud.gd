@@ -26,6 +26,7 @@ const STOCK_ROWS := 16
 @onready var weather_line: Label = $Panel/Margin/Rows/WeatherLine
 @onready var forecast_line: Label = $Panel/Margin/Rows/ForecastLine
 @onready var republic_line: Label = $Panel/Margin/Rows/RepublicLine
+@onready var crew_line: Label = $Panel/Margin/Rows/CrewLine
 @onready var overlay_line: Label = $Panel/Margin/Rows/OverlayLine
 @onready var stock_grid: GridContainer = $Stock/Margin/Rows/Grid
 @onready var stock_title: Label = $Stock/Margin/Rows/Title
@@ -81,10 +82,43 @@ func refresh(republic: Node, overlay_mode: int, speed_names: Array) -> void:
 		_thousands(republic.rubles()),
 	]
 
+	_refresh_crews(republic)
+
 	var name: String = Overlays.NAMES[overlay_mode]
 	overlay_line.text = "overlay:  %s" % (name if name != "" else "none")
 
 	_refresh_stock(republic)
+
+
+## Where the republic's builders are.
+##
+## Work happens where the crews are standing, so a site with nobody on it and a
+## site with a gang and no bricks look identical without this. The waiting count
+## is the one that costs: a gang beside a finished building is people no office
+## can post anywhere until a bus goes and fetches them.
+func _refresh_crews(republic: Node) -> void:
+	var parties: PackedFloat32Array = republic.crew_parties()
+	var stride := 5
+	var riding := 0
+	var working := 0
+	var waiting := 0
+	var heads := 0
+	for i in range(0, parties.size() / stride):
+		heads += int(parties[i * stride + 2])
+		match int(parties[i * stride + 3]):
+			0: riding += 1
+			1: working += 1
+			_: waiting += 1
+	if heads == 0:
+		crew_line.text = "no crews out"
+		crew_line.modulate = Color(1, 1, 1, 0.45)
+		return
+	crew_line.text = "%d builders out  ·  %d on site  ·  %d riding  ·  %d awaiting a bus" % [
+		heads, working, riding, waiting,
+	]
+	# A gang with nowhere to be is the state worth colouring: it is idle people
+	# and a bus journey the republic still owes them.
+	crew_line.modulate = Color(0.9, 0.55, 0.45) if waiting > 0 else Color.WHITE
 
 
 func _refresh_stock(republic: Node) -> void:

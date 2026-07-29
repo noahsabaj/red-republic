@@ -52,6 +52,25 @@ pub enum VehicleKind {
     Lorry,
     HeavyLorry,
     RecoveryVehicle,
+    CrewBus,
+}
+
+/// What a vehicle is for.
+///
+/// Replaces a `recovers: bool`, which was a fine way to divide a world with two
+/// kinds of vehicle in it and stopped being one the moment a third arrived: a
+/// crew bus recovers nothing, so under the old flag it read as a lorry and
+/// dispatch offered it freight it has no bed for. A vehicle has exactly one job,
+/// and saying so in the type is what keeps the three pools from ever competing
+/// for the same driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Role {
+    /// Carries tonnage.
+    Freight,
+    /// Carries builders between an office and its sites.
+    Crew,
+    /// Pulls the others out of fields.
+    Recovery,
 }
 
 /// What a vehicle is and what it can do.
@@ -70,8 +89,11 @@ pub enum VehicleKind {
 pub struct VehicleDef {
     pub kind: VehicleKind,
     pub name: &'static str,
-    /// Tonnes it can carry in one load.
+    pub role: Role,
+    /// Tonnes it can carry in one load. Zero on anything that is not freight.
     pub capacity: Tonnes,
+    /// Builders it can carry. Zero on anything that is not a crew bus.
+    pub seats: u32,
     /// Speed on the road network.
     pub on_road: Speed,
     /// Speed over open ground. The gap between this and [`VehicleDef::on_road`]
@@ -89,8 +111,12 @@ pub struct VehicleDef {
     /// deeper and pulls worse, and a heavy one much more so — which is the
     /// whole reason the big lorry is a road vehicle.
     pub load_penalty: f64,
-    /// Whether it can pull another vehicle out.
-    pub recovers: bool,
+}
+
+impl VehicleDef {
+    pub fn recovers(&self) -> bool {
+        self.role == Role::Recovery
+    }
 }
 
 /// The vehicle table. First-pass balance, meant to be felt out against the
@@ -103,7 +129,9 @@ pub const VEHICLES: &[VehicleDef] = &[
     VehicleDef {
         kind: VehicleKind::Lorry,
         name: "Lorry",
+        role: Role::Freight,
         capacity: Tonnes(8.0),
+        seats: 0,
         on_road: Speed::from_kph(50.0),
         cross_country: Speed::from_kph(15.0),
         // 0.3 kg/km — about 36 litres of diesel per hundred kilometres.
@@ -111,19 +139,19 @@ pub const VEHICLES: &[VehicleDef] = &[
         tank: Tonnes(0.15),
         ground: 0.75,
         load_penalty: 0.35,
-        recovers: false,
     },
     VehicleDef {
         kind: VehicleKind::HeavyLorry,
         name: "Heavy Lorry",
+        role: Role::Freight,
         capacity: Tonnes(20.0),
+        seats: 0,
         on_road: Speed::from_kph(45.0),
         cross_country: Speed::from_kph(8.0),
         fuel_per_km: 0.0006,
         tank: Tonnes(0.30),
         ground: 0.55,
         load_penalty: 0.40,
-        recovers: false,
     },
     // Carries nothing and goes everywhere. Its capability is deliberately
     // above one: a recovery vehicle that could itself get stuck would need
@@ -132,14 +160,37 @@ pub const VEHICLES: &[VehicleDef] = &[
     VehicleDef {
         kind: VehicleKind::RecoveryVehicle,
         name: "Recovery Vehicle",
+        role: Role::Recovery,
         capacity: Tonnes::ZERO,
+        seats: 0,
         on_road: Speed::from_kph(55.0),
         cross_country: Speed::from_kph(20.0),
         fuel_per_km: 0.0004,
         tank: Tonnes(0.20),
         ground: 1.2,
         load_penalty: 0.0,
-        recovers: true,
+    },
+    // The second physical hop in construction: builders are employed at an
+    // office and this is what puts them on a site. Quicker than a lorry and
+    // worse across country than one, which is the trade that makes a remote
+    // site want a road before it wants anything else.
+    //
+    // Its load penalty is zero and that is authored rather than defaulted: a
+    // dozen people weigh a rounding error against eight tonnes of brick, so a
+    // full bus crosses exactly what an empty one crosses. It is the one vehicle
+    // whose capability does not depend on what it is carrying.
+    VehicleDef {
+        kind: VehicleKind::CrewBus,
+        name: "Crew Bus",
+        role: Role::Crew,
+        capacity: Tonnes::ZERO,
+        seats: 10,
+        on_road: Speed::from_kph(60.0),
+        cross_country: Speed::from_kph(16.0),
+        fuel_per_km: 0.00025,
+        tank: Tonnes(0.12),
+        ground: 0.7,
+        load_penalty: 0.0,
     },
 ];
 
@@ -252,6 +303,18 @@ pub enum Job {
     /// journey is to a *vehicle* rather than to a place, and the thing that
     /// happens on arrival is nothing like unloading.
     Recover { casualty: VehicleId },
+    /// Carry builders from the office out to a site.
+    ///
+    /// The bus sets off **laden**, which is why this is not a fetch-then-deliver
+    /// like a haul: the crew is at the office and the office is the bus's home,
+    /// so there is nothing to drive out empty for.
+    Ferry { to: Destination, heads: u32 },
+    /// Go and bring a crew back.
+    ///
+    /// Named by the party rather than by the place, because what is being
+    /// collected can be standing beside a road that now exists and has no site
+    /// left to refer to.
+    Collect { party: crate::crews::PartyId },
 }
 
 impl Job {
@@ -264,14 +327,29 @@ impl Job {
                 resource,
                 tonnes,
             } => Some((from, to, resource, tonnes)),
-            Job::Recover { .. } => None,
+            _ => None,
         }
     }
 
     pub fn casualty(self) -> Option<VehicleId> {
         match self {
             Job::Recover { casualty } => Some(casualty),
-            Job::Haul { .. } => None,
+            _ => None,
+        }
+    }
+
+    /// The site a crew is being carried to, if this is a ferry.
+    pub fn ferry(self) -> Option<(Destination, u32)> {
+        match self {
+            Job::Ferry { to, heads } => Some((to, heads)),
+            _ => None,
+        }
+    }
+
+    pub fn party(self) -> Option<crate::crews::PartyId> {
+        match self {
+            Job::Collect { party } => Some(party),
+            _ => None,
         }
     }
 }
@@ -486,16 +564,33 @@ mod tests {
     #[test]
     fn every_vehicle_is_fully_authored() {
         for def in VEHICLES {
-            // A recovery vehicle carries nothing on purpose; everything else
-            // that carries nothing is a lorry somebody forgot to author.
-            assert_eq!(
-                def.capacity.is_positive(),
-                !def.recovers,
-                "{} carries {:?} and recovers {}",
-                def.name,
-                def.capacity,
-                def.recovers
-            );
+            // Exactly one role, and the capacity that goes with it. A lorry
+            // with no bed and a bus with no seats are both a row somebody left
+            // half-authored, and under the old `recovers: bool` neither was
+            // expressible as a question — which is why the flag became a role.
+            let carries = def.capacity.is_positive();
+            let seats = def.seats > 0;
+            match def.role {
+                Role::Freight => assert!(
+                    carries && !seats,
+                    "{} hauls freight with {:?} of bed and {} seats",
+                    def.name,
+                    def.capacity,
+                    def.seats
+                ),
+                Role::Crew => assert!(
+                    seats && !carries,
+                    "{} carries crews with {} seats and {:?} of bed",
+                    def.name,
+                    def.seats,
+                    def.capacity
+                ),
+                Role::Recovery => assert!(
+                    !seats && !carries,
+                    "{} recovers and also carries things",
+                    def.name
+                ),
+            }
             assert!(def.ground > 0.0, "{} cannot leave a road", def.name);
             assert!(
                 def.load_penalty >= 0.0 && def.load_penalty < def.ground,

@@ -25,6 +25,7 @@ use crate::citizen::Population;
 use crate::climate::{self, ClimateId};
 use crate::command::{Command, Done, Journal, Outcome, Refused};
 use crate::contract::Contracts;
+use crate::crews::Crews;
 use crate::fleet::Destination;
 use crate::fleet::Fleet;
 use crate::geology::Geology;
@@ -63,7 +64,11 @@ use serde::{Deserialize, Serialize};
 ///
 /// 8: the frontier replaces the single border edge, and the republic can carry
 /// advances from the blocs.
-pub const SAVE_VERSION: u32 = 8;
+///
+/// 9: building crews. Where a gang is standing and what it is working is
+/// persisted state — a save written before them describes a republic whose
+/// sites are being built by nobody.
+pub const SAVE_VERSION: u32 = 9;
 
 /// The first version the format ever carried.
 ///
@@ -246,6 +251,9 @@ pub struct World {
     pub(crate) contracts: Contracts,
     /// Advances the blocs have made, at most one per bloc.
     pub(crate) loans: Loans,
+    /// The building crews that are out: who they belong to, where they are
+    /// standing, and what they are working.
+    pub(crate) crews: Crews,
     /// The posting's climate. Fixed at founding — you do not get a milder
     /// winter by asking for one.
     pub(crate) climate: ClimateId,
@@ -302,6 +310,7 @@ impl World {
             trade_policy: TradePolicy::new(),
             contracts: Contracts::default(),
             loans: Loans::new(),
+            crews: Crews::new(),
             climate: spec.climate,
             journal: Journal::new(),
             seed: spec.seed,
@@ -555,6 +564,19 @@ impl World {
         }
     }
 
+    /// Where something goods or people can be sent to actually stands.
+    ///
+    /// The place half of [`World::consignee`], without having to name a resource
+    /// to ask. A crew bus wants exactly this and nothing else about the site: a
+    /// gang is set down at a place, and whether that place has room for bricks
+    /// is not a question about people.
+    pub fn place_of(&self, to: Destination) -> Option<crate::units::Point> {
+        match to {
+            Destination::Building(id) => self.buildings.get(id).map(|b| b.centre),
+            Destination::RoadSite(id) => self.roadworks.get(id).map(|s| s.depot()),
+        }
+    }
+
     /// The same, already finished — the founding grant.
     ///
     /// Scenario setup rather than play, and `pub(crate)` for a stronger reason
@@ -615,13 +637,45 @@ impl World {
                 .map(Done::Commissioned)
                 .map_err(Refused::Placement),
 
+            // Two refusals here, and both exist to make an orphaned crew
+            // unrepresentable rather than to detect one afterwards. Pulling down
+            // a site with a gang standing on it, or an office whose gangs are
+            // out, would leave people belonging to a building that no longer
+            // exists — and no amount of tidying up after the fact answers "so
+            // where are they now?".
             Command::Demolish { building } => {
+                if self.buildings.get(building).is_none() {
+                    return Err(Refused::NoSuchBuilding(building));
+                }
+                if self
+                    .crews
+                    .working_at(Destination::Building(building))
+                    .is_some()
+                {
+                    return Err(Refused::CrewOnSite);
+                }
+                if self.crews.posted(building) > 0 {
+                    return Err(Refused::CrewsOut);
+                }
                 if self.buildings.demolish(building) {
                     Ok(Done::Nothing)
                 } else {
                     Err(Refused::NoSuchBuilding(building))
                 }
             }
+
+            // Down tools. They stop work where they stand and wait for the
+            // office to send a bus — there is no way to make people appear back
+            // at the office, which is the same rule that makes construction
+            // physical in the first place.
+            Command::RecallCrew { site } => match self.crews.working_at(site) {
+                Some(_) => {
+                    let at = self.place_of(site).unwrap_or_default();
+                    self.crews.release(site, at);
+                    Ok(Done::Nothing)
+                }
+                None => Err(Refused::NoCrewThere),
+            },
 
             Command::OrderRoad { from, to, grade } => self
                 .order_road(from, to, grade)
@@ -745,6 +799,11 @@ impl World {
     }
 
     /// The advances the republic is carrying, and its record of paying them.
+    /// The building crews that are out.
+    pub fn crews(&self) -> &Crews {
+        &self.crews
+    }
+
     pub fn loans(&self) -> &Loans {
         &self.loans
     }
@@ -1447,6 +1506,93 @@ mod tests {
         assert_eq!(
             refused.unwrap_err().to_string(),
             "a customs house must stand at the national border"
+        );
+    }
+
+    /// You cannot pull down a site with builders standing on it, nor an office
+    /// whose gangs are out.
+    ///
+    /// **Prevention rather than detection**, and that is the whole reason these
+    /// two refusals exist. Allowing either would leave people belonging to a
+    /// building that no longer exists, and no amount of tidying up afterwards
+    /// answers "so where are they now?" — the office's establishment would be
+    /// short by ten and nothing would say why. Refusing makes the state
+    /// unrepresentable instead, and hands the player a sentence naming what to
+    /// do about it.
+    #[test]
+    fn a_building_nobody_can_account_for_afterwards_cannot_be_pulled_down() {
+        use crate::building::BuildingKind;
+        use crate::command::{Command, Refused};
+        use crate::fleet::Destination;
+
+        let mut world = World::new(spec(1961));
+        let base = crate::scenario::found(&mut world, 120);
+        let office = base.construction_office.expect("the founding places one");
+
+        // A site far enough out that the crew is genuinely away from the yard.
+        let centre = base.centre;
+        let site = world
+            .issue(Command::Place {
+                kind: BuildingKind::Warehouse,
+                at: Point::new(centre.x + Metres(700.0), centre.y + Metres(700.0)),
+            })
+            .expect("open ground");
+        let crate::command::Done::Commissioned(site) = site else {
+            panic!("a placement returns the building it commissioned");
+        };
+
+        // Before anybody is on it, it comes down like anything else would.
+        assert!(world.crews.at_site(Destination::Building(site)).eq(&0));
+
+        // Now put a gang on it and try again.
+        let mut posted = false;
+        for _ in 0..(crate::time::TICKS_PER_DAY * 20) {
+            world.tick();
+            if world.crews.at_site(Destination::Building(site)) > 0 {
+                posted = true;
+                break;
+            }
+        }
+        assert!(posted, "no crew was ever sent to the site");
+
+        assert_eq!(
+            world.issue(Command::Demolish { building: site }),
+            Err(Refused::CrewOnSite)
+        );
+        assert_eq!(
+            world.issue(Command::Demolish { building: office }),
+            Err(Refused::CrewsOut)
+        );
+        assert_eq!(
+            Refused::CrewsOut.to_string(),
+            "this office still has crews out at sites; bring them in first"
+        );
+
+        // Recalling them is the way through, and it is a command rather than
+        // something the simulation decides on the player's behalf.
+        assert_eq!(
+            world.issue(Command::RecallCrew {
+                site: Destination::Building(site)
+            }),
+            Ok(crate::command::Done::Nothing)
+        );
+        assert_eq!(world.crews.at_site(Destination::Building(site)), 0);
+        assert_eq!(
+            world.issue(Command::Demolish { building: site }),
+            Ok(crate::command::Done::Nothing)
+        );
+        // But the office still owes them a bus, so it is still not going
+        // anywhere — which is the point: the people did not evaporate with the
+        // foundation.
+        assert_eq!(
+            world.issue(Command::Demolish { building: office }),
+            Err(Refused::CrewsOut)
+        );
+        assert_eq!(
+            world.issue(Command::RecallCrew {
+                site: Destination::Building(site)
+            }),
+            Err(Refused::NoCrewThere)
         );
     }
 
