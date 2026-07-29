@@ -3382,7 +3382,16 @@ fn serve(
     }
 
     // A supplier is anyone holding this who does not consume it, less whatever
-    // another lorry is already on its way to collect.
+    // another lorry is already on its way to collect, **and less whatever the
+    // player told it to keep**.
+    //
+    // That last clause is what makes a standing order an order. Without it an
+    // order was a target with no floor: the goods arrived and the very next
+    // pass took them straight out again, because a store holds what it does not
+    // consume and that is the definition of a supplier. A distribution office
+    // asked to keep fifty tonnes of coal in the north was a lorry park, and a
+    // filling station was a building that could be delivered diesel all day and
+    // never have any — which is how this was found.
     let mut suppliers: Vec<(f64, BuildingId, Tonnes)> = world
         .buildings
         .all()
@@ -3391,12 +3400,18 @@ fn serve(
         .filter(|b| !b.def().inputs.iter().any(|(r, _)| *r == resource))
         .filter(|b| !b.def().sells.contains(&resource))
         .map(|b| {
+            let kept = if b.def().stores_to_order {
+                b.orders.get(resource)
+            } else {
+                Tonnes::ZERO
+            };
             (
                 b.centre.distance_to(to.at).0,
                 b.id,
                 b.stock
                     .get(resource)
-                    .saturating_sub(booked.promised(b.id, resource)),
+                    .saturating_sub(booked.promised(b.id, resource))
+                    .saturating_sub(kept),
             )
         })
         .filter(|(_, _, spare)| spare.is_positive())
@@ -8222,6 +8237,11 @@ mod tests {
             && let Some(b) = world.buildings.get_mut(pump)
         {
             b.stock.add(Resource::Fuel, Tonnes(40.0));
+            // And a standing order, because that is how a pump is kept filled
+            // now — see `a_filling_point_is_kept_filled`. Without it this
+            // fixture observes a filling station that can only run down.
+            let cap = b.storage_cap();
+            b.orders.set(Resource::Fuel, cap);
         }
         if let Some(site) =
             crate::scenario::find_site(&world, BuildingKind::BusDepot, centre, Metres(800.0))
@@ -10361,6 +10381,168 @@ mod tests {
         );
     }
 
+    /// A pump that runs dry and is never refilled is a building that works
+    /// once — and that is what this was.
+    ///
+    /// `cover_days` reads `inputs` and a `GasStation` has none, so the resupply
+    /// ranking had no reason to bring one a tonne of diesel ever. The founding
+    /// hand-stocked forty tonnes, the test above hand-stocked forty tonnes, and
+    /// between them they hid a filling station that could only ever run down.
+    /// The fix is `orders: true` — a standing order is what makes a place a
+    /// destination — and this is the test that watches a lorry turn up.
+    ///
+    /// Run against a *drained* pump, because a full one proves nothing: the
+    /// premise is asserted before the tick loop for exactly that reason.
+    #[test]
+    fn a_filling_point_is_kept_filled() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let depot = base.depot.expect("the founding sites a council depot");
+        let near_depot = w.buildings.get(depot).unwrap().centre;
+        let site =
+            crate::scenario::find_site(&w, BuildingKind::GasStation, near_depot, Metres(600.0))
+                .expect("somewhere for a pump");
+        let pump = w
+            .place_built(BuildingKind::GasStation, site)
+            .expect("a pump");
+
+        // Imported diesel standing at the border, which is where a republic
+        // with no refinery gets it. The pump is empty; before the standing
+        // order existed, that stayed true for ever.
+        let customs = base.customs.expect("the founding opens a crossing");
+        w.buildings
+            .get_mut(customs)
+            .unwrap()
+            .stock
+            .add(Resource::Fuel, Tonnes(60.0));
+
+        assert!(
+            !w.buildings
+                .get(pump)
+                .unwrap()
+                .stock
+                .get(Resource::Fuel)
+                .is_positive(),
+            "the premise: a pump with fuel in it would pass without a delivery"
+        );
+        assert!(
+            cover_days(&w, pump, Resource::Fuel).is_none(),
+            "the premise: a pump has no appetite, which is exactly why the \
+             ordinary resupply ranking never looked at it"
+        );
+
+        let cap = w.buildings.get(pump).unwrap().storage_cap();
+        w.issue(crate::command::Command::SetStandingOrder {
+            building: pump,
+            resource: Resource::Fuel,
+            tonnes: cap,
+        })
+        .expect("a filling station is a place the player may stock");
+
+        for _ in 0..(TICKS_PER_DAY * 4) {
+            w.tick();
+        }
+
+        assert!(
+            w.buildings
+                .get(pump)
+                .unwrap()
+                .stock
+                .get(Resource::Fuel)
+                .is_positive(),
+            "four days and no lorry brought the filling station any diesel"
+        );
+    }
+
+    /// A standing order is an order, not a suggestion.
+    ///
+    /// **Found by watching a pump that was being delivered to and never had
+    /// any.** A store holds goods it does not consume, which is exactly the
+    /// definition of a supplier in `serve` — so an order used to set a target
+    /// with no floor under it. Freight brought the diesel in and the next pass
+    /// took it straight back out to whatever burnt fuel nearby, five times over
+    /// four days, and the building ended each one empty.
+    ///
+    /// The premise is asserted first, because a republic with nothing that
+    /// wants the goods would pass this without the rule existing.
+    #[test]
+    fn what_a_store_is_told_to_keep_is_not_taken_out_again() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        // A founded republic burns coal in its boiler and its power plant, so
+        // there is always somebody who would like this stock.
+        let plant = base.plant.expect("the founding lights a power plant");
+        let near = w.buildings.get(plant).unwrap().centre;
+        let site =
+            crate::scenario::find_site(&w, BuildingKind::DistributionOffice, near, Metres(900.0))
+                .expect("somewhere for an office");
+        let office = w
+            .place_built(BuildingKind::DistributionOffice, site)
+            .expect("an office");
+        assert!(
+            BuildingKind::PowerPlant
+                .def()
+                .inputs
+                .iter()
+                .any(|&(r, _)| r == Resource::Coal),
+            "the premise: this test needs something nearby that wants the coal"
+        );
+
+        let keep = Tonnes(50.0);
+        w.issue(crate::command::Command::SetStandingOrder {
+            building: office,
+            resource: Resource::Coal,
+            tonnes: keep,
+        })
+        .expect("a distribution office is a store");
+        w.buildings
+            .get_mut(office)
+            .unwrap()
+            .stock
+            .set(Resource::Coal, keep);
+        // Empty the plant's bunker so its appetite is real and pressing.
+        w.buildings
+            .get_mut(plant)
+            .unwrap()
+            .stock
+            .take(Resource::Coal, Tonnes(1e9));
+
+        for _ in 0..(TICKS_PER_DAY * 3) {
+            w.tick();
+        }
+
+        let left = w.buildings.get(office).unwrap().stock.get(Resource::Coal);
+        assert!(
+            left.0 >= keep.0 - 1e-6,
+            "the office was told to keep {keep:?} and has {left:?} — an order \
+             that does not hold anything back is a target, not an order"
+        );
+
+        // And the other half: a surplus **above** the order is still fair game,
+        // or a store would be a hole goods fall into.
+        w.buildings
+            .get_mut(office)
+            .unwrap()
+            .stock
+            .add(Resource::Coal, Tonnes(30.0));
+        for _ in 0..(TICKS_PER_DAY * 3) {
+            w.tick();
+        }
+        let after = w.buildings.get(office).unwrap().stock.get(Resource::Coal);
+        assert!(
+            after.0 < keep.0 + 30.0 - 1e-6,
+            "nothing drew on the surplus, so a store hoards whatever it is given"
+        );
+    }
+
     /// A customs house at an EASTERN frontier post.
     ///
     /// The bloc matters: a house clears only for the bloc whose post it stands
@@ -10809,6 +10991,72 @@ mod tests {
             ordered.0 <= 60.0 + 1e-6,
             "the order was for 60 t and {:.1} t turned up",
             ordered.0
+        );
+    }
+
+    /// A store takes the shapes it was built for, and says so at the door.
+    ///
+    /// The refusal matters as much as the rule. Letting the order stand and
+    /// quietly never fill would be indistinguishable, from the panel, from a
+    /// republic with no lorries — and the player would have no way to find out
+    /// which, because `intake_capacity` returns zero silently.
+    #[test]
+    fn a_store_refuses_an_order_it_could_never_fill() {
+        let mut w = bare();
+        let tank = place(&mut w, BuildingKind::StorageTank, at(1_000.0, 1_000.0));
+        let silo = place(&mut w, BuildingKind::GrainSilo, at(1_400.0, 1_000.0));
+
+        w.issue(crate::command::Command::SetStandingOrder {
+            building: tank,
+            resource: Resource::Fuel,
+            tonnes: Tonnes(100.0),
+        })
+        .expect("a tank holds fuel");
+
+        let refused = w
+            .issue(crate::command::Command::SetStandingOrder {
+                building: tank,
+                resource: Resource::Coal,
+                tonnes: Tonnes(100.0),
+            })
+            .expect_err("a tank is not a coal bunker");
+        assert_eq!(
+            refused.to_string(),
+            "Coal will not go in a Storage Tank",
+            "the reason has to be a sentence a tooltip can print"
+        );
+
+        w.issue(crate::command::Command::SetStandingOrder {
+            building: silo,
+            resource: Resource::Crops,
+            tonnes: Tonnes(100.0),
+        })
+        .expect("a silo holds grain");
+        assert!(
+            w.issue(crate::command::Command::SetStandingOrder {
+                building: silo,
+                resource: Resource::Steel,
+                tonnes: Tonnes(100.0),
+            })
+            .is_err(),
+            "a silo took delivery of steel beams"
+        );
+
+        // And the panel is offered exactly what would be accepted, so a player
+        // is never shown a choice the simulation would refuse.
+        let offered = w.orderable(tank);
+        assert!(offered.contains(&Resource::Fuel));
+        assert!(!offered.contains(&Resource::Coal));
+        assert!(
+            offered
+                .iter()
+                .all(|r| r.form() == crate::resource::Form::Liquid),
+            "a tank offered something that is not a liquid"
+        );
+        let home = place(&mut w, BuildingKind::Apartment, at(1_800.0, 1_000.0));
+        assert!(
+            w.orderable(home).is_empty(),
+            "a block of flats was offered a stockpile to keep"
         );
     }
 

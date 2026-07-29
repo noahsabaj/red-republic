@@ -76,7 +76,7 @@ func _ready() -> void:
 		"tracks": _overlay = Overlays.Mode.WEAR
 		"survey": _overlay = Overlays.Mode.SURVEY
 		"pollution": _overlay = Overlays.Mode.POLLUTION
-	hud.set_resource_names(republic.resource_names())
+	hud.set_resource_names(republic.resource_names(), republic.resource_forms())
 	hud.set_contentment_names(republic.contentment_names())
 	hud.set_utility_names(republic.utility_names())
 	hud.set_way_names(republic.way_names())

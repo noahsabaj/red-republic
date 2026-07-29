@@ -130,12 +130,19 @@ pub const GRADES: &[GradeDef] = &[
         materials: &[(Resource::Gravel, 60.0)],
         labour: 70.0,
     },
+    // **Asphalt, and that is a gate rather than a price rise.** A paved road
+    // used to be gravel and brick, which a republic has on day one — so the
+    // best road in the game was available before anything had been built. It
+    // now wants the heavy end of a barrel: pump, refinery, asphalt plant. A
+    // gravel road is 45 km/h against this 60, so nothing is *blocked* by the
+    // gate; what is behind it is the last fifteen, which is the right thing to
+    // put at the end of a chain four buildings deep.
     GradeDef {
         grade: Grade::Paved,
         carries: Medium::Road,
         name: "Paved Road",
         speed: Speed::from_kph(60.0),
-        materials: &[(Resource::Gravel, 50.0), (Resource::Bricks, 30.0)],
+        materials: &[(Resource::Gravel, 40.0), (Resource::Asphalt, 25.0)],
         labour: 140.0,
     },
     // The most expensive thing a republic can order per kilometre, by a long

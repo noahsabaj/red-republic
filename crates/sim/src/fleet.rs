@@ -52,6 +52,7 @@ pub enum VehicleKind {
     Lorry,
     HeavyLorry,
     RecoveryVehicle,
+    SnowPlough,
     CrewBus,
     Coach,
     Locomotive,
@@ -79,6 +80,13 @@ pub enum Role {
     Crew,
     /// Pulls the others out of fields.
     Recovery,
+    /// Pushes the winter off the roads.
+    ///
+    /// Its own pool for the reason every other one is: a republic whose freight
+    /// stopped because its lorries were ploughing — or whose roads stayed buried
+    /// because a mine wanted a lorry — would be two unrelated decisions sharing
+    /// one budget. A plough is a plough and it does nothing else.
+    Clearance,
     /// Carries settlers from a frontier post to housing.
     ///
     /// Its own role rather than a second use for [`Role::Crew`], because the
@@ -191,6 +199,29 @@ pub const VEHICLES: &[VehicleDef] = &[
         cross_country: Speed::from_kph(20.0),
         fuel_per_km: 0.0004,
         tank: Tonnes(0.20),
+        ground: 1.2,
+        load_penalty: 0.0,
+    },
+    // What keeps a republic moving through a winter it cannot otherwise drive
+    // in. It carries nothing and it goes almost everywhere, because the roads
+    // it is sent to clear are precisely the roads nothing else can use.
+    //
+    // Slow, and that is the cost: a plough works at the pace of the blade, so
+    // clearing a republic's roads takes real hours out of a real day and a
+    // republic with one Council Depot clears its roads in the order the depot
+    // gets to them. Its ground capability is a recovery vehicle's, because a
+    // machine that got stuck in the snow it came to shift would be a joke.
+    VehicleDef {
+        kind: VehicleKind::SnowPlough,
+        medium: Medium::Road,
+        name: "Snow Plough",
+        role: Role::Clearance,
+        capacity: Tonnes::ZERO,
+        seats: 0,
+        on_road: Speed::from_kph(20.0),
+        cross_country: Speed::from_kph(10.0),
+        fuel_per_km: 0.0008,
+        tank: Tonnes(0.25),
         ground: 1.2,
         load_penalty: 0.0,
     },
@@ -804,6 +835,11 @@ mod tests {
                 Role::Recovery => assert!(
                     !seats && !carries,
                     "{} recovers and also carries things",
+                    def.name
+                ),
+                Role::Clearance => assert!(
+                    !seats && !carries,
+                    "{} clears roads and also carries things",
                     def.name
                 ),
                 Role::Passenger => assert!(

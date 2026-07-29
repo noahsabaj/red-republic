@@ -329,6 +329,42 @@ impl Republic {
         out
     }
 
+    /// What shape each resource comes in, in the same order as
+    /// [`Self::resource_names`].
+    ///
+    /// Storage is a decision now — a tank takes liquids, a silo takes grain and
+    /// cement, a bay takes heaps — and a player who learns that taxonomy only by
+    /// being refused an order is a player being ambushed. The stockpile table
+    /// carries it as a column.
+    #[func]
+    fn resource_forms(&self) -> PackedStringArray {
+        let mut out = PackedStringArray::new();
+        if let Some(w) = self.world.as_ref() {
+            for form in w.resource_forms() {
+                out.push(&GString::from(form));
+            }
+        }
+        out
+    }
+
+    /// Which resources may be ordered at a place, by index into
+    /// [`Self::resource_names`]. Empty for anything that is not a store.
+    #[func]
+    fn orderable(&self, building: i64) -> PackedInt32Array {
+        let mut out = PackedInt32Array::new();
+        let Some(w) = self.world.as_ref() else {
+            return out;
+        };
+        for resource in w.orderable(red_republic_sim::BuildingId(building.max(0) as u32)) {
+            let index = red_republic_sim::Resource::ALL
+                .iter()
+                .position(|&r| r == resource)
+                .unwrap_or_default();
+            out.push(index as i32);
+        }
+        out
+    }
+
     #[func]
     fn deposits(&self) -> PackedFloat32Array {
         self.world

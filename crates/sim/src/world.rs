@@ -989,6 +989,17 @@ impl World {
                 if !b.def().stores_to_order {
                     return Err(Refused::NotAStore);
                 }
+                // A tank is not a coal bunker, and this is where the player is
+                // told so. Refusing here rather than letting the order stand and
+                // quietly never fill is the whole difference between a rule and
+                // a mystery: `intake_capacity` would return zero for ever and
+                // the panel would show an order nothing was ever sent for.
+                if !b.def().admits.contains(&resource.form()) {
+                    return Err(Refused::WillNotHold {
+                        place: b.def().name,
+                        goods: resource.name(),
+                    });
+                }
                 let holds = b.storage_cap();
                 if tonnes.0 > holds.0 {
                     return Err(Refused::OverCapacity {
@@ -1114,6 +1125,37 @@ impl World {
             .map(|r| (r, b.stock.get(r), b.orders.get(r)))
             .filter(|(_, _, ordered)| ordered.is_positive())
             .collect()
+    }
+
+    /// What this place will take delivery of at all.
+    ///
+    /// The other half of the order panel: a list of what may be ordered here,
+    /// so a player is never offered a choice the simulation would refuse. A
+    /// storage tank offers five liquids and a grain silo offers two granular
+    /// goods, and neither offers coal.
+    ///
+    /// Empty for anything that is not a store, which is what the panel reads to
+    /// decide whether to show an order section at all.
+    pub fn orderable(&self, building: crate::building::BuildingId) -> Vec<Resource> {
+        let Some(b) = self.buildings.get(building) else {
+            return Vec::new();
+        };
+        if !b.def().stores_to_order {
+            return Vec::new();
+        }
+        Resource::ALL
+            .into_iter()
+            .filter(|r| b.def().admits.contains(&r.form()))
+            .collect()
+    }
+
+    /// What shape each resource comes in, in `Resource::ALL` order.
+    ///
+    /// A label rather than a rule: the stockpile table says *Liquid* beside
+    /// fuel so a player reading "a tank will not hold that" already knows why,
+    /// without having to discover the taxonomy by being refused.
+    pub fn resource_forms(&self) -> Vec<&'static str> {
+        Resource::ALL.into_iter().map(|r| r.form().name()).collect()
     }
 
     pub fn ground(&self) -> Ground {

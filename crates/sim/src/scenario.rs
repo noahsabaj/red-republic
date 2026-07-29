@@ -128,7 +128,7 @@ fn found_crossing(world: &mut World, near: Point) -> Option<BuildingId> {
 /// Guarded by `the_founding_hand_can_staff_itself`, because this number drifts
 /// every time a building's worker count changes and the failure is silent: the
 /// tail of the founding order simply stops being manned.
-pub const SETTLERS: usize = 139;
+pub const SETTLERS: usize = 143;
 
 /// Found a town: housing, a mine on the nearest coal, a plant to feed it, and
 /// the beginnings of a timber chain.
@@ -364,11 +364,21 @@ pub fn found(world: &mut World, citizens: usize) -> StartingBase {
         b.stock.add(Resource::Clothes, Tonnes(40.0));
         b.stock.add(Resource::Planks, Tonnes(80.0));
         b.stock.add(Resource::Bricks, Tonnes(80.0));
-        // Diesel, because a republic with no refinery yet still has to move
-        // things. It is a grant and not an allowance: it runs out, and what
-        // replaces it is an oil chain or a trade rule that buys fuel. That
-        // deadline is the point of granting a finite amount rather than
-        // waiving the cost.
+    }
+    // Diesel, because a republic with no refinery yet still has to move things.
+    // It is a grant and not an allowance: it runs out, and what replaces it is
+    // an oil chain or a trade rule that buys fuel. That deadline is the point of
+    // granting a finite amount rather than waiving the cost.
+    //
+    // **In the motor depot rather than the council yard**, and the reason is a
+    // rule in `serve`: a supplier is anyone holding a resource who does not
+    // *consume* it. The council depot keeps snow ploughs now, so it declares a
+    // fuel appetite like every other garage — which makes it a place fuel goes
+    // and not a place fuel comes from. Twenty tonnes left there would have been
+    // twenty tonnes no lorry in the republic could draw on.
+    if let Some(motor_depot) = base.motor_depot
+        && let Some(b) = world.buildings.get_mut(motor_depot)
+    {
         b.stock.add(Resource::Fuel, Tonnes(20.0));
     }
 

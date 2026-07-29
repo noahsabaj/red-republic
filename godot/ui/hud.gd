@@ -54,6 +54,7 @@ var _people_rows := 0
 var _stock_labels: Array[Label] = []
 var _people_labels: Array[Label] = []
 var _resource_names := PackedStringArray()
+var _resource_forms := PackedStringArray()
 var _content_names := PackedStringArray()
 var _utility_names := PackedStringArray()
 var _way_names := PackedStringArray()
@@ -65,8 +66,9 @@ const STAGE_NAMES := ["Infants", "Pupils", "Students", "Workers", "Retired"]
 const LEARNING_NAMES := ["Unschooled", "Schooled", "Graduates"]
 
 
-func set_resource_names(names: PackedStringArray) -> void:
+func set_resource_names(names: PackedStringArray, forms: PackedStringArray) -> void:
 	_resource_names = names
+	_resource_forms = forms
 	# Headings and totals sit above the resources, hence the slack -- but it is
 	# slack over a *derived* count, not a typed one.
 	_build_stock_rows(names.size() + 3)
@@ -289,7 +291,13 @@ func _refresh_stock(republic: Node) -> void:
 		var name_label := _stock_labels[row * 2]
 		var value_label := _stock_labels[row * 2 + 1]
 		if row < held.size() and row < _resource_names.size():
-			name_label.text = _resource_names[row]
+			# The form goes on the name, not in a column of its own: it is what
+			# decides which store will take the goods, and a player reading
+			# "Fuel (Liquid)" already knows why the grain silo refused it.
+			if row < _resource_forms.size():
+				name_label.text = "%s  (%s)" % [_resource_names[row], _resource_forms[row]]
+			else:
+				name_label.text = _resource_names[row]
 			value_label.text = "%.1f t" % held[row]
 			# Nothing at all is worth saying quietly rather than not at all: an
 			# empty bin is the most important number on this table.

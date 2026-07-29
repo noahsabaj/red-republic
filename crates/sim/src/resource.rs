@@ -17,6 +17,14 @@ use crate::units::Tonnes;
 use serde::{Deserialize, Serialize};
 
 /// Everything the economy handles.
+///
+/// # The order is logical, and it is part of the definition
+///
+/// Chains run downwards: what a thing is made from sits above it. That is for
+/// the reader and for the stockpile table, both of which are easier to follow
+/// when steel stands next to the ore it came out of. Iteration order is part of
+/// the simulation's definition wherever an accumulation follows [`Resource::ALL`],
+/// so this list is not to be reshuffled casually.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Resource {
     Coal,
@@ -24,14 +32,35 @@ pub enum Resource {
     Steel,
     Oil,
     Fuel,
+    /// The heavy end of a barrel. A refinery makes it whether anybody wants it
+    /// or not — which is the point of it being a second output rather than a
+    /// second recipe: a republic that refines for diesel has bitumen to do
+    /// something with, and asphalt is what that something is.
+    Bitumen,
+    Chemicals,
     Wood,
     Planks,
     Gravel,
     Bricks,
+    Cement,
+    Concrete,
+    /// A wall, a floor and a ceiling, cast at a works and driven to the site.
+    ///
+    /// This is how Soviet housing was actually built, and it is the one
+    /// construction material that buys a *different building* rather than a
+    /// cheaper version of the same one — see `BuildingKind::PanelBlock`.
+    PrefabPanel,
+    Asphalt,
     Crops,
     Food,
     Clothes,
+    /// A hard-currency export made from the republic's own fields, and
+    /// deliberately **not** something the people are judged on having.
+    ///
+    /// See [`Resource::is_luxury`] for why that distinction is drawn at all.
+    Alcohol,
     Machinery,
+    Electronics,
     /// What a republic throws away. A resource like any other, which is the
     /// point: it accumulates in a bin, it has to be *driven* somewhere, and a
     /// republic that has nowhere to drive it watches it pile up where people
@@ -42,20 +71,28 @@ pub enum Resource {
 impl Resource {
     /// Every resource, in a fixed order — iteration order is part of the
     /// simulation's definition wherever a draw or an accumulation follows it.
-    pub const ALL: [Resource; 14] = [
+    pub const ALL: [Resource; 22] = [
         Resource::Coal,
         Resource::IronOre,
         Resource::Steel,
         Resource::Oil,
         Resource::Fuel,
+        Resource::Bitumen,
+        Resource::Chemicals,
         Resource::Wood,
         Resource::Planks,
         Resource::Gravel,
         Resource::Bricks,
+        Resource::Cement,
+        Resource::Concrete,
+        Resource::PrefabPanel,
+        Resource::Asphalt,
         Resource::Crops,
         Resource::Food,
         Resource::Clothes,
+        Resource::Alcohol,
         Resource::Machinery,
+        Resource::Electronics,
         Resource::Waste,
     ];
 
@@ -66,19 +103,93 @@ impl Resource {
             Resource::Steel => "Steel",
             Resource::Oil => "Oil",
             Resource::Fuel => "Fuel",
+            Resource::Bitumen => "Bitumen",
+            Resource::Chemicals => "Chemicals",
             Resource::Wood => "Wood",
             Resource::Planks => "Planks",
             Resource::Gravel => "Gravel",
             Resource::Bricks => "Bricks",
+            Resource::Cement => "Cement",
+            Resource::Concrete => "Concrete",
+            Resource::PrefabPanel => "Prefab Panels",
+            Resource::Asphalt => "Asphalt",
             Resource::Crops => "Crops",
             Resource::Food => "Food",
             Resource::Clothes => "Clothes",
+            Resource::Alcohol => "Alcohol",
             Resource::Machinery => "Machinery",
+            Resource::Electronics => "Electronics",
             Resource::Waste => "Waste",
         }
     }
 
+    /// Whether this is something the republic sells rather than something its
+    /// people are judged on having.
+    ///
+    /// **The distinction is deliberate and it is a balance decision, not a
+    /// taxonomy.** Alcohol and electronics are made from domestic chains and
+    /// are worth a great deal per tonne abroad, which is what makes them the
+    /// answer to "how does a republic earn dollars without digging coal". Making
+    /// them *wants* instead would have been the other obvious design, and it
+    /// was rejected: every existing republic's `provisions` score would have
+    /// fallen the day this landed, for a shortfall in goods that did not exist
+    /// the day before. Deepening the economy must not quietly re-mark work the
+    /// player already did.
+    ///
+    /// Authored as a property of the resource rather than as a list inside the
+    /// trade or households systems, for the reason every other property here is.
+    pub fn is_luxury(self) -> bool {
+        matches!(self, Resource::Alcohol | Resource::Electronics)
+    }
+
+    /// What shape this stuff is, and therefore what will hold it.
+    ///
+    /// **This is what makes storage a decision rather than a number.** A
+    /// republic used to be able to keep two hundred tonnes of anything in one
+    /// shed; now oil goes in a tank, grain goes in a silo, and gravel goes in a
+    /// heap — which is the whole of W&R's storage roster expressed as one
+    /// authored fact per resource rather than as five special cases.
+    ///
+    /// Authored here beside the prices rather than as a list of resources
+    /// inside the storage buildings, for the usual reason: a list in logic is a
+    /// thing you must remember to edit.
+    pub fn form(self) -> Form {
+        match self {
+            // Tipped in heaps and left in the rain.
+            Resource::Coal
+            | Resource::IronOre
+            | Resource::Gravel
+            | Resource::Asphalt
+            | Resource::Waste => Form::Aggregate,
+            // Pumped, and it needs something that holds pressure.
+            Resource::Oil
+            | Resource::Fuel
+            | Resource::Bitumen
+            | Resource::Chemicals
+            | Resource::Alcohol => Form::Liquid,
+            // Powder and grain: it has to stay dry and it flows, which is what
+            // a silo is for and why a warehouse full of sacks is not one.
+            Resource::Cement | Resource::Crops => Form::Bulk,
+            // Weather does not hurt it and a yard will do.
+            Resource::Wood
+            | Resource::Planks
+            | Resource::Bricks
+            | Resource::Concrete
+            | Resource::PrefabPanel
+            | Resource::Steel
+            | Resource::Machinery => Form::Open,
+            // Wants a roof and a floor.
+            Resource::Food | Resource::Clothes | Resource::Electronics => Form::Covered,
+        }
+    }
+
     /// Price per tonne buying from the eastern bloc, in roubles.
+    ///
+    /// The manufactured end of the table is dear on purpose: a tonne of
+    /// electronics is worth twenty tonnes of steel and two hundred of coal, so
+    /// a republic that gets a chain running earns in a lorry what a mine earns
+    /// in a month. That gap **is** the industrialisation incentive, and pricing
+    /// the new goods near their inputs would have made the chains decoration.
     pub fn price_east(self) -> f64 {
         match self {
             Resource::Coal => 2.5,
@@ -86,14 +197,22 @@ impl Resource {
             Resource::Steel => 14.0,
             Resource::Oil => 5.0,
             Resource::Fuel => 10.0,
+            Resource::Bitumen => 4.0,
+            Resource::Chemicals => 26.0,
             Resource::Wood => 2.0,
             Resource::Planks => 5.0,
             Resource::Gravel => 1.5,
             Resource::Bricks => 6.0,
+            Resource::Cement => 8.0,
+            Resource::Concrete => 12.0,
+            Resource::PrefabPanel => 30.0,
+            Resource::Asphalt => 13.0,
             Resource::Crops => 2.0,
             Resource::Food => 4.5,
             Resource::Clothes => 9.0,
+            Resource::Alcohol => 45.0,
             Resource::Machinery => 80.0,
+            Resource::Electronics => 140.0,
             // Nobody buys your rubbish, and shipping it abroad costs. A price
             // is authored anyway because every resource is priced on both
             // sides — an unpriced one would be a hole in the trade table
@@ -110,14 +229,22 @@ impl Resource {
             Resource::Steel => 8.0,
             Resource::Oil => 3.0,
             Resource::Fuel => 6.0,
+            Resource::Bitumen => 2.2,
+            Resource::Chemicals => 16.0,
             Resource::Wood => 1.0,
             Resource::Planks => 2.5,
             Resource::Gravel => 0.7,
             Resource::Bricks => 3.0,
+            Resource::Cement => 4.5,
+            Resource::Concrete => 7.0,
+            Resource::PrefabPanel => 18.0,
+            Resource::Asphalt => 7.5,
             Resource::Crops => 1.0,
             Resource::Food => 2.0,
             Resource::Clothes => 5.0,
+            Resource::Alcohol => 30.0,
             Resource::Machinery => 50.0,
+            Resource::Electronics => 95.0,
             Resource::Waste => 0.1,
         }
     }
@@ -132,6 +259,47 @@ impl Resource {
             Resource::Gravel => Mineral::Gravel,
             _ => return None,
         })
+    }
+}
+
+/// What shape a resource comes in, and therefore what will hold it.
+///
+/// Five forms and five kinds of store, which is not a coincidence: the forms
+/// exist so that W&R's storage roster — open, warehouse, aggregate, tank, silo
+/// — is a property of the *goods* rather than five lists of resource ids inside
+/// five buildings. A new resource declares its form in
+/// [`Resource::form`] and every store already knows whether it will take it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Form {
+    /// Heaps of loose stuff. Tipped, scraped up, and none the worse for rain.
+    Aggregate,
+    /// Anything that has to be pumped and will run away if it is not contained.
+    Liquid,
+    /// Powder and grain: it flows, and it spoils wet.
+    Bulk,
+    /// Solid goods that survive outdoors.
+    Open,
+    /// Solid goods that want a roof.
+    Covered,
+}
+
+impl Form {
+    pub const ALL: [Form; 5] = [
+        Form::Aggregate,
+        Form::Liquid,
+        Form::Bulk,
+        Form::Open,
+        Form::Covered,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Form::Aggregate => "Loose",
+            Form::Liquid => "Liquid",
+            Form::Bulk => "Granular",
+            Form::Open => "Open",
+            Form::Covered => "Covered",
+        }
     }
 }
 
@@ -240,5 +408,46 @@ mod tests {
         assert_eq!(Resource::Coal.from_mineral(), Some(Mineral::Coal));
         assert_eq!(Resource::Gravel.from_mineral(), Some(Mineral::Gravel));
         assert_eq!(Resource::Steel.from_mineral(), None);
+    }
+
+    /// The roster's own size, so `ALL` and the enum cannot drift apart. Rust
+    /// will not catch a resource added to the enum and forgotten here — it is
+    /// an array literal, not a match — and a resource missing from `ALL` is
+    /// invisible to every stockpile, every panel and every trade rule.
+    #[test]
+    fn every_resource_is_in_the_roster_exactly_once() {
+        let mut sorted = Resource::ALL;
+        sorted.sort();
+        sorted.windows(2).for_each(|pair| {
+            assert_ne!(pair[0], pair[1], "{:?} is listed twice", pair[0]);
+        });
+        // Discriminants run 0..ALL.len() with none missing, which is what
+        // `Stock`'s indexing by `r as usize` silently depends on.
+        for (index, resource) in Resource::ALL.into_iter().enumerate() {
+            assert_eq!(resource as usize, index, "{resource:?} is out of place");
+        }
+    }
+
+    #[test]
+    fn every_resource_has_a_name_and_a_form() {
+        for r in Resource::ALL {
+            assert!(!r.name().is_empty(), "{r:?}");
+            assert!(Form::ALL.contains(&r.form()), "{r:?}");
+        }
+    }
+
+    /// The luxuries are the export answer, and the test that says so is the one
+    /// that stops somebody quietly turning them into a want later: a want would
+    /// re-mark every republic that had never heard of them.
+    #[test]
+    fn the_luxuries_are_worth_carrying_to_a_border() {
+        for r in Resource::ALL.into_iter().filter(|r| r.is_luxury()) {
+            assert!(
+                r.price_west() > Resource::Steel.price_west(),
+                "{r:?} is a luxury nobody would haul"
+            );
+        }
+        assert!(!Resource::Food.is_luxury(), "food is a need");
+        assert!(!Resource::Clothes.is_luxury(), "clothes are a need");
     }
 }
