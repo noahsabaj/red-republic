@@ -50,6 +50,14 @@ func frame_map(extent_m: float, at_x: float, at_z: float) -> void:
 	_apply()
 
 
+## Put the camera at a chosen boom length. Used by capture runs so a look can be
+## judged at the distance a player actually watches a lorry from, rather than
+## from the altitude that frames a whole posting.
+func set_distance(metres: float) -> void:
+	_distance = clampf(metres, MIN_DISTANCE, _max_distance)
+	_apply()
+
+
 func _process(delta: float) -> void:
 	var move := Vector3.ZERO
 	if Input.is_key_pressed(KEY_W):

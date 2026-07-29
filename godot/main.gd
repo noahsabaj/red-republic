@@ -13,6 +13,10 @@ extends Node3D
 ## (30 ms, measured). Buildings are uploaded only when the count changes.
 ## Vehicles are the one per-frame read, and it is 0.9 microseconds.
 
+const Looks := preload("res://looks.gd")
+const Kit := preload("res://building_kit.gd")
+const Art := preload("res://building_art.gd")
+
 const SEED := 1961
 const EXTENT_M := 6000.0
 const CLIMATE := 0  ## indexes ClimateId::ALL: plains, taiga, steppe, maritime
@@ -33,15 +37,25 @@ var _shot_after := 90
 var _frames := 0
 var _start_speed := 0
 var _bench_frames := 0
+var _look: Looks.Look = null
+var _view_distance := 0.0
+var _kind_nodes: Array[MultiMeshInstance3D] = []
+var _advance_days := 0
 var _bench_times: PackedFloat64Array = PackedFloat64Array()
 
 
 func _ready() -> void:
 	_read_arguments()
+	_look = Looks.current()
+	_apply_look()
 	republic.found(SEED, EXTENT_M, CLIMATE, SETTLERS)
 	_build_terrain()
 	_build_instance_meshes()
+	if _advance_days > 0:
+		republic.advance_days(_advance_days)
 	rig.frame_map(EXTENT_M, republic.centre_x(), republic.centre_y())
+	if _view_distance > 0.0:
+		rig.set_distance(_view_distance)
 	_refresh_buildings()
 	_refresh_roads()
 	# Founded paused. The first thing a posting should do is let you look at it.
@@ -151,6 +165,54 @@ func _read_arguments() -> void:
 			"--bench":
 				if i + 1 < args.size():
 					_bench_frames = int(args[i + 1])
+			"--dist":
+				if i + 1 < args.size():
+					_view_distance = float(args[i + 1])
+			"--advance":
+				if i + 1 < args.size():
+					_advance_days = int(args[i + 1])
+
+
+## Sun, sky and air. Presentation only -- the weather the simulation models is a
+## different thing entirely, and this does not read it.
+func _apply_look() -> void:
+	var sun: DirectionalLight3D = $Sun
+	sun.light_color = _look.sun_colour
+	sun.light_energy = _look.sun_energy
+	sun.rotation_degrees = Vector3(-_look.sun_elevation, _look.sun_azimuth, 0.0)
+	sun.shadow_enabled = true
+
+	var sky_mat := ProceduralSkyMaterial.new()
+	sky_mat.sky_top_color = _look.sky_top
+	sky_mat.sky_horizon_color = _look.sky_horizon
+	sky_mat.ground_bottom_color = _look.ground_horizon
+	sky_mat.ground_horizon_color = _look.ground_horizon
+	sky_mat.sun_angle_max = 12.0
+
+	var sky := Sky.new()
+	sky.sky_material = sky_mat
+
+	var env := Environment.new()
+	env.background_mode = Environment.BG_SKY
+	env.sky = sky
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = _look.ambient_colour
+	env.ambient_light_energy = _look.ambient_energy
+	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.tonemap_exposure = _look.tonemap_exposure
+	# Distance fog rather than volumetric: the job is to give a 6 km map depth,
+	# not to render weather, and it costs nothing.
+	env.fog_enabled = true
+	env.fog_light_color = _look.fog_colour
+	env.fog_density = _look.fog_density
+	# The sky is already the right colour; letting fog repaint it flattens the
+	# horizon into a single wash and takes the depth cue with it.
+	env.fog_sky_affect = 0.0
+	env.fog_aerial_perspective = 0.35
+	env.ssao_enabled = true
+	env.ssao_intensity = 1.2
+
+	$Sky.environment = env
 
 
 func _build_terrain() -> void:
@@ -164,28 +226,48 @@ func _build_terrain() -> void:
 	# the art direction change without recompiling the simulation's renderer.
 	var mat := ShaderMaterial.new()
 	mat.shader = load("res://terrain.gdshader")
+	mat.set_shader_parameter("grass_colour", _look.grass)
+	mat.set_shader_parameter("forest_colour", _look.forest)
+	mat.set_shader_parameter("rock_colour", _look.rock)
+	mat.set_shader_parameter("water_colour", _look.water)
+	mat.set_shader_parameter("contour_strength", _look.contour_strength)
 	terrain_node.material_override = mat
 
 
+## One mesh per building kind, assembled from the kit, each with its own
+## MultiMesh. Done once at load: a kind's mesh never changes, only how many of
+## them are standing.
 func _build_instance_meshes() -> void:
-	# A unit cube standing on the ground, scaled per instance to the real metric
-	# footprint a BuildingDef authors. Placeholder geometry on purpose: the kit
-	# of parts replaces it, and the transform buffer does not change when it does.
-	var box := BoxMesh.new()
-	box.size = Vector3.ONE
-	var box_mat := StandardMaterial3D.new()
-	box_mat.albedo_color = Color(0.72, 0.68, 0.60)
-	box.material = box_mat
+	var names := PackedStringArray()
+	for k in republic.building_kind_count():
+		names.append(republic.building_kind_name(k))
+	# An unauthored building would otherwise render as a default box nobody
+	# chose. This is the guard that makes adding a building to the Rust table
+	# fail loudly here instead.
+	Art.check(names)
 
-	var bm := MultiMesh.new()
-	bm.transform_format = MultiMesh.TRANSFORM_3D
-	bm.mesh = box
-	buildings_node.multimesh = bm
+	var parts := Kit.components()
+	if OS.is_debug_build():
+		var found := parts.keys()
+		found.sort()
+		print("kit components: %s" % ", ".join(found))
+	var art := Art.table()
+	for k in republic.building_kind_count():
+		var size: Vector2 = republic.building_kind_size(k)
+		var mesh := Kit.assemble(parts, art[names[k]], size.x, size.y, _look.tones)
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = mesh
+		var node := MultiMeshInstance3D.new()
+		node.multimesh = mm
+		node.name = "Kind%d" % k
+		buildings_node.add_child(node)
+		_kind_nodes.append(node)
 
 	var van := BoxMesh.new()
 	van.size = Vector3(6.0, 3.0, 2.5)
 	var van_mat := StandardMaterial3D.new()
-	van_mat.albedo_color = Color(0.55, 0.16, 0.13)
+	van_mat.albedo_color = _look.vehicle
 	van.material = van_mat
 
 	var vm := MultiMesh.new()
@@ -195,17 +277,21 @@ func _build_instance_meshes() -> void:
 
 
 func _refresh_buildings() -> void:
-	# Event-driven rather than per-frame: the transform buffer only changes when
-	# something is commissioned or demolished, and uploading it every frame
-	# would be paying the one cost this boundary is careful about for nothing.
-	var count: int = republic.building_count()
-	if count == _buildings_shown:
+	# Event-driven rather than per-frame: a kind's transform buffer only changes
+	# when something of that kind is commissioned or demolished, and uploading
+	# it every frame would be paying the one cost this boundary is careful about
+	# for nothing.
+	var total: int = republic.building_count()
+	if total == _buildings_shown:
 		return
-	_buildings_shown = count
-	var mm := buildings_node.multimesh
-	mm.instance_count = count
-	if count > 0:
-		mm.buffer = republic.building_transforms()
+	_buildings_shown = total
+	for k in _kind_nodes.size():
+		var count: int = republic.building_count_of_kind(k)
+		var mm: MultiMesh = _kind_nodes[k].multimesh
+		if mm.instance_count != count:
+			mm.instance_count = count
+		if count > 0:
+			mm.buffer = republic.building_transforms_of_kind(k)
 
 
 func _refresh_vehicles() -> void:
@@ -222,22 +308,53 @@ func _refresh_vehicles() -> void:
 func _refresh_roads() -> void:
 	# Roads appear without being ordered -- traffic wears the ground, and a worn
 	# corridor is promoted into the network as a dirt track -- so the segment
-	# count is genuinely a thing that changes while nobody is building.
+	# count genuinely changes while nobody is building.
+	#
+	# Drawn as ribbons rather than lines. A hairline reads as debug geometry,
+	# and it also cannot show a grade: a dirt track and tarmac differ in width
+	# and colour here because they differ in what a lorry can do on them, and
+	# that has to be visible without opening a panel.
 	var flat: PackedFloat32Array = republic.road_segments()
-	var count := flat.size() / 6
+	var stride := 7
+	var count := flat.size() / stride
 	if count == _roads_shown:
 		return
 	_roads_shown = count
 	var mesh := ImmediateMesh.new()
 	if count > 0:
 		var mat := StandardMaterial3D.new()
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		mat.albedo_color = Color(0.20, 0.18, 0.16)
-		mesh.surface_begin(Mesh.PRIMITIVE_LINES, mat)
+		mat.vertex_color_use_as_albedo = true
+		mat.roughness = 0.9
+		mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, mat)
 		for i in count:
-			var o := i * 6
-			mesh.surface_add_vertex(Vector3(flat[o], flat[o + 1] + 0.6, flat[o + 2]))
-			mesh.surface_add_vertex(Vector3(flat[o + 3], flat[o + 4] + 0.6, flat[o + 5]))
+			var o := i * stride
+			var a := Vector3(flat[o], flat[o + 1], flat[o + 2])
+			var b := Vector3(flat[o + 3], flat[o + 4], flat[o + 5])
+			var kph := flat[o + 6]
+			var along := b - a
+			along.y = 0.0
+			if along.length() < 0.01:
+				continue
+			# Dirt 25, gravel 45, paved 60 km/h. Width and tone follow from the
+			# limit, so a grade added later needs nothing here.
+			var t := clampf((kph - 25.0) / 35.0, 0.0, 1.0)
+			var half := lerpf(2.6, 4.4, t)
+			var tone := _look.road_dirt.lerp(_look.road_paved, t)
+			var side := along.normalized().cross(Vector3.UP).normalized() * half
+			# Lifted clear of the ground so it does not z-fight the terrain.
+			var lift := Vector3(0.0, 0.35, 0.0)
+			var p0 := a - side + lift
+			var p1 := a + side + lift
+			var p2 := b + side + lift
+			var p3 := b - side + lift
+			# Wound so the ribbon faces UP. Getting this backwards is the second
+			# time in this scene that correct-looking geometry rendered as
+			# nothing at all -- the terrain did it first. Godot culls back
+			# faces, and a flat quad seen from the wrong side is invisible
+			# rather than wrong-looking, which is what makes it so easy to miss.
+			for v in [p0, p3, p2, p0, p2, p1]:
+				mesh.surface_set_color(tone)
+				mesh.surface_add_vertex(v)
 		mesh.surface_end()
 	roads_node.mesh = mesh
 

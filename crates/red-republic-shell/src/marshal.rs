@@ -30,7 +30,7 @@
 
 use godot::prelude::*;
 use red_republic_sim::units::Point;
-use red_republic_sim::{Metres, Terrain, World};
+use red_republic_sim::{BuildingKind, Metres, Terrain, World};
 
 /// Floats per instance in a `MultiMesh` transform buffer (3 rows of 4).
 ///
@@ -77,40 +77,42 @@ fn push_transform(out: &mut PackedFloat32Array, at: Vector3, sx: f32, sy: f32, s
 /// The unit mesh is expected to be a 1 m cube standing on the ground, so the
 /// Y scale is the building's height and the origin is lifted half of it.
 pub fn building_transforms(world: &World) -> PackedFloat32Array {
+    transforms_of(world, None)
+}
+
+/// The same, for one kind only.
+///
+/// The kit gives each kind its own mesh, so each needs its own `MultiMesh`.
+/// Reading them apart here rather than sorting in GDScript keeps the shell
+/// handing over exactly one packed buffer per instance batch, which is the
+/// shape the 316x measurement argued for.
+pub fn building_transforms_of_kind(world: &World, kind: BuildingKind) -> PackedFloat32Array {
+    transforms_of(world, Some(kind))
+}
+
+fn transforms_of(world: &World, only: Option<BuildingKind>) -> PackedFloat32Array {
     let buildings = world.buildings().all();
     let terrain = world.terrain();
     let mut out = PackedFloat32Array::new();
     out.resize(0);
 
     for b in buildings {
-        let def = b.def();
+        if only.is_some_and(|k| k != b.kind) {
+            continue;
+        }
         let ground = ground_position(terrain, b.centre);
         // Height is not authored on a building, so it is derived from footprint
         // — a warehouse is long and low, a plant is tall. This is a rendering
         // decision and belongs here rather than in the simulation, which has no
         // opinion about how tall anything looks.
-        let height = storey_height(def.width.0, def.depth.0) as f32;
-        push_transform(
-            &mut out,
-            Vector3::new(ground.x, ground.y + height * 0.5, ground.z),
-            def.width.0 as f32,
-            height,
-            def.depth.0 as f32,
-        );
+        // The mesh the kit assembles already stands on the ground at its real
+        // metric size, so the instance transform is a position and nothing
+        // else. Height is authored in `building_art.gd` on the Godot side,
+        // because it changes nothing about how a republic runs and a field no
+        // system reads has no business being simulation state.
+        push_transform(&mut out, ground, 1.0, 1.0, 1.0);
     }
     out
-}
-
-/// How tall a building of this footprint stands, in metres.
-///
-/// Rendering only. Kept as one function so the whole skyline changes together
-/// and no single building gets a magic number of its own.
-fn storey_height(width: f64, depth: f64) -> f64 {
-    let footprint = (width * depth).sqrt();
-    // Small things are roughly cubic, large things flatten out: a 10 m hut is
-    // about 6 m tall, a 60 m works about 16 m, which keeps a factory reading as
-    // a factory rather than a tower.
-    (footprint * 0.6).min(4.0 + footprint * 0.2).max(3.0)
 }
 
 /// Every vehicle's position at a fractional tick, as `[x, y, z]` triples.
@@ -138,7 +140,16 @@ pub fn vehicle_positions(world: &World, now: f64) -> PackedFloat32Array {
     out
 }
 
-/// Every road segment as `[ax, ay, az, bx, by, bz]` sextuples.
+/// Floats per road segment: two end points and the limit on it.
+pub const ROAD_STRIDE: usize = 7;
+
+/// Every road segment as `[ax, ay, az, bx, by, bz, speed_kph]`.
+///
+/// The speed limit travels with the segment because a grade is a decision
+/// rather than a nicer word — a lorry does 25 km/h on a dirt track whatever it
+/// is capable of — so a dirt track and tarmac have to be told apart on sight.
+/// The renderer reads the limit rather than a grade enum, which keeps this
+/// working when a grade is added.
 pub fn road_segments(world: &World) -> PackedFloat32Array {
     let roads = world.roads();
     let terrain = world.terrain();
@@ -152,6 +163,7 @@ pub fn road_segments(world: &World) -> PackedFloat32Array {
             out.push(p.y);
             out.push(p.z);
         }
+        out.push((segment.speed.as_mps() * 3.6) as f32);
     }
     out
 }

@@ -19,10 +19,18 @@ uniform vec3 forest_colour : source_color = vec3(0.20, 0.29, 0.17);
 uniform vec3 rock_colour : source_color = vec3(0.44, 0.42, 0.39);
 uniform vec3 water_colour : source_color = vec3(0.19, 0.28, 0.35);
 
+// Faint banding every `contour_spacing` metres of height, for the survey look.
+// Zero strength removes it entirely, which is how the other two looks turn it
+// off without a second shader.
+uniform float contour_strength : hint_range(0.0, 1.0) = 0.0;
+uniform float contour_spacing = 8.0;
+
 varying vec3 kind;
+varying float height;
 
 void vertex() {
 	kind = COLOR.rgb;
+	height = VERTEX.y;
 }
 
 void fragment() {
@@ -32,6 +40,16 @@ void fragment() {
 	albedo = mix(albedo, grass_colour, kind.r);
 	albedo = mix(albedo, forest_colour, kind.g);
 	albedo = mix(albedo, rock_colour, kind.b);
+
+	// A contour line is a band near the top of each height interval. fwidth
+	// keeps it roughly one pixel wide however far away the ground is, so it
+	// does not turn into moire on the far side of a 6 km map.
+	if (contour_strength > 0.0) {
+		float band = fract(height / contour_spacing);
+		float edge = fwidth(height / contour_spacing) * 1.5;
+		float line = 1.0 - smoothstep(0.0, edge, min(band, 1.0 - band));
+		albedo = mix(albedo, albedo * 0.82, line * contour_strength * 0.7);
+	}
 
 	ALBEDO = albedo;
 	// Water reads as water because it is smooth, not because it is blue.

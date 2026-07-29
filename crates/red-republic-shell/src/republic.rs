@@ -123,6 +123,22 @@ impl Republic {
         self.fraction = 0.0;
     }
 
+    /// Run the republic forward whole days, as fast as the machine will.
+    ///
+    /// For capture and measurement runs that need a republic with roads worn
+    /// into it and lorries on the move, rather than one still standing at its
+    /// founding. It is `tick` in a loop and nothing else — there is no way to
+    /// skip time, only to spend it.
+    #[func]
+    fn advance_days(&mut self, days: i64) {
+        let Some(world) = self.world.as_mut() else {
+            return;
+        };
+        for _ in 0..(days.max(0) as u64 * red_republic_sim::time::TICKS_PER_DAY) {
+            world.tick();
+        }
+    }
+
     /// Whether a republic has been founded yet.
     #[func]
     fn is_founded(&self) -> bool {
@@ -168,6 +184,41 @@ impl Republic {
             Some(w) => marshal::vehicle_positions(w, self.now()),
             None => PackedFloat32Array::new(),
         }
+    }
+
+    /// Transforms for one building kind, by its index in the table.
+    #[func]
+    fn building_transforms_of_kind(&self, kind: i64) -> PackedFloat32Array {
+        let (Some(w), Some(def)) = (
+            self.world.as_ref(),
+            red_republic_sim::building::BUILDINGS.get(kind.max(0) as usize),
+        ) else {
+            return PackedFloat32Array::new();
+        };
+        marshal::building_transforms_of_kind(w, def.kind)
+    }
+
+    /// A kind's real footprint in metres, which the kit scales its walls to.
+    #[func]
+    fn building_kind_size(&self, kind: i64) -> Vector2 {
+        red_republic_sim::building::BUILDINGS
+            .get(kind.max(0) as usize)
+            .map_or(Vector2::ZERO, |d| {
+                Vector2::new(d.width.0 as f32, d.depth.0 as f32)
+            })
+    }
+
+    /// How many of a kind are standing. Lets the shell skip a kind entirely
+    /// rather than uploading an empty buffer for each of twenty-eight.
+    #[func]
+    fn building_count_of_kind(&self, kind: i64) -> i64 {
+        let (Some(w), Some(def)) = (
+            self.world.as_ref(),
+            red_republic_sim::building::BUILDINGS.get(kind.max(0) as usize),
+        ) else {
+            return 0;
+        };
+        w.buildings().of_kind(def.kind).count() as i64
     }
 
     #[func]
