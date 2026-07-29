@@ -175,3 +175,58 @@ pub fn going_at(world: &World, x: f64, y: f64) -> f64 {
 pub fn distance_to_border(world: &World, x: f64, y: f64) -> f64 {
     world.distance_to_border(Point::new(Metres(x), Metres(y))).0
 }
+
+/// Floats per frontier sample in [`frontier_line`].
+pub const FRONTIER_STRIDE: usize = 4;
+
+/// The frontier as a polyline: `[x, y, bloc, along]` per sample.
+///
+/// Sampled around the perimeter rather than handed over as arcs, so the shell
+/// draws a line without knowing how the frontier is parameterised. `bloc` is 0
+/// East, 1 West.
+///
+/// This has to be visible. The whole perimeter is border and the two blocs hold
+/// different stretches of it, so "which way is west" is a fact about the land
+/// that decides which currency a republic earns — and a player who cannot see
+/// it is guessing at the most consequential thing about their posting.
+pub fn frontier_line(world: &World, samples: usize) -> PackedFloat32Array {
+    let frontier = world.frontier();
+    let mut out = PackedFloat32Array::new();
+    for i in 0..=samples {
+        let along = red_republic_sim::Frontier::TURNS * i as f64 / samples as f64;
+        let at = frontier.point_at(along);
+        out.push(at.x.0 as f32);
+        out.push(at.y.0 as f32);
+        out.push(bloc_index(frontier.bloc_at(along)) as f32);
+        out.push(along as f32);
+    }
+    out
+}
+
+/// Floats per post in [`crossings`].
+pub const CROSSING_STRIDE: usize = 4;
+
+/// The frontier posts: `[x, y, bloc, id]`.
+///
+/// Placed at worldgen — you do not build one, you build road out to one. That
+/// makes them the most important thing on an unexplored map after the geology,
+/// and they need to be on it from the first frame.
+pub fn crossings(world: &World) -> PackedFloat32Array {
+    let mut out = PackedFloat32Array::new();
+    for crossing in world.frontier().crossings() {
+        out.push(crossing.at.x.0 as f32);
+        out.push(crossing.at.y.0 as f32);
+        out.push(bloc_index(crossing.bloc) as f32);
+        out.push(crossing.id.0 as f32);
+    }
+    out
+}
+
+/// 0 East, 1 West. Kept in one place so the shell never has to match on a
+/// simulation enum.
+pub fn bloc_index(bloc: red_republic_sim::Market) -> usize {
+    match bloc {
+        red_republic_sim::Market::East => 0,
+        red_republic_sim::Market::West => 1,
+    }
+}

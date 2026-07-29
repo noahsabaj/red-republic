@@ -12,7 +12,6 @@ use crate::building::{BuildingId, BuildingKind};
 use crate::citizen::MAX_WALK;
 use crate::geology::Mineral;
 use crate::resource::Resource;
-use crate::trade::{BorderEdge, CUSTOMS_RANGE};
 use crate::units::{Metres, Point, Tonnes};
 use crate::world::World;
 
@@ -81,40 +80,15 @@ pub fn find_site(world: &World, kind: BuildingKind, near: Point, within: Metres)
 /// republic that cannot trade is a legitimate hand to be dealt, and hiding it
 /// would make the founding screen's candidate cards a lie.
 fn found_crossing(world: &mut World, near: Point) -> Option<BuildingId> {
-    let extent = world.terrain.extent();
-    // A little inside the border, so the whole footprint is on home soil.
-    let inset = Metres(CUSTOMS_RANGE.0 / 2.0);
-    // Read the border once: the closure below cannot hold a borrow of `world`
-    // while the loop needs it mutably to place.
-    let border = world.border;
-    let along = move |t: f64| match border {
-        BorderEdge::North => Point::new(Metres(t), inset),
-        BorderEdge::South => Point::new(Metres(t), extent - inset),
-        BorderEdge::West => Point::new(inset, Metres(t)),
-        BorderEdge::East => Point::new(extent - inset, Metres(t)),
-    };
-    let anchor = match border {
-        BorderEdge::North | BorderEdge::South => near.x.0,
-        BorderEdge::West | BorderEdge::East => near.y.0,
-    };
-
-    // Search outward from the point on the border nearest the town, so the
-    // crossing lands as close to home as the ground allows.
-    let step = 100.0;
-    let steps = (extent.0 / step) as i64;
-    for i in 0..=steps {
-        for direction in [1.0, -1.0] {
-            let t = anchor + direction * f64::from(i as i32) * step;
-            if t < 0.0 || t > extent.0 {
-                continue;
-            }
-            let at = along(t);
-            if let Ok(id) = world.place_built(BuildingKind::Customs, at) {
-                return Some(id);
-            }
-        }
-    }
-    None
+    // The frontier posts are already there. This does not look for somewhere to
+    // put a crossing -- it picks which existing one the republic opens a house
+    // at, which is the nearest, because the founding grant is one house and the
+    // haul to it is the republic's first long journey.
+    //
+    // Whichever bloc that post belongs to is who this republic trades with
+    // first, and that is decided by the land rather than by a menu.
+    let at = world.frontier.nearest_crossing(near, None)?.at;
+    world.place_built(BuildingKind::Customs, at).ok()
 }
 
 /// Found a town: housing, a mine on the nearest coal, a plant to feed it, and

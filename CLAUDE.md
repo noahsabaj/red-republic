@@ -36,7 +36,11 @@ Terrain and borders · construction (offices, crews, machinery, construction veh
 
 Taken 2026-07-28 in the interview that set the scope above. Everything here was undecided or wrong before it.
 
-- **The border is the whole perimeter, and it has two sides.** Not an edge of the map and not a `BorderEdge` enum: a polyline that wanders inland with the terrain, partitioned into arcs that belong to the **Western Alliance** or the **Eastern Bloc**. Customs crossings are **placed at worldgen**, not by the player — you build road out to whichever one you want to trade through. Which crossing you use is therefore a siting and haulage decision rather than a dropdown, and it is what makes the two currencies geographic instead of a menu choice. Everything inside the border is yours on day one.
+- **The border is the whole perimeter, and it has two sides. Built.** `Frontier` replaces `BorderEdge`, which named one edge as foreign and said nothing about the other three — so a republic had a single frontier and three impassable nothings. The perimeter is one parameter in `0.0..4.0`, partitioned into arcs held by the **Western Alliance** or the **Eastern Bloc**, with four posts placed at worldgen on the republic's own ground. **You do not build a crossing; you build road out to one.** Everything inside the border is yours on day one.
+
+  **Trade is geographic, and that is the whole point.** A customs house clears *only* for the bloc whose post it stands at, so earning dollars means hauling to a Western post — and if the only Western post is across the map, that is what a dollar costs. The trajectory runner proved it in one run: told to sell coal east from a republic whose crossing is Western, it earned **zero for two years**. It now reads the bloc off its own crossing, which is what a competent player would do.
+
+  Still to come on this row: loans, and refuelling away from home.
 
 - **Construction Offices employ the builders and own the machinery, and they run crew buses.** Not local hire: an office's workers commute to the office like any other workplace, and the office shuttles them out to its sites. That is a second physical transport hop, and it is deliberate — it means a remote site is expensive in the same currency everything else in this game is expensive in, which is vehicles, roads and time.
 

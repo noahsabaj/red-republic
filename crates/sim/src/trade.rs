@@ -28,31 +28,237 @@ use crate::resource::Resource;
 use crate::units::{Metres, Point, Tonnes};
 use serde::{Deserialize, Serialize};
 
-/// Which edge of the map is foreign soil.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BorderEdge {
-    North,
-    South,
-    East,
-    West,
+/// A stretch of frontier, and the bloc on the other side of it.
+///
+/// Position runs around the perimeter as a single parameter in `0.0..4.0`:
+/// 0 at the map's origin corner, 1 at the next corner clockwise, and so on. One
+/// number rather than an edge plus an offset, because every question anyone
+/// asks of the frontier — which bloc is this, where is the nearest crossing,
+/// how far along is that post — is a question about a loop.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FrontierArc {
+    /// Where this stretch begins on the perimeter. It runs to the next arc's
+    /// start, and the last wraps to the first.
+    pub start: f64,
+    pub bloc: Market,
 }
 
-impl BorderEdge {
-    pub const ALL: [BorderEdge; 4] = [
-        BorderEdge::North,
-        BorderEdge::South,
-        BorderEdge::East,
-        BorderEdge::West,
-    ];
+/// A crossing point, placed by worldgen rather than by the player.
+///
+/// **You do not build these.** The frontier and its posts are there when you
+/// arrive; what you decide is which one to build road out to, and that is a
+/// siting and haulage decision rather than a dropdown. It is also what makes
+/// the two currencies geographic: a crossing settles in its own bloc's money,
+/// so trading west means hauling west.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BorderCrossing {
+    pub id: CrossingId,
+    /// Where the post stands, inset from the frontier onto workable ground.
+    pub at: Point,
+    /// Where it sits on the perimeter, so the frontier can be drawn with its
+    /// posts in the right places.
+    pub along: f64,
+    pub bloc: Market,
+}
 
-    /// How far a point is from this edge of a square map.
-    pub fn distance_from(self, point: Point, extent: Metres) -> Metres {
-        Metres(match self {
-            BorderEdge::North => point.y.0,
-            BorderEdge::South => extent.0 - point.y.0,
-            BorderEdge::West => point.x.0,
-            BorderEdge::East => extent.0 - point.x.0,
-        })
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct CrossingId(pub u32);
+
+/// The whole perimeter, and who is on the other side of each part of it.
+///
+/// Replaces `BorderEdge`, which named **one** edge of the map as foreign and
+/// said nothing about the other three — so a republic had a single frontier and
+/// three impassable nothings. A republic is surrounded. The map Noah pointed at
+/// has blue Western Alliance and red Eastern Bloc frontier on the same edge,
+/// which is the shape this models.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Frontier {
+    extent: Metres,
+    /// In perimeter order, always covering the whole loop and never empty.
+    arcs: Vec<FrontierArc>,
+    crossings: Vec<BorderCrossing>,
+}
+
+/// How many crossings a frontier gets. Enough that "which one" is a real
+/// choice and few enough that one is always a haul away.
+pub const CROSSINGS: usize = 4;
+
+/// How far inside the frontier a post stands.
+pub const CROSSING_INSET: Metres = Metres(120.0);
+
+impl Frontier {
+    /// The perimeter as one parameter: `0.0..4.0`, one unit per side.
+    pub const TURNS: f64 = 4.0;
+
+    /// Draw a frontier for a map: where the blocs meet, and where the posts are.
+    ///
+    /// Deterministic from its own substream, so the frontier is a property of
+    /// the seed rather than of how much of the world has been generated —
+    /// which is what lets a founding shelf show one candidate's frontier
+    /// without disturbing another's.
+    ///
+    /// The two blocs each hold a contiguous stretch. A frontier chopped into
+    /// many alternating pieces would make "haul west" meaningless: the point of
+    /// two currencies being geographic is that one direction is the west.
+    pub fn generate(extent: Metres, rng: &mut crate::rng::Rng) -> Self {
+        // Where the two blocs meet, as two points on the loop. Kept at least
+        // a side apart so neither ends up with a sliver nobody can reach.
+        let first = rng.next_bounded(4_000) as f64 / 1_000.0;
+        let span = 1.0 + rng.next_bounded(2_000) as f64 / 1_000.0;
+        let second = (first + span).rem_euclid(Self::TURNS);
+
+        let (a, b) = if first <= second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let east_first = rng.next_bounded(2) == 0;
+        let (one, two) = if east_first {
+            (Market::East, Market::West)
+        } else {
+            (Market::West, Market::East)
+        };
+        let arcs = vec![
+            FrontierArc {
+                start: 0.0,
+                bloc: two,
+            },
+            FrontierArc {
+                start: a,
+                bloc: one,
+            },
+            FrontierArc {
+                start: b,
+                bloc: two,
+            },
+        ];
+
+        let mut frontier = Self::new(extent, arcs, Vec::new());
+        // Posts spread evenly around the loop, offset so they never land
+        // exactly on a corner or on the seam between blocs.
+        let offset = rng.next_bounded(1_000) as f64 / 1_000.0 * Self::TURNS / CROSSINGS as f64;
+        let mut crossings = Vec::with_capacity(CROSSINGS);
+        for i in 0..CROSSINGS {
+            let along = (offset + Self::TURNS * i as f64 / CROSSINGS as f64) % Self::TURNS;
+            crossings.push(BorderCrossing {
+                id: CrossingId(i as u32 + 1),
+                at: frontier.inset_point(along),
+                along,
+                bloc: frontier.bloc_at(along),
+            });
+        }
+        frontier.crossings = crossings;
+        frontier
+    }
+
+    /// A point on the frontier, moved inward onto the republic's own ground.
+    fn inset_point(&self, along: f64) -> Point {
+        let e = self.extent.0;
+        let on = self.point_at(along);
+        let inset = CROSSING_INSET.0.min(e * 0.25);
+        Point::new(
+            Metres(on.x.0.clamp(inset, e - inset)),
+            Metres(on.y.0.clamp(inset, e - inset)),
+        )
+    }
+
+    pub fn new(extent: Metres, arcs: Vec<FrontierArc>, crossings: Vec<BorderCrossing>) -> Self {
+        assert!(!arcs.is_empty(), "a frontier needs at least one stretch");
+        Self {
+            extent,
+            arcs,
+            crossings,
+        }
+    }
+
+    pub fn arcs(&self) -> &[FrontierArc] {
+        &self.arcs
+    }
+
+    pub fn crossings(&self) -> &[BorderCrossing] {
+        &self.crossings
+    }
+
+    pub fn get(&self, id: CrossingId) -> Option<&BorderCrossing> {
+        self.crossings.iter().find(|c| c.id == id)
+    }
+
+    /// Where a perimeter parameter lands on the map.
+    pub fn point_at(&self, along: f64) -> Point {
+        let e = self.extent.0;
+        let t = along.rem_euclid(Self::TURNS);
+        let (side, f) = (t.floor(), t.fract());
+        match side as u32 {
+            0 => Point::new(Metres(e * f), Metres(0.0)),
+            1 => Point::new(Metres(e), Metres(e * f)),
+            2 => Point::new(Metres(e * (1.0 - f)), Metres(e)),
+            _ => Point::new(Metres(0.0), Metres(e * (1.0 - f))),
+        }
+    }
+
+    /// The nearest point on the frontier to somewhere inside the republic,
+    /// as a perimeter parameter.
+    pub fn nearest_along(&self, point: Point) -> f64 {
+        let e = self.extent.0;
+        let (x, y) = (point.x.0.clamp(0.0, e), point.y.0.clamp(0.0, e));
+        // Distance to each side, then the parameter on whichever is closest.
+        // Ties break toward the lower side index so the answer is stable.
+        let candidates = [
+            (y, x / e),                 // north edge, y = 0
+            (e - x, 1.0 + y / e),       // east edge
+            (e - y, 2.0 + (e - x) / e), // south edge
+            (x, 3.0 + (e - y) / e),     // west edge
+        ];
+        candidates
+            .iter()
+            .enumerate()
+            .min_by(|(ia, (da, _)), (ib, (db, _))| da.total_cmp(db).then_with(|| ia.cmp(ib)))
+            .map(|(_, (_, t))| *t)
+            .unwrap_or(0.0)
+    }
+
+    /// How far a point is from foreign soil.
+    pub fn distance_from(&self, point: Point) -> Metres {
+        let e = self.extent.0;
+        let (x, y) = (point.x.0, point.y.0);
+        Metres(x.min(y).min(e - x).min(e - y).max(0.0))
+    }
+
+    /// Which bloc holds the frontier at a perimeter parameter.
+    pub fn bloc_at(&self, along: f64) -> Market {
+        let t = along.rem_euclid(Self::TURNS);
+        // The arc whose start is the last one at or before `t`; if `t` comes
+        // before every start it belongs to the arc that wraps around.
+        let mut held = self.arcs.last().expect("never empty").bloc;
+        for arc in &self.arcs {
+            if arc.start <= t {
+                held = arc.bloc;
+            }
+        }
+        held
+    }
+
+    /// Which bloc's frontier is nearest to a point.
+    pub fn bloc_near(&self, point: Point) -> Market {
+        self.bloc_at(self.nearest_along(point))
+    }
+
+    /// The nearest crossing to a point, optionally of one bloc only.
+    ///
+    /// Straight-line distance rather than road distance on purpose: this
+    /// answers "which post is this near", and how long it actually takes to
+    /// reach one is the fleet's question, priced by the same planner that will
+    /// drive it.
+    pub fn nearest_crossing(&self, to: Point, bloc: Option<Market>) -> Option<&BorderCrossing> {
+        self.crossings
+            .iter()
+            .filter(|c| bloc.is_none_or(|b| c.bloc == b))
+            .min_by(|a, b| {
+                a.at.distance_to(to)
+                    .0
+                    .total_cmp(&b.at.distance_to(to).0)
+                    .then_with(|| a.id.cmp(&b.id))
+            })
     }
 }
 
@@ -183,14 +389,99 @@ impl TradePolicy {
 mod tests {
     use super::*;
 
+    fn plain(extent: f64) -> Frontier {
+        Frontier::new(
+            Metres(extent),
+            vec![
+                FrontierArc {
+                    start: 0.0,
+                    bloc: Market::East,
+                },
+                FrontierArc {
+                    start: 2.0,
+                    bloc: Market::West,
+                },
+            ],
+            Vec::new(),
+        )
+    }
+
+    /// The frontier is the whole perimeter, so the distance to it is the
+    /// distance to the *nearest* side.
+    ///
+    /// This replaces a test that measured from one chosen edge, which was
+    /// right about the old model and is the wrong question now: under
+    /// `BorderEdge` a republic had one frontier and three impassable nothings.
     #[test]
-    fn the_border_is_measured_from_the_right_edge() {
-        let extent = Metres(1_000.0);
-        let p = Point::new(Metres(100.0), Metres(250.0));
-        assert_eq!(BorderEdge::North.distance_from(p, extent), Metres(250.0));
-        assert_eq!(BorderEdge::South.distance_from(p, extent), Metres(750.0));
-        assert_eq!(BorderEdge::West.distance_from(p, extent), Metres(100.0));
-        assert_eq!(BorderEdge::East.distance_from(p, extent), Metres(900.0));
+    fn the_frontier_is_measured_to_whichever_side_is_nearest() {
+        let f = plain(1_000.0);
+        assert_eq!(
+            f.distance_from(Point::new(Metres(100.0), Metres(250.0))),
+            Metres(100.0),
+        );
+        assert_eq!(
+            f.distance_from(Point::new(Metres(500.0), Metres(250.0))),
+            Metres(250.0),
+        );
+        assert_eq!(
+            f.distance_from(Point::new(Metres(900.0), Metres(500.0))),
+            Metres(100.0),
+        );
+        // Dead centre is as far from foreign soil as it is possible to get.
+        assert_eq!(
+            f.distance_from(Point::new(Metres(500.0), Metres(500.0))),
+            Metres(500.0),
+        );
+    }
+
+    /// Which bloc you are near depends on which way you look, which is the
+    /// whole point of the frontier having sides.
+    #[test]
+    fn the_two_blocs_hold_different_stretches_of_the_same_perimeter() {
+        let f = plain(1_000.0);
+        // North edge (t in 0..1) and east (1..2) are the East's; south (2..3)
+        // and west (3..4) are the West's.
+        assert_eq!(f.bloc_at(0.5), Market::East);
+        assert_eq!(f.bloc_at(1.5), Market::East);
+        assert_eq!(f.bloc_at(2.5), Market::West);
+        assert_eq!(f.bloc_at(3.5), Market::West);
+
+        // And from inside: near the north edge is East, near the south is West.
+        assert_eq!(
+            f.bloc_near(Point::new(Metres(500.0), Metres(50.0))),
+            Market::East
+        );
+        assert_eq!(
+            f.bloc_near(Point::new(Metres(500.0), Metres(950.0))),
+            Market::West
+        );
+    }
+
+    /// A generated frontier always has posts of both blocs to trade through,
+    /// and they stand on the republic's own ground rather than on the line.
+    #[test]
+    fn a_generated_frontier_has_posts_inside_the_republic() {
+        for seed in [1u64, 1961, 7, 40_000] {
+            let extent = Metres(6_000.0);
+            let f = Frontier::generate(extent, &mut crate::rng::Rng::from_seed(seed));
+            assert_eq!(f.crossings().len(), CROSSINGS, "seed {seed}");
+            for crossing in f.crossings() {
+                let d = f.distance_from(crossing.at);
+                assert!(
+                    d.0 > 0.0 && d.0 <= CROSSING_INSET.0 + 1.0,
+                    "seed {seed}: a post sat {d:?} from the frontier"
+                );
+            }
+            let east = f
+                .crossings()
+                .iter()
+                .filter(|c| c.bloc == Market::East)
+                .count();
+            assert!(
+                east > 0 && east < CROSSINGS,
+                "seed {seed}: every post belonged to one bloc, so there is                  nothing to choose between"
+            );
+        }
     }
 
     /// Selling and buying the same tonne must lose money, or the optimal

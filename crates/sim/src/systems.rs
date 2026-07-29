@@ -1184,7 +1184,6 @@ pub fn households(world: &World) -> Vec<Mutation> {
 /// the same way.
 pub fn trade(world: &World) -> Vec<Mutation> {
     let day = tick_days();
-    let extent = world.terrain.extent();
     let mut out = Vec::new();
     let mut purse = world.treasury;
     // What this pass has already booked against each tender. The same
@@ -1198,7 +1197,7 @@ pub fn trade(world: &World) -> Vec<Mutation> {
         .all()
         .iter()
         .filter(|b| b.is_built() && b.kind == BuildingKind::Customs)
-        .filter(|b| world.border.distance_from(b.centre, extent).0 <= CUSTOMS_RANGE.0)
+        .filter(|b| world.frontier.distance_from(b.centre).0 <= CUSTOMS_RANGE.0)
         .collect();
     houses.sort_by_key(|b| b.id);
 
@@ -1207,8 +1206,19 @@ pub fn trade(world: &World) -> Vec<Mutation> {
         if !clearance.is_positive() {
             continue;
         }
+        // A house clears for the bloc whose frontier post it stands at, and
+        // only that bloc. This is what makes the two currencies geographic
+        // rather than a dropdown: earning dollars means hauling to a Western
+        // post, and if the only Western post is on the far side of the map
+        // then that is what a dollar costs.
+        let bloc = world.frontier.bloc_near(house.centre);
 
-        for rule in &world.trade_policy.rules {
+        for rule in world
+            .trade_policy
+            .rules
+            .iter()
+            .filter(|rule| rule.market == bloc)
+        {
             if !clearance.is_positive() {
                 break;
             }
@@ -1872,13 +1882,12 @@ pub fn dispatch(world: &World) -> Vec<Mutation> {
         .map(|r| r.resource)
         .collect();
     if !sells.is_empty() {
-        let extent = world.terrain.extent();
         let mut houses: Vec<BuildingId> = world
             .buildings
             .all()
             .iter()
             .filter(|b| b.is_built() && b.kind == BuildingKind::Customs)
-            .filter(|b| world.border.distance_from(b.centre, extent).0 <= CUSTOMS_RANGE.0)
+            .filter(|b| world.frontier.distance_from(b.centre).0 <= CUSTOMS_RANGE.0)
             .map(|b| b.id)
             .collect();
         houses.sort();
@@ -4928,17 +4937,18 @@ mod tests {
     #[test]
     fn exports_earn_currency_at_the_border() {
         let mut w = bare();
-        // bare() uses a 4 km map; put the house on whichever edge is foreign.
-        let extent = w.terrain.extent();
-        let on_border = match w.border {
-            crate::trade::BorderEdge::North => at(2_000.0, 200.0),
-            crate::trade::BorderEdge::South => at(2_000.0, extent.0 - 200.0),
-            crate::trade::BorderEdge::West => at(200.0, 2_000.0),
-            crate::trade::BorderEdge::East => at(extent.0 - 200.0, 2_000.0),
-        };
+        // A house goes at a frontier POST, and it clears for the bloc whose
+        // post it stands at. This one sells East, so it stands at an EASTERN
+        // post -- which is the mechanic, not a fixture detail: earning roubles
+        // means hauling to a post the Eastern Bloc holds.
+        let post = w
+            .frontier
+            .nearest_crossing(at(2_000.0, 2_000.0), Some(Market::East))
+            .expect("a frontier always has posts of both blocs")
+            .at;
         let customs = w
-            .place_built(BuildingKind::Customs, on_border)
-            .expect("on the border");
+            .place_built(BuildingKind::Customs, post)
+            .expect("at a frontier post");
         staff_up(&mut w, at(2_000.0, 2_000.0), 20);
         w.buildings
             .get_mut(customs)
@@ -4981,13 +4991,11 @@ mod tests {
     #[test]
     fn imports_stop_when_the_money_runs_out() {
         let mut w = bare();
-        let extent = w.terrain.extent();
-        let on_border = match w.border {
-            crate::trade::BorderEdge::North => at(2_000.0, 200.0),
-            crate::trade::BorderEdge::South => at(2_000.0, extent.0 - 200.0),
-            crate::trade::BorderEdge::West => at(200.0, 2_000.0),
-            crate::trade::BorderEdge::East => at(extent.0 - 200.0, 2_000.0),
-        };
+        let on_border = w
+            .frontier
+            .nearest_crossing(at(2_000.0, 2_000.0), None)
+            .expect("a frontier always has posts")
+            .at;
         let customs = w.place_built(BuildingKind::Customs, on_border).unwrap();
         staff_up(&mut w, at(2_000.0, 2_000.0), 20);
         w.trade_policy =
@@ -5030,13 +5038,11 @@ mod tests {
     #[test]
     fn the_wrong_currency_buys_nothing() {
         let mut w = bare();
-        let extent = w.terrain.extent();
-        let on_border = match w.border {
-            crate::trade::BorderEdge::North => at(2_000.0, 200.0),
-            crate::trade::BorderEdge::South => at(2_000.0, extent.0 - 200.0),
-            crate::trade::BorderEdge::West => at(200.0, 2_000.0),
-            crate::trade::BorderEdge::East => at(extent.0 - 200.0, 2_000.0),
-        };
+        let on_border = w
+            .frontier
+            .nearest_crossing(at(2_000.0, 2_000.0), None)
+            .expect("a frontier always has posts")
+            .at;
         let customs = w.place_built(BuildingKind::Customs, on_border).unwrap();
         staff_up(&mut w, at(2_000.0, 2_000.0), 20);
         w.treasury.rubles = 10_000.0;
@@ -5062,13 +5068,11 @@ mod tests {
     #[test]
     fn an_unstaffed_crossing_clears_nothing() {
         let mut w = bare();
-        let extent = w.terrain.extent();
-        let on_border = match w.border {
-            crate::trade::BorderEdge::North => at(2_000.0, 200.0),
-            crate::trade::BorderEdge::South => at(2_000.0, extent.0 - 200.0),
-            crate::trade::BorderEdge::West => at(200.0, 2_000.0),
-            crate::trade::BorderEdge::East => at(extent.0 - 200.0, 2_000.0),
-        };
+        let on_border = w
+            .frontier
+            .nearest_crossing(at(2_000.0, 2_000.0), None)
+            .expect("a frontier always has posts")
+            .at;
         let customs = w.place_built(BuildingKind::Customs, on_border).unwrap();
         w.buildings
             .get_mut(customs)
@@ -5163,10 +5167,30 @@ mod tests {
         // not, because the systems at the tail of the commissioning order are
         // then never exercised and their declarations stop being checked.
         crate::scenario::found(&mut world, 240);
+        // Both rules point at the bloc of the house the founding actually
+        // opened, because a house clears only for the bloc whose frontier post
+        // it stands at. Which post the founding picks is decided by the land,
+        // so hard-coding East here exercised `Export` or `Import` depending on
+        // a coin flip and left the other declaration looking like a superset
+        // when it was not. The both-directions guard caught that the moment
+        // trade became geographic.
+        //
+        // One house rather than one per bloc, and that is not tidiness. A
+        // second house at the *other* bloc's post can be six kilometres away,
+        // and a distant customs house generates continuous long-haul freight —
+        // every dispatch of which runs a cross-country A* over the lattice.
+        // Adding one took this fixture from about two seconds to over five
+        // minutes. Both declarations are reachable from a single house, so the
+        // cost bought nothing.
+        let trading_bloc = world
+            .buildings
+            .of_kind(BuildingKind::Customs)
+            .next()
+            .map_or(Market::East, |house| world.frontier.bloc_near(house.centre));
         world.trade_policy = crate::trade::TradePolicy::new()
-            .sell(Resource::Coal, Market::East)
-            .buy(Resource::Machinery, Market::West, Tonnes(4.0));
-        world.treasury.credit(Market::West, 500.0);
+            .sell(Resource::Coal, trading_bloc)
+            .buy(Resource::Machinery, trading_bloc, Tonnes(4.0));
+        world.treasury.credit(trading_bloc, 500.0);
         // Something under construction, so the construction system has work.
         let centre = world.buildings.all()[0].centre;
         let _ = world.place(
@@ -5681,20 +5705,20 @@ mod tests {
 
     // ---- Contracts ----
 
-    /// A customs house on whatever edge is foreign.
+    /// A customs house at an EASTERN frontier post.
+    ///
+    /// The bloc matters: a house clears only for the bloc whose post it stands
+    /// at, and every tender fixture here deals with the East.
     fn crossing(world: &mut World) -> BuildingId {
-        let extent = world.terrain.extent();
-        let inset = Metres(CUSTOMS_RANGE.0 / 2.0);
-        let middle = extent / 2.0;
-        let at = match world.border {
-            crate::trade::BorderEdge::North => Point::new(middle, inset),
-            crate::trade::BorderEdge::South => Point::new(middle, extent - inset),
-            crate::trade::BorderEdge::West => Point::new(inset, middle),
-            crate::trade::BorderEdge::East => Point::new(extent - inset, middle),
-        };
+        let middle = world.terrain.extent() / 2.0;
+        let at = world
+            .frontier
+            .nearest_crossing(Point::new(middle, middle), Some(Market::East))
+            .expect("a frontier always has posts of both blocs")
+            .at;
         world
             .place_built(BuildingKind::Customs, at)
-            .expect("border")
+            .expect("at a frontier post")
     }
 
     fn live_tender(world: &mut World, amount: f64, deadline_in: u64) -> ContractId {
@@ -5902,21 +5926,29 @@ mod tests {
     #[test]
     fn two_crossings_cannot_fill_the_same_tender_twice() {
         let mut w = bare();
-        let extent = w.terrain.extent();
-        let inset = Metres(CUSTOMS_RANGE.0 / 2.0);
-        // Two houses along the same edge.
-        let sites: Vec<Point> = [0.35, 0.65]
+        // Two houses at two different frontier posts. The posts exist at
+        // worldgen, so this takes the first two rather than inventing sites --
+        // and two posts on a four-post frontier is the ordinary case rather
+        // than a contrivance.
+        let sites: Vec<Point> = w
+            .frontier
+            .crossings()
             .iter()
-            .map(|f| match w.border {
-                crate::trade::BorderEdge::North => Point::new(extent * *f, inset),
-                crate::trade::BorderEdge::South => Point::new(extent * *f, extent - inset),
-                crate::trade::BorderEdge::West => Point::new(inset, extent * *f),
-                crate::trade::BorderEdge::East => Point::new(extent - inset, extent * *f),
-            })
+            .filter(|c| c.bloc == Market::East)
+            .take(2)
+            .map(|c| c.at)
             .collect();
+        assert_eq!(
+            sites.len(),
+            2,
+            "this needs two EASTERN posts: a house clears only for the bloc it              stands at, so two posts of different blocs cannot contend for the              same tender at all"
+        );
         let houses: Vec<BuildingId> = sites
             .into_iter()
-            .map(|p| w.place_built(BuildingKind::Customs, p).expect("border"))
+            .map(|p| {
+                w.place_built(BuildingKind::Customs, p)
+                    .expect("at a frontier post")
+            })
             .collect();
 
         let id = live_tender(&mut w, 10.0, 60);

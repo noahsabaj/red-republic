@@ -50,6 +50,11 @@ class Look:
 	var vehicle: Color
 	var road_dirt: Color
 	var road_paved: Color
+	## The two blocs on the frontier. Red for the Eastern Bloc and blue for the
+	## Western Alliance, which is the convention the reference map uses and the
+	## only part of this palette that is not free to change.
+	var bloc_east: Color
+	var bloc_west: Color
 	## Material families for the building kit, keyed by `building_art.Tone`.
 	var tones: Dictionary
 	var tonemap_exposure: float
@@ -66,6 +71,8 @@ class Look:
 static func current() -> Look:
 	var l := Look.new()
 	l.name = "survey"
+	l.bloc_east = Color(0.72, 0.20, 0.18)
+	l.bloc_west = Color(0.22, 0.42, 0.72)
 	# Render, brick, concrete, metal, timber -- the five families the kit works
 	# in. Not per-building colours: a hundred buildings each with its own tint
 	# is noise, and things that are alike should look alike.

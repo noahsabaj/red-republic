@@ -31,6 +31,7 @@ const SETTLERS := 120
 @onready var roads_node: MeshInstance3D = $Roads
 @onready var hud: CanvasLayer = $HUD
 @onready var survey_node: MeshInstance3D = $Survey
+@onready var frontier_node: MeshInstance3D = $Frontier
 
 var _buildings_shown := -1
 var _roads_shown := -1
@@ -74,6 +75,7 @@ func _ready() -> void:
 	)
 	_refresh_buildings()
 	_refresh_roads()
+	_build_frontier()
 	# Founded paused. The first thing a posting should do is let you look at it.
 	republic.set_speed(_start_speed)
 
@@ -334,6 +336,77 @@ func _refresh_vehicles() -> void:
 	for i in count:
 		var at := Vector3(flat[i * 3], flat[i * 3 + 1] + 1.5, flat[i * 3 + 2])
 		mm.set_instance_transform(i, Transform3D(Basis.IDENTITY, at))
+
+
+## The frontier, drawn once: a coloured band around the whole perimeter with a
+## marker at each post.
+##
+## Built at load and never rebuilt, because a frontier does not move. The two
+## blocs hold different stretches and the colours are the only thing that says
+## which way is west -- which decides what currency this republic can earn, so
+## it is not decoration.
+func _build_frontier() -> void:
+	var line: PackedFloat32Array = republic.frontier_line(240)
+	var stride := 4
+	var count := line.size() / stride
+	if count < 2:
+		return
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# Inward, so the band lies on the republic's own ground rather than off the
+	# edge of the mesh where there is nothing to draw on.
+	var mid := EXTENT_M * 0.5
+	for i in count - 1:
+		var a := Vector3(line[i * stride], 0.0, line[i * stride + 1])
+		var b := Vector3(line[(i + 1) * stride], 0.0, line[(i + 1) * stride + 1])
+		var bloc := int(line[i * stride + 2])
+		var tone: Color = _look.bloc_east if bloc == 0 else _look.bloc_west
+		for p in [a, b]:
+			p.y = republic.ground_height(p.x, p.z) + 1.0
+		a.y = republic.ground_height(a.x, a.z) + 1.0
+		b.y = republic.ground_height(b.x, b.z) + 1.0
+		var inward_a := (Vector3(mid, a.y, mid) - a).normalized() * 26.0
+		var inward_b := (Vector3(mid, b.y, mid) - b).normalized() * 26.0
+		var p0 := a
+		var p1 := b
+		var p2 := b + inward_b
+		var p3 := a + inward_a
+		for v in [p0, p3, p2, p0, p2, p1]:
+			st.set_color(tone)
+			st.add_vertex(v)
+
+	# A post at each crossing, standing proud so it reads from altitude.
+	var posts: PackedFloat32Array = republic.crossings()
+	for i in posts.size() / 4:
+		var px := posts[i * 4]
+		var pz := posts[i * 4 + 1]
+		var tone: Color = _look.bloc_east if int(posts[i * 4 + 2]) == 0 else _look.bloc_west
+		var base := Vector3(px, republic.ground_height(px, pz), pz)
+		_pillar(st, base, 9.0, 26.0, tone)
+
+	st.generate_normals()
+	var mesh: ArrayMesh = st.commit()
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mesh.surface_set_material(0, mat)
+	frontier_node.mesh = mesh
+
+
+func _pillar(st: SurfaceTool, base: Vector3, half: float, height: float, tone: Color) -> void:
+	var corners := [
+		Vector3(-half, 0.0, -half), Vector3(half, 0.0, -half),
+		Vector3(half, 0.0, half), Vector3(-half, 0.0, half),
+	]
+	for i in 4:
+		var a: Vector3 = base + corners[i]
+		var b: Vector3 = base + corners[(i + 1) % 4]
+		var at := a + Vector3(0.0, height, 0.0)
+		var bt := b + Vector3(0.0, height, 0.0)
+		for v in [a, b, bt, a, bt, at]:
+			st.set_color(tone)
+			st.add_vertex(v)
 
 
 func _refresh_roads() -> void:
