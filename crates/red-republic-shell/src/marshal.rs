@@ -151,7 +151,7 @@ pub const ROAD_STRIDE: usize = 7;
 /// The renderer reads the limit rather than a grade enum, which keeps this
 /// working when a grade is added.
 pub fn road_segments(world: &World) -> PackedFloat32Array {
-    let roads = world.roads();
+    let roads = world.network(red_republic_sim::journey::Medium::Road);
     let terrain = world.terrain();
     let mut out = PackedFloat32Array::new();
     for segment in roads.segments() {

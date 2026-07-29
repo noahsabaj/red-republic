@@ -22,9 +22,10 @@
 //! raw call is 0.21 µs and a chatty small interface is free.
 
 use godot::prelude::*;
+use red_republic_sim::journey::Medium;
 use red_republic_sim::resource::Resource;
 use red_republic_sim::units::Point;
-use red_republic_sim::{Metres, World};
+use red_republic_sim::{BuildingId, Metres, World};
 
 /// Floats per deposit in [`deposits`].
 pub const DEPOSIT_STRIDE: usize = 8;
@@ -494,5 +495,84 @@ pub fn wellbeing(world: &World) -> PackedFloat32Array {
     let mut out = PackedFloat32Array::new();
     out.push(health as f32);
     out.push(loyalty as f32);
+    out
+}
+
+/// Every span of one network as `[ax, ay, bx, by, speed_kph]`.
+///
+/// One view for all four ways rather than one each, because the shell should
+/// not have to know how many there are: `Medium::ALL` is the roster, and a
+/// fifth network becomes drawable without anybody remembering to add a getter.
+/// Flat coordinates — the caller lifts them onto the ground, exactly as it does
+/// for utility spans.
+pub fn ways(world: &World, medium: Medium) -> PackedFloat32Array {
+    let net = world.network(medium);
+    let mut out = PackedFloat32Array::new();
+    for segment in net.segments() {
+        let Some((from, to)) = net.segment_ends(segment) else {
+            continue;
+        };
+        out.push(from.x.0 as f32);
+        out.push(from.y.0 as f32);
+        out.push(to.x.0 as f32);
+        out.push(to.y.0 as f32);
+        out.push((segment.speed.as_mps() * 3.6) as f32);
+    }
+    out
+}
+
+/// How much of each way there is, in kilometres, in `Medium::ALL` order.
+///
+/// Water is in here beside the rest and that is the point: a republic can see
+/// at a glance that it has forty kilometres of river and no port, which is the
+/// only way the one network nobody builds becomes a thing anybody notices.
+pub fn way_lengths(world: &World) -> PackedFloat32Array {
+    let mut out = PackedFloat32Array::new();
+    for medium in Medium::ALL {
+        out.push(world.network(medium).total_length().as_km() as f32);
+    }
+    out
+}
+
+/// What a place has been told to keep, as `[resource_index, held, ordered]`
+/// per line. Empty for anything that does not keep goods to order.
+pub fn standing_orders(world: &World, building: BuildingId) -> PackedFloat32Array {
+    let mut out = PackedFloat32Array::new();
+    for (resource, held, ordered) in world.standing_orders(building) {
+        let index = Resource::ALL
+            .iter()
+            .position(|&r| r == resource)
+            .unwrap_or_default();
+        out.push(index as f32);
+        out.push(held.0 as f32);
+        out.push(ordered.0 as f32);
+    }
+    out
+}
+
+/// The republic's fleet by medium: how many vehicles ride each way, in
+/// `Medium::ALL` order, then how many of those are out on a job.
+pub fn fleet_by_medium(world: &World) -> PackedFloat32Array {
+    let mut out = PackedFloat32Array::new();
+    for medium in Medium::ALL {
+        out.push(
+            world
+                .fleet()
+                .all()
+                .iter()
+                .filter(|v| v.def().medium == medium)
+                .count() as f32,
+        );
+    }
+    for medium in Medium::ALL {
+        out.push(
+            world
+                .fleet()
+                .all()
+                .iter()
+                .filter(|v| v.def().medium == medium && !v.is_idle())
+                .count() as f32,
+        );
+    }
     out
 }

@@ -110,6 +110,16 @@ static func table() -> Dictionary:
 		"Gas Station": Art.new(1, 4.0, F, 0, 2, false, Tone.METAL),
 		"Bus Depot": Art.new(1, 9.5, S, 0, 0, false, Tone.METAL),
 
+		# Terminals. Long, low and mostly canopy -- a station and a wharf are
+		# both a shed over a platform, and the gantry is what makes them read as
+		# places where something is craned rather than as another warehouse.
+		# The aerodrome is the flattest thing in the republic on purpose: it is
+		# almost all apron, and a tall one would read as a hangar estate.
+		"Railway Station": Art.new(2, 5.0, F, 0, 0, true, Tone.CONCRETE),
+		"River Port": Art.new(1, 7.0, F, 0, 1, true, Tone.CONCRETE),
+		"Aerodrome": Art.new(1, 6.0, F, 0, 0, false, Tone.CONCRETE),
+		"Distribution Office": Art.new(2, 4.0, F, 0, 0, false, Tone.RENDER),
+
 		# The frontier.
 		"Customs House": Art.new(2, 4.0, F, 0, 0, false, Tone.RENDER),
 	}

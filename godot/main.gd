@@ -33,6 +33,7 @@ const CLIMATE := 0  ## indexes ClimateId::ALL: plains, taiga, steppe, maritime
 @onready var newcomers_node: MultiMeshInstance3D = $Newcomers
 @onready var roads_node: MeshInstance3D = $Roads
 @onready var lines_node: MeshInstance3D = $Lines
+@onready var ways_node: MeshInstance3D = $Ways
 @onready var hud: CanvasLayer = $HUD
 @onready var survey_node: MeshInstance3D = $Survey
 @onready var frontier_node: MeshInstance3D = $Frontier
@@ -40,6 +41,7 @@ const CLIMATE := 0  ## indexes ClimateId::ALL: plains, taiga, steppe, maritime
 var _buildings_shown := -1
 var _roads_shown := -1
 var _lines_shown := -1
+var _ways_shown := -1
 var _shot_path := ""
 var _shot_after := 90
 var _frames := 0
@@ -77,6 +79,7 @@ func _ready() -> void:
 	hud.set_resource_names(republic.resource_names())
 	hud.set_contentment_names(republic.contentment_names())
 	hud.set_utility_names(republic.utility_names())
+	hud.set_way_names(republic.way_names())
 	hud.set_hint(
 		"0-5 speed  ·  space pause  ·  F none  G going  T tracks  R survey  P smoke  ·  "
 		+ "WASD pan  ·  right-drag orbit  ·  wheel zoom"
@@ -84,6 +87,7 @@ func _ready() -> void:
 	_refresh_buildings()
 	_refresh_roads()
 	_refresh_lines()
+	_refresh_ways()
 	_build_frontier()
 	# Founded paused. The first thing a posting should do is let you look at it.
 	republic.set_speed(_start_speed)
@@ -103,6 +107,7 @@ func _process(_delta: float) -> void:
 	_refresh_buildings()
 	_refresh_roads()
 	_refresh_lines()
+	_refresh_ways()
 	_refresh_vehicles()
 	_refresh_newcomers()
 	_refresh_overlay()
@@ -569,6 +574,62 @@ func _refresh_lines() -> void:
 			_span(mesh, sites[o], sites[o + 1], sites[o + 2], sites[o + 3], tone, 1.0, 5.0)
 		mesh.surface_end()
 	lines_node.mesh = mesh
+
+
+## The rails and the rivers, drawn from the same span machinery as the grid.
+##
+## Roads have their own mesh already; these are the three ways that did not
+## exist before. Water is in here beside the built ones deliberately -- the one
+## network nobody builds is invisible on the ground at this camera height, and a
+## republic that cannot see its river will not think to put a port on it.
+##
+## Air is deliberately **not** drawn. It is a fully connected graph between
+## aerodromes, so drawing it means a spray of straight lines across the whole
+## map that says nothing a list of aerodromes does not; the HUD carries its
+## length instead.
+func _refresh_ways() -> void:
+	var rail: PackedFloat32Array = republic.ways(WAY_RAIL)
+	var water: PackedFloat32Array = republic.ways(WAY_WATER)
+	@warning_ignore("integer_division")
+	var count: int = rail.size() / 5 + water.size() / 5
+	if count == _ways_shown:
+		return
+	_ways_shown = count
+	var mesh := ImmediateMesh.new()
+	if count > 0:
+		var mat := StandardMaterial3D.new()
+		mat.vertex_color_use_as_albedo = true
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, mat)
+		# Lift matters more than it looks. Water was first drawn 0.4 m off the
+		# ground, which reads as a hatched mess at map height rather than as a
+		# river: a flat ribbon that close to the terrain z-fights with it, and
+		# the result looks like a rendering fault rather than like a feature.
+		# Caught by looking at a frame -- nothing that counts spans can see it.
+		for pair in [[rail, RAIL_TONE, 6.0, 2.5], [water, WATER_TONE, 30.0, 1.5]]:
+			var spans: PackedFloat32Array = pair[0]
+			@warning_ignore("integer_division")
+			var n: int = spans.size() / 5
+			for i in n:
+				var o := i * 5
+				_span(mesh, spans[o], spans[o + 1], spans[o + 2], spans[o + 3],
+					pair[1], pair[2], pair[3])
+		mesh.surface_end()
+	ways_node.mesh = mesh
+
+
+## Indices into `Medium::ALL`, which is the order the shell hands them over in.
+const WAY_ROAD := 0
+const WAY_RAIL := 1
+const WAY_WATER := 2
+const WAY_AIR := 3
+
+## Track reads as dark steel; water as a broad pale ribbon lying almost flat on
+## the ground, because it is the surface rather than something built on it.
+const RAIL_TONE := Color(0.32, 0.30, 0.28)
+const WATER_TONE := Color(0.35, 0.47, 0.60, 0.85)
 
 
 ## In the order `Utility::ALL` declares: power, heat, conveyor, pipeline.

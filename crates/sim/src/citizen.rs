@@ -31,7 +31,7 @@
 //!    stored one would be reading a different citizen after a reload.
 
 use crate::building::{BuildingId, Buildings};
-use crate::road::RoadNetwork;
+use crate::network::Network;
 use crate::transport::{self, Commute, Mode};
 use crate::units::{Metres, Point, Speed};
 use bevy_ecs::prelude::*;
@@ -719,7 +719,7 @@ impl<'de> Deserialize<'de> for Population {
 /// a road is a real route, where the straight line through it is not. Falls
 /// back to the straight line otherwise, which is the right answer on open
 /// ground, and never claims a road is longer than walking directly.
-pub fn commute_distance(home: Point, work: Point, roads: &RoadNetwork) -> Metres {
+pub fn commute_distance(home: Point, work: Point, roads: &Network) -> Metres {
     let straight = home.distance_to(work);
     let by_road = (|| {
         let a = roads.nearest_node(home, ROAD_ACCESS)?;
@@ -741,7 +741,7 @@ pub fn commute_distance(home: Point, work: Point, roads: &RoadNetwork) -> Metres
 ///
 /// On foot only. Whether they could get there *at all* is
 /// [`crate::transport::reach`], which also knows about buses.
-pub fn is_reachable(home: Point, work: Point, roads: &RoadNetwork) -> bool {
+pub fn is_reachable(home: Point, work: Point, roads: &Network) -> bool {
     commute_distance(home, work, roads).0 <= MAX_WALK.0
 }
 
@@ -776,7 +776,7 @@ pub struct Labour {
 pub fn assign_labour(
     population: &mut Population,
     buildings: &Buildings,
-    roads: &RoadNetwork,
+    roads: &Network,
 ) -> Labour {
     let people = population.records();
     let home_of = |record: &CitizenRecord| {
@@ -974,7 +974,7 @@ mod tests {
             p.spawn_citizen(home, 30);
         }
 
-        let labour = assign_labour(&mut p, &b, &RoadNetwork::new());
+        let labour = assign_labour(&mut p, &b, &Network::new());
         assert_eq!(labour.staffing, vec![(mill, 4)]);
         assert_eq!(p.employed(), 4);
     }
@@ -998,7 +998,7 @@ mod tests {
             p.spawn_citizen(home, 30);
         }
 
-        let labour = assign_labour(&mut p, &b, &RoadNetwork::new());
+        let labour = assign_labour(&mut p, &b, &Network::new());
         assert_eq!(
             labour.staffing,
             vec![(mine, 0)],
@@ -1023,7 +1023,7 @@ mod tests {
             p.spawn_citizen(camp, 30);
         }
 
-        let labour = assign_labour(&mut p, &b, &RoadNetwork::new());
+        let labour = assign_labour(&mut p, &b, &Network::new());
         assert_eq!(
             labour.staffing,
             vec![(mine, 14)],
@@ -1061,7 +1061,7 @@ mod tests {
             p.spawn_citizen(city, 30);
         }
 
-        let roads = RoadNetwork::new();
+        let roads = Network::new();
         assign_labour(&mut p, &b, &roads);
         assert_eq!(p.staff_of(mine), 14, "the town works its mine");
 
@@ -1093,10 +1093,10 @@ mod tests {
     /// line only when it is genuinely shorter, never when it is longer.
     #[test]
     fn roads_shorten_a_commute_but_never_lengthen_one() {
-        let mut roads = RoadNetwork::new();
+        let mut roads = Network::new();
         let a = roads.add_node(at(0.0, 0.0));
         let b = roads.add_node(at(5_000.0, 0.0));
-        roads.connect(a, b, crate::road::default_road_speed());
+        roads.connect(a, b, crate::network::default_road_speed());
 
         // Both ends near the road: the road route is the same as the straight
         // line here, so the straight line must win or tie — never lose.
@@ -1135,8 +1135,8 @@ mod tests {
             p
         };
         let (mut first, mut second) = (build(), build());
-        let a = assign_labour(&mut first, &b, &RoadNetwork::new());
-        let c = assign_labour(&mut second, &b, &RoadNetwork::new());
+        let a = assign_labour(&mut first, &b, &Network::new());
+        let c = assign_labour(&mut second, &b, &Network::new());
         assert_eq!(a, c);
         assert_eq!(first.records(), second.records());
     }
@@ -1156,11 +1156,11 @@ mod tests {
         for _ in 0..6 {
             p.spawn_citizen(home, 30);
         }
-        assign_labour(&mut p, &b, &RoadNetwork::new());
+        assign_labour(&mut p, &b, &Network::new());
         assert_eq!(p.employed(), 6);
 
         b.demolish(home);
-        assign_labour(&mut p, &b, &RoadNetwork::new());
+        assign_labour(&mut p, &b, &Network::new());
         assert_eq!(
             p.employed(),
             0,
@@ -1192,7 +1192,7 @@ mod tests {
         for i in 0..12 {
             p.spawn_citizen(home, 20 + i);
         }
-        assign_labour(&mut p, &b, &RoadNetwork::new());
+        assign_labour(&mut p, &b, &Network::new());
 
         let records = p.records();
         assert_eq!(p.count(), records.len());

@@ -32,8 +32,8 @@
 
 use crate::building::{BuildingKind, Buildings};
 use crate::citizen::{MAX_WALK, ROAD_ACCESS, walking_speed};
+use crate::network::Network;
 use crate::resource::Resource;
-use crate::road::RoadNetwork;
 use crate::units::{Metres, Point, Seconds, Speed, Tonnes};
 use bevy_ecs::prelude::Component;
 use serde::{Deserialize, Serialize};
@@ -127,7 +127,7 @@ impl Default for Commute {
 /// not. That ordering is the entire allocation policy and it is deliberate: any
 /// cleverer scheme would be the simulation making a decision about who deserves
 /// a bus, which is not its call.
-pub fn reach(home: Point, work: Point, roads: &RoadNetwork) -> Option<Commute> {
+pub fn reach(home: Point, work: Point, roads: &Network) -> Option<Commute> {
     let straight = crate::citizen::commute_distance(home, work, roads);
     if straight.0 <= MAX_WALK.0 {
         return Some(Commute::on_foot(straight));
@@ -141,7 +141,7 @@ pub fn reach(home: Point, work: Point, roads: &RoadNetwork) -> Option<Commute> {
 /// `None` when either end is out of walking range of the network, when the two
 /// are not connected by road, or when the whole journey would take longer than
 /// anyone will travel.
-pub fn ride(home: Point, work: Point, roads: &RoadNetwork) -> Option<Commute> {
+pub fn ride(home: Point, work: Point, roads: &Network) -> Option<Commute> {
     let start = roads.nearest_node(home, STOP_WALK)?;
     let finish = roads.nearest_node(work, STOP_WALK)?;
     let route = roads.route(start, finish)?;
@@ -230,7 +230,7 @@ pub fn fuel_burn(
 }
 
 /// Whether a building is close enough to a road to be served by freight.
-pub fn is_road_served(at: Point, roads: &RoadNetwork) -> bool {
+pub fn is_road_served(at: Point, roads: &Network) -> bool {
     roads.nearest_node(at, ROAD_ACCESS).is_some()
 }
 
@@ -238,7 +238,7 @@ pub fn is_road_served(at: Point, roads: &RoadNetwork) -> bool {
 mod tests {
     use super::*;
     use crate::geology::Geology;
-    use crate::road::default_road_speed;
+    use crate::network::default_road_speed;
     use crate::terrain::Terrain;
 
     fn at(x: f64, y: f64) -> Point {
@@ -246,8 +246,8 @@ mod tests {
     }
 
     /// A road from one end to the other, with junctions every 500 m.
-    fn highway(length: f64) -> RoadNetwork {
-        let mut roads = RoadNetwork::new();
+    fn highway(length: f64) -> Network {
+        let mut roads = Network::new();
         let steps = (length / 500.0) as u32;
         let mut previous = roads.add_node(at(0.0, 0.0));
         for i in 1..=steps {
@@ -276,7 +276,7 @@ mod tests {
         let far_work = at(6_000.0, 50.0);
 
         // No roads at all: out of range, exactly as before transport existed.
-        assert!(reach(home, far_work, &RoadNetwork::new()).is_none());
+        assert!(reach(home, far_work, &Network::new()).is_none());
 
         let roads = highway(10_000.0);
         let commute = reach(home, far_work, &roads).expect("the bus should reach it");

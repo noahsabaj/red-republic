@@ -36,7 +36,7 @@
 //! happen, so it is deliberately not prevented here.
 
 use crate::building::{Building, BuildingId};
-use crate::journey::Journey;
+use crate::journey::{Journey, Medium};
 use crate::resource::{Resource, Stock};
 use crate::roadworks::RoadSiteId;
 use crate::units::{Metres, Point, Speed, Tonnes};
@@ -54,6 +54,10 @@ pub enum VehicleKind {
     RecoveryVehicle,
     CrewBus,
     Coach,
+    Locomotive,
+    PassengerTrain,
+    Barge,
+    Freighter,
 }
 
 /// What a vehicle is for.
@@ -100,6 +104,10 @@ pub struct VehicleDef {
     pub kind: VehicleKind,
     pub name: &'static str,
     pub role: Role,
+    /// The way it gets about. A lorry prefers roads; everything else is
+    /// **confined** to its own network and simply refuses work it cannot
+    /// reach — see [`crate::journey::Medium`].
+    pub medium: Medium,
     /// Tonnes it can carry in one load. Zero on anything that is not freight.
     pub capacity: Tonnes,
     /// Builders it can carry. Zero on anything that is not a crew bus.
@@ -138,6 +146,7 @@ impl VehicleDef {
 pub const VEHICLES: &[VehicleDef] = &[
     VehicleDef {
         kind: VehicleKind::Lorry,
+        medium: Medium::Road,
         name: "Lorry",
         role: Role::Freight,
         capacity: Tonnes(8.0),
@@ -152,6 +161,7 @@ pub const VEHICLES: &[VehicleDef] = &[
     },
     VehicleDef {
         kind: VehicleKind::HeavyLorry,
+        medium: Medium::Road,
         name: "Heavy Lorry",
         role: Role::Freight,
         capacity: Tonnes(20.0),
@@ -169,6 +179,7 @@ pub const VEHICLES: &[VehicleDef] = &[
     // one after the first.
     VehicleDef {
         kind: VehicleKind::RecoveryVehicle,
+        medium: Medium::Road,
         name: "Recovery Vehicle",
         role: Role::Recovery,
         capacity: Tonnes::ZERO,
@@ -191,6 +202,7 @@ pub const VEHICLES: &[VehicleDef] = &[
     // whose capability does not depend on what it is carrying.
     VehicleDef {
         kind: VehicleKind::CrewBus,
+        medium: Medium::Road,
         name: "Crew Bus",
         role: Role::Crew,
         capacity: Tonnes::ZERO,
@@ -209,6 +221,7 @@ pub const VEHICLES: &[VehicleDef] = &[
     // same answer trade already gives about the same posts.
     VehicleDef {
         kind: VehicleKind::Coach,
+        medium: Medium::Road,
         name: "Coach",
         role: Role::Passenger,
         capacity: Tonnes::ZERO,
@@ -218,6 +231,84 @@ pub const VEHICLES: &[VehicleDef] = &[
         fuel_per_km: 0.00035,
         tank: Tonnes(0.20),
         ground: 0.6,
+        load_penalty: 0.0,
+    },
+    // Everything below here is **confined**: it cannot leave its own network,
+    // and that is authored rather than enforced by a rule elsewhere. A zero
+    // `cross_country` and a zero `ground` say exactly that — a locomotive off
+    // the rails is not a slow locomotive, it is a locomotive that is not going
+    // anywhere. The planner never asks either question of them, because a
+    // journey that leaves the network is one it will not return at all.
+    //
+    // The trade against a lorry is the same in all three cases and it is a real
+    // one: an enormous load, moved for very little fuel, along a line that goes
+    // exactly where it was laid and nowhere else. A mine feeding one works
+    // across the republic wants rails. A mine feeding six things scattered over
+    // a valley wants lorries, and no amount of track will change that.
+    VehicleDef {
+        kind: VehicleKind::Locomotive,
+        medium: Medium::Rail,
+        name: "Locomotive",
+        role: Role::Freight,
+        // Fifteen lorries in one train, and the whole point of building rails.
+        capacity: Tonnes(120.0),
+        seats: 0,
+        on_road: Speed::from_kph(70.0),
+        cross_country: Speed::ZERO,
+        // Twice a heavy lorry's burn for six times its load: a third of the
+        // fuel per tonne-kilometre.
+        fuel_per_km: 0.0012,
+        tank: Tonnes(1.20),
+        ground: 0.0,
+        load_penalty: 0.0,
+    },
+    VehicleDef {
+        kind: VehicleKind::PassengerTrain,
+        medium: Medium::Rail,
+        name: "Passenger Train",
+        role: Role::Passenger,
+        capacity: Tonnes::ZERO,
+        seats: 240,
+        on_road: Speed::from_kph(80.0),
+        cross_country: Speed::ZERO,
+        fuel_per_km: 0.0009,
+        tank: Tonnes(0.90),
+        ground: 0.0,
+        load_penalty: 0.0,
+    },
+    // The cheapest tonne-kilometre in the republic by a wide margin, and the
+    // slowest. It also costs nothing to build the network it rides, because
+    // nobody built it — which is the whole character of water: an enormous
+    // asset that runs exactly where the land decided it runs.
+    VehicleDef {
+        kind: VehicleKind::Barge,
+        medium: Medium::Water,
+        name: "Barge",
+        role: Role::Freight,
+        capacity: Tonnes(200.0),
+        seats: 0,
+        on_road: Speed::from_kph(18.0),
+        cross_country: Speed::ZERO,
+        fuel_per_km: 0.0008,
+        tank: Tonnes(1.00),
+        ground: 0.0,
+        load_penalty: 0.0,
+    },
+    // Fast, small, and dear enough that it is for what cannot wait rather than
+    // for tonnage. A republic that hauls coal by air is a republic that has
+    // misunderstood something.
+    VehicleDef {
+        kind: VehicleKind::Freighter,
+        medium: Medium::Air,
+        name: "Freighter",
+        role: Role::Freight,
+        capacity: Tonnes(15.0),
+        seats: 0,
+        on_road: Speed::from_kph(320.0),
+        cross_country: Speed::ZERO,
+        fuel_per_km: 0.0090,
+        tank: Tonnes(4.00),
+        ground: 0.0,
         load_penalty: 0.0,
     },
 ];
@@ -648,23 +739,47 @@ mod tests {
                     def.capacity
                 ),
             }
-            assert!(def.ground > 0.0, "{} cannot leave a road", def.name);
-            assert!(
-                def.load_penalty >= 0.0 && def.load_penalty < def.ground,
-                "{} cannot cross its own yard with a load on",
-                def.name
-            );
             assert!(def.on_road > Speed::ZERO, "{} cannot move", def.name);
-            assert!(
-                def.cross_country > Speed::ZERO,
-                "{} cannot leave the road",
-                def.name
-            );
-            assert!(
-                def.cross_country < def.on_road,
-                "{} is no slower off road, so no road is worth building",
-                def.name
-            );
+
+            // **Confinement is authored, not inferred.** A locomotive with a
+            // cross-country speed is a locomotive somebody forgot to think
+            // about, and a barge with a bogging capability is a barge that can
+            // get stuck in a field. Asserting both directions is what stops a
+            // new row being added with the road vehicle's fields copied over.
+            if def.medium.free_ranging() {
+                assert!(def.ground > 0.0, "{} cannot leave a road", def.name);
+                assert!(
+                    def.load_penalty >= 0.0 && def.load_penalty < def.ground,
+                    "{} cannot cross its own yard with a load on",
+                    def.name
+                );
+                assert!(
+                    def.cross_country > Speed::ZERO,
+                    "{} cannot leave the road",
+                    def.name
+                );
+                assert!(
+                    def.cross_country < def.on_road,
+                    "{} is no slower off road, so no road is worth building",
+                    def.name
+                );
+            } else {
+                assert_eq!(
+                    def.cross_country,
+                    Speed::ZERO,
+                    "{} rides {} and also drives across country",
+                    def.name,
+                    def.medium.name()
+                );
+                assert_eq!(
+                    def.ground,
+                    0.0,
+                    "{} rides {} and also has a view about mud",
+                    def.name,
+                    def.medium.name()
+                );
+                assert_eq!(def.load_penalty, 0.0, "{} sinks when laden", def.name);
+            }
             assert!(def.fuel_per_km > 0.0, "{} burns nothing", def.name);
             assert!(def.tank.is_positive(), "{} has no tank", def.name);
         }

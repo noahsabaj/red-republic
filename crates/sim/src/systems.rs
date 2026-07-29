@@ -32,6 +32,7 @@ use crate::contract::{self, Contract, ContractId, ContractState};
 use crate::crews::PartyId;
 use crate::fleet::{Destination, Doing, Job, Role, VehicleId, VehicleKind, VehicleState, crewed};
 use crate::geology::DepositId;
+use crate::ground::Crossing;
 use crate::journey::{self, Journey};
 use crate::migration::GroupId;
 use crate::resource::Resource;
@@ -830,8 +831,15 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                 if let Some(b) = world.buildings.get(site)
                     && b.is_built()
                 {
-                    let (at, id) = (b.centre, b.id);
+                    let (at, id, def) = (b.centre, b.id, b.def());
                     world.crews.release(Destination::Building(id), at);
+                    // An aerodrome *is* the air network, so opening one changes
+                    // where every aeroplane in the republic can fly. Derived at
+                    // the event that invalidates it, not per tick — the same
+                    // discipline as the utility grids.
+                    if def.medium == Some(crate::journey::Medium::Air) {
+                        world.re_survey_airways();
+                    }
                 }
             }
             &Mutation::Weather(ground) => {
@@ -866,7 +874,10 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                         .crews
                         .release(Destination::RoadSite(site), opened.depot());
                     world.build_policy.forget(Destination::RoadSite(site));
-                    roadworks::open(&mut world.roads, &opened);
+                    // Into whichever network this grade joins — a finished
+                    // railway is not a road that trains happen to use.
+                    let grade = opened.grade;
+                    roadworks::open(world.network_for(grade), &opened);
                 }
             }
             &Mutation::String { site, builder_days } => {
@@ -1999,19 +2010,11 @@ fn send_bus(
             continue;
         };
         let def = v.def();
-        let leg = |a: Point, b: Point| {
-            journey::plan(
-                a,
-                b,
-                &world.roads,
-                &crossing,
-                def.on_road,
-                def.cross_country,
-                now,
-            )
+        let leg = |a: Point, b: Point| plan_leg(world, &crossing, def, a, b, now);
+        let (Some(outbound), Some(home_run)) = (leg(v.at, target), leg(target, yard)) else {
+            continue;
         };
-        let outbound = leg(v.at, target);
-        let round_trip = outbound.distance() + leg(target, yard).distance();
+        let round_trip = outbound.distance() + home_run.distance();
         let held = world
             .buildings
             .get(v.home)
@@ -2850,6 +2853,32 @@ pub const RESUPPLY_AT_DAYS: f64 = 3.0;
 ///   bin is full has stopped producing.
 pub const MIN_LOAD: Tonnes = Tonnes(2.0);
 
+/// Plan one leg for a vehicle, over whatever it is allowed to ride.
+///
+/// `None` where a confined vehicle cannot reach both ends — and **every caller
+/// treats that as "this vehicle cannot do this job" and moves on to the next
+/// one**, which is the same thing they already did when a lorry could not carry
+/// enough fuel. That is why rails, water and air needed no rule in the
+/// dispatcher: the refusal was already a shape it understood.
+fn plan_leg(
+    world: &World,
+    crossing: &Crossing<'_>,
+    def: &crate::fleet::VehicleDef,
+    a: Point,
+    b: Point,
+    now: f64,
+) -> Option<Journey> {
+    journey::plan_for(
+        def.medium,
+        a,
+        b,
+        world.ways(crossing),
+        def.on_road,
+        def.cross_country,
+        now,
+    )
+}
+
 /// Send the republic's lorries where their absence would cost the most.
 ///
 /// This is the archived build's freight ranking, kept almost unchanged, with
@@ -3016,6 +3045,56 @@ pub fn dispatch(world: &World) -> Vec<Mutation> {
         );
     }
 
+    // Standing orders: what the player told a terminal or a distribution
+    // office to keep on hand.
+    //
+    // **This is what makes a station a place goods go.** A station consumes
+    // nothing and sells nothing, so without an order the ranking has no reason
+    // to look at it at all — and a terminal nothing delivers to is an expensive
+    // shed. Given one it is an ordinary destination, and everything else falls
+    // out of machinery that already existed: lorries or trains bring the
+    // tonnage in because it is a demand, and whatever needs it nearby draws on
+    // the yard because a station holds goods it does not consume, which is the
+    // definition of a supplier.
+    //
+    // It sits **below** the urgent passes and above the comfortable ones. A
+    // stockpile is a plan rather than a need: a factory about to stall
+    // outranks it, and a top-up somewhere already comfortable does not.
+    let mut stores: Vec<(f64, Destination, Resource)> = Vec::new();
+    for b in world.buildings.all() {
+        if !b.is_built() || !b.def().stores_to_order {
+            continue;
+        }
+        for resource in Resource::ALL {
+            let wanted = b.orders.get(resource);
+            if !wanted.is_positive() {
+                continue;
+            }
+            let fill = (b.stock.get(resource).0 / wanted.0).clamp(0.0, 1.0);
+            if fill < 1.0 {
+                stores.push((fill, Destination::Building(b.id), resource));
+            }
+        }
+    }
+    stores.sort_by(|(fa, ia, ra), (fb, ib, rb)| {
+        fa.total_cmp(fb)
+            .then_with(|| ia.cmp(ib))
+            .then_with(|| ra.cmp(rb))
+    });
+    for (_, destination, resource) in stores {
+        if idle.is_empty() {
+            break;
+        }
+        serve(
+            world,
+            destination,
+            resource,
+            &mut idle,
+            &mut booked,
+            &mut out,
+        );
+    }
+
     // Export staging: getting goods to the border prevents no downtime at all,
     // so it runs on whatever the urgent passes left. That is the archived
     // build's rule — housekeeping never preempts a real need.
@@ -3160,19 +3239,11 @@ fn send_help(
             continue;
         };
         let def = v.def();
-        let leg = |a: Point, b: Point| {
-            journey::plan(
-                a,
-                b,
-                &world.roads,
-                &crossing,
-                def.on_road,
-                def.cross_country,
-                now,
-            )
+        let leg = |a: Point, b: Point| plan_leg(world, &crossing, def, a, b, now);
+        let (Some(outbound), Some(home_run)) = (leg(v.at, stuck_at), leg(stuck_at, yard)) else {
+            continue;
         };
-        let outbound = leg(v.at, stuck_at);
-        let round_trip = outbound.distance() + leg(stuck_at, yard).distance();
+        let round_trip = outbound.distance() + home_run.distance();
         let top_up = def
             .tank
             .saturating_sub(v.fuel)
@@ -3428,20 +3499,20 @@ fn dispatch_one(
         // — and a road laid while it is out can only make the trip shorter.
         let def = v.def();
         let crossing = world.crossing();
-        let leg = |a: Point, b: Point| {
-            journey::plan(
-                a,
-                b,
-                &world.roads,
-                &crossing,
-                def.on_road,
-                def.cross_country,
-                now,
-            )
+        let leg = |a: Point, b: Point| plan_leg(world, &crossing, def, a, b, now);
+        // **The whole round trip has to be plannable, not only affordable.**
+        // For a confined vehicle this is also the reach test: a locomotive
+        // whose load, drop or yard is not on the rails gets `None` here and the
+        // loop moves on to the next vehicle, exactly as it does for one that
+        // cannot carry the fuel.
+        let (Some(outbound), Some(laden), Some(home_run)) = (
+            leg(v.at, load_at),
+            leg(load_at, drop_at),
+            leg(drop_at, yard),
+        ) else {
+            continue;
         };
-        let outbound = leg(v.at, load_at);
-        let round_trip =
-            outbound.distance() + leg(load_at, drop_at).distance() + leg(drop_at, yard).distance();
+        let round_trip = outbound.distance() + laden.distance() + home_run.distance();
         let top_up = def
             .tank
             .saturating_sub(v.fuel)
@@ -3696,16 +3767,20 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
         let Some(yard) = world.buildings.get(v.home).map(|b| b.centre) else {
             continue;
         };
-        let onward = |target: Point| {
-            journey::plan(
-                arrived,
-                target,
-                &world.roads,
-                &crossing,
-                def.on_road,
-                def.cross_country,
-                depart,
-            )
+        let onward = |target: Point| plan_leg(world, &crossing, def, arrived, target, depart);
+        // The way home, worked out once because nearly every branch below ends
+        // with it. A vehicle that cannot find one **parks where it stands**
+        // rather than being carried home by fiat — which is the same answer the
+        // line above gives a vehicle whose garage was pulled down while it was
+        // out. Unreachable for a confined vehicle in ordinary play, because
+        // dispatch prices the whole round trip before the job is taken, but it
+        // is a state the world can hold and so it gets an answer.
+        let Some(home_run) = onward(yard) else {
+            out.push(Mutation::Park {
+                vehicle: v.id,
+                burn,
+            });
+            continue;
         };
 
         // Whatever it just drove over, it packed down a little.
@@ -3729,7 +3804,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                             from: v.home,
                             resource: Resource::Fuel,
                             tonnes: Tonnes::ZERO,
-                            journey: onward(yard),
+                            journey: home_run.clone(),
                             state: VehicleState::Returning,
                             burn,
                         });
@@ -3758,7 +3833,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                         casualty_leg: leg,
                         casualty_start: now,
                         casualty_end: now + journey::leg_ticks(a.distance_to(b), speed),
-                        journey: onward(yard),
+                        journey: home_run.clone(),
                         burn,
                     });
                 }
@@ -3785,7 +3860,10 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                     // against what it now weighs. A single-leg journey has no
                     // leg boundary to be caught at, so this is where a short
                     // haul across a wet field goes wrong.
-                    let plan = onward(next);
+                    // No way on to the drop means the way home, which was
+                    // already found above — a loaded vehicle is never left
+                    // standing because the far end went out of reach.
+                    let plan = onward(next).unwrap_or_else(|| home_run.clone());
                     let laden = def.ground
                         - (tonnes.0 / def.capacity.0.max(f64::MIN_POSITIVE)).clamp(0.0, 1.0)
                             * def.load_penalty;
@@ -3810,7 +3888,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                     Some(_) => out.push(Mutation::Embark {
                         vehicle: v.id,
                         party,
-                        journey: onward(yard),
+                        journey: home_run.clone(),
                         burn,
                     }),
                     // Nobody here. Go home rather than stand in a field holding
@@ -3821,7 +3899,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                         from: v.home,
                         resource: Resource::Fuel,
                         tonnes: Tonnes::ZERO,
-                        journey: onward(yard),
+                        journey: home_run.clone(),
                         state: VehicleState::Returning,
                         burn,
                     }),
@@ -3835,12 +3913,14 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                         world.migration.get(group).map(|g| g.heads),
                         world.buildings.get(to).map(|b| b.centre),
                     ) {
-                        (Some(_), Some(estate)) => out.push(Mutation::Board {
-                            vehicle: v.id,
-                            group,
-                            journey: onward(estate),
-                            burn,
-                        }),
+                        (Some(_), Some(estate)) if onward(estate).is_some() => {
+                            out.push(Mutation::Board {
+                                vehicle: v.id,
+                                group,
+                                journey: onward(estate).expect("just checked"),
+                                burn,
+                            })
+                        }
                         // Either nobody is here or the estate has been pulled
                         // down under them. Go home rather than stand in a field
                         // holding a job that can never finish.
@@ -3849,7 +3929,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                             from: v.home,
                             resource: Resource::Fuel,
                             tonnes: Tonnes::ZERO,
-                            journey: onward(yard),
+                            journey: home_run.clone(),
                             state: VehicleState::Returning,
                             burn,
                         }),
@@ -3867,7 +3947,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                 let Some(party) = world.crews.riding(v.id).map(|p| p.id) else {
                     continue;
                 };
-                let plan = onward(yard);
+                let plan = home_run.clone();
                 let stuck = sticks(world, &crossing, v.id, def.ground, &plan, 0, day);
                 out.push(Mutation::Land {
                     vehicle: v.id,
@@ -3887,7 +3967,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                 let Some((group, home)) = v.job.and_then(Job::settling) else {
                     continue;
                 };
-                let plan = onward(yard);
+                let plan = home_run.clone();
                 let stuck = sticks(world, &crossing, v.id, def.ground, &plan, 0, day);
                 out.push(Mutation::Settle {
                     vehicle: v.id,
@@ -3908,7 +3988,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                     .consignee(to, resource)
                     .map(|c| c.capacity.saturating_sub(c.held))
                     .unwrap_or(Tonnes::ZERO);
-                let plan = onward(yard);
+                let plan = home_run.clone();
                 // Empty now, so the way home is rolled at the vehicle's own
                 // capability rather than at a laden one.
                 let stuck = sticks(world, &crossing, v.id, def.ground, &plan, 0, day);
@@ -4724,21 +4804,15 @@ pub fn settling(world: &World) -> Vec<Mutation> {
                 continue;
             };
             let def = v.def();
-            let leg = |a: Point, b: Point| {
-                journey::plan(
-                    a,
-                    b,
-                    &world.roads,
-                    &crossing,
-                    def.on_road,
-                    def.cross_country,
-                    now,
-                )
+            let leg = |a: Point, b: Point| plan_leg(world, &crossing, def, a, b, now);
+            let (Some(outbound), Some(carrying), Some(home_run)) = (
+                leg(v.at, at),
+                leg(at, yard_of_home),
+                leg(yard_of_home, yard),
+            ) else {
+                continue;
             };
-            let outbound = leg(v.at, at);
-            let whole = outbound.distance()
-                + leg(at, yard_of_home).distance()
-                + leg(yard_of_home, yard).distance();
+            let whole = outbound.distance() + carrying.distance() + home_run.distance();
             let held = world
                 .buildings
                 .get(v.home)
@@ -5158,7 +5232,7 @@ mod tests {
     use crate::citizen::Population;
     use crate::climate::ClimateId;
     use crate::geology::{Deposit, DepositId, Geology, Layer, Mineral};
-    use crate::road::RoadNetwork;
+    use crate::network::Network;
     use crate::terrain::Terrain;
     use crate::time::TICKS_PER_DAY;
     use crate::units::{Metres, Point};
@@ -5194,7 +5268,7 @@ mod tests {
         };
         w.geology = Geology::new();
         w.buildings = Buildings::new();
-        w.roads = RoadNetwork::new();
+        w.roads = Network::new();
         w.population = Population::new();
         w
     }
@@ -5845,8 +5919,8 @@ mod tests {
             at(1.0, 0.0),
             &w.roads,
             &w.crossing(),
-            crate::road::default_road_speed(),
-            crate::road::default_road_speed(),
+            crate::network::default_road_speed(),
+            crate::network::default_road_speed(),
             0.0,
         );
         apply(
@@ -6953,7 +7027,7 @@ mod tests {
         for i in 1..=6 {
             let next = w.roads.add_node(at(900.0 + f64::from(i) * 420.0, 1_000.0));
             w.roads
-                .connect(previous, next, crate::road::default_road_speed());
+                .connect(previous, next, crate::network::default_road_speed());
             previous = next;
         }
         let segments = w.roads.segment_count();
@@ -7719,7 +7793,7 @@ mod tests {
                 for i in 1..=6 {
                     let next = w.roads.add_node(at(400.0 + f64::from(i) * 500.0, 1_000.0));
                     w.roads
-                        .connect(previous, next, crate::road::default_road_speed());
+                        .connect(previous, next, crate::network::default_road_speed());
                     previous = next;
                 }
             }
@@ -8985,7 +9059,7 @@ mod tests {
     /// wants one there or not.
     #[test]
     fn a_road_and_a_bus_save_the_town_the_mine_left_behind() {
-        use crate::road::default_road_speed;
+        use crate::network::default_road_speed;
 
         let build = |with_transport: bool| {
             let mut w = bare();
@@ -9070,7 +9144,7 @@ mod tests {
     /// the same refinery output everything else wants.
     #[test]
     fn carrying_commuters_burns_the_depots_fuel() {
-        use crate::road::default_road_speed;
+        use crate::network::default_road_speed;
         let mut w = bare();
         w.set_terrain(Terrain::flat(Metres(12_000.0)));
 
@@ -10451,6 +10525,414 @@ mod tests {
             contract.delivered.0 <= 10.0 + 1e-9,
             "the tender was over-delivered to {} t against an order of 10 t",
             contract.delivered.0
+        );
+    }
+
+    // ---- Rail, water and air: three confined media -------------------------
+
+    /// Lay a finished way of any grade, the way `energise` lays a finished
+    /// span. Most tests here are about running a republic rather than building
+    /// one; the construction of a way has its own tests.
+    fn lay(world: &mut World, grade: crate::roadworks::Grade, from: Point, to: Point) {
+        let id = world.order_road(from, to, grade).expect("orderable");
+        let site = world.roadworks.remove(id).expect("just ordered");
+        crate::roadworks::open(world.network_for(grade), &site);
+    }
+
+    /// A staffed, fuelled terminal with its vehicles on the strength.
+    fn terminal(world: &mut World, kind: BuildingKind, at: Point) -> BuildingId {
+        let id = world.place_built(kind, at).expect("beside its way");
+        let def = kind.def();
+        let b = world.buildings.get_mut(id).unwrap();
+        b.staff = def.workers;
+        b.stock.add(Resource::Fuel, Tonnes(30.0));
+        for &(vehicle, n) in def.vehicles {
+            for _ in 0..n {
+                world.fleet.commission(vehicle, id, at);
+            }
+        }
+        id
+    }
+
+    /// The whole mechanic in one assertion, and the reason rails needed no rule
+    /// in the dispatcher: **a train cannot plan a journey off the rails**, so a
+    /// job it cannot reach is one it is never offered.
+    #[test]
+    fn a_train_can_only_plan_where_there_are_rails() {
+        let mut w = bare();
+        let def = VehicleKind::Locomotive.def();
+        let (a, b) = (at(500.0, 1_000.0), at(3_000.0, 1_000.0));
+
+        {
+            let crossing = w.crossing();
+            assert!(
+                crate::journey::plan_for(
+                    def.medium,
+                    a,
+                    b,
+                    w.ways(&crossing),
+                    def.on_road,
+                    def.cross_country,
+                    0.0
+                )
+                .is_none(),
+                "a locomotive planned a journey across a republic with no railway in it"
+            );
+        }
+
+        lay(&mut w, crate::roadworks::Grade::Railway, a, b);
+        let crossing = w.crossing();
+        let plan = crate::journey::plan_for(
+            def.medium,
+            a,
+            b,
+            w.ways(&crossing),
+            def.on_road,
+            def.cross_country,
+            0.0,
+        )
+        .expect("the rails now run all the way");
+        assert!(
+            plan.limit.iter().all(|l| l.is_some()),
+            "a leg of a rail journey was off the network"
+        );
+    }
+
+    /// The counterpart, and the one that would pass for the wrong reason if the
+    /// networks were shared: a **road** all the way from A to B must not let a
+    /// train run. Peer of `the_two_networks_never_touch` on the utility side.
+    #[test]
+    fn a_train_cannot_ride_a_road() {
+        let mut w = bare();
+        let (a, b) = (at(500.0, 1_000.0), at(3_000.0, 1_000.0));
+        lay(&mut w, crate::roadworks::Grade::Paved, a, b);
+        assert!(
+            w.roads.segment_count() > 0,
+            "the fixture laid no road, so this proves nothing"
+        );
+        assert_eq!(w.rails.segment_count(), 0, "a road went into the rails");
+
+        let def = VehicleKind::Locomotive.def();
+        let crossing = w.crossing();
+        assert!(
+            crate::journey::plan_for(
+                def.medium,
+                a,
+                b,
+                w.ways(&crossing),
+                def.on_road,
+                def.cross_country,
+                0.0
+            )
+            .is_none(),
+            "a locomotive routed itself down a paved road"
+        );
+    }
+
+    /// A terminal has to stand beside the way it serves, and the refusal says
+    /// which way. Same shape of rule as the customs house's.
+    #[test]
+    fn a_station_cannot_be_built_away_from_the_rails() {
+        let mut w = bare();
+        let (a, b) = (at(500.0, 1_000.0), at(3_000.0, 1_000.0));
+        lay(&mut w, crate::roadworks::Grade::Railway, a, b);
+
+        assert_eq!(
+            w.place(BuildingKind::RailwayStation, at(1_500.0, 3_000.0)),
+            Err(crate::building::PlacementError::NoWayThere(
+                crate::journey::Medium::Rail
+            )),
+            "a station went up two kilometres from the nearest rail"
+        );
+        assert!(
+            w.place(BuildingKind::RailwayStation, at(1_500.0, 1_060.0))
+                .is_ok(),
+            "a station beside the line was refused"
+        );
+    }
+
+    /// **A station with no standing order is a shed.** Nothing in the republic
+    /// wants to deliver to it, because it consumes nothing and sells nothing —
+    /// and that is deliberate rather than an oversight, because a terminal that
+    /// hoovered up whatever was passing would be making the player's
+    /// distribution decisions for them.
+    #[test]
+    fn a_standing_order_is_what_makes_a_terminal_a_destination() {
+        let run = |order: f64| -> Tonnes {
+            let mut w = bare();
+            let (a, b) = (at(500.0, 1_000.0), at(2_500.0, 1_000.0));
+            lay(&mut w, crate::roadworks::Grade::Railway, a, b);
+            // A road too, or the lorries that stock the station cannot reach it.
+            lay(&mut w, crate::roadworks::Grade::Gravel, a, b);
+            let station = terminal(&mut w, BuildingKind::RailwayStation, at(2_500.0, 1_060.0));
+
+            // Somewhere with coal, and lorries to move it.
+            let pit = place(&mut w, BuildingKind::Warehouse, at(500.0, 1_060.0));
+            w.buildings
+                .get_mut(pit)
+                .unwrap()
+                .stock
+                .add(Resource::Coal, Tonnes(200.0));
+            terminal(&mut w, BuildingKind::MotorDepot, at(760.0, 1_060.0));
+            staff_up(&mut w, at(1_000.0, 1_060.0), 80);
+
+            if order > 0.0 {
+                w.issue(crate::command::Command::SetStandingOrder {
+                    building: station,
+                    resource: Resource::Coal,
+                    tonnes: Tonnes(order),
+                })
+                .expect("a station keeps goods to order");
+            }
+            for _ in 0..TICKS_PER_DAY * 6 {
+                w.tick();
+            }
+            w.buildings.get(station).unwrap().stock.get(Resource::Coal)
+        };
+
+        let unordered = run(0.0);
+        let ordered = run(60.0);
+        assert_eq!(
+            unordered,
+            Tonnes::ZERO,
+            "coal was delivered to a station nobody ordered any to"
+        );
+        assert!(
+            ordered.is_positive(),
+            "a station with a standing order for 60 t received nothing"
+        );
+        // And the order is a ceiling, not a suggestion.
+        assert!(
+            ordered.0 <= 60.0 + 1e-6,
+            "the order was for 60 t and {:.1} t turned up",
+            ordered.0
+        );
+    }
+
+    /// The one network nobody builds. A republic on a river has bulk haulage
+    /// from day one, and one sited away from water does not — a difference in
+    /// the land rather than in what the player did.
+    #[test]
+    fn navigable_water_comes_from_the_ground_rather_than_from_a_crew() {
+        let mut w = bare();
+        assert_eq!(
+            w.waterways.node_count(),
+            0,
+            "the flat test fixture has no water, so this would prove nothing"
+        );
+
+        // Cut a channel five hundred metres wide across the map.
+        let mut ground = crate::terrain::Terrain::flat(Metres(4_000.0));
+        for cy in 0..ground.cells() {
+            for cx in 0..ground.cells() {
+                let p = ground.cell_centre(cx, cy);
+                if (1_000.0..1_500.0).contains(&p.y.0) {
+                    ground.set_surface(p, crate::terrain::Surface::Water);
+                }
+            }
+        }
+        w.set_terrain(ground);
+
+        assert!(
+            w.waterways.node_count() > 0,
+            "a river across the map produced no fairway"
+        );
+        let def = VehicleKind::Barge.def();
+        let crossing = w.crossing();
+        assert!(
+            crate::journey::plan_for(
+                def.medium,
+                at(300.0, 1_250.0),
+                at(3_700.0, 1_250.0),
+                w.ways(&crossing),
+                def.on_road,
+                def.cross_country,
+                0.0
+            )
+            .is_some(),
+            "a barge could not follow a channel running the width of the map"
+        );
+        // And it cannot leave it.
+        assert!(
+            crate::journey::plan_for(
+                def.medium,
+                at(300.0, 1_250.0),
+                at(2_000.0, 3_000.0),
+                w.ways(&crossing),
+                def.on_road,
+                def.cross_country,
+                0.0
+            )
+            .is_none(),
+            "a barge sailed onto dry land"
+        );
+    }
+
+    /// An aeroplane lands at an aerodrome. Giving air a network whose nodes are
+    /// the aerodromes puts it under exactly the rule the other two obey; the
+    /// alternative was a special case in the dispatcher saying so.
+    #[test]
+    fn an_aeroplane_flies_between_aerodromes_and_nowhere_else() {
+        let mut w = bare();
+        let def = VehicleKind::Freighter.def();
+        let (north, south) = (at(800.0, 800.0), at(3_200.0, 3_200.0));
+
+        fn reaches(w: &World, a: Point, b: Point) -> bool {
+            let def = VehicleKind::Freighter.def();
+            let crossing = w.crossing();
+            crate::journey::plan_for(
+                def.medium,
+                a,
+                b,
+                w.ways(&crossing),
+                def.on_road,
+                def.cross_country,
+                0.0,
+            )
+            .is_some()
+        }
+
+        assert!(!reaches(&w, north, south), "flew with no aerodrome at all");
+        terminal(&mut w, BuildingKind::Aerodrome, north);
+        w.re_survey_airways();
+        assert!(
+            !reaches(&w, north, south),
+            "flew to a place with no aerodrome on it"
+        );
+        terminal(&mut w, BuildingKind::Aerodrome, south);
+        w.re_survey_airways();
+        assert!(reaches(&w, north, south), "two aerodromes and no route");
+        let _ = def;
+    }
+
+    /// Nothing on rails, water or in the air can bog. It falls out of the rule
+    /// roads already had — `sticks` skips any leg with a speed limit on it, and
+    /// **every** leg of a confined journey has one — rather than needing a
+    /// medium check of its own, which is why this asserts it rather than
+    /// trusting the reading.
+    #[test]
+    fn a_confined_vehicle_never_bogs_however_bad_the_ground() {
+        let mut w = bare();
+        // Saturate the ground: a lorry would be in serious trouble here.
+        w.ground.moisture = 1.0;
+        let (a, b) = (at(500.0, 1_000.0), at(3_000.0, 1_000.0));
+        lay(&mut w, crate::roadworks::Grade::Railway, a, b);
+        let station = terminal(&mut w, BuildingKind::RailwayStation, at(500.0, 1_060.0));
+        let train = w
+            .fleet
+            .of_garage(station)
+            .find(|v| v.kind == VehicleKind::Locomotive)
+            .expect("a station keeps locomotives")
+            .id;
+
+        let def = VehicleKind::Locomotive.def();
+        let crossing = w.crossing();
+        let plan = crate::journey::plan_for(
+            def.medium,
+            a,
+            b,
+            w.ways(&crossing),
+            def.on_road,
+            def.cross_country,
+            0.0,
+        )
+        .expect("the rails run");
+        assert!(
+            crossing.going_at(at(1_750.0, 1_000.0)) > 0.5,
+            "the fixture's ground is firm, so this proves nothing"
+        );
+        for leg in 0..plan.legs() {
+            assert!(
+                !sticks(&w, &crossing, train, def.ground, &plan, leg, 0),
+                "a locomotive bogged on leg {leg}"
+            );
+        }
+    }
+
+    /// The trade in one number. A locomotive shifts fifteen lorry-loads behind
+    /// one driver, for a third of the fuel per tonne-kilometre — and it goes
+    /// exactly where the track was laid.
+    #[test]
+    fn a_train_moves_far_more_for_far_less_than_a_lorry() {
+        let train = VehicleKind::Locomotive.def();
+        let lorry = VehicleKind::Lorry.def();
+        assert!(train.capacity.0 >= lorry.capacity.0 * 10.0);
+        let per_tonne_km = |d: &crate::fleet::VehicleDef| d.fuel_per_km / d.capacity.0;
+        assert!(
+            per_tonne_km(train) < per_tonne_km(lorry) / 2.0,
+            "a train is no cheaper per tonne-kilometre than a lorry, so rails buy nothing"
+        );
+        // And the barge is cheaper still, on a network nobody paid to lay.
+        assert!(per_tonne_km(VehicleKind::Barge.def()) < per_tonne_km(train));
+        // Air is the other end: fast, small, and for what cannot wait.
+        let air = VehicleKind::Freighter.def();
+        assert!(per_tonne_km(air) > per_tonne_km(lorry) * 5.0);
+        assert!(air.on_road.as_mps() > train.on_road.as_mps() * 3.0);
+    }
+
+    /// The fairway is **derived** from the ground, and a derived thing that is
+    /// also stored can drift from what it was derived from.
+    ///
+    /// It is stored rather than rebuilt on load, for the same reason the
+    /// traversal lattice is: automatic and correct beats a step somebody has to
+    /// remember. The risk that buys is this one, so it is asserted rather than
+    /// reasoned about — `set_terrain` is the only thing that may replace the
+    /// ground, and it must replace the water with it. A republic whose river
+    /// moved and whose barges did not would be one where nothing can get
+    /// anywhere for no visible reason, which is exactly the failure the lattice
+    /// rule exists to prevent.
+    #[test]
+    fn the_fairway_always_matches_the_ground_it_was_read_from() {
+        let mut w = bare();
+        let mut ground = crate::terrain::Terrain::flat(Metres(4_000.0));
+        for cy in 0..ground.cells() {
+            for cx in 0..ground.cells() {
+                let p = ground.cell_centre(cx, cy);
+                if (1_000.0..1_600.0).contains(&p.y.0) {
+                    ground.set_surface(p, crate::terrain::Surface::Water);
+                }
+            }
+        }
+        w.set_terrain(ground);
+        assert!(
+            w.waterways.node_count() > 0,
+            "the fixture cut no channel, so this proves nothing"
+        );
+
+        let round_tripped = World::from_bytes(&w.to_bytes()).expect("a save it just wrote");
+        assert_eq!(
+            round_tripped.waterways,
+            crate::network::navigable(round_tripped.terrain()),
+            "the saved fairway is not what the saved ground implies"
+        );
+        assert_eq!(round_tripped.waterways, w.waterways);
+    }
+
+    /// A **real** generated republic has water a barge could use, not merely
+    /// the synthetic channel the fixture above cuts by hand.
+    ///
+    /// This is the premise assertion for the whole water half, and it caught
+    /// the thing that made it worth writing. The fairway was first sampled at
+    /// 100 m and required the whole cell to be wet, so nothing narrower than a
+    /// hundred metres counted: the standard founding reported 1.2 km of
+    /// navigable water, all of it lake, with every river excluded. A barge
+    /// mechanic on that map is a mechanic with no subject — and every unit test
+    /// of it would still have passed, because they cut their own channels.
+    #[test]
+    fn a_founded_republic_has_water_worth_putting_a_barge_on() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let km = w
+            .network(crate::journey::Medium::Water)
+            .total_length()
+            .as_km();
+        assert!(
+            km > 5.0,
+            "a founded republic has {km:.1} km of navigable water — a barge has nowhere to go"
         );
     }
 }

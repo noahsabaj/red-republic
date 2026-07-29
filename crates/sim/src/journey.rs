@@ -41,13 +41,108 @@
 
 use crate::citizen::ROAD_ACCESS;
 use crate::ground::Crossing;
-use crate::road::RoadNetwork;
+use crate::network::Network;
 use crate::time::TICK;
 use crate::units::{Metres, Point, Speed};
 use serde::{Deserialize, Serialize};
 
 /// The shortest a leg may take, in ticks. See the module docs.
 pub const MIN_LEG_TICKS: f64 = 1.0;
+
+/// How far a confined vehicle's terminal may stand from the way it rides.
+///
+/// A station forecourt, a wharf, an apron: the short shunt between where the
+/// vehicle stops and where the goods are. Tighter than
+/// [`crate::citizen::ROAD_ACCESS`] on purpose — a lorry that finds itself
+/// 300 m from a road drives across the field, and a train that finds itself
+/// 300 m from the rails is a train in a field.
+pub const TERMINAL_REACH: Metres = Metres(120.0);
+
+/// The pace in a yard, apron or wharf — the short hop between a terminal's
+/// door and the way it stands beside.
+///
+/// One figure for every confined medium, because the thing being modelled is
+/// the same in all three: manoeuvring in a confined space at the end of a
+/// journey. Slow enough that a terminal sited carelessly costs real minutes.
+pub const SHUNTING: Speed = Speed::from_kph(15.0);
+
+/// The way a vehicle gets about, and the whole of what separates a lorry from
+/// a train, a barge and an aeroplane.
+///
+/// # Confinement is the mechanic
+///
+/// A lorry **prefers** roads: [`plan`] costs the network route against the
+/// open-ground line and takes whichever is quicker, which is what makes a road
+/// something a vehicle chooses rather than a rail it is stuck on. Everything
+/// else here is stuck on one. A train that cannot find rails at both ends of a
+/// job does not take the job — and because that refusal comes back as `None`
+/// from the planner, the dispatcher needed **no** new rule to keep trains off
+/// road work. It already skips a vehicle that cannot make the trip.
+///
+/// # Why air has a network at all
+///
+/// It has no ground to follow, so the obvious model is a straight line from
+/// anywhere to anywhere. That is wrong for the same reason a train in a field
+/// is wrong: an aeroplane lands at an aerodrome. Giving air a network whose
+/// nodes *are* the aerodromes puts it under exactly the rule the other two
+/// already obey, and the alternative was a special case in the dispatcher
+/// saying so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Medium {
+    /// Roads where they help, open country where they do not.
+    Road,
+    Rail,
+    /// Rivers and lakes — the one network nobody builds.
+    Water,
+    Air,
+}
+
+impl Medium {
+    /// Whether a vehicle of this medium may leave its network and cross open
+    /// ground. Only a road vehicle can, which is the entire difference.
+    pub fn free_ranging(self) -> bool {
+        matches!(self, Medium::Road)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Medium::Road => "Road",
+            Medium::Rail => "Rail",
+            Medium::Water => "Water",
+            Medium::Air => "Air",
+        }
+    }
+
+    pub const ALL: [Medium; 4] = [Medium::Road, Medium::Rail, Medium::Water, Medium::Air];
+}
+
+/// Every way through the republic, handed to the planner together.
+///
+/// One parameter rather than four, because a caller that has to name each
+/// network separately is a caller that can be given the wrong one — and a
+/// planner asked for a rail route with the road network in its hand would
+/// answer confidently and be wrong.
+#[derive(Debug, Clone, Copy)]
+pub struct Ways<'a> {
+    pub roads: &'a Network,
+    pub rails: &'a Network,
+    pub water: &'a Network,
+    /// Aerodromes, joined to each other. See [`Medium`].
+    pub air: &'a Network,
+    /// The open ground, for the one medium allowed to cross it.
+    pub crossing: &'a Crossing<'a>,
+}
+
+impl<'a> Ways<'a> {
+    pub fn of(&self, medium: Medium) -> &'a Network {
+        match medium {
+            Medium::Road => self.roads,
+            Medium::Rail => self.rails,
+            Medium::Water => self.water,
+            Medium::Air => self.air,
+        }
+    }
+}
 
 /// Two waypoints closer together than this are the same place.
 ///
@@ -301,7 +396,7 @@ impl PathBuilder {
 pub fn plan(
     from: Point,
     to: Point,
-    roads: &RoadNetwork,
+    roads: &Network,
     crossing: &Crossing,
     on_road: Speed,
     cross_country: Speed,
@@ -377,7 +472,7 @@ pub fn plan(
 
 /// The road-network candidate: cross-country to the nearest junction, along the
 /// network, then cross-country to the door.
-fn by_road(from: Point, to: Point, roads: &RoadNetwork) -> Option<PathBuilder> {
+fn by_road(from: Point, to: Point, roads: &Network) -> Option<PathBuilder> {
     let start = roads.nearest_node(from, ROAD_ACCESS)?;
     let finish = roads.nearest_node(to, ROAD_ACCESS)?;
     let route = roads.route(start, finish)?;
@@ -397,11 +492,75 @@ fn by_road(from: Point, to: Point, roads: &RoadNetwork) -> Option<PathBuilder> {
     Some(b)
 }
 
+/// Plan a journey for a vehicle of any medium.
+///
+/// **`None` is a real answer and the whole mechanic.** A lorry can always get
+/// somewhere, however slowly, so [`Medium::Road`] always plans. A train, a
+/// barge and an aeroplane cannot leave their network, so if either end of the
+/// job is out of reach of it there is no journey — and the dispatcher, which
+/// already moves on to the next vehicle when one cannot make a trip, keeps
+/// them off work they have no business taking without knowing they exist.
+pub fn plan_for(
+    medium: Medium,
+    from: Point,
+    to: Point,
+    ways: Ways<'_>,
+    on_road: Speed,
+    cross_country: Speed,
+    now: f64,
+) -> Option<Journey> {
+    if medium.free_ranging() {
+        return Some(plan(
+            from,
+            to,
+            ways.roads,
+            ways.crossing,
+            on_road,
+            cross_country,
+            now,
+        ));
+    }
+    let net = ways.of(medium);
+    let start = net.nearest_node(from, TERMINAL_REACH)?;
+    let finish = net.nearest_node(to, TERMINAL_REACH)?;
+    let route = net.route(start, finish)?;
+
+    // Every hop carries a limit, including the shunt in and out of the yard —
+    // a confined vehicle is never off its network, so there is no leg anywhere
+    // on this path that the ground could slow down. That is also why nothing
+    // here consults the crossing: a barge does not care that it rained.
+    let mut b = PathBuilder::from(from);
+    let mut nodes = route.nodes.into_iter();
+    let mut previous = nodes.next()?;
+    b.step(net.position_of(previous)?, Some(SHUNTING));
+    for node in nodes {
+        let limit = net.speed_between(previous, node);
+        b.step(net.position_of(node)?, limit);
+        previous = node;
+    }
+    b.step(to, Some(SHUNTING));
+
+    if b.path.len() < 2 {
+        // Loading bay and unloading bay are the same place. Still a journey,
+        // or the vehicle never arrives — see [`MIN_LEG_TICKS`].
+        b.path = vec![from, to];
+        b.limit = vec![Some(SHUNTING)];
+    }
+    let first = leg_ticks(
+        b.path[0].distance_to(b.path[1]),
+        match b.limit[0] {
+            Some(limit) => on_road.min(limit),
+            None => cross_country,
+        },
+    );
+    Some(Journey::begin(b.path, b.limit, now, first))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ground::Lattice;
-    use crate::road::default_road_speed;
+    use crate::network::default_road_speed;
     use crate::terrain::Terrain;
 
     /// Flat, dry, open ground with nothing in the way: the crossing these tests
@@ -424,8 +583,8 @@ mod tests {
     }
 
     /// Junctions in a line 500 m apart, starting at the origin.
-    fn highway(length: f64) -> RoadNetwork {
-        let mut roads = RoadNetwork::new();
+    fn highway(length: f64) -> Network {
+        let mut roads = Network::new();
         let steps = (length / 500.0) as u32;
         let mut previous = roads.add_node(at(0.0, 0.0));
         for i in 1..=steps {
@@ -523,7 +682,7 @@ mod tests {
         let j = plan(
             at(0.0, 0.0),
             at(3_000.0, 0.0),
-            &RoadNetwork::new(),
+            &Network::new(),
             &crossing,
             default_road_speed(),
             lorry(),
@@ -549,7 +708,7 @@ mod tests {
         let cross_country = plan(
             from,
             to,
-            &RoadNetwork::new(),
+            &Network::new(),
             &crossing,
             default_road_speed(),
             lorry(),
@@ -598,8 +757,8 @@ mod tests {
     /// coexist.
     #[test]
     fn a_straight_road_is_one_leg_however_many_junctions_it_has() {
-        let mut sparse = RoadNetwork::new();
-        let mut dense = RoadNetwork::new();
+        let mut sparse = Network::new();
+        let mut dense = Network::new();
         for (roads, spacing) in [(&mut sparse, 1_000.0), (&mut dense, 200.0)] {
             let steps = (6_000.0 / spacing) as u32;
             let mut previous = roads.add_node(at(0.0, 0.0));
@@ -645,7 +804,7 @@ mod tests {
         let across = plan(
             ends.0,
             ends.1,
-            &RoadNetwork::new(),
+            &Network::new(),
             &crossing,
             fast_lorry(),
             lorry(),
@@ -671,7 +830,7 @@ mod tests {
     /// shell would draw lorries driving through the countryside.
     #[test]
     fn a_road_that_turns_keeps_its_corner() {
-        let mut roads = RoadNetwork::new();
+        let mut roads = Network::new();
         let a = roads.add_node(at(0.0, 0.0));
         let corner = roads.add_node(at(2_000.0, 0.0));
         let b = roads.add_node(at(2_000.0, 2_000.0));
@@ -728,7 +887,7 @@ mod tests {
     /// the journey is timed at what it allows.
     #[test]
     fn a_better_surface_wins_over_a_longer_detour_on_a_worse_one() {
-        let mut roads = RoadNetwork::new();
+        let mut roads = Network::new();
         let a = roads.add_node(at(0.0, 0.0));
         let b = roads.add_node(at(4_000.0, 0.0));
         let track = roads.add_node(at(2_000.0, 100.0));
@@ -762,7 +921,7 @@ mod tests {
     /// network is an option, not an obligation.
     #[test]
     fn a_road_going_the_wrong_way_is_ignored() {
-        let mut roads = RoadNetwork::new();
+        let mut roads = Network::new();
         let a = roads.add_node(at(0.0, 0.0));
         let b = roads.add_node(at(0.0, 20_000.0));
         let c = roads.add_node(at(200.0, 20_000.0));
@@ -824,7 +983,7 @@ mod tests {
         let j = plan(
             at(500.0, 500.0),
             at(500.0, 500.0),
-            &RoadNetwork::new(),
+            &Network::new(),
             &crossing,
             default_road_speed(),
             lorry(),

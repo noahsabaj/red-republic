@@ -63,6 +63,9 @@ theme_override_font_sizes/font_size = 13
 [node name="MigrationLine" type="Label" parent="Panel/Margin/Rows"]
 theme_override_font_sizes/font_size = 13
 
+[node name="WaysLine" type="Label" parent="Panel/Margin/Rows"]
+theme_override_font_sizes/font_size = 13
+
 [node name="GridLine" type="Label" parent="Panel/Margin/Rows"]
 theme_override_font_sizes/font_size = 13
 

@@ -32,10 +32,10 @@ use crate::geology::Geology;
 use crate::ground::{Crossing, Ground, Lattice};
 use crate::loan::Loans;
 use crate::mapgen;
+use crate::network::Network;
 use crate::policy::BuildPolicy;
 use crate::resource::Resource;
 use crate::rng::{Rng, RngState};
-use crate::road::RoadNetwork;
 use crate::roadworks::{Grade, RoadError, RoadSiteId, RoadWorks};
 use crate::terrain::{self, Terrain};
 use crate::time::SimClock;
@@ -243,8 +243,18 @@ pub struct World {
     /// What stands on it.
     pub(crate) buildings: Buildings,
     /// The roads between them.
-    pub(crate) roads: RoadNetwork,
-    /// The roads that have been ordered and are not yet drivable.
+    pub(crate) roads: Network,
+    /// The railways. A peer of `roads` rather than a variant of it, because
+    /// what keeps a train off a road is that the road is not in here.
+    pub(crate) rails: Network,
+    /// Navigable water. **The one network nobody builds** — it is derived from
+    /// the ground the moment the ground exists, and rebuilt with it.
+    pub(crate) waterways: Network,
+    /// The aerodromes, joined to one another. Rebuilt when one opens.
+    pub(crate) airways: Network,
+    /// The ways that have been ordered and are not yet usable. One queue for
+    /// roads and rails alike: a railway takes its turn behind whatever was
+    /// ordered before it, the same as everything else the crew builds.
     pub(crate) roadworks: RoadWorks,
     /// How wet and how frozen the open ground is today.
     pub(crate) ground: Ground,
@@ -316,13 +326,17 @@ impl World {
             &mapgen::DEFAULT_PLAN,
         );
         let lattice = Lattice::from_terrain(&terrain);
+        let waterways = crate::network::navigable(&terrain);
         Self {
             clock: SimClock::new(),
             rng: Rng::from_seed(spec.seed),
             terrain,
             geology,
             buildings: Buildings::new(),
-            roads: RoadNetwork::new(),
+            roads: Network::new(),
+            rails: Network::new(),
+            waterways,
+            airways: Network::new(),
             roadworks: RoadWorks::new(),
             ground: Ground::default(),
             lattice,
@@ -413,7 +427,54 @@ impl World {
     #[cfg_attr(not(feature = "fixtures"), allow(dead_code))]
     pub(crate) fn set_terrain(&mut self, terrain: Terrain) {
         self.lattice = Lattice::from_terrain(&terrain);
+        self.waterways = crate::network::navigable(&terrain);
         self.terrain = terrain;
+    }
+
+    /// Every way through the republic, for the planner.
+    ///
+    /// One accessor rather than four fields threaded through every call site,
+    /// because a planner handed the wrong network answers confidently and is
+    /// wrong — see [`crate::journey::Ways`].
+    pub(crate) fn ways<'a>(&'a self, crossing: &'a Crossing<'a>) -> crate::journey::Ways<'a> {
+        crate::journey::Ways {
+            roads: &self.roads,
+            rails: &self.rails,
+            water: &self.waterways,
+            air: &self.airways,
+            crossing,
+        }
+    }
+
+    /// The network a finished way of this grade joins.
+    pub(crate) fn network_for(&mut self, grade: Grade) -> &mut Network {
+        match grade.def().carries {
+            crate::journey::Medium::Rail => &mut self.rails,
+            _ => &mut self.roads,
+        }
+    }
+
+    /// Rebuild the aerodrome network.
+    ///
+    /// Every aerodrome joined to every other, because an aeroplane between two
+    /// of them flies straight there. Derived at the event that invalidates it —
+    /// a landing ground opening or being pulled down — rather than per tick,
+    /// the same discipline the utility grids and the traversal lattice follow.
+    pub(crate) fn re_survey_airways(&mut self) {
+        self.airways = Network::new();
+        let fields: Vec<Point> = self
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().medium == Some(crate::journey::Medium::Air))
+            .map(|b| b.centre)
+            .collect();
+        let nodes: Vec<_> = fields.iter().map(|&at| self.airways.add_node(at)).collect();
+        for (i, &a) in nodes.iter().enumerate() {
+            for &b in &nodes[i + 1..] {
+                self.airways.connect(a, b, crate::network::AIRWAY_SPEED);
+            }
+        }
     }
 
     /// The lattice and today's conditions together: what it costs to cross
@@ -489,6 +550,32 @@ impl World {
                 .is_some_and(|c| c.at.distance_to(at).0 <= crate::trade::CUSTOMS_RANGE.0);
             if !near_a_post {
                 return Err(crate::building::PlacementError::NotOnTheBorder);
+            }
+        }
+
+        // A terminal has to stand beside the way it serves. Exactly the same
+        // shape of rule as the customs house's, and for the same reason: a
+        // station four hundred metres from the nearest rail is not a station
+        // that works badly, it is a building no train can reach, and letting it
+        // be built would leave the player with a very expensive shed and
+        // nothing saying why nothing calls at it.
+        //
+        // An aerodrome is deliberately exempt: it *is* the network, so
+        // requiring one to stand near an existing one would mean a republic
+        // could never build its first.
+        if let Some(medium) = kind.def().medium
+            && medium != crate::journey::Medium::Air
+        {
+            let net = match medium {
+                crate::journey::Medium::Rail => &self.rails,
+                crate::journey::Medium::Water => &self.waterways,
+                _ => &self.roads,
+            };
+            if net
+                .nearest_node(at, crate::journey::TERMINAL_REACH)
+                .is_none()
+            {
+                return Err(crate::building::PlacementError::NoWayThere(medium));
             }
         }
         Ok(())
@@ -703,6 +790,14 @@ impl World {
         if let Some(b) = self.buildings.get_mut(id) {
             b.work_done = b.def().labour;
         }
+        // Opening an aerodrome changes where every aeroplane can fly. The
+        // construction system does this when the last builder-day lands; a
+        // building conjured up finished skips that, so it does it here. Two
+        // callers rather than one is the price of a founding hand that arrives
+        // already built.
+        if kind.def().medium == Some(crate::journey::Medium::Air) {
+            self.re_survey_airways();
+        }
         Ok(id)
     }
 
@@ -872,6 +967,30 @@ impl World {
                 }
             }
 
+            Command::SetStandingOrder {
+                building,
+                resource,
+                tonnes,
+            } => {
+                let Some(b) = self.buildings.get(building) else {
+                    return Err(Refused::NoSuchBuilding(building));
+                };
+                if !b.def().stores_to_order {
+                    return Err(Refused::NotAStore);
+                }
+                let holds = b.storage_cap();
+                if tonnes.0 > holds.0 {
+                    return Err(Refused::OverCapacity {
+                        asked: tonnes.0,
+                        holds: holds.0,
+                    });
+                }
+                if let Some(b) = self.buildings.get_mut(building) {
+                    b.orders.set(resource, tonnes);
+                }
+                Ok(Done::Nothing)
+            }
+
             // Hiring is a transaction at a genuine boundary: the fee leaves and
             // the workers set out, and neither happens without the other.
             Command::HireForeign {
@@ -942,12 +1061,46 @@ impl World {
         &self.buildings
     }
 
-    pub fn roads(&self) -> &RoadNetwork {
-        &self.roads
+    /// One of the republic's four ways through.
+    ///
+    /// One accessor rather than four, and it is the only public way to read a
+    /// network — a shell that has to name `roads` and `rails` separately is a
+    /// shell that draws three of them and forgets the fourth when a fifth
+    /// arrives. `Medium` is the roster, and iterating it is what makes a new
+    /// network visible without anybody remembering to add it.
+    pub fn network(&self, medium: crate::journey::Medium) -> &Network {
+        match medium {
+            crate::journey::Medium::Road => &self.roads,
+            crate::journey::Medium::Rail => &self.rails,
+            crate::journey::Medium::Water => &self.waterways,
+            crate::journey::Medium::Air => &self.airways,
+        }
     }
 
     pub fn roadworks(&self) -> &RoadWorks {
         &self.roadworks
+    }
+
+    /// What a place has been told to keep on hand, and how much of it is there.
+    ///
+    /// The panel side of [`crate::command::Command::SetStandingOrder`]: a
+    /// player who cannot see the order they set cannot tell a station that is
+    /// filling from one nothing is being sent to.
+    pub fn standing_orders(
+        &self,
+        building: crate::building::BuildingId,
+    ) -> Vec<(Resource, Tonnes, Tonnes)> {
+        let Some(b) = self.buildings.get(building) else {
+            return Vec::new();
+        };
+        if !b.def().stores_to_order {
+            return Vec::new();
+        }
+        Resource::ALL
+            .into_iter()
+            .map(|r| (r, b.stock.get(r), b.orders.get(r)))
+            .filter(|(_, _, ordered)| ordered.is_positive())
+            .collect()
     }
 
     pub fn ground(&self) -> Ground {

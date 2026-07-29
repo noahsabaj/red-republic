@@ -106,6 +106,22 @@ pub enum Command {
     /// Put a site back under the republic's default policy.
     ClearImportPolicy { site: Destination },
 
+    /// Tell a terminal or a distribution office what to keep on hand.
+    ///
+    /// **The command that makes a station worth building.** Nothing in the
+    /// republic wants to deliver to one otherwise: a station consumes nothing
+    /// and sells nothing, so the freight ranking has no reason to look at it.
+    /// A standing order gives it a demand of its own, and the ordinary ranking
+    /// does the rest — lorries or trains bring the tonnage in, and whatever
+    /// needs it nearby draws on the yard the way it draws on any other.
+    ///
+    /// Setting `tonnes` to zero cancels the order.
+    SetStandingOrder {
+        building: BuildingId,
+        resource: Resource,
+        tonnes: crate::units::Tonnes,
+    },
+
     /// Hire builders from a bloc, for one Construction Office.
     ///
     /// They cost a placement fee now and a wage every day thereafter, both in
@@ -205,6 +221,14 @@ pub enum Refused {
     NoPostOfThatBloc(Market),
     /// Hiring nobody.
     NobodyToHire,
+    /// A standing order somewhere that does not hold goods to order.
+    ///
+    /// A coal mine told to keep fifty tonnes of coal on hand would be an
+    /// instruction to fetch coal to the coal, and a house told to keep steel
+    /// would send lorries to a doorstep for ever.
+    NotAStore,
+    /// A standing order larger than the place could hold.
+    OverCapacity { asked: f64, holds: f64 },
 }
 
 impl std::fmt::Display for Refused {
@@ -242,6 +266,13 @@ impl std::fmt::Display for Refused {
                 "the {} holds no frontier post here, so its workers have nowhere to arrive",
                 market.name()
             ),
+            Refused::NotAStore => write!(
+                f,
+                "only a terminal or a distribution office keeps goods to order"
+            ),
+            Refused::OverCapacity { asked, holds } => {
+                write!(f, "asked for {asked:.0} t where only {holds:.0} t will fit")
+            }
             Refused::NobodyToHire => write!(f, "no workers were asked for"),
             Refused::NoSuchRule { index, rules } => match rules {
                 0 => write!(f, "there are no trade rules to change"),
