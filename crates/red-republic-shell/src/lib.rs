@@ -30,6 +30,7 @@ use godot::prelude::*;
 pub mod marshal;
 pub mod republic;
 pub mod terrain_mesh;
+pub mod views;
 
 struct RedRepublicShell;
 

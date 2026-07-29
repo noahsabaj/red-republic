@@ -25,12 +25,29 @@ uniform vec3 water_colour : source_color = vec3(0.19, 0.28, 0.35);
 uniform float contour_strength : hint_range(0.0, 1.0) = 0.0;
 uniform float contour_spacing = 8.0;
 
+// The overlay: one channel of simulation state painted over the ground.
+//
+// Resources are invisible on the terrain by design, soil state is invisible
+// because soil is, and track wear is invisible until it becomes a road. All
+// three are things the simulation knows, so all three need somewhere to be
+// seen. A sampled texture is the cheap way: the traversal lattice is 100 m
+// where the terrain is 10 m, so a 6 km map is a 60x60 image.
+uniform sampler2D overlay_field : filter_linear, repeat_disable;
+uniform float overlay_strength : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 overlay_low : source_color = vec3(0.75, 0.24, 0.18);
+uniform vec3 overlay_high : source_color = vec3(0.30, 0.55, 0.35);
+uniform float map_extent = 6000.0;
+
 varying vec3 kind;
 varying float height;
+varying vec2 ground_uv;
 
 void vertex() {
 	kind = COLOR.rgb;
 	height = VERTEX.y;
+	// Position on the map rather than mesh UV, so the overlay lines up with the
+	// lattice whatever resolution the terrain was generated at.
+	ground_uv = vec2(VERTEX.x, VERTEX.z) / map_extent;
 }
 
 void fragment() {
@@ -49,6 +66,11 @@ void fragment() {
 		float edge = fwidth(height / contour_spacing) * 1.5;
 		float line = 1.0 - smoothstep(0.0, edge, min(band, 1.0 - band));
 		albedo = mix(albedo, albedo * 0.82, line * contour_strength * 0.7);
+	}
+
+	if (overlay_strength > 0.0) {
+		float v = texture(overlay_field, ground_uv).r;
+		albedo = mix(albedo, mix(overlay_low, overlay_high, v), overlay_strength);
 	}
 
 	ALBEDO = albedo;

@@ -25,7 +25,7 @@ use red_republic_sim::time::TICK;
 use red_republic_sim::units::Point;
 use red_republic_sim::{BuildingKind, Command, Metres, World, WorldSpec};
 
-use crate::marshal;
+use crate::{marshal, views};
 
 /// In-game seconds bought by one real second, per speed setting.
 ///
@@ -304,6 +304,218 @@ impl Republic {
     #[func]
     fn temperature_c(&self) -> f64 {
         self.world.as_ref().map_or(0.0, |w| w.temperature())
+    }
+
+    // ---- Panel reads. See `views`. -----------------------------------------
+
+    /// The resources, in `Resource::ALL` order — the same order `stockpiles`
+    /// comes back in, so a table never has to guess which column is which.
+    #[func]
+    fn resource_names(&self) -> PackedStringArray {
+        let mut out = PackedStringArray::new();
+        for resource in red_republic_sim::Resource::ALL {
+            out.push(&GString::from(resource.name()));
+        }
+        out
+    }
+
+    #[func]
+    fn deposits(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::deposits)
+    }
+
+    #[func]
+    fn going_field(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::going_field)
+    }
+
+    #[func]
+    fn wear_field(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::wear_field)
+    }
+
+    #[func]
+    fn road_sites(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::road_sites)
+    }
+
+    #[func]
+    fn stockpiles(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::stockpiles)
+    }
+
+    /// `[temperature_c, rain_mm]` per day, starting today.
+    #[func]
+    fn forecast(&self, days: i64) -> PackedFloat32Array {
+        match &self.world {
+            Some(w) => views::forecast(w, days.max(0) as u64),
+            None => PackedFloat32Array::new(),
+        }
+    }
+
+    #[func]
+    fn lattice_cells(&self) -> i64 {
+        self.world
+            .as_ref()
+            .map_or(0, |w| i64::from(w.lattice().cells()))
+    }
+
+    #[func]
+    fn lattice_cell_size(&self) -> f64 {
+        self.world
+            .as_ref()
+            .map_or(0.0, |w| w.lattice().cell_size().0)
+    }
+
+    /// Ground height at a point, so anything drawn flat on the map sits on the
+    /// map rather than on a plane at zero.
+    #[func]
+    fn ground_height(&self, x: f64, y: f64) -> f64 {
+        self.world.as_ref().map_or(0.0, |w| {
+            crate::terrain_mesh::height_at(w.terrain(), Point::new(Metres(x), Metres(y)))
+        })
+    }
+
+    #[func]
+    fn going_at(&self, x: f64, y: f64) -> f64 {
+        self.world
+            .as_ref()
+            .map_or(0.0, |w| views::going_at(w, x, y))
+    }
+
+    #[func]
+    fn distance_to_border(&self, x: f64, y: f64) -> f64 {
+        self.world
+            .as_ref()
+            .map_or(0.0, |w| views::distance_to_border(w, x, y))
+    }
+
+    #[func]
+    fn precipitation_mm(&self) -> f64 {
+        self.world.as_ref().map_or(0.0, |w| w.precipitation())
+    }
+
+    #[func]
+    fn temperature_on_day(&self, day: i64) -> f64 {
+        self.world
+            .as_ref()
+            .map_or(0.0, |w| w.temperature_on_day(day.max(0) as u64))
+    }
+
+    /// The odds a vehicle sticks setting out on a leg, `0.0..=1.0`.
+    ///
+    /// The showable half of the bogging model, and most of the explicability a
+    /// probability normally costs: a panel can put this in front of the player
+    /// *before* they commit a lorry to a crossing. Hiding it would leave the
+    /// one deliberately random mechanic in the game feeling arbitrary.
+    #[func]
+    fn bog_chance(&self, vehicle: i64, leg: i64) -> f64 {
+        let Some(w) = &self.world else { return 0.0 };
+        let Some(v) = w.fleet().all().get(vehicle.max(0) as usize) else {
+            return 0.0;
+        };
+        w.bog_chance(v.id, leg.max(0) as u32)
+    }
+
+    /// What is waiting at the place a vehicle is delivering to: held over
+    /// capacity, as a fraction. `-1.0` when it is not carrying to anywhere.
+    #[func]
+    fn vehicle_destination_fullness(&self, vehicle: i64) -> f64 {
+        let Some(w) = &self.world else { return -1.0 };
+        let Some(v) = w.fleet().all().get(vehicle.max(0) as usize) else {
+            return -1.0;
+        };
+        let Some((_, to, resource, _)) = v.job.and_then(|j| j.haul()) else {
+            return -1.0;
+        };
+        match w.consignee(to, resource) {
+            Some(c) if c.capacity.0 > 0.0 => c.held.0 / c.capacity.0,
+            _ => -1.0,
+        }
+    }
+
+    /// Tenders on the table and running, one line each.
+    #[func]
+    fn contract_count(&self) -> i64 {
+        self.world
+            .as_ref()
+            .map_or(0, |w| w.contracts().all().len() as i64)
+    }
+
+    #[func]
+    fn contract_line(&self, index: i64) -> GString {
+        let Some(w) = &self.world else {
+            return GString::from("");
+        };
+        let Some(c) = w.contracts().all().get(index.max(0) as usize) else {
+            return GString::from("");
+        };
+        GString::from(
+            format!(
+                "{:?} · {:.0}/{:.0} t {} · due day {} · {:?}",
+                c.market,
+                c.delivered.0,
+                c.amount.0,
+                c.resource.name(),
+                c.deadline_day,
+                c.state
+            )
+            .as_str(),
+        )
+    }
+
+    /// The republic's standing instructions to its customs houses, in the
+    /// player's own order — which matters, because the first rule is served
+    /// first when throughput or money runs short.
+    #[func]
+    fn trade_rule_count(&self) -> i64 {
+        self.world
+            .as_ref()
+            .map_or(0, |w| w.trade_policy().rules.len() as i64)
+    }
+
+    #[func]
+    fn trade_rule_line(&self, index: i64) -> GString {
+        let Some(w) = &self.world else {
+            return GString::from("");
+        };
+        let Some(rule) = w.trade_policy().rules.get(index.max(0) as usize) else {
+            return GString::from("");
+        };
+        let what = match rule.action {
+            red_republic_sim::TradeAction::Sell => "sell".to_string(),
+            red_republic_sim::TradeAction::Buy { up_to } => format!("buy up to {:.0} t", up_to.0),
+        };
+        GString::from(format!("{} {} · {:?}", what, rule.resource.name(), rule.market).as_str())
+    }
+
+    /// Everything the player has done, in order. A republic that can show its
+    /// own history is one whose save can be replayed and whose bug report is
+    /// reproducible.
+    #[func]
+    fn journal_len(&self) -> i64 {
+        self.world.as_ref().map_or(0, |w| w.journal().len() as i64)
+    }
+
+    #[func]
+    fn journal_line(&self, index: i64) -> GString {
+        let Some(w) = &self.world else {
+            return GString::from("");
+        };
+        let Some(entry) = w.journal().entries().get(index.max(0) as usize) else {
+            return GString::from("");
+        };
+        GString::from(format!("t{} {:?}", entry.tick, entry.command).as_str())
     }
 
     // ---- The one write. ----------------------------------------------------
