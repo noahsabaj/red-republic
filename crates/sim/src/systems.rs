@@ -140,6 +140,13 @@ pub enum Mutation {
     /// A vehicle got home: the job is done and anything still aboard is put
     /// into the garage.
     Park { vehicle: VehicleId, burn: Tonnes },
+    /// A vehicle topping up at a filling point it has reached, away from its
+    /// own garage.
+    Refuel {
+        vehicle: VehicleId,
+        from: BuildingId,
+        tonnes: Tonnes,
+    },
     /// Ground packed down by something driving over it.
     ///
     /// Traffic is the only thing that makes a track, and the loop it closes is
@@ -271,6 +278,7 @@ pub enum MutationKind {
     Load,
     Unload,
     Park,
+    Refuel,
     Bog,
     Free,
     Recover,
@@ -306,6 +314,7 @@ impl Mutation {
             Mutation::Load { .. } => MutationKind::Load,
             Mutation::Unload { .. } => MutationKind::Unload,
             Mutation::Park { .. } => MutationKind::Park,
+            Mutation::Refuel { .. } => MutationKind::Refuel,
             Mutation::Wear { .. } => MutationKind::Wear,
             Mutation::Fade { .. } => MutationKind::Fade,
             Mutation::Promote { .. } => MutationKind::Promote,
@@ -377,6 +386,7 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
             MutationKind::Load,
             MutationKind::Unload,
             MutationKind::Park,
+            MutationKind::Refuel,
             MutationKind::Bog,
             MutationKind::Free,
             MutationKind::Recover,
@@ -776,6 +786,20 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     v.at = journey.path.first().copied().unwrap_or(v.at);
                     v.journey = Some(journey.clone());
                     v.state = VehicleState::Returning;
+                }
+            }
+            &Mutation::Refuel {
+                vehicle,
+                from,
+                tonnes,
+            } => {
+                let drawn = world
+                    .buildings
+                    .get_mut(from)
+                    .map(|b| b.stock.take(Resource::Fuel, tonnes))
+                    .unwrap_or(Tonnes::ZERO);
+                if let Some(v) = world.fleet.get_mut(vehicle) {
+                    v.fuel += drawn;
                 }
             }
             &Mutation::Park { vehicle, burn } => {
@@ -2321,7 +2345,25 @@ fn dispatch_one(
             .tank
             .saturating_sub(v.fuel)
             .min(booked.fuel_left(world, v.home));
-        if (v.fuel + top_up).0 < v.fuel_for(round_trip).0 {
+
+        // A pump within reach of either end of the haul is what turns the range
+        // rule from a wall into something you can build past. **The rule itself
+        // does not bend** -- a vehicle still never accepts a job it cannot
+        // finish -- but a filling point changes what "finish" costs: it only
+        // has to carry fuel as far as the pump, not all the way home.
+        //
+        // Counted at the ends rather than along the route on purpose. A lorry
+        // pulls in off the road; it does not detour across a field to a pump,
+        // and pretending otherwise would make the range depend on a corridor
+        // width nobody chose.
+        let refuel_en_route = [load_at, drop_at]
+            .iter()
+            .filter_map(|end| filling_point(world, *end))
+            .map(|pump| pump.stock.get(Resource::Fuel).min(def.tank))
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .unwrap_or(Tonnes::ZERO);
+
+        if (v.fuel + top_up + refuel_en_route).0 < v.fuel_for(round_trip).0 {
             continue;
         }
 
@@ -2494,6 +2536,29 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
         }
 
         let burn = v.fuel_for(journey.leg_distance());
+
+        // A pump within reach of wherever this leg just ended: fill up.
+        //
+        // At **every** leg boundary rather than only at a journey's end, which
+        // took a measurement to get right. A lorry passes a filling point in
+        // the middle of a run far more often than it finishes a journey beside
+        // one, and checking only destinations meant the pump served nobody --
+        // the write-set guard reported the declaration as a superset three
+        // times before this moved.
+        let reached = journey.leg_ends(journey.leg).1;
+        if let Some(pump) = filling_point(world, reached) {
+            let drawn = def
+                .tank
+                .saturating_sub(v.fuel)
+                .min(pump.stock.get(Resource::Fuel));
+            if drawn.is_positive() {
+                out.push(Mutation::Refuel {
+                    vehicle: v.id,
+                    from: pump.id,
+                    tonnes: drawn,
+                });
+            }
+        }
 
         if !journey.on_last_leg() {
             let ahead = journey.leg + 1;
@@ -2669,6 +2734,29 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
         }
     }
     out
+}
+
+/// How near a filling point a vehicle must be to draw from it.
+///
+/// The same order as `ROAD_ACCESS`: a lorry pulls in off the road, it does not
+/// drive across a field to reach a pump.
+pub const REFUEL_RANGE: Metres = Metres(300.0);
+
+/// The filling point a vehicle standing here could draw from.
+///
+/// A `GasStation` was in the building table from the start with nothing to do.
+/// This is what it does: it turns the range rule from a wall into something you
+/// can build past. A vehicle never accepts a job it cannot finish -- that rule
+/// does not bend -- but where it can *refuel* changes what it can finish, which
+/// is a range mechanic rather than a safety one.
+fn filling_point(world: &World, at: Point) -> Option<&crate::building::Building> {
+    world
+        .buildings
+        .of_kind(BuildingKind::GasStation)
+        .filter(|b| b.is_built() && b.staffing() > 0.0)
+        .filter(|b| b.stock.get(Resource::Fuel).is_positive())
+        .filter(|b| b.centre.distance_to(at).0 <= REFUEL_RANGE.0)
+        .min_by_key(|b| b.id)
 }
 
 /// The ground a vehicle just packed down finishing a leg.
@@ -5222,7 +5310,7 @@ mod tests {
         // included. A founding is allowed to be short of people; a *guard* is
         // not, because the systems at the tail of the commissioning order are
         // then never exercised and their declarations stop being checked.
-        crate::scenario::found(&mut world, 240);
+        let base = crate::scenario::found(&mut world, 240);
         // Both rules point at the bloc of the house the founding actually
         // opened, because a house clears only for the bloc whose frontier post
         // it stands at. Which post the founding picks is decided by the land,
@@ -5293,6 +5381,41 @@ mod tests {
                 &world.terrain,
                 &world.geology,
             );
+        }
+        // A filling point, so `fleet`'s declared `Refuel` is reachable.
+        //
+        // In the TOWN rather than at the far end, which took two attempts. A
+        // pump needs an attendant, and the far end is beyond walking range with
+        // no bus running yet, so an unstaffed pump serves nobody and the
+        // declaration went on looking like a superset.
+        //
+        // Stocked directly rather than supplied by freight: a pump that has to
+        // be *delivered* to is another consignee, and a distant consignee is
+        // exactly what took this fixture from two seconds to five minutes once
+        // already.
+        // Beside the GARAGE, which took three attempts and a probe to get
+        // right. The pump itself was never the problem -- a probe showed it
+        // built, staffed and full every time -- it was that nothing ever came
+        // within reach of it. A lorry's legs end where its work is, and the one
+        // place every lorry provably ends up is its own yard.
+        //
+        // It is also the realistic siting: you put the filling station next to
+        // the depot.
+        let pump_near = base
+            .motor_depot
+            .and_then(|id| world.buildings.get(id).map(|b| b.centre))
+            .unwrap_or(centre);
+        if let Some(site) =
+            crate::scenario::find_site(&world, BuildingKind::GasStation, pump_near, Metres(400.0))
+            && let Ok(pump) = world.buildings.place_built(
+                BuildingKind::GasStation,
+                site,
+                &world.terrain,
+                &world.geology,
+            )
+            && let Some(b) = world.buildings.get_mut(pump)
+        {
+            b.stock.add(Resource::Fuel, Tonnes(40.0));
         }
         if let Some(site) =
             crate::scenario::find_site(&world, BuildingKind::BusDepot, centre, Metres(800.0))
@@ -5842,6 +5965,65 @@ mod tests {
             Err(crate::command::Refused::Loan(
                 crate::loan::LoanError::Defaulted
             ))
+        );
+    }
+
+    /// A pump serves what is within reach of it and nothing else.
+    ///
+    /// The reach is what makes this a *place* rather than a global fuel pool.
+    /// It also has to be staffed and hold something: an unstaffed pump is a
+    /// building, and an empty one is a disappointment. Each precondition is
+    /// asserted separately because a probe found that all three held while the
+    /// mechanic still never fired -- the miss was geometric, and a test that
+    /// only checked "does it refuel" would have said nothing about which.
+    #[test]
+    fn a_filling_point_serves_what_is_within_reach_of_it() {
+        let mut w = bare();
+        let centre = at(2_000.0, 2_000.0);
+        staff_up(&mut w, centre, 60);
+        let site = crate::scenario::find_site(&w, BuildingKind::GasStation, centre, Metres(700.0))
+            .expect("somewhere for a pump");
+        let pump = w
+            .place_built(BuildingKind::GasStation, site)
+            .expect("a pump");
+
+        // Staffed and stocked, but reach still decides.
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        w.buildings
+            .get_mut(pump)
+            .unwrap()
+            .stock
+            .add(Resource::Fuel, Tonnes(40.0));
+        let at_pump = w.buildings.get(pump).unwrap().centre;
+        assert!(
+            w.buildings.get(pump).unwrap().staffing() > 0.0,
+            "the premise: an unstaffed pump serves nobody, so reach would be              untested"
+        );
+
+        assert!(
+            filling_point(&w, at_pump).is_some(),
+            "standing on it and it does not serve you"
+        );
+        let just_inside = Point::new(at_pump.x + REFUEL_RANGE * 0.9, at_pump.y);
+        assert!(filling_point(&w, just_inside).is_some(), "within reach");
+        let well_outside = Point::new(at_pump.x + REFUEL_RANGE * 3.0, at_pump.y);
+        assert!(
+            filling_point(&w, well_outside).is_none(),
+            "a pump is a place, not a fuel pool the whole map draws from"
+        );
+
+        // Empty is a disappointment rather than a filling point.
+        let held = w.buildings.get(pump).unwrap().stock.get(Resource::Fuel);
+        w.buildings
+            .get_mut(pump)
+            .unwrap()
+            .stock
+            .take(Resource::Fuel, held);
+        assert!(
+            filling_point(&w, at_pump).is_none(),
+            "an empty pump is still offering to fill you up"
         );
     }
 
