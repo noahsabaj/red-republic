@@ -490,6 +490,69 @@ impl Republic {
             .map_or_else(PackedFloat32Array::new, views::crew_parties)
     }
 
+    /// Every energised span: `[ax, ay, bx, by, kind]`, kind 0 power, 1 heat.
+    #[func]
+    fn utility_lines(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::utility_lines)
+    }
+
+    /// Spans ordered and not yet carrying: `[ax, ay, bx, by, progress, kind]`.
+    #[func]
+    fn utility_sites(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::utility_sites)
+    }
+
+    /// The grid at a glance: `[power_km, heat_km, on_power, on_heat, dark,
+    /// cold]`.
+    #[func]
+    fn utility_totals(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::utility_totals)
+    }
+
+    /// How dirty each lattice cell is, row-major.
+    #[func]
+    fn pollution_field(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::pollution_field)
+    }
+
+    /// Order a power line or a heat main. Empty string on success, or the
+    /// reason it was refused.
+    #[func]
+    fn order_line(&mut self, kind: i64, ax: f64, ay: f64, bx: f64, by: f64) -> GString {
+        let Some(world) = self.world.as_mut() else {
+            return GString::from("no republic has been founded");
+        };
+        let kind = *red_republic_sim::Utility::ALL
+            .get(kind.max(0) as usize)
+            .unwrap_or(&red_republic_sim::Utility::Power);
+        match world.issue(Command::OrderLine {
+            kind,
+            from: Point::new(Metres(ax), Metres(ay)),
+            to: Point::new(Metres(bx), Metres(by)),
+        }) {
+            Ok(_) => GString::from(""),
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
+    /// The names of the two networks, in `Utility::ALL` order.
+    #[func]
+    fn utility_names(&self) -> PackedStringArray {
+        let mut out = PackedStringArray::new();
+        for kind in red_republic_sim::Utility::ALL {
+            out.push(kind.name());
+        }
+        out
+    }
+
     /// Who the republic is made of: `[infants, pupils, students, workers,
     /// retired, unschooled, schooled, graduates]`.
     #[func]

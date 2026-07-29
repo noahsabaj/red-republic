@@ -277,6 +277,11 @@ pub struct World {
     /// People standing at the frontier waiting to be let in, and the running
     /// tally of everyone who has come and gone.
     pub(crate) migration: crate::migration::Migration,
+    /// The republic's energised power lines and heat mains, and who is plugged
+    /// into them.
+    pub(crate) utilities: crate::utility::Networks,
+    /// Lines that have been ordered and are not yet carrying anything.
+    pub(crate) lineworks: crate::utility::LineWorks,
     /// The posting's climate. Fixed at founding — you do not get a milder
     /// winter by asking for one.
     pub(crate) climate: ClimateId,
@@ -336,6 +341,8 @@ impl World {
             crews: Crews::new(),
             build_policy: BuildPolicy::new(),
             migration: crate::migration::Migration::new(),
+            utilities: crate::utility::Networks::new(),
+            lineworks: crate::utility::LineWorks::new(),
             climate: spec.climate,
             journal: Journal::new(),
             seed: spec.seed,
@@ -521,7 +528,12 @@ impl World {
         at: crate::units::Point,
     ) -> Result<crate::building::BuildingId, crate::building::PlacementError> {
         self.border_rule(kind, at)?;
-        self.buildings.place(kind, at, &self.terrain, &self.geology)
+        let id = self
+            .buildings
+            .place(kind, at, &self.terrain, &self.geology)?;
+        // Plugged in at the moment it goes up, not searched for per tick.
+        self.wire_in(id);
+        Ok(id)
     }
 
     /// Order a road between two points.
@@ -559,6 +571,62 @@ impl World {
         self.roadworks.order(from, to, grade, ordered)
     }
 
+    /// Order a power line or a heat main between two points.
+    ///
+    /// A **site**, exactly as a road is: it carries nothing until the crew have
+    /// strung it and the steel has been driven out. `pub(crate)`;
+    /// [`crate::command::Command::OrderLine`] is the public way in.
+    pub(crate) fn order_line(
+        &mut self,
+        kind: crate::utility::Utility,
+        from: Point,
+        to: Point,
+    ) -> Result<crate::utility::LineSiteId, crate::utility::LineError> {
+        let ordered = self.buildings.commissioned();
+        self.lineworks.order(kind, from, to, ordered)
+    }
+
+    /// Plug a building into whatever runs close enough to it.
+    ///
+    /// Called at placement rather than searched for per tick, which is the
+    /// whole reason the attachment is stored: testing every building against
+    /// every span 1,440 times a simulated day is the shape of cost this
+    /// codebase has already been caught by once.
+    pub(crate) fn wire_in(&mut self, building: crate::building::BuildingId) {
+        if let Some(at) = self.buildings.get(building).map(|b| b.centre) {
+            self.utilities.attach_all(building, at);
+        }
+    }
+
+    /// The founding grant's grid: energise a span without building it.
+    ///
+    /// `pub(crate)` and used only by [`crate::scenario::found`], for exactly
+    /// the reason [`World::place_built`] is: there is no player action that
+    /// makes a finished span appear, so exposing one would hand a shell a cheat
+    /// with no meaning inside the fiction.
+    pub(crate) fn energise_now(&mut self, site: &crate::utility::LineSite) {
+        self.utilities.energise(site);
+        self.wire_up(site.kind);
+    }
+
+    pub(crate) fn lineworks_mut(&mut self) -> &mut crate::utility::LineWorks {
+        &mut self.lineworks
+    }
+
+    /// Plug in everything that now stands within reach of a newly energised
+    /// span. The counterpart of [`World::wire_in`], from the line's side.
+    pub(crate) fn wire_up(&mut self, kind: crate::utility::Utility) {
+        let standing: Vec<_> = self
+            .buildings
+            .all()
+            .iter()
+            .map(|b| (b.id, b.centre))
+            .collect();
+        for (id, at) in standing {
+            self.utilities.attach(id, at, kind);
+        }
+    }
+
     /// What dispatch needs to know about somewhere goods can go.
     ///
     /// One view over two different structures, which is the point: the ranking,
@@ -586,6 +654,15 @@ impl World {
                     finished: false,
                 })
             }
+            Destination::LineSite(id) => {
+                let s = self.lineworks.get(id)?;
+                Some(Consignee {
+                    at: s.depot(),
+                    held: s.stock.get(resource),
+                    capacity: s.intake_capacity(resource),
+                    finished: false,
+                })
+            }
         }
     }
 
@@ -599,6 +676,7 @@ impl World {
         match to {
             Destination::Building(id) => self.buildings.get(id).map(|b| b.centre),
             Destination::RoadSite(id) => self.roadworks.get(id).map(|s| s.depot()),
+            Destination::LineSite(id) => self.lineworks.get(id).map(|s| s.depot()),
         }
     }
 
@@ -688,6 +766,7 @@ impl World {
                     // for ever. This is one of the few structures keyed by
                     // something that stops existing.
                     self.build_policy.forget(Destination::Building(building));
+                    self.utilities.detach(building);
                     Ok(Done::Nothing)
                 } else {
                     Err(Refused::NoSuchBuilding(building))
@@ -711,6 +790,11 @@ impl World {
                 .order_road(from, to, grade)
                 .map(Done::Ordered)
                 .map_err(Refused::Road),
+
+            Command::OrderLine { kind, from, to } => self
+                .order_line(kind, from, to)
+                .map(Done::Strung)
+                .map_err(Refused::Line),
 
             Command::AcceptContract { contract } => {
                 if self.contracts.accept(contract) {
@@ -901,6 +985,16 @@ impl World {
     /// everyone who has arrived, left, or given up waiting.
     pub fn migration(&self) -> &crate::migration::Migration {
         &self.migration
+    }
+
+    /// The energised power lines and heat mains, and who is plugged into them.
+    pub fn utilities(&self) -> &crate::utility::Networks {
+        &self.utilities
+    }
+
+    /// Lines ordered and not yet carrying anything.
+    pub fn lineworks(&self) -> &crate::utility::LineWorks {
+        &self.lineworks
     }
 
     pub fn loans(&self) -> &Loans {
@@ -1738,7 +1832,7 @@ mod tests {
             .filter_map(|job| job.haul())
             .find_map(|(_, to, _, _)| match to {
                 Destination::Building(id) => Some(id),
-                Destination::RoadSite(_) => None,
+                Destination::RoadSite(_) | Destination::LineSite(_) => None,
             })
             .expect("no lorry was en route to a building, so this proves nothing");
         let population_before = world.population().count();

@@ -23,9 +23,12 @@ const Overlays := preload("res://ui/overlays.gd")
 const STOCK_ROWS := 16
 
 ## Rows the people table keeps alive: five life stages, three education levels,
-## six contentment components, and the headings between them. A pool for the
-## same reason the stockpile table is one.
-const PEOPLE_ROWS := 18
+## the contentment components, and the headings between them. A pool for the
+## same reason the stockpile table is one, and with slack because the roster of
+## components grows -- adding `Cleanliness` overflowed a table sized exactly to
+## what existed the day it was written, and the symptom was one row silently
+## missing rather than anything looking wrong.
+const PEOPLE_ROWS := 24
 
 @onready var clock_line: Label = $Panel/Margin/Rows/ClockLine
 @onready var weather_line: Label = $Panel/Margin/Rows/WeatherLine
@@ -34,6 +37,7 @@ const PEOPLE_ROWS := 18
 @onready var crew_line: Label = $Panel/Margin/Rows/CrewLine
 @onready var people_line: Label = $Panel/Margin/Rows/PeopleLine
 @onready var migration_line: Label = $Panel/Margin/Rows/MigrationLine
+@onready var grid_line: Label = $Panel/Margin/Rows/GridLine
 @onready var overlay_line: Label = $Panel/Margin/Rows/OverlayLine
 @onready var stock_grid: GridContainer = $Stock/Margin/Rows/Grid
 @onready var stock_title: Label = $Stock/Margin/Rows/Title
@@ -118,6 +122,7 @@ func refresh(republic: Node, overlay_mode: int, speed_names: Array) -> void:
 	_refresh_crews(republic)
 	_refresh_people_lines(republic)
 	_refresh_migration_line(republic)
+	_refresh_grid_line(republic)
 
 	var name: String = Overlays.NAMES[overlay_mode]
 	overlay_line.text = "overlay:  %s        %s" % [
@@ -138,10 +143,13 @@ func refresh(republic: Node, overlay_mode: int, speed_names: Array) -> void:
 func _refresh_people_lines(republic: Node) -> void:
 	var content: PackedFloat32Array = republic.contentment()
 	var health: PackedFloat32Array = republic.wellbeing()
-	if content.size() < 7 or health.size() < 2:
+	# The overall score is the last entry, whatever the roster of components is.
+	# Indexing it by a hardcoded 6 is how a table quietly stops showing the
+	# component somebody added yesterday.
+	if content.size() != _content_names.size() + 1 or health.size() < 2:
 		people_line.text = ""
 		return
-	var overall: float = content[6]
+	var overall: float = content[content.size() - 1]
 	people_line.text = "content %d%%  ·  health %d%%  ·  loyalty %d%%  ·  weakest: %s" % [
 		int(round(overall * 100.0)),
 		int(round(health[0] * 100.0)),
@@ -155,14 +163,15 @@ func _refresh_people_lines(republic: Node) -> void:
 
 ## The component costing the republic most, by the simulation's own weighting.
 func _weakest(content: PackedFloat32Array) -> String:
-	if _content_names.size() < 6:
+	var parts := _content_names.size()
+	if parts == 0 or content.size() < parts:
 		return "-"
 	# The weights are the simulation's; the shell reads the parts and names the
 	# lowest, which is a presentation choice rather than balance. Where the
 	# weighted answer is wanted -- for one estate -- `home_contentment` reports
 	# the simulation's own verdict instead of this.
 	var worst := 0
-	for i in range(1, 6):
+	for i in range(1, parts):
 		if content[i] < content[worst]:
 			worst = i
 	if content[worst] > 0.98:
@@ -280,9 +289,10 @@ func _refresh_people(republic: Node) -> void:
 		rows.append(["SCHOOLING", ""])
 		for i in LEARNING_NAMES.size():
 			rows.append([LEARNING_NAMES[i], str(who[STAGE_NAMES.size() + i])])
-	if content.size() >= 7 and _content_names.size() >= 6:
-		rows.append(["CONTENTMENT", "%d%%" % int(round(content[6] * 100.0))])
-		for i in 6:
+	var parts := _content_names.size()
+	if parts > 0 and content.size() == parts + 1:
+		rows.append(["CONTENTMENT", "%d%%" % int(round(content[parts] * 100.0))])
+		for i in parts:
 			rows.append([_content_names[i], "%d%%" % int(round(content[i] * 100.0))])
 
 	for row in PEOPLE_ROWS:
@@ -303,6 +313,28 @@ func _refresh_people(republic: Node) -> void:
 		else:
 			name_label.text = ""
 			value_label.text = ""
+
+
+## The two networks, and what is not on them.
+##
+## Power and heat stopped being quantities the moment lines existed: a plant
+## lights what it is strung to and a boiler warms what a main runs past. So
+## "dark" and "cold" are now questions about wire and pipe as well as about
+## generation, and a republic short of one looks exactly like a republic short
+## of the other unless both numbers are on the same line.
+func _refresh_grid_line(republic: Node) -> void:
+	var grid: PackedFloat32Array = republic.utility_totals()
+	if grid.size() < 6:
+		grid_line.text = ""
+		return
+	grid_line.text = "grid %.1f km · mains %.1f km · %d on power, %d on heat" % [
+		grid[0], grid[1], int(grid[2]), int(grid[3]),
+	]
+	var dark := int(grid[4])
+	var cold := int(grid[5])
+	if dark > 0 or cold > 0:
+		grid_line.text += "   ·   %d dark, %d cold" % [dark, cold]
+	grid_line.modulate = Color(0.9, 0.55, 0.45) if (dark > 0 or cold > 0) else Color.WHITE
 
 
 func set_hint(text: String) -> void:

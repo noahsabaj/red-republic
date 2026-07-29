@@ -131,7 +131,7 @@ fn main() {
     );
     println!();
     println!(
-        "{:>10} {:>4} {:>5} {:>5} {:>6} {:>6} {:>5} {:>8} {:>8} {:>6} {:>8} {:>7} {:>5} {:>8} {:>10} {:>9} {:>4} {:>8} {:>5} {:>9}",
+        "{:>10} {:>4} {:>5} {:>5} {:>6} {:>6} {:>5} {:>8} {:>8} {:>6} {:>8} {:>7} {:>5} {:>8} {:>10} {:>9} {:>4} {:>8} {:>5} {:>9} {:>7} {:>6}",
         "date",
         "pop",
         "empl",
@@ -162,7 +162,12 @@ fn main() {
         // And who actually came and went: settled / left / turned back at the
         // border for want of a coach. The last of the three is the friction
         // number — people the republic was offered and could not reach.
-        "in/out/x"
+        "in/out/x",
+        // Rubbish nobody has driven to a landfill, and how filthy the town's
+        // own air is. Both are invisible in every other column here, and both
+        // cost the republic its people's contentment.
+        "rubbish",
+        "smoke"
     );
 
     let months = years * 12;
@@ -271,7 +276,7 @@ fn main() {
         };
 
         println!(
-            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>6.1} {:>5.0}% {:>4.0}% {:>8.0} {:>8.1} {:>6.2} {:>8.0} {:>3}/{:<3} {:>5} {:>8} {:>10.0} {:>9.0} {:>4} {:>8} {:>4.0}% {:>9}",
+            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>6.1} {:>5.0}% {:>4.0}% {:>8.0} {:>8.1} {:>6.2} {:>8.0} {:>3}/{:<3} {:>5} {:>8} {:>10.0} {:>9.0} {:>4} {:>8} {:>4.0}% {:>9} {:>7.0} {:>5.0}%",
             date.year,
             date.month,
             date.day,
@@ -311,6 +316,11 @@ fn main() {
                 world.migration().left(),
                 world.migration().gave_up()
             ),
+            held(Resource::Waste).0,
+            // The air over the town, not over the map: an average across six
+            // kilometres of empty grass says nothing about a valley with a
+            // steel works in it.
+            world.lattice().pollution_near(base.centre) * 100.0,
         );
     }
 
