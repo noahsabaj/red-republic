@@ -49,6 +49,7 @@ var _stock_labels: Array[Label] = []
 var _people_labels: Array[Label] = []
 var _resource_names := PackedStringArray()
 var _content_names := PackedStringArray()
+var _utility_names := PackedStringArray()
 
 ## The order `demographics()` hands them back in, which is the order
 ## `LifeStage::ALL` and `Education::ALL` declare. Named here rather than read
@@ -68,6 +69,10 @@ func set_resource_names(names: PackedStringArray) -> void:
 
 func set_contentment_names(names: PackedStringArray) -> void:
 	_content_names = names
+
+
+func set_utility_names(names: PackedStringArray) -> void:
+	_utility_names = names
 
 
 ## Pooled rows, built once. See the virtualisation note above.
@@ -324,14 +329,21 @@ func _refresh_people(republic: Node) -> void:
 ## of the other unless both numbers are on the same line.
 func _refresh_grid_line(republic: Node) -> void:
 	var grid: PackedFloat32Array = republic.utility_totals()
-	if grid.size() < 6:
+	var kinds := _utility_names.size()
+	if kinds == 0 or grid.size() != kinds * 2 + 2:
 		grid_line.text = ""
 		return
-	grid_line.text = "grid %.1f km · mains %.1f km · %d on power, %d on heat" % [
-		grid[0], grid[1], int(grid[2]), int(grid[3]),
-	]
-	var dark := int(grid[4])
-	var cold := int(grid[5])
+	# One entry per kind, read off the roster rather than off two names typed
+	# here. The roster went from two to four the day belts existed.
+	var parts := PackedStringArray()
+	for i in kinds:
+		if grid[i] > 0.05:
+			parts.append("%s %.1f km (%d)" % [
+				_utility_names[i].to_lower(), grid[i], int(grid[kinds + i]),
+			])
+	grid_line.text = "  ·  ".join(parts) if parts.size() > 0 else "nothing strung"
+	var dark := int(grid[kinds * 2])
+	var cold := int(grid[kinds * 2 + 1])
 	if dark > 0 or cold > 0:
 		grid_line.text += "   ·   %d dark, %d cold" % [dark, cold]
 	grid_line.modulate = Color(0.9, 0.55, 0.45) if (dark > 0 or cold > 0) else Color.WHITE

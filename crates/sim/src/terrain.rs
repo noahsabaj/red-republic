@@ -161,6 +161,25 @@ impl Terrain {
         self.index_of(p).map(|i| Metres(f64::from(self.height[i])))
     }
 
+    /// Whether a straight run between two points crosses open water.
+    ///
+    /// Sampled at half-cell steps so a river cannot be stepped over. What a
+    /// road order asks before it decides whether it is looking at a road or at
+    /// a bridge — and until this existed nothing asked at all, so a gravel road
+    /// could be laid straight across a river at the price of gravel.
+    pub fn crosses_water(&self, from: Point, to: Point) -> bool {
+        let distance = from.distance_to(to).0;
+        let steps = ((distance / (self.cell_size().0 * 0.5)).ceil() as u32).clamp(1, 512);
+        (0..=steps).any(|step| {
+            let t = f64::from(step) / f64::from(steps);
+            let at = Point::new(
+                Metres(from.x.0 + (to.x.0 - from.x.0) * t),
+                Metres(from.y.0 + (to.y.0 - from.y.0) * t),
+            );
+            self.surface_at(at) == Some(Surface::Water)
+        })
+    }
+
     pub fn set_surface(&mut self, p: Point, surface: Surface) {
         if let Some(i) = self.index_of(p) {
             self.surface[i] = surface;

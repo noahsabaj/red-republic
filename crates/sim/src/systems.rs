@@ -159,6 +159,18 @@ pub enum Mutation {
     /// A day of the ground coming back. Without it every line ever driven is
     /// permanent and a map fills with the ghosts of routes nobody uses.
     Fade { by: f64 },
+    /// Goods moving along a belt or a pipe.
+    ///
+    /// **One kind, coarse on purpose**: taking a tonne out of one bin and
+    /// putting it in another is a single transaction, and a half of it that
+    /// landed alone would either destroy goods or mint them. The same reasoning
+    /// as `Extract`, one level up.
+    Convey {
+        from: BuildingId,
+        to: BuildingId,
+        resource: Resource,
+        tonnes: Tonnes,
+    },
     /// Smoke settling on a cell of the traversal lattice.
     Foul { cell: usize, by: f64 },
     /// A day of weather carrying it away. The counterpart of [`Mutation::Fade`]
@@ -420,6 +432,7 @@ pub enum MutationKind {
     Recover,
     Wear,
     Fade,
+    Convey,
     Foul,
     Disperse,
     Promote,
@@ -470,6 +483,7 @@ impl Mutation {
             Mutation::Embark { .. } => MutationKind::Embark,
             Mutation::Wear { .. } => MutationKind::Wear,
             Mutation::Fade { .. } => MutationKind::Fade,
+            Mutation::Convey { .. } => MutationKind::Convey,
             Mutation::Foul { .. } => MutationKind::Foul,
             Mutation::Disperse { .. } => MutationKind::Disperse,
             Mutation::Promote { .. } => MutationKind::Promote,
@@ -585,6 +599,10 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
         ],
     ),
     ("tracks", &[MutationKind::Fade, MutationKind::Promote]),
+    // Per tick, like the fleet: a belt runs continuously, and the point of
+    // building one is that the goods are simply there rather than arriving in
+    // eight-tonne lumps whenever a driver is free.
+    ("belts", &[MutationKind::Convey]),
     // Daily. What the republic throws away, and what it breathes.
     ("sanitation", &[MutationKind::Produce]),
     ("pollution", &[MutationKind::Foul, MutationKind::Disperse]),
@@ -1066,6 +1084,27 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                 }
             }
             &Mutation::Fade { by } => world.lattice.fade(by),
+            &Mutation::Convey {
+                from,
+                to,
+                resource,
+                tonnes,
+            } => {
+                // Taken first, then put down, and only as much as was really
+                // there: a belt conserves goods end to end exactly as a lorry
+                // does.
+                let lifted = world
+                    .buildings
+                    .get_mut(from)
+                    .map(|b| b.stock.take(resource, tonnes))
+                    .unwrap_or(Tonnes::ZERO);
+                if let Some(b) = world.buildings.get_mut(to) {
+                    let room = b
+                        .intake_capacity(resource)
+                        .saturating_sub(b.stock.get(resource));
+                    b.stock.add(resource, lifted.min(room));
+                }
+            }
             &Mutation::Foul { cell, by } => world.lattice.foul(cell, by),
             &Mutation::Disperse { by } => world.lattice.disperse(by),
             Mutation::Promote { cells } => {
@@ -4730,6 +4769,115 @@ pub fn settling(world: &World) -> Vec<Mutation> {
     out
 }
 
+/// Goods moving along a belt or a pipe, without a lorry.
+///
+/// **Per tick, like the fleet**, because a belt runs continuously and the point
+/// of building one is that the goods are simply *there* rather than arriving in
+/// eight-tonne lumps whenever a driver is free.
+///
+/// The trade against the fleet is the whole mechanic. A belt needs no vehicle,
+/// no driver and no diesel, and it goes exactly where it was built and nowhere
+/// else — so a mine feeding one plant four hundred metres away wants a belt,
+/// and a mine feeding six things scattered over a valley wants lorries.
+///
+/// Ranked by who is emptiest, in the same spirit as freight: a consumer with a
+/// day's cover left is served before one with a week's, because what a network
+/// is for is keeping things running.
+pub fn belts(world: &World) -> Vec<Mutation> {
+    use crate::utility::Utility;
+    let day = tick_days();
+    let mut out = Vec::new();
+
+    for kind in Utility::ALL {
+        if !kind.moves_goods() {
+            continue;
+        }
+        // What each network can still move this tick. A belt is a belt however
+        // many sections it has: adding a kilometre makes it longer, not wider.
+        let mut left: BTreeMap<u32, f64> = BTreeMap::new();
+        // What this pass has already taken out of each yard, so two consumers
+        // on one belt are not both told the same tonne is theirs.
+        let mut taken: BTreeMap<(BuildingId, Resource), Tonnes> = BTreeMap::new();
+
+        for resource in kind.def().carries.iter().copied() {
+            // Everyone on a network of this kind who wants this, emptiest
+            // first, ties on id so the answer is reproducible.
+            let mut wanting: Vec<(f64, BuildingId, u32)> = Vec::new();
+            for b in world.buildings.all() {
+                if !b.is_built() {
+                    continue;
+                }
+                let wants = b.def().inputs.iter().any(|&(r, _)| r == resource);
+                if !wants {
+                    continue;
+                }
+                let Some(network) = world.utilities.network_of(b.id, kind) else {
+                    continue;
+                };
+                let cover = cover_days(world, b.id, resource).unwrap_or(f64::INFINITY);
+                wanting.push((cover, b.id, network));
+            }
+            wanting.sort_by(|(ca, ia, _), (cb, ib, _)| ca.total_cmp(cb).then_with(|| ia.cmp(ib)));
+
+            for (_, consumer, network) in wanting {
+                let allowance = left
+                    .entry(network)
+                    .or_insert_with(|| kind.def().throughput * day);
+                if *allowance <= 1e-12 {
+                    continue;
+                }
+                let Some(c) = world.buildings.get(consumer) else {
+                    continue;
+                };
+                let room = c
+                    .intake_capacity(resource)
+                    .saturating_sub(c.stock.get(resource));
+                if !room.is_positive() {
+                    continue;
+                }
+
+                // Whoever on the same network is holding it, fullest first —
+                // the opposite ranking from the consumers, and for the same
+                // reason: draw down the yard that is closest to blocking.
+                let mut yards: Vec<(f64, BuildingId)> = world
+                    .buildings
+                    .all()
+                    .iter()
+                    .filter(|b| b.id != consumer && b.is_built())
+                    .filter(|b| world.utilities.network_of(b.id, kind) == Some(network))
+                    .filter_map(|b| {
+                        let held = b.stock.get(resource).saturating_sub(
+                            taken.get(&(b.id, resource)).copied().unwrap_or_default(),
+                        );
+                        held.is_positive().then_some((held.0, b.id))
+                    })
+                    .collect();
+                yards.sort_by(|(ha, ia), (hb, ib)| hb.total_cmp(ha).then_with(|| ia.cmp(ib)));
+
+                for (held, from) in yards {
+                    if *allowance <= 1e-12 {
+                        break;
+                    }
+                    let moved = Tonnes(held.min(room.0).min(*allowance));
+                    if !moved.is_positive() {
+                        continue;
+                    }
+                    *allowance -= moved.0;
+                    *taken.entry((from, resource)).or_default() += moved;
+                    out.push(Mutation::Convey {
+                        from,
+                        to: consumer,
+                        resource,
+                        tonnes: moved,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// How far a building's smoke carries.
 ///
 /// A generous radius on a hundred-metre lattice: a steel works fouls the valley
@@ -4934,6 +5082,10 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
         households,
         trade,
         fleet,
+        // Before dispatch: goods a belt has already moved are goods no lorry
+        // needs to be sent for, and running it the other way round would send
+        // a lorry for a load that was about to arrive on its own.
+        belts,
         dispatch,
         // Departures, after arrivals, for the reason dispatch sits where it
         // does: a bus that reached its yard this tick can be sent out again on
@@ -8055,6 +8207,22 @@ mod tests {
             }
         }
 
+        // A belt from the mine to the plant, energised on the spot. What is
+        // being watched here is `Convey` rather than the stringing, which the
+        // power line above already covers.
+        if let (Some(mine), Some(plant)) = (base.mine, base.plant) {
+            let ends = (
+                world.buildings.get(mine).map(|b| b.centre),
+                world.buildings.get(plant).map(|b| b.centre),
+            );
+            if let (Some(a), Some(b)) = ends
+                && let Ok(id) = world.order_line(crate::utility::Utility::Conveyor, a, b)
+                && let Some(site) = world.lineworks_mut().remove(id)
+            {
+                world.energise_now(&site);
+            }
+        }
+
         // A school, and children to fill it.
         //
         // The children are put there directly, and that is not laziness: a
@@ -8168,6 +8336,7 @@ mod tests {
                     ("households", households),
                     ("trade", trade),
                     ("fleet", fleet),
+                    ("belts", belts),
                     ("dispatch", dispatch),
                     ("crews", crews),
                     ("settling", settling),
@@ -9321,6 +9490,122 @@ mod tests {
             w.lattice.pollution_near(at(1_000.0, 1_000.0)),
             0.0,
             "the works came down two months ago and the valley is still filthy"
+        );
+    }
+
+    /// A belt is a haul that needs no lorry, no driver and no diesel — and it
+    /// goes exactly where it was built and nowhere else.
+    ///
+    /// Both halves are the mechanic. Without the first there is no reason to
+    /// build one; without the second there is no reason ever to keep a fleet.
+    #[test]
+    fn a_belt_moves_coal_with_no_lorry_and_only_where_it_was_built() {
+        use crate::utility::Utility;
+        let mut w = bare();
+        let site = at(1_000.0, 1_000.0);
+        coal_body(&mut w, site, 50_000.0);
+        let mine = place(&mut w, BuildingKind::CoalMine, site);
+        let plant = place(&mut w, BuildingKind::PowerPlant, at(1_400.0, 1_000.0));
+        // A second plant, off the belt, to prove a belt is not a republic-wide
+        // pipe with extra steps.
+        let elsewhere = place(&mut w, BuildingKind::PowerPlant, at(3_000.0, 3_000.0));
+        w.buildings
+            .get_mut(mine)
+            .unwrap()
+            .stock
+            .add(Resource::Coal, Tonnes(60.0));
+
+        energise(&mut w, Utility::Conveyor, site, at(1_400.0, 1_000.0));
+        // The premise: the two ends really are on one belt and the far plant is
+        // not, or nothing below proves anything.
+        assert_eq!(
+            w.utilities.network_of(mine, Utility::Conveyor),
+            w.utilities.network_of(plant, Utility::Conveyor),
+        );
+        assert!(
+            w.utilities
+                .network_of(elsewhere, Utility::Conveyor)
+                .is_none(),
+            "the far plant is on the belt, so this proves nothing"
+        );
+        assert!(w.fleet.is_empty(), "there is no fleet, which is the point");
+
+        for _ in 0..TICKS_PER_DAY {
+            let m = belts(&w);
+            apply(&mut w, &m);
+            w.clock.advance();
+        }
+
+        let delivered = w.buildings.get(plant).unwrap().stock.get(Resource::Coal);
+        assert!(
+            delivered.is_positive(),
+            "a day on a belt moved no coal at all"
+        );
+        assert!(
+            w.buildings.get(mine).unwrap().stock.get(Resource::Coal).0 < 60.0,
+            "the coal arrived without leaving — a belt minted it"
+        );
+        assert_eq!(
+            w.buildings
+                .get(elsewhere)
+                .unwrap()
+                .stock
+                .get(Resource::Coal),
+            Tonnes::ZERO,
+            "a plant with no belt to it was fed anyway"
+        );
+        // And a belt will not take what it is not for.
+        assert!(!Utility::Conveyor.takes(Resource::Oil));
+        assert!(Utility::Pipeline.takes(Resource::Oil));
+    }
+
+    /// A river divides a republic until somebody pays to span it, and only a
+    /// bridge may span it.
+    ///
+    /// Until this refusal existed nothing asked what a road ran *over* — only
+    /// its two ends — so a gravel road could be laid straight across a river at
+    /// the price of gravel, while the design recorded water as impassable.
+    #[test]
+    fn only_a_bridge_crosses_water_and_it_costs_what_a_bridge_costs() {
+        use crate::roadworks::Grade;
+        let mut w = bare();
+        // A river down the middle of the map.
+        for step in 0..400 {
+            let y = f64::from(step) * 10.0;
+            for across in -1..=1 {
+                w.terrain.set_surface(
+                    at(2_000.0 + f64::from(across) * 10.0, y),
+                    crate::terrain::Surface::Water,
+                );
+            }
+        }
+        let terrain = w.terrain.clone();
+        w.set_terrain(terrain);
+
+        let (west, east) = (at(1_800.0, 1_000.0), at(2_300.0, 1_000.0));
+        assert_eq!(
+            w.order_road(west, east, Grade::Gravel),
+            Err(crate::roadworks::RoadError::NeedsABridge),
+            "a gravel road was laid across a river"
+        );
+        assert!(
+            w.order_road(west, east, Grade::Bridge).is_ok(),
+            "a bridge could not span the river it exists for"
+        );
+        // And it is not merely a road with a different name: a kilometre of it
+        // is steel and months of a crew.
+        let bridge = Grade::Bridge.def();
+        let paved = Grade::Paved.def();
+        assert!(bridge.labour > paved.labour * 3.0);
+        assert!(
+            bridge.materials.iter().any(|&(r, _)| r == Resource::Steel),
+            "a bridge is built out of no steel"
+        );
+        // A road that stays on one bank is unaffected.
+        assert!(
+            w.order_road(at(1_000.0, 1_000.0), at(1_800.0, 1_000.0), Grade::Gravel)
+                .is_ok(),
+            "a road nowhere near the water was refused"
         );
     }
 

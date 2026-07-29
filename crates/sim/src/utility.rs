@@ -48,6 +48,11 @@ use std::collections::BTreeMap;
 pub enum Utility {
     Power,
     Heat,
+    /// A belt. Carries bulk solids between things standing on it, without a
+    /// lorry and without a driver.
+    Conveyor,
+    /// A pipe. Carries liquids, in quantity.
+    Pipeline,
 }
 
 /// What a kind of line costs and what it is worth.
@@ -71,6 +76,20 @@ pub struct UtilityDef {
     /// grid worse than a compact one and is the whole argument for siting a
     /// plant near what it serves.
     pub loss_per_km: f64,
+    /// What goods this kind moves, if it moves goods at all.
+    ///
+    /// Empty on power and heat, which carry something that is not tonnage.
+    /// Authored as a list rather than derived from a `is_liquid()` predicate
+    /// because what a belt will take is a design decision about the economy and
+    /// not a fact about chemistry — and a list beside the rest of the row is
+    /// where this codebase puts design decisions.
+    pub carries: &'static [Resource],
+    /// Tonnes a day the whole network will move, at full length.
+    ///
+    /// A property of the *network* rather than of a span, because a belt is a
+    /// belt however many sections it has: adding another kilometre does not
+    /// double what it carries, it only makes it longer.
+    pub throughput: f64,
 }
 
 /// The utility table. First-pass balance, meant to be felt out against the
@@ -90,6 +109,8 @@ pub const UTILITIES: &[UtilityDef] = &[
         labour: 35.0,
         reach: Metres(250.0),
         loss_per_km: 0.012,
+        carries: &[],
+        throughput: 0.0,
     },
     UtilityDef {
         kind: Utility::Heat,
@@ -98,11 +119,63 @@ pub const UTILITIES: &[UtilityDef] = &[
         labour: 95.0,
         reach: Metres(110.0),
         loss_per_km: 0.07,
+        carries: &[],
+        throughput: 0.0,
+    },
+    // A belt. What it buys is a haul that needs no lorry, no driver and no
+    // diesel — and what it costs is that it goes exactly where it was built and
+    // nowhere else. The trade against the fleet is the whole point: a mine
+    // feeding a plant four hundred metres away wants a belt, and a mine feeding
+    // six things scattered over a valley wants lorries.
+    UtilityDef {
+        kind: Utility::Conveyor,
+        name: "Conveyor",
+        materials: &[(Resource::Steel, 30.0), (Resource::Machinery, 4.0)],
+        labour: 120.0,
+        reach: Metres(60.0),
+        loss_per_km: 0.0,
+        carries: &[
+            Resource::Coal,
+            Resource::IronOre,
+            Resource::Gravel,
+            Resource::Bricks,
+            Resource::Crops,
+            Resource::Wood,
+            Resource::Waste,
+        ],
+        throughput: 60.0,
+    },
+    // The same idea for what will not sit on a belt. Dearer, and it moves far
+    // more — which is what makes an oil field worth reaching with one.
+    UtilityDef {
+        kind: Utility::Pipeline,
+        name: "Pipeline",
+        materials: &[(Resource::Steel, 45.0), (Resource::Machinery, 3.0)],
+        labour: 150.0,
+        reach: Metres(70.0),
+        loss_per_km: 0.0,
+        carries: &[Resource::Oil, Resource::Fuel],
+        throughput: 180.0,
     },
 ];
 
 impl Utility {
-    pub const ALL: [Utility; 2] = [Utility::Power, Utility::Heat];
+    pub const ALL: [Utility; 4] = [
+        Utility::Power,
+        Utility::Heat,
+        Utility::Conveyor,
+        Utility::Pipeline,
+    ];
+
+    /// Whether this kind moves tonnage rather than current or hot water.
+    pub fn moves_goods(self) -> bool {
+        !self.def().carries.is_empty()
+    }
+
+    /// Whether it will take this resource.
+    pub fn takes(self, resource: Resource) -> bool {
+        self.def().carries.contains(&resource)
+    }
 
     pub fn def(self) -> &'static UtilityDef {
         UTILITIES
@@ -582,6 +655,41 @@ mod tests {
                 "{} loses everything over a kilometre",
                 def.name
             );
+            // A kind either moves goods or it does not, and the two fields that
+            // say so must agree. A belt with no throughput carries nothing and
+            // a power line with one would be current measured in tonnes.
+            assert_eq!(
+                kind.moves_goods(),
+                def.throughput > 0.0,
+                "{} declares goods and throughput inconsistently",
+                def.name
+            );
+        }
+    }
+
+    /// Nothing is carried by two kinds. A resource a belt and a pipe would both
+    /// take is a resource whose route depends on which network the pass happens
+    /// to look at first.
+    #[test]
+    fn no_resource_rides_two_networks() {
+        for a in Utility::ALL {
+            for b in Utility::ALL {
+                if a >= b {
+                    continue;
+                }
+                let clash: Vec<_> = a
+                    .def()
+                    .carries
+                    .iter()
+                    .filter(|r| b.def().carries.contains(r))
+                    .collect();
+                assert!(
+                    clash.is_empty(),
+                    "{} and {} both carry {clash:?}",
+                    a.name(),
+                    b.name()
+                );
+            }
         }
     }
 

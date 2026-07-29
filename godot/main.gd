@@ -76,6 +76,7 @@ func _ready() -> void:
 		"pollution": _overlay = Overlays.Mode.POLLUTION
 	hud.set_resource_names(republic.resource_names())
 	hud.set_contentment_names(republic.contentment_names())
+	hud.set_utility_names(republic.utility_names())
 	hud.set_hint(
 		"0-5 speed  ·  space pause  ·  F none  G going  T tracks  R survey  P smoke  ·  "
 		+ "WASD pan  ·  right-drag orbit  ·  wheel zoom"
@@ -570,9 +571,21 @@ func _refresh_lines() -> void:
 	lines_node.mesh = mesh
 
 
-## 0 power, 1 heat -- the order `Utility::ALL` declares.
+## In the order `Utility::ALL` declares: power, heat, conveyor, pipeline.
+##
+## Four distinct hues rather than a ramp, because these are categories and not a
+## quantity -- a player has to be able to tell a belt from a pipe at a glance,
+## and two shades of the same colour would read as "more of the same thing".
+const UTILITY_TONES := [
+	Color(0.86, 0.80, 0.42),  # power: overhead line
+	Color(0.78, 0.42, 0.32),  # heat: hot main
+	Color(0.55, 0.60, 0.66),  # conveyor: steel belt
+	Color(0.44, 0.56, 0.44),  # pipeline: painted pipe
+]
+
+
 func _utility_tone(kind: int) -> Color:
-	return Color(0.86, 0.80, 0.42) if kind == 0 else Color(0.78, 0.42, 0.32)
+	return UTILITY_TONES[kind] if kind >= 0 and kind < UTILITY_TONES.size() else Color.WHITE
 
 
 ## One ribbon between two ground positions, lifted clear and wound to face up.
