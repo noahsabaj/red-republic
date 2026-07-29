@@ -112,12 +112,23 @@ func _refresh_crews(republic: Node) -> void:
 			0: riding += 1
 			1: working += 1
 			_: waiting += 1
+	# Foreign labour is the one standing cost in hard currency the republic
+	# carries, and nothing else on this panel would show it: domestic builders
+	# cost no money at all, so a wage bill has to be visible beside the treasury
+	# it comes out of.
+	var hired: PackedInt32Array = republic.hired_builders()
+	var foreign := ""
+	if hired.size() >= 2 and (hired[0] + hired[1]) > 0:
+		var terms: PackedFloat32Array = republic.hiring_terms()
+		var daily := float(hired[0] + hired[1]) * (terms[1] if terms.size() > 1 else 0.0)
+		foreign = "   ·   %d hired abroad, %.0f a day" % [hired[0] + hired[1], daily]
+
 	if heads == 0:
-		crew_line.text = "no crews out"
-		crew_line.modulate = Color(1, 1, 1, 0.45)
+		crew_line.text = ("no crews out" + foreign) if foreign != "" else "no crews out"
+		crew_line.modulate = Color(1, 1, 1, 0.45) if foreign == "" else Color.WHITE
 		return
-	crew_line.text = "%d builders out  ·  %d on site  ·  %d riding  ·  %d awaiting a bus" % [
-		heads, working, riding, waiting,
+	crew_line.text = "%d builders out  ·  %d on site  ·  %d riding  ·  %d awaiting a bus%s" % [
+		heads, working, riding, waiting, foreign,
 	]
 	# A gang with nowhere to be is the state worth colouring: it is idle people
 	# and a bus journey the republic still owes them.

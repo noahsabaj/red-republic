@@ -282,6 +282,21 @@ pub enum Market {
 }
 
 impl Market {
+    /// Both blocs, in a fixed order.
+    ///
+    /// Authored rather than derived, for the reason every other table in this
+    /// crate is: anything that walks the markets walks them in this order, and
+    /// the order is part of the simulation's definition rather than whatever a
+    /// derive happened to produce.
+    pub const ALL: [Market; 2] = [Market::East, Market::West];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Market::East => "Eastern Bloc",
+            Market::West => "Western Alliance",
+        }
+    }
+
     /// What one tonne costs to buy here.
     pub fn buy_price(self, resource: Resource) -> f64 {
         match self {

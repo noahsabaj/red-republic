@@ -620,6 +620,65 @@ impl Republic {
         }
     }
 
+    /// Foreign builders the republic employs, by bloc: `[east, west]`.
+    ///
+    /// A standing hard-currency cost that nothing else on the panel would show:
+    /// domestic labour is free in money and this is not, so a republic with a
+    /// wage bill needs to be able to see it beside the treasury it comes out of.
+    #[func]
+    fn hired_builders(&self) -> PackedInt32Array {
+        let mut out = PackedInt32Array::new();
+        let Some(w) = &self.world else { return out };
+        for market in red_republic_sim::Market::ALL {
+            out.push(w.crews().hired_from_bloc(market) as i32);
+        }
+        out
+    }
+
+    /// What one foreign builder costs: `[placement_fee, daily_wage]`.
+    #[func]
+    fn hiring_terms(&self) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        out.push(red_republic_sim::crews::HIRING_FEE as f32);
+        out.push(red_republic_sim::crews::FOREIGN_WAGE as f32);
+        out
+    }
+
+    /// Foreign builders on one office's books.
+    #[func]
+    fn office_hired(&self, office: i64) -> i64 {
+        let Some(w) = &self.world else { return 0 };
+        i64::from(
+            w.crews()
+                .hired_total(red_republic_sim::BuildingId(office.max(0) as u32)),
+        )
+    }
+
+    /// Hire builders from a bloc for an office. `market` is 0 East, 1 West.
+    ///
+    /// Empty string on success, or the reason — which carries the fee against
+    /// what the treasury holds, because a refusal a player cannot act on is
+    /// the failure the whole refusal type exists to avoid.
+    #[func]
+    fn hire_foreign(&mut self, market: i64, office: i64, heads: i64) -> GString {
+        let Some(world) = self.world.as_mut() else {
+            return GString::from("no republic has been founded");
+        };
+        let market = if market == 0 {
+            red_republic_sim::Market::East
+        } else {
+            red_republic_sim::Market::West
+        };
+        match world.issue(Command::HireForeign {
+            market,
+            office: red_republic_sim::BuildingId(office.max(0) as u32),
+            heads: heads.max(0) as u32,
+        }) {
+            Ok(_) => GString::from(""),
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
     /// Tenders on the table and running, one line each.
     #[func]
     fn contract_count(&self) -> i64 {
