@@ -165,6 +165,22 @@ pub enum Command {
     /// order **is** the decision: when throughput or money runs short the first
     /// rule is served first, and that ranking is the player's to make.
     MoveTradeRule { from: u32, to: u32 },
+
+    /// Name the republic. The second beat of founding.
+    ///
+    /// A command rather than a field on [`crate::world::WorldSpec`] for two
+    /// reasons, and the second is the load-bearing one. The shelf generates six
+    /// candidate worlds before the player has named anything, so a spec with a
+    /// required name would have made it invent five names nobody chose. And a
+    /// name is an **input**: it is something a person decided, so it belongs in
+    /// the journal beside every other decision, which is what makes a replayed
+    /// republic come back called what the player called it rather than nothing.
+    ///
+    /// It changes nothing the simulation computes, and it is still not the
+    /// shell's to hold. A name kept beside the save rather than inside it is a
+    /// second file that can be lost, renamed or copied apart from the republic
+    /// it belongs to.
+    NameRepublic { name: String },
 }
 
 /// What an accepted command produced.
@@ -239,6 +255,18 @@ pub enum Refused {
     },
     /// A standing order larger than the place could hold.
     OverCapacity { asked: f64, holds: f64 },
+    /// A republic named nothing at all.
+    ///
+    /// Refused rather than defaulted. A build held to a release standard has no
+    /// placeholder strings in it, and "Republic 1" is exactly one — it would
+    /// reach the title bar, the save list and the pause menu before anybody
+    /// noticed the player had never been made to answer.
+    Nameless,
+    /// A name longer than [`crate::world::NAME_LIMIT`] characters.
+    ///
+    /// Refused rather than truncated, because a name the player typed and the
+    /// game silently shortened is not the name they chose.
+    NameTooLong { asked: usize, limit: usize },
 }
 
 impl std::fmt::Display for Refused {
@@ -287,6 +315,11 @@ impl std::fmt::Display for Refused {
                 write!(f, "asked for {asked:.0} t where only {holds:.0} t will fit")
             }
             Refused::NobodyToHire => write!(f, "no workers were asked for"),
+            Refused::Nameless => write!(f, "a republic needs a name"),
+            Refused::NameTooLong { asked, limit } => write!(
+                f,
+                "that name is {asked} characters and {limit} is the most that will fit"
+            ),
             Refused::NoSuchRule { index, rules } => match rules {
                 0 => write!(f, "there are no trade rules to change"),
                 1 => write!(f, "there is only one trade rule, and it is not {index}"),

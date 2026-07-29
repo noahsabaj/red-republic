@@ -21,11 +21,12 @@
 use godot::classes::{INode3D, Node3D};
 use godot::prelude::*;
 use red_republic_sim::climate::ClimateId;
+use red_republic_sim::founding::{Shelf, ShelfFilter};
 use red_republic_sim::time::TICK;
 use red_republic_sim::units::Point;
 use red_republic_sim::{BuildingKind, Command, Metres, World, WorldSpec};
 
-use crate::{marshal, views};
+use crate::{marshal, shelf, views};
 
 /// In-game seconds bought by one real second, per speed setting.
 ///
@@ -34,6 +35,29 @@ use crate::{marshal, views};
 /// between them — you are either watching a lorry cross a field or you are
 /// getting through a week.
 const SPEEDS: [f64; 6] = [0.0, 1.0, 3_600.0, 7_200.0, 14_400.0, 28_800.0];
+
+/// A climate index into `ClimateId::ALL`, clamped rather than trusted.
+///
+/// Every index arriving from GDScript is clamped at this boundary. An out-of-range
+/// climate from a stale scene would otherwise pick whatever `unwrap_or` chose,
+/// which is a silently wrong posting rather than a visible error.
+fn climate_at(index: i64) -> ClimateId {
+    *ClimateId::ALL
+        .get(index.clamp(0, ClimateId::ALL.len() as i64 - 1) as usize)
+        .unwrap_or(&ClimateId::Plains)
+}
+
+/// A shelf filter from the two indices the founding screen holds.
+fn filter(size: i64, climate: i64) -> ShelfFilter {
+    let sizes = red_republic_sim::founding::SIZES;
+    let extent = sizes
+        .get(size.clamp(0, sizes.len() as i64 - 1) as usize)
+        .map_or(sizes[1].1, |(_, extent)| *extent);
+    ShelfFilter {
+        extent,
+        climate: climate_at(climate),
+    }
+}
 
 /// The most ticks one frame may run, whatever the frame took.
 ///
@@ -46,6 +70,15 @@ const MAX_TICKS_PER_FRAME: u32 = 2_000;
 #[class(base = Node3D)]
 pub struct Republic {
     world: Option<World>,
+    /// The candidate postings, while the founding screen is open.
+    ///
+    /// Held here rather than in a node of its own so there is no handing a
+    /// `World` between two Godot objects. It is dropped the moment a posting is
+    /// taken, which is what makes its memory transient — 81 MB at the largest
+    /// size, measured, and the reason [`Republic::close_shelf`] exists as
+    /// something the menu calls rather than something a destructor eventually
+    /// does.
+    shelf: Option<Shelf>,
     /// Where the founding put the town.
     ///
     /// Kept because it is not recoverable from the world afterwards and the
@@ -66,6 +99,7 @@ impl INode3D for Republic {
     fn init(base: Base<Node3D>) -> Self {
         Self {
             world: None,
+            shelf: None,
             centre: Point::new(Metres(0.0), Metres(0.0)),
             // Founded paused. A republic that starts running before anyone has
             // looked at it is a republic whose first winter arrives during the
@@ -153,6 +187,296 @@ impl Republic {
     #[func]
     fn is_founded(&self) -> bool {
         self.world.is_some()
+    }
+
+    // ---- Founding: choosing your land ------------------------------------
+    //
+    // Two beats. `derive_shelf` and the reads under it are the first — a shelf
+    // of candidate postings with the few facts that decide a start. `take_posting`
+    // is the second, and it is the one that needs a name.
+
+    /// Generate a shelf of candidate postings from one master seed.
+    ///
+    /// `size` indexes `founding::SIZES` and `climate` indexes `ClimateId::ALL`.
+    /// **This blocks**, and the figures are measured: 219 ms at 6 km, 611 ms at
+    /// 10 km, 1,630 ms at 16 km. The caller shows a loading state at every size
+    /// — the number that used to be recorded for the default size was the one for
+    /// the smallest, and the correction is why this note is here rather than a
+    /// vague warning.
+    #[func]
+    fn derive_shelf(&mut self, master_seed: i64, size: i64, climate: i64) {
+        self.shelf = Some(Shelf::derive(master_seed as u64, filter(size, climate)));
+    }
+
+    /// Re-derive the shelf under a new filter, keeping the same candidate seeds.
+    ///
+    /// The design decision this exists to hold: a filter **transforms** the
+    /// shelf rather than dealing a fresh hand, so flipping to taiga shows what
+    /// that does to land the player was already considering. Candidate `n` stays
+    /// candidate `n`, which is what makes comparing them across a filter change
+    /// mean anything.
+    #[func]
+    fn refilter_shelf(&mut self, size: i64, climate: i64) {
+        if let Some(current) = self.shelf.as_ref() {
+            self.shelf = Some(current.refilter(filter(size, climate)));
+        }
+    }
+
+    /// Let the candidate worlds go.
+    ///
+    /// Called when the founding screen closes, whether a posting was taken or
+    /// the player went back. A shelf of six 16 km maps is 81 MB and there is no
+    /// reason to hold it while a republic is being played.
+    #[func]
+    fn close_shelf(&mut self) {
+        self.shelf = None;
+    }
+
+    #[func]
+    fn shelf_size(&self) -> i64 {
+        self.shelf.as_ref().map_or(0, |s| s.candidates.len() as i64)
+    }
+
+    /// Every candidate's decisive facts. See `shelf::CARD_STRIDE` for the layout.
+    #[func]
+    fn shelf_cards(&self) -> PackedFloat32Array {
+        self.shelf
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, shelf::cards)
+    }
+
+    /// One candidate's land as an RGB8 raster, `size` by `size`.
+    #[func]
+    fn shelf_minimap(&self, index: i64, size: i64) -> PackedByteArray {
+        let Some(candidate) = self
+            .shelf
+            .as_ref()
+            .and_then(|s| s.get(index.max(0) as usize))
+        else {
+            return PackedByteArray::new();
+        };
+        shelf::minimap(candidate.world.terrain(), size.max(0) as u32)
+    }
+
+    /// A candidate's seed, which is the land's identity.
+    ///
+    /// The one thing a player might write down and share, so it is shown rather
+    /// than hidden — and it is the reason `World::seed` is exempt from the
+    /// exposure guard as *map identity* rather than republic state.
+    #[func]
+    fn candidate_seed(&self, index: i64) -> i64 {
+        self.shelf
+            .as_ref()
+            .and_then(|s| s.get(index.max(0) as usize))
+            .map_or(0, |c| c.spec.seed as i64)
+    }
+
+    /// Take a posting: found the chosen candidate and name it.
+    ///
+    /// Empty string on success, or the reason it was refused — which for a
+    /// blank or overlong name is a sentence the founding screen prints under the
+    /// name box. A republic is never named for the player, because a default
+    /// would be a placeholder string reaching the title bar and the save list.
+    ///
+    /// The two halves are deliberately one call. A founded but unnamed republic
+    /// is a state nothing should be able to observe: the naming would be a second
+    /// step that could be skipped, and every screen downstream would need a
+    /// branch for a republic with no name.
+    #[func]
+    fn take_posting(&mut self, index: i64, name: GString) -> GString {
+        let Some(shelf) = self.shelf.as_ref() else {
+            return GString::from("no shelf of postings has been generated");
+        };
+        let Some(mut world) = shelf.found(index.max(0) as usize) else {
+            return GString::from("that posting is not on the shelf");
+        };
+        if let Err(why) = world.issue(Command::NameRepublic {
+            name: name.to_string(),
+        }) {
+            // Refused before anything is kept, so a rejected name leaves the
+            // founding screen exactly as it was rather than half-founded.
+            return GString::from(why.to_string().as_str());
+        }
+        let base =
+            red_republic_sim::scenario::found(&mut world, red_republic_sim::scenario::SETTLERS);
+        self.centre = base.centre;
+        self.world = Some(world);
+        self.fraction = 0.0;
+        self.speed = 0;
+        self.shelf = None;
+        GString::from("")
+    }
+
+    /// What the player called this republic.
+    #[func]
+    fn republic_name(&self) -> GString {
+        self.world
+            .as_ref()
+            .map_or_else(|| GString::from(""), |w| GString::from(w.name()))
+    }
+
+    /// The longest name that will be accepted, so the name box can say so
+    /// before the player is refused rather than after.
+    #[func]
+    fn name_limit(&self) -> i64 {
+        red_republic_sim::world::NAME_LIMIT as i64
+    }
+
+    /// Rename the republic. Empty string on success, or the reason.
+    #[func]
+    fn rename(&mut self, name: GString) -> GString {
+        let Some(world) = self.world.as_mut() else {
+            return GString::from("no republic has been founded");
+        };
+        match world.issue(Command::NameRepublic {
+            name: name.to_string(),
+        }) {
+            Ok(_) => GString::from(""),
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
+    /// One climate's authored year: twelve mean temperatures, then twelve
+    /// rainfall figures. What the posting briefing is made of.
+    #[func]
+    fn climate_year(&self, climate: i64) -> PackedFloat32Array {
+        shelf::climate_year(climate_at(climate))
+    }
+
+    #[func]
+    fn climate_names(&self) -> PackedStringArray {
+        shelf::climate_names()
+    }
+
+    #[func]
+    fn size_names(&self) -> PackedStringArray {
+        shelf::size_names()
+    }
+
+    #[func]
+    fn size_extents(&self) -> PackedFloat32Array {
+        shelf::size_extents()
+    }
+
+    /// The climate this republic was posted to, as an index into
+    /// `ClimateId::ALL`. Fixed at founding — you do not get a milder winter by
+    /// asking for one.
+    #[func]
+    fn climate(&self) -> i64 {
+        let Some(w) = &self.world else { return 0 };
+        ClimateId::ALL
+            .iter()
+            .position(|&c| c == w.climate())
+            .unwrap_or(0) as i64
+    }
+
+    // ---- Saving and loading ------------------------------------------------
+
+    /// Write the republic to a file. Empty string on success, or the reason.
+    ///
+    /// The bytes are the simulation crate's own format and the shell adds
+    /// nothing to them — no header, no sidecar. That is deliberate: a save whose
+    /// name lived beside it in a second file is a save that can be renamed apart
+    /// from the republic it holds, and the format's requirement of bit-exact
+    /// `f64` round-tripping is not something a caller may opt out of.
+    #[func]
+    fn save_to(&self, path: GString) -> GString {
+        let Some(world) = self.world.as_ref() else {
+            return GString::from("no republic has been founded");
+        };
+        // Written to a neighbouring file and then moved into place. A save
+        // interrupted halfway is the one failure that costs a player a republic
+        // rather than a minute, and a partial write over the previous save
+        // destroys the thing it was meant to replace.
+        let path = path.to_string();
+        let temporary = format!("{path}.part");
+        if let Err(why) = std::fs::write(&temporary, world.to_bytes()) {
+            return GString::from(format!("could not write the save: {why}").as_str());
+        }
+        match std::fs::rename(&temporary, &path) {
+            Ok(()) => GString::from(""),
+            Err(why) => {
+                let _ = std::fs::remove_file(&temporary);
+                GString::from(format!("could not replace the save: {why}").as_str())
+            }
+        }
+    }
+
+    /// Load a republic from a file. Empty string on success, or the reason.
+    ///
+    /// The world is only put in place once it has parsed, so a failed load
+    /// leaves whatever was being played untouched. Reading a save into a
+    /// half-state and then reporting an error would lose a republic to a typo.
+    #[func]
+    fn load_from(&mut self, path: GString) -> GString {
+        let bytes = match std::fs::read(path.to_string()) {
+            Ok(bytes) => bytes,
+            Err(why) => return GString::from(format!("could not read the save: {why}").as_str()),
+        };
+        match World::from_bytes(&bytes) {
+            Ok(world) => {
+                // The founding centre is not in the save and does not need to
+                // be: it was only ever where the camera should open, and a
+                // republic being resumed has buildings to aim at instead.
+                self.centre = marshal::centre_of(&world);
+                self.world = Some(world);
+                self.fraction = 0.0;
+                self.speed = 0;
+                self.shelf = None;
+                GString::from("")
+            }
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
+    /// What a save says about itself, without opening it.
+    ///
+    /// `[name, date, days, population, climate, extent_km]` as strings, or a
+    /// single-entry array holding the reason it could not be read. Empty when the
+    /// file is not there at all, which is not an error worth a sentence — a load
+    /// screen simply does not list it.
+    ///
+    /// This is the read that lets the load screen exist. Listing saves by loading
+    /// them does not scale: a republic's map is megabytes, and `postcard` is
+    /// positional, so there is no reaching a field near the end of `World`
+    /// without decoding the terrain on the way past.
+    #[func]
+    fn save_preview(&self, path: GString) -> PackedStringArray {
+        let mut out = PackedStringArray::new();
+        let Ok(bytes) = std::fs::read(path.to_string()) else {
+            return out;
+        };
+        match World::preview_from_bytes(&bytes) {
+            Ok(preview) => {
+                let (year, month, day) = preview.date;
+                out.push(&GString::from(preview.name.as_str()));
+                out.push(&GString::from(
+                    format!("{year:04}-{month:02}-{day:02}").as_str(),
+                ));
+                out.push(&GString::from(preview.day.to_string().as_str()));
+                out.push(&GString::from(preview.population.to_string().as_str()));
+                out.push(&GString::from(
+                    ClimateId::ALL
+                        .iter()
+                        .position(|&c| c == preview.climate)
+                        .unwrap_or(0)
+                        .to_string()
+                        .as_str(),
+                ));
+                out.push(&GString::from(
+                    format!("{:.0}", preview.extent_m / 1_000.0).as_str(),
+                ));
+            }
+            Err(why) => out.push(&GString::from(why.to_string().as_str())),
+        }
+        out
+    }
+
+    /// The format version this build writes, so a save file name can carry it
+    /// and a player can see why an old one will not open.
+    #[func]
+    fn save_version(&self) -> i64 {
+        i64::from(red_republic_sim::world::SAVE_VERSION)
     }
 
     #[func]

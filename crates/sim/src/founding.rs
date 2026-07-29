@@ -24,11 +24,19 @@
 //!
 //! # It is not free, and the number is measured
 //!
-//! Generating a candidate costs a full worldgen — **36 ms for a 10 km map**,
-//! measured by `worldgen_cost` in the baselines. A shelf of six is about 220 ms,
-//! which is fine for a screen the player opens once, and would not be fine for
-//! something that regenerated on every keystroke. [`Shelf::derive`] therefore
-//! generates on demand and hands back owned worlds the caller can keep.
+//! Generating a candidate costs a full worldgen, and the figure that used to be
+//! here was attached to the wrong map size. Measured by `founding_shelf_cost`:
+//! **219 ms at 6 km, 611 ms at 10 km, 1,630 ms at 16 km** for a shelf of six.
+//! The 220 ms this once claimed for a 10 km shelf is what a *6 km* shelf costs,
+//! and 10 km is the default — so the screen the player opens by default is
+//! nearly three times dearer than the number the design was reasoning with. A
+//! re-filter costs the same again, because a filter genuinely re-derives the
+//! land.
+//!
+//! That is affordable for a screen opened once and **needs a loading state at
+//! every size**, which is the conclusion the old figure was soft on.
+//! [`Shelf::derive`] generates on demand and hands back owned worlds the caller
+//! can keep — see [`Candidate::world`] for why they are kept rather than rebuilt.
 
 use crate::climate::ClimateId;
 use crate::geology::Mineral;
@@ -134,6 +142,27 @@ pub struct Candidate {
     pub index: usize,
     pub spec: WorldSpec,
     pub stats: CandidateStats,
+    /// The land itself, generated once and kept.
+    ///
+    /// Kept rather than regenerated on demand, for three reasons that all point
+    /// the same way:
+    ///
+    /// 1. **[`Shelf::found`] stops trusting determinism and starts returning the
+    ///    surveyed world.** Building a second world from the same spec and
+    ///    assuming it matches the one the card described is exactly the kind of
+    ///    unchecked assumption the determinism rule exists to make *checkable* —
+    ///    and here it did not need to be assumed at all.
+    /// 2. **The founding screen renders the selected candidate in full**, with
+    ///    its real climate and its real relief. That needs the whole world, not
+    ///    a summary, so the alternative was generating it twice.
+    /// 3. It halves the cost of opening the screen, since the survey already
+    ///    generated it.
+    ///
+    /// The price is memory, and it is transient: a shelf is dropped the moment a
+    /// posting is chosen. Measured by `a_shelf_of_the_largest_maps_is_affordable`
+    /// rather than estimated, because the largest size on offer is six 16 km maps
+    /// at once and a guess there would have been a guess about the worst case.
+    pub world: World,
 }
 
 /// The shelf itself: candidate seeds, and the worlds they make.
@@ -166,8 +195,9 @@ impl Shelf {
                 let world = World::new(spec);
                 Candidate {
                     index,
-                    spec,
                     stats: survey(&world),
+                    spec,
+                    world,
                 }
             })
             .collect();
@@ -187,9 +217,15 @@ impl Shelf {
         self.candidates.iter().find(|c| c.index == index)
     }
 
-    /// Build the world for a candidate. The one the player actually plays.
+    /// The world for a candidate. The one the player actually plays.
+    ///
+    /// A clone of the land the card described, **not** a fresh world built from
+    /// the same spec. Those two are supposed to be identical and the difference
+    /// still matters: regenerating makes the card's honesty depend on worldgen
+    /// determinism holding, which is an assumption nothing here was checking.
+    /// Handing over the surveyed world makes it true by construction.
     pub fn found(&self, index: usize) -> Option<World> {
-        self.get(index).map(|c| World::new(c.spec))
+        self.get(index).map(|c| c.world.clone())
     }
 }
 
@@ -351,6 +387,28 @@ mod tests {
         assert_eq!(played.seed(), shelf.candidates[0].spec.seed);
         assert_eq!(played.climate, shelf.filter.climate);
         assert_eq!(played.terrain.extent(), shelf.filter.extent);
+    }
+
+    /// Worldgen is a pure function of its spec — asserted, not assumed.
+    ///
+    /// [`Shelf::found`] used to build a second world from the candidate's spec
+    /// and hand that over, which quietly made every card's honesty depend on
+    /// this property. It now hands over the surveyed world, so the dependency is
+    /// gone — and the property is worth keeping under test *because* nothing
+    /// relies on it any more. An assumption that stops being load-bearing is an
+    /// assumption that stops being noticed when it breaks, and map generation
+    /// reproducing from a seed is a promise between players rather than an
+    /// implementation detail.
+    #[test]
+    fn the_same_spec_generates_the_same_land_twice() {
+        let shelf = Shelf::derive(99, small());
+        let candidate = shelf.get(3).expect("six candidates");
+        let regenerated = World::new(candidate.spec);
+        assert_eq!(
+            candidate.world, regenerated,
+            "two worlds from one spec came out different, which breaks the \
+             promise that a shared seed means a shared map"
+        );
     }
 
     #[test]

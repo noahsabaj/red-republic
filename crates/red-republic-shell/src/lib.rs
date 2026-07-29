@@ -29,6 +29,7 @@ use godot::prelude::*;
 
 pub mod marshal;
 pub mod republic;
+pub mod shelf;
 pub mod terrain_mesh;
 pub mod views;
 
