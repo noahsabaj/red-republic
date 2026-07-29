@@ -56,3 +56,95 @@ jobs:
       # them to a threshold — the pinned figures in the repo are Noah's machine.
       - name: Baselines
         run: cargo test --release --test baselines -- --nocapture
+
+  # Does the game actually load? Nothing in this repository asked that until now.
+  #
+  # `cargo test` does not parse GDScript, and on 2026-07-29 that turned out to
+  # have been hiding two breaks at once, both of which made the game refuse to
+  # start at all:
+  #
+  #   * `Overlays.Mode.SNOW` was referenced from three files, including
+  #     `overlays.gd` itself, and the enum never got the variant. Every `.gd` in
+  #     the project failed to parse. Shipped in M11.
+  #   * Thirteen buildings had no row in `building_art.gd`, so the art guard —
+  #     which works, and is the right guard — fired an assertion at load.
+  #
+  # The exposure guard could not see either. It is a source *scan*: it found the
+  # string it was looking for in a file that cannot load, and reported the view
+  # exposed. A scan over text cannot tell you the text is valid.
+  #
+  # This job runs on Linux only. The check is "does the project parse and does
+  # the extension load", which is not an OS-specific question, and a second
+  # runner downloading Godot buys nothing the Rust matrix above does not already
+  # cover.
+  loads:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The cdylib has to exist before Godot can load it. Debug rather than
+      # release: this job is asking whether the project loads, not how fast it
+      # runs, and a debug build is minutes cheaper.
+      - name: Build the shell
+        run: cargo build -p red-republic-shell
+
+      # A standalone build from godotengine.org, pinned. The editor on Noah's
+      # desktop comes from Steam and auto-updates, which can break the build with
+      # no commit to blame; CI is where a pinned version actually gets used.
+      - name: Fetch Godot
+        run: |
+          curl -sSLo godot.zip \
+            https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_linux.x86_64.zip
+          unzip -q godot.zip
+          mv Godot_v4.7.1-stable_linux.x86_64 godot-bin
+          chmod +x godot-bin
+
+      # A virgin checkout has no `.godot/`, and without one no GDExtension class
+      # resolves — the tell is `Cannot get class` with no `Initialize godot-rust`
+      # line. So the import pass comes first, and its own output is checked:
+      # `--import` exits 0 on a project full of parse errors.
+      - name: Import
+        run: |
+          ./godot-bin --headless --import --path godot 2>&1 | tee import.log
+          if grep -qiE "Parse Error|Failed to load script|Cannot get class" import.log; then
+            echo "::error::the Godot project does not load — see the log above"
+            exit 1
+          fi
+
+      # And then actually run it. Parsing is not loading: the building-art guard
+      # is an `assert` at scene setup, so only a real run reaches it.
+      #
+      # `--check` founds a republic, prints the line saying so, and quits. It
+      # exists because both alternatives are wrong here: `--shot` awaits
+      # `RenderingServer.frame_post_draw`, which never arrives under `--headless`
+      # and spins for ever printing nothing, and a plain `--advance` run never
+      # exits — so the job would hang on a success and depend on a timeout to
+      # report it.
+      - name: Load a republic
+        run: |
+          ./godot-bin --headless --path godot -- --check 2>&1 | tee run.log
+          if grep -qiE "SCRIPT ERROR|Assertion failed|unauthored" run.log; then
+            echo "::error::the republic did not load cleanly — see the log above"
+            exit 1
+          fi
+          # A run that quietly does nothing prints nothing, which is the failure
+          # these lines exist to tell apart from success. Same reason the founding
+          # print exists at all.
+          if ! grep -q "^founded " run.log; then
+            echo "::error::no republic was founded"
+            exit 1
+          fi
+          # `--check` also writes a save, lists it, reads it back and compares.
+          # That covers the part only the shell can get wrong — the temporary-file
+          # write and rename, the preview marshalling, the listing — and it is
+          # where a bug costs a player their republic. It earned this line
+          # immediately: the first run failed with `os error 123`, because the
+          # Rust side was being handed Godot's `user://` virtual path.
+          if ! grep -q "^save check ok" run.log; then
+            echo "::error::this build cannot round-trip its own save"
+            exit 1
+          fi

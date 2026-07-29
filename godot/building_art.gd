@@ -60,6 +60,10 @@ static func table() -> Dictionary:
 		# a single storey with a pitched roof.
 		"Small House": Art.new(1, 3.2, P, 0, 0, false, Tone.TIMBER),
 		"Apartment Block": Art.new(5, 3.0, F, 0, 0, false, Tone.RENDER),
+		# The panel block is the one that needs prefab panels to exist, so it is
+		# taller than the walk-up and concrete rather than rendered -- the point of
+		# it is that you can see it was assembled from parts.
+		"Panel Block": Art.new(9, 3.0, F, 0, 0, false, Tone.CONCRETE),
 
 		# Extraction. The gantry is what makes a mine read as a mine from above.
 		"Woodcutter Post": Art.new(1, 4.0, P, 0, 0, false, Tone.TIMBER),
@@ -74,6 +78,24 @@ static func table() -> Dictionary:
 		"Steel Mill": Art.new(3, 6.5, S, 2, 0, false, Tone.METAL),
 		"Oil Refinery": Art.new(2, 6.0, F, 1, 3, false, Tone.METAL),
 		"Machine Works": Art.new(2, 6.0, S, 1, 0, false, Tone.CONCRETE),
+
+		# The construction-materials chain. All four are silos and gantries rather
+		# than sheds, because that is what these actually look like: a cement works
+		# is a stack and a row of silos, and a precast yard is a crane over a slab.
+		"Cement Works": Art.new(3, 7.0, F, 1, 3, false, Tone.CONCRETE),
+		"Concrete Plant": Art.new(2, 6.0, F, 0, 2, true, Tone.CONCRETE),
+		"Panel Works": Art.new(1, 9.0, S, 0, 0, true, Tone.CONCRETE),
+		# Bitumen has to be kept hot, so an asphalt plant is a mixing tower with
+		# tanks under it rather than a building with a yard.
+		"Asphalt Plant": Art.new(2, 7.0, F, 1, 2, false, Tone.METAL),
+
+		# Chemicals and what comes after them. The works is the dirtiest thing in
+		# the republic and looks it; the electronics combine is the cleanest piece
+		# of industry there is, so it gets the light-industry read instead.
+		"Chemical Works": Art.new(3, 6.0, F, 2, 3, false, Tone.METAL),
+		"Electronics Combine": Art.new(3, 4.2, S, 0, 0, false, Tone.RENDER),
+		# Brick and a stack, with the tanks the fermentation needs.
+		"State Distillery": Art.new(2, 5.5, F, 1, 2, false, Tone.BRICK),
 
 		# Power and heat. The tallest stacks in the republic.
 		"Coal Power Plant": Art.new(4, 6.5, F, 2, 0, false, Tone.CONCRETE),
@@ -123,6 +145,15 @@ static func table() -> Dictionary:
 
 		# Storage and logistics. Long, low, and mostly roof.
 		"Warehouse": Art.new(1, 11.0, F, 0, 0, false, Tone.CONCRETE),
+		# The four stores that are not sheds, and each one has to read as the shape
+		# of goods it takes -- that is the whole point of storage having forms. A
+		# tank is a tank, a silo is a silo, and a heap of gravel is a low bay.
+		# The open yard is the flattest thing in the republic on purpose: it is a
+		# fence and a hardstanding, and anything taller would read as a building.
+		"Open Storage Yard": Art.new(1, 1.6, F, 0, 0, false, Tone.CONCRETE),
+		"Aggregate Store": Art.new(1, 4.0, F, 0, 0, false, Tone.CONCRETE),
+		"Storage Tank": Art.new(1, 10.0, F, 0, 3, false, Tone.METAL),
+		"Grain Silo": Art.new(1, 14.0, F, 0, 4, false, Tone.CONCRETE),
 		"Council Depot": Art.new(1, 8.0, F, 0, 0, false, Tone.CONCRETE),
 		"Construction Office": Art.new(2, 3.6, F, 0, 0, false, Tone.RENDER),
 		"Motor Depot": Art.new(1, 9.0, S, 0, 0, false, Tone.METAL),
@@ -147,6 +178,15 @@ static func table() -> Dictionary:
 		"River Port": Art.new(1, 7.0, F, 0, 1, true, Tone.CONCRETE),
 		"Aerodrome": Art.new(1, 6.0, F, 0, 0, false, Tone.CONCRETE),
 		"Distribution Office": Art.new(2, 4.0, F, 0, 0, false, Tone.RENDER),
+
+		# Tourism. The tallest civic building there is, and deliberately so: an
+		# Intourist hotel was a statement building, and it is the one thing a
+		# republic puts up for the benefit of people who do not live there.
+
+		# Tourism. The tallest civic building there is, and deliberately so: an
+		# Intourist hotel was a statement building, and it is the one thing a
+		# republic puts up for the benefit of people who do not live there.
+		"Intourist Hotel": Art.new(8, 3.2, F, 0, 0, false, Tone.RENDER),
 
 		# The frontier.
 		"Customs House": Art.new(2, 4.0, F, 0, 0, false, Tone.RENDER),

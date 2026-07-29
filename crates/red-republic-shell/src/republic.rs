@@ -479,6 +479,17 @@ impl Republic {
         i64::from(red_republic_sim::world::SAVE_VERSION)
     }
 
+    /// The reference, as marked lines. See [`crate::reference`] for the markers.
+    ///
+    /// Generated from the authored tables every time it is asked for, rather than
+    /// cached: it is a few hundred lines built once when a screen opens, and a
+    /// cache would be a copy that can be stale — which is the one thing this
+    /// document exists not to be.
+    #[func]
+    fn reference(&self) -> PackedStringArray {
+        crate::reference::document_for_godot()
+    }
+
     #[func]
     fn set_speed(&mut self, speed: i64) {
         self.speed = speed.clamp(0, SPEEDS.len() as i64 - 1) as usize;
