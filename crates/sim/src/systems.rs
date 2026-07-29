@@ -233,7 +233,20 @@ pub enum Mutation {
         burn: Tonnes,
     },
     /// How much of a household's needs the shops actually met, 0..=1.
-    Provision { building: BuildingId, fraction: f64 },
+    /// What came off the shelves for the people who live here.
+    ///
+    /// **One mutation for the necessities and the comforts**, because they came
+    /// off the same shelves in the same pass and a home provisioned without its
+    /// comforts recorded would be a building whose two halves disagreed about
+    /// what day it was. `drink` is carried apart from `comforts` because alcohol
+    /// alone costs health — see [`crate::wellbeing::ALCOHOL_HEALTH_COST`] — and
+    /// a combined figure could not say how much of it was vodka.
+    Provision {
+        building: BuildingId,
+        fraction: f64,
+        comforts: f64,
+        drink: f64,
+    },
     /// Goods leaving the republic and the currency that came back. One kind:
     /// the stock and the payment are the same transaction, and a sale where
     /// only one landed would either give goods away or mint money.
@@ -804,9 +817,16 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     world.lattice.clear(cell);
                 }
             }
-            &Mutation::Provision { building, fraction } => {
+            &Mutation::Provision {
+                building,
+                fraction,
+                comforts,
+                drink,
+            } => {
                 if let Some(b) = world.buildings.get_mut(building) {
                     b.provisioned = fraction.clamp(0.0, 1.0);
+                    b.comforted = comforts.clamp(0.0, 1.0);
+                    b.drink = drink.clamp(0.0, 1.0);
                 }
             }
             &Mutation::Export {
@@ -2232,6 +2252,25 @@ pub const FOOD_PER_CITIZEN: f64 = 0.015;
 /// And wears out in a day.
 pub const CLOTHES_PER_CITIZEN: f64 = 0.004;
 
+/// What one citizen drinks in a day.
+///
+/// Well under half what they wear out and a fraction of what they eat, which is
+/// the scale a comfort should sit at: a distillery supplies a town rather than
+/// an estate, and the tonnage is small enough that the same crop going to a
+/// food factory is nearly always the better call — which is what makes sending
+/// it to the still a decision.
+pub const ALCOHOL_PER_CITIZEN: f64 = 0.0015;
+
+/// And wants in household electrics.
+///
+/// Smaller again, because these are **durables**. A radio, a television, a
+/// refrigerator: bought once and kept for years, so what a republic has to
+/// supply is a trickle rather than a ration. It is also why one Electronics
+/// Combine can comfortably keep a whole republic in televisions while the same
+/// output is worth ninety-five dollars a tonne at a Western post — the tension
+/// this good exists for.
+pub const ELECTRONICS_PER_CITIZEN: f64 = 0.0006;
+
 /// How far people will go to a shop.
 ///
 /// Shorter than the commute they will accept for work, deliberately: you walk
@@ -2299,12 +2338,23 @@ pub fn households(world: &World) -> Vec<Mutation> {
 
         let mut met = 0.0;
         let mut wanted = 0.0;
+        // The comforts are tallied **separately and per good**, not folded into
+        // the tonnage above. Two reasons, and both matter: what they are worth
+        // is a lift rather than a component, so mixing the tonnage in would make
+        // a missing television read as a missing meal; and drink alone carries a
+        // health cost, so how much of *it* reached the shelves has to survive
+        // this loop.
+        let mut comfort_shares: Vec<f64> = Vec::new();
+        let mut drink = 0.0;
+
         for (resource, per_head) in [
             (Resource::Food, FOOD_PER_CITIZEN),
             (Resource::Clothes, CLOTHES_PER_CITIZEN),
+            (Resource::Alcohol, ALCOHOL_PER_CITIZEN),
+            (Resource::Electronics, ELECTRONICS_PER_CITIZEN),
         ] {
             let need = Tonnes(residents as f64 * per_head * day);
-            wanted += need.0;
+            let mut got = Tonnes::ZERO;
             let mut outstanding = need;
 
             for shop in &reachable {
@@ -2317,13 +2367,32 @@ pub fn households(world: &World) -> Vec<Mutation> {
                 let taken = stock.take(resource, outstanding);
                 if taken.is_positive() {
                     outstanding = outstanding.saturating_sub(taken);
-                    met += taken.0;
+                    got += taken;
                     out.push(Mutation::Consume {
                         building: *shop,
                         resource,
                         tonnes: taken,
                     });
                 }
+            }
+
+            let share = if need.is_positive() {
+                (got.0 / need.0).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            if resource.is_comfort() {
+                // Each comfort counts for as much as the other, rather than by
+                // weight. Electronics is a broad category and a household wants
+                // a radio about as much as it wants a bottle; weighting by
+                // tonnage would have made the whole thing a drink meter.
+                comfort_shares.push(share);
+                if resource == Resource::Alcohol {
+                    drink = share;
+                }
+            } else {
+                wanted += need.0;
+                met += got.0;
             }
         }
 
@@ -2332,9 +2401,16 @@ pub fn households(world: &World) -> Vec<Mutation> {
         } else {
             1.0
         };
+        let comforts = if comfort_shares.is_empty() {
+            0.0
+        } else {
+            comfort_shares.iter().sum::<f64>() / comfort_shares.len() as f64
+        };
         out.push(Mutation::Provision {
             building: home.id,
             fraction,
+            comforts,
+            drink,
         });
     }
 
@@ -4654,6 +4730,10 @@ pub fn contentment(world: &World) -> Vec<Mutation> {
                 let smoke = world.lattice.pollution_near(home.centre);
                 (1.0 - rubbish.max(smoke)).clamp(0.0, 1.0)
             },
+            // Drink and household electrics off a shelf in reach. A lift on top
+            // of everything above rather than one more of them — see
+            // `Contentment::comforts` for why that is the whole design.
+            comforts: home.comforted,
         };
         scores.insert(home.id, content.overall());
         out.push(Mutation::Content {
@@ -4687,7 +4767,12 @@ pub fn contentment(world: &World) -> Vec<Mutation> {
         // Age tells on people whatever the republic does about it. This is what
         // makes an ageing population a problem rather than a statistic.
         let wear = 1.0 - f64::from(record.age.0.saturating_sub(50)) * 0.012;
-        let target_health = (served * wear.max(0.25)).clamp(0.0, 1.0);
+        // And so does the drink. **The other half of a trade the player is
+        // making on purpose**: supplying alcohol lifts a home's contentment and
+        // costs the people in it health, scaled by how much of it the shops in
+        // reach actually had. A republic that makes none pays nothing.
+        let drink = crate::wellbeing::ALCOHOL_HEALTH_COST * home.drink.clamp(0.0, 1.0);
+        let target_health = (served * wear.max(0.25) - drink).clamp(0.0, 1.0);
         let health = record.wellbeing.health
             + (target_health - record.wellbeing.health) * crate::wellbeing::HEALTH_DRIFT;
 
@@ -8567,11 +8652,29 @@ mod tests {
 
     /// Only what a building is authored to sell reaches its shelves — the
     /// property lives on the def, not in a list of kinds inside this module.
+    ///
+    /// Four things on the counter: the two people need and the two they are
+    /// glad of. Both halves are asserted, because a shop that quietly stopped
+    /// stocking drink would make the comfort lift unreachable and look like a
+    /// balance problem.
     #[test]
     fn only_authored_retail_sells_anything() {
         assert_eq!(
             BuildingKind::Store.def().sells,
-            &[Resource::Food, Resource::Clothes]
+            &[
+                Resource::Food,
+                Resource::Clothes,
+                Resource::Alcohol,
+                Resource::Electronics
+            ]
+        );
+        assert!(
+            BuildingKind::Store
+                .def()
+                .sells
+                .iter()
+                .any(|r| r.is_comfort()),
+            "nothing on the shelves is a comfort, so nothing can ever lift a home"
         );
         for def in crate::building::BUILDINGS {
             if def.kind != BuildingKind::Store {
@@ -11709,6 +11812,76 @@ mod tests {
             ordered.0 <= 60.0 + 1e-6,
             "the order was for 60 t and {:.1} t turned up",
             ordered.0
+        );
+    }
+
+    /// Drink lifts a block and costs the people in it health, and both halves
+    /// are real in a running republic.
+    ///
+    /// **The trade the player is being asked to make**, and it is asserted in
+    /// both directions from the same fixture so neither half can be true on its
+    /// own. The premise — that the vodka actually reaches the shelves — is
+    /// checked before either, because a shop nobody stocked would give the same
+    /// answer as a mechanic that does nothing.
+    #[test]
+    fn drink_lifts_a_block_and_costs_it_health() {
+        let run = |stock_drink: bool| -> (f64, f64, f64) {
+            let mut w = bare();
+            let town = at(2_000.0, 2_000.0);
+            let home = staff_up(&mut w, town, 40);
+            let shop = crate::scenario::find_site(&w, BuildingKind::Store, town, Metres(300.0))
+                .expect("somewhere for a shop");
+            let store = w.place_built(BuildingKind::Store, shop).expect("a shop");
+            {
+                let b = w.buildings.get_mut(store).unwrap();
+                b.staff = BuildingKind::Store.def().workers;
+                // Fed and clothed either way, so the only thing that differs
+                // between the two runs is the drink.
+                b.stock.add(Resource::Food, Tonnes(30.0));
+                b.stock.add(Resource::Clothes, Tonnes(30.0));
+                if stock_drink {
+                    b.stock.add(Resource::Alcohol, Tonnes(30.0));
+                }
+            }
+            for _ in 0..(TICKS_PER_DAY * 20) {
+                w.tick();
+            }
+            let block = w.buildings.get(home).unwrap();
+            let (health, _) = w.population().mean_wellbeing();
+            (block.content.overall(), block.content.lift(), health)
+        };
+
+        let (dry_score, dry_lift, dry_health) = run(false);
+        let (wet_score, wet_lift, wet_health) = run(true);
+
+        assert_eq!(
+            dry_lift, 0.0,
+            "the premise: a republic with no drink should be lifted by nothing"
+        );
+        assert!(
+            wet_lift > 0.0,
+            "the premise: the vodka never reached anybody, so neither half below \
+             is being tested"
+        );
+
+        assert!(
+            wet_score > dry_score,
+            "drink was on the shelves and the block is no happier: \
+             {dry_score:.3} then {wet_score:.3}"
+        );
+        assert!(
+            wet_health < dry_health,
+            "the republic drank for twenty days and is exactly as healthy: \
+             {dry_health:.4} then {wet_health:.4}"
+        );
+
+        // And the needs half is untouched, which is what stops the lift being
+        // mistaken for the republic having fed anybody better.
+        let needs = wet_score - wet_lift;
+        assert!(
+            (needs - dry_score).abs() < 1e-9,
+            "supplying drink moved what the republic is judged on: \
+             {dry_score:.4} against {needs:.4}"
         );
     }
 

@@ -290,13 +290,18 @@ pub fn demographics(world: &World) -> PackedInt32Array {
 
 /// How the republic is treating its people, component by component.
 ///
-/// `[provisions, warmth, health, culture, schooling, work, overall]`, each
-/// `0.0..=1.0`, averaged over homes and **weighted by how many people live in
-/// them** — one wretched outpost does not cancel a working city, and an equal
-/// average over blocks would say it did.
+/// One float per `Contentment::NAMES`, then **`overall`, then the comfort
+/// lift** — each `0.0..=1.0`, averaged over homes and **weighted by how many
+/// people live in them**: one wretched outpost does not cancel a working city,
+/// and an equal average over blocks would say it did.
 ///
 /// The breakdown rather than the score, because "your people are at 61%" is not
 /// something a player can act on and "fed, warm, no doctor, no work" is.
+///
+/// The lift comes back apart from the components on purpose. Drink and
+/// household electrics are not a way to fail — they add on top — so a panel
+/// showing them in the same column as Warmth would be inviting a player to fix
+/// the wrong thing.
 pub fn contentment(world: &World) -> PackedFloat32Array {
     let census = world.population().census_by_home();
     // Sized from the roster rather than from a number typed here. A literal
@@ -305,6 +310,7 @@ pub fn contentment(world: &World) -> PackedFloat32Array {
     // and the panel that checked the two agreed showed nothing at all.
     let mut totals = [0.0f64; red_republic_sim::Contentment::NAMES.len()];
     let mut overall = 0.0;
+    let mut lift = 0.0;
     let mut heads = 0u32;
     for building in world.buildings().all() {
         if !building.is_built() || building.def().residents == 0 {
@@ -319,11 +325,16 @@ pub fn contentment(world: &World) -> PackedFloat32Array {
             *total += part * weight;
         }
         overall += building.content.overall() * weight;
+        lift += building.content.lift() * weight;
         heads += here.residents;
     }
     let mut out = PackedFloat32Array::new();
     if heads == 0 {
-        for _ in 0..7 {
+        // Sized from the roster plus the two trailing figures, never typed. A
+        // literal `6` here outlived the sixth component by exactly one
+        // milestone and the panel that checked the lengths agreed showed
+        // nothing at all.
+        for _ in 0..(red_republic_sim::Contentment::NAMES.len() + 2) {
             out.push(0.0);
         }
         return out;
@@ -332,6 +343,7 @@ pub fn contentment(world: &World) -> PackedFloat32Array {
         out.push((total / f64::from(heads)) as f32);
     }
     out.push((overall / f64::from(heads)) as f32);
+    out.push((lift / f64::from(heads)) as f32);
     out
 }
 

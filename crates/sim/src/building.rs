@@ -573,13 +573,20 @@ pub const BUILDINGS: &[BuildingDef] = &[
             needs: Graduate, teaches: None,
             transforms: false, waste: 0.7, dirt: 3.0, on: None, orders: false, serves: [],
             holds: [Open], beds: 0),
+    // Four things on the shelves: two people need and two they are glad of.
+    // Whether the drink and the electrics ever get here is the player's
+    // decision — both are worth more at a frontier post than they are on this
+    // counter, which is exactly the tension they exist for.
+    //
+    // It admits `Liquid` because of the alcohol, which is made and hauled in
+    // bulk like any other liquid. A state store with a cellar.
     def!(Store, "State Store", 30.0, 20.0, workers: 3, draw: 1.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [],
-        cost: [(Planks, 6.0), (Bricks, 8.0)], labour: 80.0, sells: [Food, Clothes], taps: None, residents: 0, storage: 30.0,
+        cost: [(Planks, 6.0), (Bricks, 8.0)], labour: 80.0, sells: [Food, Clothes, Alcohol, Electronics], taps: None, residents: 0, storage: 30.0,
             wear: 0.0, farms: false,
             needs: Unschooled, teaches: None,
             transforms: false, waste: 0.15, dirt: 0.05, on: None, orders: false, serves: [],
-            holds: [Covered], beds: 0),
+            holds: [Covered, Liquid], beds: 0),
     def!(Clinic, "Polyclinic", 45.0, 30.0, workers: 6, draw: 2.0, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [],
         cost: [(Bricks, 14.0), (Steel, 4.0), (Planks, 6.0)], labour: 150.0, sells: [], taps: None, residents: 0, storage: 10.0,
@@ -1061,6 +1068,22 @@ pub struct Building {
     /// households system, never authored. Meaningless on anything that is not
     /// housing.
     pub provisioned: f64,
+    /// How much of the drink and household electrics these people wanted was on
+    /// a shelf within reach, 0..=1. Set by the households system, never
+    /// authored.
+    ///
+    /// Kept apart from `provisioned` because the two are worth different
+    /// *kinds* of thing: falling short of food is a failure and falling short of
+    /// televisions is only a missed opportunity. See
+    /// [`crate::wellbeing::Contentment::comforts`].
+    pub comforted: f64,
+    /// How much of the alcohol these people wanted they got, 0..=1. Set by the
+    /// households system, never authored.
+    ///
+    /// Carried on its own because drink is the one comfort with a price
+    /// attached: it lifts contentment and costs health, and the second half
+    /// needs to know how much of the first was vodka rather than radios.
+    pub drink: f64,
     /// How well the republic is serving the people who live here, component by
     /// component. Set by the contentment system, never authored. Meaningless on
     /// anything that is not housing.
@@ -1380,6 +1403,8 @@ impl Buildings {
             powered: false,
             heated: true,
             provisioned: 0.0,
+            comforted: 0.0,
+            drink: 0.0,
             content: crate::wellbeing::Contentment::NOTHING,
             work_done: 0.0,
             tapped: None,
@@ -1420,6 +1445,8 @@ impl Buildings {
             powered: false,
             heated: true,
             provisioned: 0.0,
+            comforted: 0.0,
+            drink: 0.0,
             content: crate::wellbeing::Contentment::NOTHING,
             work_done: 0.0,
             tapped,
@@ -1590,6 +1617,8 @@ mod tests {
             powered: false,
             heated: false,
             provisioned: 0.0,
+            comforted: 0.0,
+            drink: 0.0,
             content: crate::wellbeing::Contentment::NOTHING,
             work_done: BuildingKind::StorageTank.def().labour,
             tapped: None,
@@ -1643,11 +1672,34 @@ mod tests {
             }) || crate::roadworks::GRADES
                 .iter()
                 .any(|g| g.materials.iter().any(|&(r, _)| r == resource))
-                || resource.is_luxury()
                 || resource == Resource::Machinery;
             assert!(
                 used,
                 "{} is produced and nothing anywhere wants it",
+                resource.name()
+            );
+        }
+    }
+
+    /// A comfort nobody sells is a lift no republic can ever earn.
+    ///
+    /// The same shape as `every_need_can_be_met_by_something_the_republic_can_
+    /// build`: a good that raises contentment and reaches no shelf would be a
+    /// permanent twelve points the player is told about and cannot have.
+    /// `is_comfort` is authored on the resource and `sells` on the building, so
+    /// without this nothing connects the two.
+    #[test]
+    fn every_comfort_reaches_a_shelf() {
+        let comforts: Vec<Resource> = Resource::ALL
+            .into_iter()
+            .filter(|r| r.is_comfort())
+            .collect();
+        assert!(!comforts.is_empty(), "the roster has no comforts in it");
+        for resource in comforts {
+            let sold = BUILDINGS.iter().any(|d| d.sells.contains(&resource));
+            assert!(
+                sold,
+                "{} raises contentment and no building puts it on a shelf",
                 resource.name()
             );
         }
