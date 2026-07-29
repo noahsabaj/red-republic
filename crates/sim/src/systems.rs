@@ -29,7 +29,8 @@ use crate::building::{BuildingId, BuildingKind};
 use crate::citizen::assign_labour;
 use crate::climate;
 use crate::contract::{self, Contract, ContractId, ContractState};
-use crate::fleet::{Destination, Doing, Job, VehicleId, VehicleKind, VehicleState, crewed};
+use crate::crews::PartyId;
+use crate::fleet::{Destination, Doing, Job, Role, VehicleId, VehicleKind, VehicleState, crewed};
 use crate::geology::DepositId;
 use crate::journey::{self, Journey};
 use crate::resource::Resource;
@@ -222,6 +223,28 @@ pub enum Mutation {
         market: Market,
         cost: f64,
     },
+    /// A crew set down at the site it is to work, and the bus turning for home.
+    ///
+    /// One kind, because a gang standing in a field with the bus still holding
+    /// them is not a state anybody should be able to write. The counterpart of
+    /// [`Mutation::Unload`], and it is separate from it for the reason a
+    /// [`Job::Ferry`] is separate from a haul: what comes off is people, and
+    /// what they then do is work rather than sit in a bin.
+    Land {
+        vehicle: VehicleId,
+        party: PartyId,
+        site: Destination,
+        at: Point,
+        journey: Journey,
+        burn: Tonnes,
+    },
+    /// A crew picked up, and the bus turning for home.
+    Embark {
+        vehicle: VehicleId,
+        party: PartyId,
+        journey: Journey,
+        burn: Tonnes,
+    },
     /// Builder-days worked on a site, and the materials that went into them.
     /// One kind: work and materials are the same transaction, and a site that
     /// advanced without consuming would be building itself out of nothing.
@@ -279,6 +302,8 @@ pub enum MutationKind {
     Unload,
     Park,
     Refuel,
+    Land,
+    Embark,
     Bog,
     Free,
     Recover,
@@ -315,6 +340,8 @@ impl Mutation {
             Mutation::Unload { .. } => MutationKind::Unload,
             Mutation::Park { .. } => MutationKind::Park,
             Mutation::Refuel { .. } => MutationKind::Refuel,
+            Mutation::Land { .. } => MutationKind::Land,
+            Mutation::Embark { .. } => MutationKind::Embark,
             Mutation::Wear { .. } => MutationKind::Wear,
             Mutation::Fade { .. } => MutationKind::Fade,
             Mutation::Promote { .. } => MutationKind::Promote,
@@ -348,7 +375,22 @@ impl Mutation {
 pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
     ("power", &[MutationKind::Powered]),
     ("heating", &[MutationKind::Heated, MutationKind::Consume]),
-    ("construction", &[MutationKind::Build, MutationKind::Lay]),
+    // Construction consumes as well as builds: the plant a crew works with is
+    // owned by its office and wears out in proportion to the builder-days
+    // actually worked, so an office with idle crews wears nothing.
+    (
+        "construction",
+        &[
+            MutationKind::Build,
+            MutationKind::Lay,
+            MutationKind::Consume,
+        ],
+    ),
+    // Getting the builders to the work. Its own system rather than a branch of
+    // `dispatch`, because the two rank completely different things: freight
+    // ranks by downtime averted, and a crew posting ranks by the commissioning
+    // order the construction queue already works to.
+    ("crews", &[MutationKind::Dispatch, MutationKind::Bog]),
     (
         "production",
         &[
@@ -387,6 +429,8 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
             MutationKind::Unload,
             MutationKind::Park,
             MutationKind::Refuel,
+            MutationKind::Land,
+            MutationKind::Embark,
             MutationKind::Bog,
             MutationKind::Free,
             MutationKind::Recover,
@@ -563,6 +607,17 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                 if let Some(b) = world.buildings.get_mut(site) {
                     b.work_done += worked;
                 }
+                // The last builder-day opens the building, and the crew that
+                // laid it is standing outside a finished thing with no work and
+                // no lift. Releasing them here rather than in the crews system
+                // is what keeps "there is a party working a site that is not a
+                // site" out of the states the world can hold.
+                if let Some(b) = world.buildings.get(site)
+                    && b.is_built()
+                {
+                    let (at, id) = (b.centre, b.id);
+                    world.crews.release(Destination::Building(id), at);
+                }
             }
             &Mutation::Weather(ground) => {
                 world.ground = ground;
@@ -585,10 +640,16 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     }
                     road.work_done += worked;
                 }
-                // And the last builder-day opens it.
+                // And the last builder-day opens it. The crew is set down where
+                // the site's depot stood — the site itself stops existing in
+                // this same transaction, so a party still pointed at it would be
+                // pointed at nothing.
                 if world.roadworks.get(site).is_some_and(|r| r.is_finished())
                     && let Some(opened) = world.roadworks.remove(site)
                 {
+                    world
+                        .crews
+                        .release(Destination::RoadSite(site), opened.depot());
                     roadworks::open(&mut world.roads, &opened);
                 }
             }
@@ -611,11 +672,67 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     .and_then(|h| world.buildings.get_mut(h))
                     .map(|b| b.stock.take(Resource::Fuel, *refuel))
                     .unwrap_or(Tonnes::ZERO);
+                // A bus setting out on a ferry leaves **with the crew aboard**,
+                // because the crew is at the office and the office is the bus's
+                // home. That is why the state a dispatch enters is read off the
+                // job rather than fixed: everything else drives out empty to
+                // fetch something, and a ferry is already carrying it.
+                let ferry = job.ferry().and_then(|(_, heads)| {
+                    let v = world.fleet.get(*vehicle)?;
+                    Some((v.home, v.at, heads))
+                });
+                if let Some((office, at, heads)) = ferry {
+                    world.crews.send(office, heads, at, *vehicle);
+                }
                 if let Some(v) = world.fleet.get_mut(*vehicle) {
                     v.fuel = (v.fuel + drawn).min(v.def().tank);
                     v.job = Some(*job);
                     v.journey = Some(journey.clone());
-                    v.state = VehicleState::Fetching;
+                    v.state = if ferry.is_some() {
+                        VehicleState::Delivering
+                    } else {
+                        VehicleState::Fetching
+                    };
+                }
+            }
+            Mutation::Land {
+                vehicle,
+                party,
+                site,
+                at,
+                journey,
+                burn,
+            } => {
+                if let Some(p) = world.crews.get_mut(*party) {
+                    p.riding = None;
+                    p.working = Some(*site);
+                    p.at = *at;
+                }
+                if let Some(v) = world.fleet.get_mut(*vehicle) {
+                    v.fuel = v.fuel.saturating_sub(*burn);
+                    v.at = *at;
+                    v.journey = Some(journey.clone());
+                    v.state = VehicleState::Returning;
+                }
+            }
+            Mutation::Embark {
+                vehicle,
+                party,
+                journey,
+                burn,
+            } => {
+                let boarded = world.crews.get_mut(*party).map(|p| {
+                    p.working = None;
+                    p.riding = Some(*vehicle);
+                    p.at
+                });
+                if let Some(v) = world.fleet.get_mut(*vehicle) {
+                    v.fuel = v.fuel.saturating_sub(*burn);
+                    if let Some(at) = boarded {
+                        v.at = at;
+                    }
+                    v.journey = Some(journey.clone());
+                    v.state = VehicleState::Returning;
                 }
             }
             &Mutation::Advance {
@@ -807,6 +924,11 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     continue;
                 };
                 let home = v.home;
+                // Anyone riding is home: the heads go back into the office's
+                // establishment, which is what makes them postable again.
+                if let Some(party) = world.crews.riding(vehicle).map(|p| p.id) {
+                    world.crews.dissolve(party);
+                }
                 let aboard: Vec<(Resource, Tonnes)> = v.cargo.iter().collect();
                 let yard = world.buildings.get(home).map(|b| b.centre);
                 // Anything the lorry came back with is tipped in the yard, so
@@ -1023,35 +1145,46 @@ pub fn heating(world: &World) -> Vec<Mutation> {
     out
 }
 
-/// The most builders one site can absorb in a day. Ported from the archive:
-/// throwing the whole republic's crew at one foundation does not make it set
-/// faster.
-pub const BUILDERS_PER_SITE: f64 = 10.0;
+/// The most builders one site can absorb. Ported from the archive: throwing the
+/// whole republic's crew at one foundation does not make it set faster.
+///
+/// It is now a **posting** limit rather than a per-day one, which is the same
+/// number meaning something firmer. A crew of this size is put on a site and
+/// stays there; what a republic can build at once is therefore the number of
+/// gangs it can field and carry, not a pool of days divided up.
+pub const BUILDERS_PER_SITE: u32 = 10;
+
+/// Tonnes of machinery a single builder-day wears out.
+///
+/// The industrialisation tax, pointed at the one place in the republic that had
+/// no machinery demand at all. It is charged to the **office**, because the
+/// office owns the plant — which is what makes a second office a real decision
+/// rather than only more people, and what finally gives `Machine Works`
+/// something to make for somebody.
+///
+/// Authored against the office's declared appetite: twenty builders working a
+/// full day wear 0.4 t, which is exactly what `ConstructionOffice` asks the
+/// resupply ranking for.
+pub const MACHINERY_PER_BUILDER_DAY: f64 = 0.02;
 
 /// Putting up what has been ordered.
 ///
-/// Builders are the staff of Construction Offices — a republic with no office
-/// builds nothing, however much material it has stockpiled. A site progresses
-/// only when **all** its materials are on hand: a half-delivered site waits,
-/// which is what makes freight priority matter during a build-out.
+/// **Work is done by the builders standing on the site**, and they got there on
+/// a bus — see [`crews`]. That is the whole difference from what this used to
+/// be: every office in the republic pooled its staff into a number of
+/// builder-days, and that number was spent on whatever was next in the queue
+/// however far away it stood. A site on the far side of the map cost exactly
+/// what a site next door cost.
 ///
-/// Sites are worked in commissioning order and finished one at a time rather
-/// than progressed evenly. That is the archived build's rule and it was learned
-/// the hard way — spreading crews across every site meant nothing opened, and
-/// ranking by nearness-to-completion starved new sites permanently.
+/// A site progresses only when the materials for the work still to do are on
+/// hand: a half-delivered site waits with its crew standing on it, which is what
+/// makes freight priority matter during a build-out and what makes an idle gang
+/// something the player can see and act on.
+///
+/// Sites are worked in commissioning order, which now decides which site gets a
+/// crew rather than which site gets the days.
 pub fn construction(world: &World) -> Vec<Mutation> {
     let day = tick_days();
-    let mut crew = world
-        .buildings
-        .all()
-        .iter()
-        .filter(|b| b.is_built() && b.kind == BuildingKind::ConstructionOffice)
-        .map(|b| f64::from(b.staff))
-        .sum::<f64>()
-        * day;
-    if crew <= 0.0 {
-        return Vec::new();
-    }
 
     // Buildings and roads, ranked together. A building's id *is* its place in
     // the commissioning order; a road site carries the count as it stood when
@@ -1059,6 +1192,68 @@ pub fn construction(world: &World) -> Vec<Mutation> {
     // that number was placed first. Ordering a road therefore takes its turn in
     // the queue like anything else, rather than jumping it or waiting behind
     // every factory in the republic.
+    let mut out = Vec::new();
+    // What each office's machinery bin holds as this pass sees it. The same
+    // scratch-ledger discipline the households and trade passes use: two gangs
+    // out of one office must not both be told they had the last of the plant.
+    let mut plant: BTreeMap<BuildingId, Tonnes> = BTreeMap::new();
+
+    for (_, site, wanted) in sites_in_order(world) {
+        let Some(party) = world.crews.working_at(site) else {
+            continue;
+        };
+        let Some(office) = world.buildings.get(party.office) else {
+            continue;
+        };
+
+        // A dry machinery bin is a soft penalty and never a stall — the rule
+        // `WORN_EFFICIENCY` already states for every other building, applied
+        // here to the plant a crew works with. A republic that runs out of
+        // machinery builds at half speed; it does not stop building, because
+        // limping is recoverable and stopping is not.
+        let held = *plant
+            .entry(office.id)
+            .or_insert_with(|| office.stock.get(Resource::Machinery));
+        let worn = if held.is_positive() {
+            1.0
+        } else {
+            WORN_EFFICIENCY
+        };
+
+        let days = (f64::from(party.heads) * day * worn).min(wanted);
+        if days <= 0.0 {
+            continue;
+        }
+        let plant_used = Tonnes(days * MACHINERY_PER_BUILDER_DAY).min(held);
+        if plant_used.is_positive() {
+            *plant.entry(office.id).or_default() = held.saturating_sub(plant_used);
+            out.push(Mutation::Consume {
+                building: office.id,
+                resource: Resource::Machinery,
+                tonnes: plant_used,
+            });
+        }
+        out.push(match site {
+            Destination::Building(id) => Mutation::Build {
+                site: id,
+                builder_days: days,
+            },
+            Destination::RoadSite(id) => Mutation::Lay {
+                site: id,
+                builder_days: days,
+            },
+        });
+    }
+    out
+}
+
+/// Every site with its materials on hand, in commissioning order, with the work
+/// each has left.
+///
+/// Shared by [`construction`] and [`crews`] because they must agree on the
+/// queue: a crew posted to the third site while the first is worked would make
+/// the commissioning order a thing the player could see and not rely on.
+fn sites_in_order(world: &World) -> Vec<(u64, Destination, f64)> {
     let mut sites: Vec<(u64, Destination, f64)> = Vec::new();
     for b in world.buildings.all() {
         if b.is_built() || !b.has_materials() {
@@ -1075,29 +1270,245 @@ pub fn construction(world: &World) -> Vec<Mutation> {
         sites.push((road.ordered, Destination::RoadSite(road.id), remaining));
     }
     sites.sort_by(|(oa, da, _), (ob, db, _)| oa.cmp(ob).then_with(|| da.cmp(db)));
+    sites
+}
 
+/// Getting the builders to the work, and back again.
+///
+/// The physical half of construction, and the reason a remote site is expensive:
+/// **an office's crews commute to it on the office's own buses**, over the
+/// republic's own roads, burning the republic's own diesel. Noah's rule, in his
+/// words: *"The office employs them and they commute office→site. No local
+/// crew."*
+///
+/// Two things happen here, in this order and deliberately:
+///
+/// 1. **Collections first.** A gang standing beside a building it has just
+///    finished is a gang the office cannot post anywhere — its heads are still
+///    counted against the establishment. Fetching them back is what frees them,
+///    so it outranks sending anybody new out.
+/// 2. **Postings**, in the same commissioning order the construction queue works
+///    to, so the site that would be built first is the site that gets a crew.
+///
+/// A bus that cannot make the round trip does not set out, which is the fleet's
+/// rule applied unchanged: the alternative is a gang stranded in a field with no
+/// bus, and unlike a load of gravel a stranded gang is people the republic has
+/// lost the use of.
+pub fn crews(world: &World) -> Vec<Mutation> {
+    let mut buses = available(world, Role::Crew);
+    if buses.is_empty() {
+        return Vec::new();
+    }
     let mut out = Vec::new();
-    for (_, site, wanted) in sites {
-        if crew <= 0.0 {
+    // Heads posted and fuel drawn *by this pass*, on top of what the world
+    // already shows. Two buses leaving one office in the same tick must not
+    // both be told the same ten people are free to go.
+    let mut going: BTreeMap<BuildingId, u32> = BTreeMap::new();
+    let mut drawn: BTreeMap<BuildingId, Tonnes> = BTreeMap::new();
+
+    // Gangs a bus is already on its way to. **A crew waiting for a lift stays
+    // waiting until the bus actually arrives**, so without this every tick sends
+    // another bus after the same ten people — measured, and it cost a republic
+    // one of its two buses permanently: the second arrived to find nobody there
+    // and sat in the field holding a job it could never finish. The same shape
+    // as freight's `Booked`, and needed for the same reason.
+    let coming: Vec<PartyId> = world
+        .fleet
+        .all()
+        .iter()
+        .filter_map(|v| v.job.and_then(Job::party))
+        .collect();
+    // And sites a gang is already on its way to. **A crew riding toward a site
+    // is not yet working it**, so without this the second bus leaves for the
+    // same foundation on the same tick — measured, and the trajectory runner
+    // reported it plainly: twenty builders out for one road that can absorb
+    // ten. Exactly the shape of the collection bug above, which is the argument
+    // for both being written down here: a journey is a commitment, and a
+    // dispatcher that only reads arrivals will make it twice.
+    let booked: Vec<Destination> = world
+        .fleet
+        .all()
+        .iter()
+        .filter_map(|v| v.job.and_then(Job::ferry))
+        .map(|(to, _)| to)
+        .collect();
+    let stranded: Vec<(PartyId, BuildingId, Point)> = world
+        .crews
+        .stranded()
+        .filter(|p| !coming.contains(&p.id))
+        .map(|p| (p.id, p.office, p.at))
+        .collect();
+    for (party, office, at) in stranded {
+        if buses.is_empty() {
             break;
         }
-        let days = crew.min(BUILDERS_PER_SITE * day).min(wanted);
-        if days <= 0.0 {
+        // Only its own office fetches a gang: the heads go back into *that*
+        // establishment, and a bus from elsewhere would deliver them to a yard
+        // that never lent them.
+        send_bus(
+            world,
+            at,
+            |v| (v.home == office).then_some(Job::Collect { party }),
+            &mut buses,
+            &mut drawn,
+            &mut out,
+        );
+    }
+
+    // How many an office could still send, counting what it has already sent on
+    // earlier ticks and earlier in this one.
+    let heads = |v: &crate::fleet::Vehicle, going: &BTreeMap<BuildingId, u32>| -> u32 {
+        world
+            .buildings
+            .get(v.home)
+            .map(|office| {
+                office
+                    .staff
+                    .saturating_sub(world.crews.posted(office.id))
+                    .saturating_sub(going.get(&office.id).copied().unwrap_or(0))
+                    .min(v.def().seats)
+                    .min(BUILDERS_PER_SITE)
+            })
+            .unwrap_or(0)
+    };
+
+    for (_, site, _) in sites_in_order(world) {
+        if buses.is_empty() {
+            break;
+        }
+        // **Stop as soon as no bus has anybody to carry.** Without this a
+        // republic with more sites than gangs — which is every republic in the
+        // middle of a build-out — plans a cross-country route for every idle
+        // bus against every unmanned site, on every tick, and throws all of it
+        // away. That is the same shape that once took a test fixture from two
+        // seconds to over five minutes, and it is why a check that costs
+        // nothing goes in front of one that costs an A*.
+        if !buses
+            .iter()
+            .filter_map(|&id| world.fleet.get(id))
+            .any(|v| heads(v, &going) > 0)
+        {
+            break;
+        }
+        if world.crews.working_at(site).is_some() || booked.contains(&site) {
             continue;
         }
-        crew -= days;
-        out.push(match site {
-            Destination::Building(id) => Mutation::Build {
-                site: id,
-                builder_days: days,
+        let Some(at) = world.place_of(site) else {
+            continue;
+        };
+        // How many go is a property of the bus that takes it — its seats, its
+        // office's spare people, and the cap on what one site can absorb — so
+        // the job is built by whichever bus is chosen rather than guessed
+        // before one is.
+        let Some(sent) = send_bus(
+            world,
+            at,
+            |v| {
+                let taking = heads(v, &going);
+                (taking > 0).then_some(Job::Ferry {
+                    to: site,
+                    heads: taking,
+                })
             },
-            Destination::RoadSite(id) => Mutation::Lay {
-                site: id,
-                builder_days: days,
-            },
-        });
+            &mut buses,
+            &mut drawn,
+            &mut out,
+        ) else {
+            continue;
+        };
+        if let Some(v) = world.fleet.get(sent) {
+            let taken = heads(v, &going);
+            *going.entry(v.home).or_default() += taken;
+        }
     }
     out
+}
+
+/// Send the nearest idle bus that `work` will give a job to and that can make
+/// the round trip.
+///
+/// Returns the vehicle that took it. The round-trip check is the fleet's own
+/// rule and it is not relaxed here: a bus that runs dry on the way back has
+/// stranded people rather than a pallet.
+///
+/// `work` both decides suitability and builds the job, because for a ferry
+/// those are one question — how many go depends on which bus goes.
+fn send_bus(
+    world: &World,
+    target: Point,
+    work: impl Fn(&crate::fleet::Vehicle) -> Option<Job>,
+    buses: &mut Vec<VehicleId>,
+    drawn: &mut BTreeMap<BuildingId, Tonnes>,
+    out: &mut Vec<Mutation>,
+) -> Option<VehicleId> {
+    let mut nearest: Vec<(f64, usize)> = buses
+        .iter()
+        .enumerate()
+        .filter_map(|(i, id)| {
+            let v = world.fleet.get(*id)?;
+            work(v).map(|_| (v.at.distance_to(target).0, i))
+        })
+        .collect();
+    nearest.sort_by(|(da, ia), (db, ib)| da.total_cmp(db).then_with(|| ia.cmp(ib)));
+
+    let crossing = world.crossing();
+    let now = world.clock.ticks() as f64;
+    let day = world.clock.day_index();
+    for (_, index) in nearest {
+        let id = buses[index];
+        let (Some(v), Some(yard)) = (
+            world.fleet.get(id),
+            world
+                .fleet
+                .get(id)
+                .and_then(|v| world.buildings.get(v.home))
+                .map(|b| b.centre),
+        ) else {
+            continue;
+        };
+        let Some(job) = work(v) else {
+            continue;
+        };
+        let def = v.def();
+        let leg = |a: Point, b: Point| {
+            journey::plan(
+                a,
+                b,
+                &world.roads,
+                &crossing,
+                def.on_road,
+                def.cross_country,
+                now,
+            )
+        };
+        let outbound = leg(v.at, target);
+        let round_trip = outbound.distance() + leg(target, yard).distance();
+        let held = world
+            .buildings
+            .get(v.home)
+            .map(|b| b.stock.get(Resource::Fuel))
+            .unwrap_or(Tonnes::ZERO)
+            .saturating_sub(drawn.get(&v.home).copied().unwrap_or(Tonnes::ZERO));
+        let top_up = def.tank.saturating_sub(v.fuel).min(held);
+        if (v.fuel + top_up).0 < v.fuel_for(round_trip).0 {
+            continue;
+        }
+
+        let stuck = sticks(world, &crossing, id, v.capability(), &outbound, 0, day);
+        out.push(Mutation::Dispatch {
+            vehicle: id,
+            job,
+            journey: outbound,
+            refuel: top_up,
+        });
+        if stuck {
+            out.push(Mutation::Bog { vehicle: id, day });
+        }
+        *drawn.entry(v.home).or_default() += top_up;
+        buses.remove(index);
+        return Some(id);
+    }
+    None
 }
 
 /// What one citizen eats in a day. Ported from the archived balance.
@@ -1771,8 +2182,8 @@ pub const MIN_LOAD: Tonnes = Tonnes(2.0);
 /// longer a scalar but **the vehicles that have drivers today**, so a republic
 /// that wants to move more builds another depot and staffs it.
 pub fn dispatch(world: &World) -> Vec<Mutation> {
-    let mut idle = available(world, false);
-    let mut tows = available(world, true);
+    let mut idle = available(world, Role::Freight);
+    let mut tows = available(world, Role::Recovery);
     if idle.is_empty() && tows.is_empty() {
         return Vec::new();
     }
@@ -1987,7 +2398,7 @@ pub fn dispatch(world: &World) -> Vec<Mutation> {
 /// — [`crewed`] — so a shift that goes unstaffed shrinks what can leave the
 /// yard. It does **not** recall the lorries already out: a republic short of
 /// people does not abandon its vehicles in a field.
-fn available(world: &World, recovery: bool) -> Vec<VehicleId> {
+fn available(world: &World, role: Role) -> Vec<VehicleId> {
     let mut out = Vec::new();
     // `Buildings::all` is in commissioning order, which is id order, which is
     // what makes the answer reproducible.
@@ -2008,9 +2419,10 @@ fn available(world: &World, recovery: bool) -> Vec<VehicleId> {
             if !v.is_idle() {
                 continue;
             }
-            // A recovery vehicle does not haul and a lorry does not tow, so
-            // the two pools never compete for the same driver-slot twice.
-            if v.def().recovers != recovery {
+            // A recovery vehicle does not haul, a lorry does not tow and a bus
+            // carries neither, so the three pools never compete for the same
+            // driver-slot twice.
+            if v.def().role != role {
                 continue;
             }
             out.push(v.id);
@@ -2702,8 +3114,55 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                         out.push(Mutation::Bog { vehicle: v.id, day });
                     }
                 }
-                None => {}
+                // Arrived at a gang waiting for a lift. They get on and the bus
+                // turns for home; the heads rejoin the office's establishment
+                // when it parks.
+                Some(Job::Collect { party }) => match world.crews.get(party) {
+                    Some(_) => out.push(Mutation::Embark {
+                        vehicle: v.id,
+                        party,
+                        journey: onward(yard),
+                        burn,
+                    }),
+                    // Nobody here. Go home rather than stand in a field holding
+                    // a job that can never finish — the same answer the recovery
+                    // case gives when a casualty frees itself on the way.
+                    None => out.push(Mutation::Load {
+                        vehicle: v.id,
+                        from: v.home,
+                        resource: Resource::Fuel,
+                        tonnes: Tonnes::ZERO,
+                        journey: onward(yard),
+                        state: VehicleState::Returning,
+                        burn,
+                    }),
+                },
+                Some(Job::Ferry { .. }) | None => {}
             },
+            // A bus is `Delivering` from the moment it leaves the office,
+            // because the crew boarded in the yard. Arriving means setting them
+            // down on the site they were sent to.
+            VehicleState::Delivering if v.job.and_then(Job::ferry).is_some() => {
+                let Some((site, _)) = v.job.and_then(Job::ferry) else {
+                    continue;
+                };
+                let Some(party) = world.crews.riding(v.id).map(|p| p.id) else {
+                    continue;
+                };
+                let plan = onward(yard);
+                let stuck = sticks(world, &crossing, v.id, def.ground, &plan, 0, day);
+                out.push(Mutation::Land {
+                    vehicle: v.id,
+                    party,
+                    site,
+                    at: arrived,
+                    journey: plan,
+                    burn,
+                });
+                if stuck {
+                    out.push(Mutation::Bog { vehicle: v.id, day });
+                }
+            }
             VehicleState::Delivering => {
                 let Some((_, to, resource, _)) = v.job.and_then(Job::haul) else {
                     continue;
@@ -2984,6 +3443,11 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
         trade,
         fleet,
         dispatch,
+        // Departures, after arrivals, for the reason dispatch sits where it
+        // does: a bus that reached its yard this tick can be sent out again on
+        // the same tick rather than standing in it for a minute because two
+        // systems happened to be listed the other way round.
+        crews,
     ] {
         let mutations = system(world);
         apply(world, &mutations);
@@ -4582,7 +5046,7 @@ mod tests {
             .fleet
             .all()
             .iter()
-            .find(|v| v.def().recovers)
+            .find(|v| v.def().recovers())
             .expect("the garage keeps one");
         assert!(
             tow.fuel < tow.def().tank,
@@ -4915,6 +5379,13 @@ mod tests {
 
     /// The queue is one queue. A road ordered before a factory is laid before
     /// the factory goes up, and a road ordered after it waits its turn.
+    ///
+    /// What the queue decides changed with crews and the test says so: it used
+    /// to ration builder-*days* between sites, and it now decides which site
+    /// gets a **gang**. Same rule, firmer consequence — a crew posted to a site
+    /// stays there rather than being re-divided every tick. The office is
+    /// deliberately staffed for exactly one gang, because a republic that can
+    /// field two gangs works two sites at once and there is no queue to observe.
     #[test]
     fn the_crew_works_roads_and_buildings_in_the_order_they_were_ordered() {
         let worked = |road_first: bool| -> (f64, f64) {
@@ -4924,7 +5395,7 @@ mod tests {
                 BuildingKind::ConstructionOffice,
                 at(1_000.0, 1_000.0),
             );
-            staff_up(&mut w, at(1_000.0, 1_150.0), 20);
+            staff_up(&mut w, at(1_000.0, 1_150.0), BUILDERS_PER_SITE as usize);
 
             let order_the_road = |w: &mut World| {
                 w.order_road(
@@ -4982,6 +5453,233 @@ mod tests {
         assert!(
             building > 0.0 && road == 0.0,
             "the building was ordered first and got {building} days against the road's {road}"
+        );
+    }
+
+    /// A site with everything it needs and a crew somewhere else.
+    ///
+    /// The office, the people, the materials and the bus, with only the
+    /// distance between them varying.
+    fn building_out_at(where_: Point) -> World {
+        let mut w = bare();
+        place(
+            &mut w,
+            BuildingKind::ConstructionOffice,
+            at(1_000.0, 1_000.0),
+        );
+        staff_up(&mut w, at(1_000.0, 1_150.0), 20);
+        let site = w
+            .buildings
+            .place(BuildingKind::Warehouse, where_, &w.terrain, &w.geology)
+            .expect("open ground");
+        for &(resource, quantity) in BuildingKind::Warehouse.def().materials {
+            w.buildings
+                .get_mut(site)
+                .unwrap()
+                .stock
+                .add(resource, Tonnes(quantity));
+        }
+        w
+    }
+
+    fn only_site(w: &World) -> BuildingId {
+        w.buildings
+            .all()
+            .iter()
+            .find(|b| b.kind == BuildingKind::Warehouse)
+            .expect("placed")
+            .id
+    }
+
+    /// The whole mechanic, end to end: builders are employed at an office,
+    /// carried to a site by a bus, work it, and are fetched back when it opens.
+    ///
+    /// This is the acceptance test for the construction rework. Before it, every
+    /// office in the republic contributed to one pool of builder-days that was
+    /// spent on whatever was next in the queue, wherever it stood — a crew never
+    /// travelled and a remote site cost exactly what a near one cost.
+    #[test]
+    fn builders_are_carried_to_a_site_and_fetched_back_when_it_opens() {
+        let mut w = building_out_at(at(2_200.0, 2_200.0));
+        let site = only_site(&w);
+        let office = w
+            .buildings
+            .all()
+            .iter()
+            .find(|b| b.kind == BuildingKind::ConstructionOffice)
+            .expect("placed")
+            .id;
+
+        // Nothing is built before anybody gets there. The bus has to make the
+        // journey first, and that is the point of the whole change.
+        w.tick();
+        assert_eq!(
+            w.buildings.get(site).unwrap().work_done,
+            0.0,
+            "a site was worked with nobody standing on it"
+        );
+
+        let mut landed = None;
+        let mut finished = None;
+        let mut collected = None;
+        for tick in 0..(TICKS_PER_DAY * 40) {
+            w.tick();
+            if landed.is_none() && w.crews.at_site(Destination::Building(site)) > 0 {
+                landed = Some(tick);
+            }
+            if finished.is_none() && w.buildings.get(site).unwrap().is_built() {
+                finished = Some(tick);
+            }
+            if finished.is_some() && collected.is_none() && w.crews.posted(office) == 0 {
+                collected = Some(tick);
+            }
+        }
+
+        let landed = landed.expect("a crew was never put on the site");
+        let finished = finished.expect("the site never opened");
+        let collected = collected.expect("the crew was never brought home");
+        assert!(landed > 0, "the crew was on site before the bus set out");
+        assert!(finished > landed, "the work happened before the crew did");
+        assert!(
+            collected >= finished,
+            "the crew came home before the site was done"
+        );
+        assert_eq!(
+            w.crews.len(),
+            0,
+            "a party outlived the job it was sent to do"
+        );
+    }
+
+    /// **The change the rework exists for.** The same building, the same office
+    /// and the same crew: further away is slower, because the builders have to
+    /// get there.
+    ///
+    /// Under the old pool this was flat — a site four kilometres out drew
+    /// builder-days at exactly the rate one next door did.
+    #[test]
+    fn a_site_further_out_takes_longer_to_start() {
+        let started = |where_: Point| -> u64 {
+            let mut w = building_out_at(where_);
+            let site = only_site(&w);
+            for tick in 0..(TICKS_PER_DAY * 10) {
+                w.tick();
+                if w.buildings.get(site).unwrap().work_done > 0.0 {
+                    return tick;
+                }
+            }
+            u64::MAX
+        };
+        let near = started(at(1_200.0, 1_100.0));
+        let far = started(at(3_400.0, 3_400.0));
+        assert!(near < far, "near started at {near}, far at {far}");
+        assert!(far < u64::MAX, "the far site never started at all");
+    }
+
+    /// One site, one gang. A crew riding toward a foundation has already been
+    /// committed to it.
+    ///
+    /// **Found by the trajectory runner, not by reasoning.** A founded republic
+    /// with a single ordered road reported twenty builders out for a site that
+    /// can absorb ten: the office's second bus left on the same tick as the
+    /// first, because the gang aboard the first was riding rather than working
+    /// and the site still read as unmanned. A journey is a commitment, and a
+    /// dispatcher that only reads arrivals makes it twice.
+    #[test]
+    fn one_site_is_never_sent_two_gangs() {
+        let mut w = building_out_at(at(2_600.0, 2_100.0));
+        let site = only_site(&w);
+        let mut most = 0;
+        for _ in 0..(TICKS_PER_DAY * 12) {
+            w.tick();
+            most = most.max(w.crews.all().len());
+            if w.buildings.get(site).unwrap().is_built() {
+                break;
+            }
+        }
+        assert!(most > 0, "no gang was ever sent, so nothing was tested");
+        assert_eq!(
+            most, 1,
+            "{most} gangs were out at once for a republic with one site"
+        );
+    }
+
+    /// Heads are conserved. A builder is riding, working or waiting — never two
+    /// of those, and never counted against an office twice.
+    ///
+    /// The invariant the whole model rests on: `posted` is what an office
+    /// subtracts from its staff before it can send anybody else, so a head
+    /// double-counted is a republic that cannot build and a head lost is one
+    /// that builds out of nothing.
+    #[test]
+    fn nobody_is_in_two_places_at_once() {
+        let mut w = building_out_at(at(2_400.0, 1_800.0));
+        let office = w
+            .buildings
+            .all()
+            .iter()
+            .find(|b| b.kind == BuildingKind::ConstructionOffice)
+            .expect("placed")
+            .id;
+        for _ in 0..(TICKS_PER_DAY * 30) {
+            w.tick();
+            let mut counted = 0;
+            for party in w.crews.all() {
+                assert!(
+                    !(party.riding.is_some() && party.working.is_some()),
+                    "a gang was aboard a bus and on a site at once: {party:?}"
+                );
+                assert!(party.heads > 0, "an empty gang: {party:?}");
+                counted += party.heads;
+            }
+            assert_eq!(
+                counted,
+                w.crews.posted(office),
+                "the office's posted count and the gangs disagree"
+            );
+            let staff = w.buildings.get(office).unwrap().staff;
+            assert!(
+                w.crews.posted(office) <= staff,
+                "the office has {} out of {staff} staff",
+                w.crews.posted(office)
+            );
+        }
+    }
+
+    /// A dry machinery bin halves the work and never stops it.
+    ///
+    /// The rule `WORN_EFFICIENCY` already states for every other building,
+    /// applied to the plant a crew works with — and the reason it is a soft
+    /// penalty is the reason it is everywhere else: limping is recoverable and
+    /// stopping is not.
+    #[test]
+    fn an_office_with_no_machinery_builds_at_half_speed() {
+        let worked = |machinery: f64| -> f64 {
+            let mut w = building_out_at(at(1_300.0, 1_200.0));
+            let site = only_site(&w);
+            let office = w
+                .buildings
+                .all()
+                .iter()
+                .find(|b| b.kind == BuildingKind::ConstructionOffice)
+                .expect("placed")
+                .id;
+            for _ in 0..(TICKS_PER_DAY * 2) {
+                // Topped up every tick, so this measures the rate rather than
+                // how long one bin lasts.
+                if let Some(b) = w.buildings.get_mut(office) {
+                    b.stock.add(Resource::Machinery, Tonnes(machinery));
+                }
+                w.tick();
+            }
+            w.buildings.get(site).unwrap().work_done
+        };
+        let plant = worked(1.0);
+        let none = worked(0.0);
+        assert!(plant > 0.0 && none > 0.0, "one of them did no work at all");
+        assert!(
+            (none / plant - WORN_EFFICIENCY).abs() < 0.02,
+            "a worn office did {none} against a plant-equipped {plant}"
         );
     }
 
@@ -5530,6 +6228,7 @@ mod tests {
                     ("trade", trade),
                     ("fleet", fleet),
                     ("dispatch", dispatch),
+                    ("crews", crews),
                 ] {
                     let m = system(&world);
                     note(name, &m);
@@ -5549,7 +6248,184 @@ mod tests {
                 }
             }
         }
+        // A wet fortnight with every gang called off its site, which is the only
+        // way this fixture reaches `crews`' bog roll.
+        //
+        // **Measured before it was written, and the number is why it is here**:
+        // over 600 simulated days a republic sent 130 crew buses out, median
+        // journey two kilometres, and exactly *one* of them stuck — and that was
+        // in taiga. An empty bus is the second most capable thing the republic
+        // owns, so the roll almost always comes up safe, and a declaration the
+        // guard can never see reached is a declaration that has stopped
+        // constraining anything. Saturating the ground and stranding the crews
+        // makes the crossing one no bus can make, which is the case the roll
+        // exists for.
+        world.ground.moisture = 1.0;
+        world.ground.water = 1.0;
+        world.ground.frost = 0.0;
+        world.ground.snow = 0.0;
+        let posted: Vec<Destination> = world.crews.all().iter().filter_map(|p| p.working).collect();
+        for site in posted {
+            let at = world.place_of(site).unwrap_or(centre);
+            world.crews.release(site, at);
+        }
+        // And diesel, in the tanks and in the office. Four hundred days of
+        // running leaves a republic dry, and a bus that cannot set out cannot
+        // be rolled for anything — which is the difference between a mechanic
+        // that never fires and a fixture that never reaches it.
+        let offices: Vec<BuildingId> = world
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.kind == BuildingKind::ConstructionOffice)
+            .map(|b| b.id)
+            .collect();
+        for id in offices {
+            if let Some(b) = world.buildings.get_mut(id) {
+                b.stock.add(Resource::Fuel, Tonnes(5.0));
+            }
+        }
+        let buses: Vec<VehicleId> = world
+            .fleet
+            .all()
+            .iter()
+            .filter(|v| v.def().role == Role::Crew)
+            .map(|v| v.id)
+            .collect();
+        for id in buses {
+            if let Some(v) = world.fleet.get_mut(id) {
+                v.fuel = v.def().tank;
+            }
+        }
+        // And somewhere to send them. By day 400 the republic has finished
+        // everything it was given and every gang is home, so without a fresh
+        // site there is no ferry to roll for. Its gravel is put straight in the
+        // site rather than driven out, because what is being reached here is
+        // the crossing and not the supply chain.
+        // Six of them, in different directions, because the crossing is a roll
+        // at odds of about one in four rather than a verdict — two ferries is a
+        // coin flip and a guard that passes on a coin flip is not a guard.
+        for i in 0..6 {
+            let out = Metres(1_400.0 + f64::from(i) * 250.0);
+            let away = if i % 2 == 0 { out } else { Metres(-out.0) };
+            let Ok(site) = world.order_road(
+                centre,
+                Point::new(centre.x + away, centre.y + out),
+                crate::roadworks::Grade::Dirt,
+            ) else {
+                continue;
+            };
+            let bill = world.roadworks.get(site).map(|r| r.materials());
+            if let (Some(bill), Some(road)) = (bill, world.roadworks.get_mut(site)) {
+                for (resource, quantity) in bill {
+                    road.stock.add(resource, quantity);
+                }
+            }
+        }
+        for _ in 0..(TICKS_PER_DAY * 8) {
+            // Called off every morning, so the two buses shuttle all fortnight
+            // instead of posting one gang and going quiet.
+            if world.clock.is_day_boundary() {
+                let posted: Vec<Destination> =
+                    world.crews.all().iter().filter_map(|p| p.working).collect();
+                for site in posted {
+                    let at = world.place_of(site).unwrap_or(centre);
+                    world.crews.release(site, at);
+                }
+            }
+            let m = crews(&world);
+            note("crews", &m);
+            apply(&mut world, &m);
+            let m = fleet(&world);
+            note("fleet", &m);
+            apply(&mut world, &m);
+            world.clock.advance();
+        }
+
         seen
+    }
+
+    /// A crew bus is rolled for the ground it is about to cross, exactly as a
+    /// lorry is, and a saturated field beats it.
+    ///
+    /// Its own test because the odds are genuinely long — 130 ferries over 600
+    /// simulated days produced one casualty — and a mechanic that fires once a
+    /// republic-year is one nobody would notice had broken.
+    #[test]
+    fn a_crew_bus_sticks_in_ground_it_cannot_cross() {
+        let sent = |soaked: bool, day: u64| -> (usize, usize) {
+            let mut w = bare();
+            for _ in 0..(day * TICKS_PER_DAY) {
+                w.clock.advance();
+            }
+            place(
+                &mut w,
+                BuildingKind::ConstructionOffice,
+                at(1_000.0, 1_000.0),
+            );
+            staff_up(&mut w, at(1_000.0, 1_150.0), 10);
+            // Far enough out that the ferry is a real crossing rather than a
+            // walk across the yard.
+            let site = w
+                .buildings
+                .place(
+                    BuildingKind::Warehouse,
+                    at(3_000.0, 3_000.0),
+                    &w.terrain,
+                    &w.geology,
+                )
+                .expect("open ground");
+            for &(resource, quantity) in BuildingKind::Warehouse.def().materials {
+                w.buildings
+                    .get_mut(site)
+                    .unwrap()
+                    .stock
+                    .add(resource, Tonnes(quantity));
+            }
+            // The office's buses, and the people to drive and crew them.
+            let m = commissioning(&w);
+            apply(&mut w, &m);
+            let m = labour(&mut w);
+            apply(&mut w, &m);
+            if soaked {
+                w.ground.moisture = 1.0;
+                w.ground.water = 1.0;
+            }
+
+            let m = crews(&w);
+            (
+                m.iter()
+                    .filter(|x| matches!(x, Mutation::Dispatch { .. }))
+                    .count(),
+                m.iter()
+                    .filter(|x| matches!(x, Mutation::Bog { .. }))
+                    .count(),
+            )
+        };
+
+        // Twenty separate days, because the crossing is a **roll** and not a
+        // verdict: saturated grass is 0.3 past what an empty bus can take, which
+        // is odds of about one in four rather than a certainty. Asserting on one
+        // draw would be asserting on which key the substream happened to hand
+        // out. The premise assertion is the dispatch count — without it the wet
+        // case could pass by sending nobody at all.
+        let mut dry_stuck = 0;
+        let mut wet_stuck = 0;
+        for day in 0..20 {
+            let (out, stuck) = sent(false, day);
+            assert_eq!(out, 1, "day {day}: a bus should be sent on firm ground");
+            dry_stuck += stuck;
+            let (out, stuck) = sent(true, day);
+            assert_eq!(out, 1, "day {day}: the same bus is sent on wet ground");
+            wet_stuck += stuck;
+        }
+        assert_eq!(dry_stuck, 0, "firm ground stopped nobody");
+        assert!(
+            wet_stuck > 0,
+            "twenty crews were sent across saturated ground and every one of \
+             them arrived — a bus is not being rolled for the crossing it is \
+             about to make"
+        );
     }
 
     /// The guard the archived build proved worth having: a system may not

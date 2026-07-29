@@ -129,6 +129,42 @@ pub fn road_sites(world: &World) -> PackedFloat32Array {
     out
 }
 
+/// Floats per crew in [`crew_parties`].
+pub const CREW_STRIDE: usize = 5;
+
+/// Every building crew the republic has out.
+///
+/// `[x, y, heads, state, office]` per gang, where state is 0 riding a bus,
+/// 1 working a site, 2 standing waiting for a lift.
+///
+/// This has to be visible or the whole construction rework is invisible: work
+/// happens where the builders are, so a site with nobody on it looks identical
+/// to a site with a gang on it and no materials. The waiting state is the one
+/// that matters most — a gang standing beside a finished building is people the
+/// office cannot post anywhere until a bus fetches them.
+pub fn crew_parties(world: &World) -> PackedFloat32Array {
+    let mut out = PackedFloat32Array::new();
+    for party in world.crews().all() {
+        // Where a working gang is standing comes from the site itself rather
+        // than from a copy on the party, so a panel and the map can never
+        // disagree about where the work is.
+        let at = party
+            .working
+            .and_then(|site| world.place_of(site))
+            .unwrap_or(party.at);
+        out.push(at.x.0 as f32);
+        out.push(at.y.0 as f32);
+        out.push(party.heads as f32);
+        out.push(match (party.riding, party.working) {
+            (Some(_), _) => 0.0,
+            (None, Some(_)) => 1.0,
+            (None, None) => 2.0,
+        });
+        out.push(party.office.0 as f32);
+    }
+    out
+}
+
 /// What every yard in the republic is holding, by resource.
 ///
 /// One total per `Resource::ALL`, so the stockpile table is a single read of

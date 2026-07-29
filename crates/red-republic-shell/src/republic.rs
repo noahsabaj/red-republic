@@ -471,6 +471,58 @@ impl Republic {
         }
     }
 
+    /// Every building crew that is out: `[x, y, heads, state, office]`, with
+    /// state 0 riding, 1 working, 2 waiting for a lift.
+    #[func]
+    fn crew_parties(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::crew_parties)
+    }
+
+    /// How many builders are standing on a site, and how many its office still
+    /// has to send. What a site panel needs to answer the only two questions
+    /// worth asking of a half-built thing: is anyone on it, and if not, why not.
+    #[func]
+    fn site_crew(&self, building: i64) -> i64 {
+        let Some(w) = &self.world else { return 0 };
+        let id = red_republic_sim::BuildingId(building.max(0) as u32);
+        i64::from(
+            w.crews()
+                .at_site(red_republic_sim::Destination::Building(id)),
+        )
+    }
+
+    /// Builders an office has spare — its staff less everyone already out.
+    #[func]
+    fn office_spare(&self, office: i64) -> i64 {
+        let Some(w) = &self.world else { return 0 };
+        let id = red_republic_sim::BuildingId(office.max(0) as u32);
+        let Some(b) = w.buildings().get(id) else {
+            return 0;
+        };
+        i64::from(b.staff.saturating_sub(w.crews().posted(id)))
+    }
+
+    /// Call a crew off a site. Empty string on success, or the reason.
+    ///
+    /// The player's half of the mechanic: a site whose materials never arrive
+    /// would otherwise hold its gang for ever, and deciding when a plan has gone
+    /// wrong is not a judgment the simulation should be making.
+    #[func]
+    fn recall_crew(&mut self, building: i64) -> GString {
+        let Some(world) = self.world.as_mut() else {
+            return GString::from("no republic has been founded");
+        };
+        let id = red_republic_sim::BuildingId(building.max(0) as u32);
+        match world.issue(Command::RecallCrew {
+            site: red_republic_sim::Destination::Building(id),
+        }) {
+            Ok(_) => GString::from(""),
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
     /// Tenders on the table and running, one line each.
     #[func]
     fn contract_count(&self) -> i64 {

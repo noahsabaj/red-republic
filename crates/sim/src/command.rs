@@ -39,6 +39,7 @@
 
 use crate::building::{BuildingId, BuildingKind, PlacementError};
 use crate::contract::ContractId;
+use crate::fleet::Destination;
 use crate::resource::Resource;
 use crate::roadworks::{Grade, RoadError, RoadSiteId};
 use crate::trade::{Market, TradeAction, TradeRule};
@@ -64,6 +65,15 @@ pub enum Command {
         to: Point,
         grade: Grade,
     },
+
+    /// Call a building crew off a site.
+    ///
+    /// They down tools where they stand and wait for their office to send a bus.
+    /// It exists because a site whose materials never arrive would otherwise
+    /// hold its gang for ever — and because the alternative, letting the
+    /// simulation decide when a crew has waited long enough, is a judgment about
+    /// the player's plan that the player should be making.
+    RecallCrew { site: Destination },
 
     /// Take a tender the Foreign Trade Directorate has offered.
     AcceptContract { contract: ContractId },
@@ -122,6 +132,12 @@ pub enum Refused {
     NoSuchRule { index: u32, rules: u32 },
     /// The advance could not be taken or repaid.
     Loan(crate::loan::LoanError),
+    /// A site with builders standing on it. Recall them first.
+    CrewOnSite,
+    /// A Construction Office with crews still out at sites.
+    CrewsOut,
+    /// Nobody is working that site, so there is nobody to call off it.
+    NoCrewThere,
 }
 
 impl std::fmt::Display for Refused {
@@ -134,6 +150,12 @@ impl std::fmt::Display for Refused {
             // is not something a player has ever seen or could act on.
             Refused::NoSuchOffer(_) => write!(f, "that tender is no longer on the table"),
             Refused::Loan(why) => write!(f, "{why}"),
+            Refused::CrewOnSite => write!(f, "a crew is still working this site"),
+            Refused::CrewsOut => write!(
+                f,
+                "this office still has crews out at sites; bring them in first"
+            ),
+            Refused::NoCrewThere => write!(f, "nobody is working that site"),
             Refused::NoSuchRule { index, rules } => match rules {
                 0 => write!(f, "there are no trade rules to change"),
                 1 => write!(f, "there is only one trade rule, and it is not {index}"),

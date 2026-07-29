@@ -127,7 +127,7 @@ fn main() {
     );
     println!();
     println!(
-        "{:>10} {:>4} {:>5} {:>5} {:>6} {:>6} {:>5} {:>8} {:>8} {:>6} {:>8} {:>7} {:>5} {:>8} {:>10} {:>9} {:>4}",
+        "{:>10} {:>4} {:>5} {:>5} {:>6} {:>6} {:>5} {:>8} {:>8} {:>6} {:>8} {:>7} {:>5} {:>8} {:>10} {:>9} {:>4} {:>8}",
         "date",
         "pop",
         "empl",
@@ -144,7 +144,12 @@ fn main() {
         "road km",
         "coal left",
         "money",
-        "dark"
+        "dark",
+        // Builders out from their offices, and how many of those are standing
+        // somewhere waiting for a bus. The second number is the friction one:
+        // a gang with nowhere to be is people the republic is paying to stand
+        // in a field, and it is invisible in every other column here.
+        "crew/wait"
     );
 
     let months = years * 12;
@@ -155,7 +160,16 @@ fn main() {
         // what a budget allowed.
         let mut moved = Tonnes::ZERO;
         let mut stuck = 0usize;
+        // Crews are transient — a gang goes out, works, and is fetched back —
+        // so sampling them at the month boundary reports zero for a republic
+        // that was building all month. The same trap a fleet check fell into
+        // once already, when it sampled one instant of a fleet that holds a job
+        // on 12.9% of ticks and found every lorry parked. Peaks, not instants.
+        let mut peak_out = 0u32;
+        let mut peak_waiting = 0u32;
         for _ in 0..TICKS_PER_DAY * 30 {
+            peak_out = peak_out.max(world.crews().all().iter().map(|p| p.heads).sum::<u32>());
+            peak_waiting = peak_waiting.max(world.crews().stranded().map(|p| p.heads).sum::<u32>());
             for m in world.tick() {
                 match m {
                     red_republic_sim::systems::Mutation::Unload { tonnes, .. } => moved += tonnes,
@@ -226,7 +240,7 @@ fn main() {
         };
 
         println!(
-            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>6.1} {:>5.0}% {:>4.0}% {:>8.0} {:>8.1} {:>6.2} {:>8.0} {:>3}/{:<3} {:>5} {:>8} {:>10.0} {:>9.0} {:>4}",
+            "{:>4}-{:02}-{:02} {:>4} {:>5} {:>4.0}% {:>6.1} {:>5.0}% {:>4.0}% {:>8.0} {:>8.1} {:>6.2} {:>8.0} {:>3}/{:<3} {:>5} {:>8} {:>10.0} {:>9.0} {:>4} {:>8}",
             date.year,
             date.month,
             date.day,
@@ -258,6 +272,7 @@ fn main() {
                 .0,
             world.treasury().of(bloc),
             dark,
+            format!("{peak_out}/{peak_waiting}"),
         );
     }
 

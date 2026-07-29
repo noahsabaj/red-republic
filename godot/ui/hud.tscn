@@ -54,6 +54,9 @@ theme_override_colors/font_color = Color(0.78, 0.79, 0.74, 1)
 [node name="RepublicLine" type="Label" parent="Panel/Margin/Rows"]
 theme_override_font_sizes/font_size = 14
 
+[node name="CrewLine" type="Label" parent="Panel/Margin/Rows"]
+theme_override_font_sizes/font_size = 13
+
 [node name="OverlayLine" type="Label" parent="Panel/Margin/Rows"]
 theme_override_font_sizes/font_size = 13
 theme_override_colors/font_color = Color(0.86, 0.78, 0.5, 1)
