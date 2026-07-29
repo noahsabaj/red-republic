@@ -63,7 +63,10 @@ pub use roadworks::{Grade, RoadError, RoadSite, RoadSiteId, RoadWorks};
 pub use systems::{Mutation, Stall};
 pub use terrain::{Surface, Terrain};
 pub use time::{Date, Season, SimClock};
-pub use trade::{BorderEdge, Market, TradeAction, TradePolicy, TradeRule, Treasury};
+pub use trade::{
+    BorderCrossing, CrossingId, Frontier, FrontierArc, Market, TradeAction, TradePolicy, TradeRule,
+    Treasury,
+};
 pub use transport::{Commute, Mode};
 pub use units::{Metres, Point, Seconds, Speed, Tonnes};
 pub use world::{SAVE_VERSION, Save, SaveError, World, WorldSpec};

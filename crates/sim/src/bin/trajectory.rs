@@ -71,17 +71,30 @@ fn main() {
         },
         if base.customs.is_some() { "yes" } else { "NO" },
     );
-    // Sell surplus coal east; that is how a republic earns anything.
+    // Sell surplus coal to whichever bloc this republic's crossing belongs to;
+    // that is how it earns anything.
+    //
+    // **Not a fixed market.** A customs house clears only for the bloc whose
+    // frontier post it stands at, and which post the founding opens is decided
+    // by the land. Selling east from a Western crossing earns nothing at all —
+    // which is what this runner reported, in its first run after trade became
+    // geographic, as a flat zero in the roubles column for two years.
     //
     // Issued as a command rather than written into the world, because this
     // runner is held to exactly the boundary the shell is: it is a separate
     // crate, so every field on `World` is out of its reach and the only way it
     // can change anything is to ask. That is the point of running it this way —
     // if the player API is awkward, the trajectory runner finds out first.
+    let bloc = base
+        .customs
+        .and_then(|id| world.buildings().get(id).map(|b| b.centre))
+        .map(|at| world.bloc_near(at))
+        .unwrap_or(red_republic_sim::trade::Market::East);
+    println!("the crossing is on the {bloc:?}ern frontier; selling coal there");
     world
         .issue(Command::AddTradeRule {
             resource: Resource::Coal,
-            market: red_republic_sim::trade::Market::East,
+            market: bloc,
             action: red_republic_sim::trade::TradeAction::Sell,
         })
         .expect("adding a trade rule cannot fail");
@@ -130,7 +143,7 @@ fn main() {
         "stuck",
         "road km",
         "coal left",
-        "roubles",
+        "money",
         "dark"
     );
 
@@ -243,7 +256,7 @@ fn main() {
                 .geology()
                 .remaining_of(red_republic_sim::geology::Mineral::Coal)
                 .0,
-            world.treasury().rubles,
+            world.treasury().of(bloc),
             dark,
         );
     }

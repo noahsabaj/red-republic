@@ -326,6 +326,33 @@ impl Republic {
             .map_or_else(PackedFloat32Array::new, views::deposits)
     }
 
+    /// The frontier as a polyline, `[x, y, bloc, along]` per sample.
+    #[func]
+    fn frontier_line(&self, samples: i64) -> PackedFloat32Array {
+        match &self.world {
+            Some(w) => views::frontier_line(w, samples.clamp(8, 4_096) as usize),
+            None => PackedFloat32Array::new(),
+        }
+    }
+
+    /// The frontier posts, `[x, y, bloc, id]`.
+    #[func]
+    fn crossings(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::crossings)
+    }
+
+    /// Which bloc's frontier is nearest a point: 0 East, 1 West.
+    ///
+    /// What a customs house built here would trade with, and therefore which
+    /// currency this corner of the republic earns.
+    #[func]
+    fn bloc_near(&self, x: f64, y: f64) -> i64 {
+        let Some(w) = &self.world else { return 0 };
+        views::bloc_index(w.bloc_near(Point::new(Metres(x), Metres(y)))) as i64
+    }
+
     #[func]
     fn going_field(&self) -> PackedFloat32Array {
         self.world

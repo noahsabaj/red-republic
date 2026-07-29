@@ -36,7 +36,7 @@ use crate::road::RoadNetwork;
 use crate::roadworks::{Grade, RoadError, RoadSiteId, RoadWorks};
 use crate::terrain::{self, Terrain};
 use crate::time::SimClock;
-use crate::trade::{BorderEdge, TradePolicy, Treasury};
+use crate::trade::{Frontier, Market, TradePolicy, Treasury};
 use crate::units::Metres;
 use crate::units::{Point, Tonnes};
 use serde::{Deserialize, Serialize};
@@ -229,9 +229,10 @@ pub struct World {
     pub(crate) fleet: Fleet,
     /// The people.
     pub(crate) population: Population,
-    /// Which edge of the map is foreign soil. A customs house must stand near
-    /// it, and nothing else about the republic may depend on where it is.
-    pub(crate) border: BorderEdge,
+    /// The whole perimeter, which bloc holds each stretch of it, and where the
+    /// crossings stand. Placed at worldgen — you do not build a frontier post,
+    /// you build road out to one.
+    pub(crate) frontier: Frontier,
     /// Hard currency. Earned at the border, spent at the border, and never on
     /// anything domestic.
     pub(crate) treasury: Treasury,
@@ -285,10 +286,12 @@ impl World {
             lattice,
             fleet: Fleet::new(),
             population: Population::new(),
-            // One edge per seed, drawn from its own substream so the choice
-            // does not shift when terrain or geology generation changes.
-            border: BorderEdge::ALL
-                [(Rng::from_seed(derive(spec.seed, BORDER_STREAM)).next_bounded(4)) as usize],
+            // Drawn from its own substream so the frontier does not shift when
+            // terrain or geology generation changes.
+            frontier: Frontier::generate(
+                spec.extent,
+                &mut Rng::from_seed(derive(spec.seed, BORDER_STREAM)),
+            ),
             treasury: Treasury::default(),
             trade_policy: TradePolicy::new(),
             contracts: Contracts::default(),
@@ -402,7 +405,18 @@ impl World {
 
     /// How far a point is from foreign soil.
     pub fn distance_to_border(&self, at: crate::units::Point) -> Metres {
-        self.border.distance_from(at, self.terrain.extent())
+        self.frontier.distance_from(at)
+    }
+
+    /// The frontier: its stretches, their blocs, and the crossings on it.
+    pub fn frontier(&self) -> &Frontier {
+        &self.frontier
+    }
+
+    /// Which bloc's frontier is nearest a point — what a crossing here would
+    /// trade with.
+    pub fn bloc_near(&self, at: crate::units::Point) -> Market {
+        self.frontier.bloc_near(at)
     }
 
     /// The rules that need to know where the border is.
@@ -415,10 +429,19 @@ impl World {
         kind: crate::building::BuildingKind,
         at: crate::units::Point,
     ) -> Result<(), crate::building::PlacementError> {
-        if kind == crate::building::BuildingKind::Customs
-            && self.distance_to_border(at).0 > crate::trade::CUSTOMS_RANGE.0
-        {
-            return Err(crate::building::PlacementError::NotOnTheBorder);
+        // A customs house goes AT a frontier post, not merely near the
+        // frontier. The posts are placed at worldgen and you build road out to
+        // the one you want; that is what makes which bloc you trade with a
+        // siting decision rather than a dropdown, and it is why the whole
+        // perimeter being border does not mean you can trade from anywhere.
+        if kind == crate::building::BuildingKind::Customs {
+            let near_a_post = self
+                .frontier
+                .nearest_crossing(at, None)
+                .is_some_and(|c| c.at.distance_to(at).0 <= crate::trade::CUSTOMS_RANGE.0);
+            if !near_a_post {
+                return Err(crate::building::PlacementError::NotOnTheBorder);
+            }
         }
         Ok(())
     }
@@ -673,10 +696,6 @@ impl World {
 
     pub fn population(&self) -> &Population {
         &self.population
-    }
-
-    pub fn border(&self) -> BorderEdge {
-        self.border
     }
 
     pub fn treasury(&self) -> Treasury {

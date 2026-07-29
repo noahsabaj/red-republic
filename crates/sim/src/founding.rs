@@ -33,7 +33,7 @@
 use crate::climate::ClimateId;
 use crate::geology::Mineral;
 use crate::terrain::Surface;
-use crate::trade::BorderEdge;
+use crate::trade::Market;
 use crate::units::{Metres, Point, Tonnes};
 use crate::world::{World, WorldSpec, derive};
 
@@ -97,7 +97,12 @@ pub struct CandidateStats {
     /// twelve kilometres away is a haulage problem.
     pub coal_reach: Option<Metres>,
     /// Which edge is foreign soil.
-    pub border: BorderEdge,
+    /// Frontier posts of each bloc. Which blocs a posting can reach, and how
+    /// many ways, is a decisive fact about it: a republic with one Western post
+    /// on the far side of a river trades in dollars only when it has built a
+    /// road most of the way across the map.
+    pub crossings_east: u32,
+    pub crossings_west: u32,
     /// The coldest month's mean, in degrees Celsius — what a winter costs.
     pub coldest_month_c: f64,
 }
@@ -204,7 +209,18 @@ pub fn survey(world: &World) -> CandidateStats {
         oil: world.geology.remaining_of(Mineral::Oil),
         groundwater: world.geology.remaining_of(Mineral::Groundwater),
         coal_reach: world.geology.distance_to_nearest(middle, Mineral::Coal),
-        border: world.border,
+        crossings_east: world
+            .frontier
+            .crossings()
+            .iter()
+            .filter(|c| c.bloc == Market::East)
+            .count() as u32,
+        crossings_west: world
+            .frontier
+            .crossings()
+            .iter()
+            .filter(|c| c.bloc == Market::West)
+            .count() as u32,
         coldest_month_c: world.climate.def().coldest_mean_c(),
     }
 }
@@ -293,7 +309,10 @@ mod tests {
             world.geology.remaining_of(Mineral::Coal),
             candidate.stats.coal
         );
-        assert_eq!(world.border, candidate.stats.border);
+        assert_eq!(
+            world.frontier.crossings().len() as u32,
+            candidate.stats.crossings_east + candidate.stats.crossings_west,
+        );
         assert_eq!(
             world.terrain.fraction_of(Surface::Water),
             candidate.stats.water
