@@ -559,6 +559,30 @@ impl Republic {
             .map_or_else(PackedFloat32Array::new, views::pollution_field)
     }
 
+    /// How buried in snow each lattice cell is, row-major.
+    #[func]
+    fn snow_field(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::snow_field)
+    }
+
+    /// The winter at a glance: `[lying, buried]`, each `0.0..=1.0`.
+    ///
+    /// How much is down, and how much of it nobody has shifted. Two numbers
+    /// rather than one because they are different failures — a republic under
+    /// deep snow with its roads swept is working, and one under a dusting it has
+    /// not touched is about to stop.
+    #[func]
+    fn snow(&self) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        if let Some(w) = self.world.as_ref() {
+            out.push(w.snow_cover() as f32);
+            out.push(w.roads_unswept() as f32);
+        }
+        out
+    }
+
     /// Order a power line or a heat main. Empty string on success, or the
     /// reason it was refused.
     #[func]

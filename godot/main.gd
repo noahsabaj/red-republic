@@ -76,12 +76,13 @@ func _ready() -> void:
 		"tracks": _overlay = Overlays.Mode.WEAR
 		"survey": _overlay = Overlays.Mode.SURVEY
 		"pollution": _overlay = Overlays.Mode.POLLUTION
+		"snow": _overlay = Overlays.Mode.SNOW
 	hud.set_resource_names(republic.resource_names(), republic.resource_forms())
 	hud.set_contentment_names(republic.contentment_names())
 	hud.set_utility_names(republic.utility_names())
 	hud.set_way_names(republic.way_names())
 	hud.set_hint(
-		"0-5 speed  ·  space pause  ·  F none  G going  T tracks  R survey  P smoke  ·  "
+		"0-5 speed  ·  space pause  ·  F none  G going  T tracks  R survey  P smoke  N snow  ·  "
 		+ "WASD pan  ·  right-drag orbit  ·  wheel zoom"
 	)
 	_refresh_buildings()
@@ -187,6 +188,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				KEY_T: Overlays.Mode.WEAR,
 				KEY_R: Overlays.Mode.SURVEY,
 				KEY_P: Overlays.Mode.POLLUTION,
+				KEY_N: Overlays.Mode.SNOW,
 			}
 			if modes.has(event.keycode):
 				_overlay = modes[event.keycode]

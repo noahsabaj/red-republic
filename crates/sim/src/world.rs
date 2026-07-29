@@ -493,6 +493,7 @@ impl World {
         Crossing {
             lattice: &self.lattice,
             softness: self.ground.softness(),
+            snow: self.ground.snow_load(),
         }
     }
 
@@ -1160,6 +1161,49 @@ impl World {
 
     pub fn ground(&self) -> Ground {
         self.ground
+    }
+
+    /// How deep the snow is, as a share of what stops a vehicle.
+    ///
+    /// The republic-wide figure. Where it has been pushed aside is a place and
+    /// is read off the lattice — see [`World::buried_share`] for the summary and
+    /// the snow overlay for the map.
+    pub fn snow_cover(&self) -> f64 {
+        self.ground.snow_load()
+    }
+
+    /// How much of the **road network** is under unswept snow, `0.0` to `1.0`.
+    ///
+    /// Snow is the one piece of weather the player can *do* something about, and
+    /// this is the number that says whether they are keeping up with it.
+    ///
+    /// **Roads and not the map, and that distinction was found by measuring.**
+    /// The whole-lattice figure sat at 94% through a taiga winter with the
+    /// ploughs working perfectly well, because a 6 km republic is three and a
+    /// half thousand cells of empty countryside and nine kilometres of road.
+    /// Nobody ploughs a field, so a map-wide average reports a republic losing
+    /// whatever it does — which is a number that cannot be acted on and would
+    /// have read as a broken mechanic.
+    pub fn roads_unswept(&self) -> f64 {
+        let lying = self.ground.snow_load();
+        if lying <= 0.0 {
+            return 0.0;
+        }
+        let mut buried = 0.0;
+        let mut counted = 0usize;
+        for segment in self.roads.segments() {
+            let Some((from, to)) = self.roads.segment_ends(segment) else {
+                continue;
+            };
+            for cell in self.lattice.cells_along(from, to) {
+                buried += 1.0 - self.lattice.cleared_at(cell);
+                counted += 1;
+            }
+        }
+        if counted == 0 {
+            return 0.0;
+        }
+        lying * buried / counted as f64
     }
 
     pub fn lattice(&self) -> &Lattice {

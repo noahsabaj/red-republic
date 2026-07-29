@@ -489,6 +489,30 @@ pub fn pollution_field(world: &World) -> PackedFloat32Array {
     out
 }
 
+/// How buried each lattice cell is, row-major, `0.0` swept to `1.0` under snow.
+///
+/// **A badness, like going and unlike wear** — the same trap that painted a
+/// bone-dry map entirely red once already, so the direction is stated here and
+/// the ramp is built from it. The simulation stores the opposite (`cleared`,
+/// where one is swept), and it is inverted *here* rather than in the shader so
+/// there is one place to check it against the source.
+///
+/// Snow is why a republic keeps ploughs, and where the snow is *not* is the
+/// only thing on the map that says whether the ploughs are winning.
+pub fn snow_field(world: &World) -> PackedFloat32Array {
+    let lattice = world.lattice();
+    let cells = lattice.cells();
+    let mut out = PackedFloat32Array::new();
+    let lying = world.snow_cover();
+    for y in 0..cells {
+        for x in 0..cells {
+            let index = (y * cells + x) as usize;
+            out.push((lying * (1.0 - lattice.cleared_at(index))) as f32);
+        }
+    }
+    out
+}
+
 /// Mean health and mean loyalty across the republic, `[health, loyalty]`.
 pub fn wellbeing(world: &World) -> PackedFloat32Array {
     let (health, loyalty) = world.population().mean_wellbeing();

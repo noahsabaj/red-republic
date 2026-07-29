@@ -85,7 +85,21 @@ pub enum Mutation {
     /// falls below freezing becomes snow instead of moisture, and snow that
     /// melts becomes moisture instead of snow. Splitting them would make
     /// "it snowed and the ground got wetter" representable.
-    Weather(crate::ground::Ground),
+    /// The day's weather, and what it did to the snow lying on the ground.
+    ///
+    /// **One kind carrying both**, because they are one transaction: the day's
+    /// snowfall IS what buries the roads, and a republic whose ground had
+    /// advanced without its cover changing would be a republic where the
+    /// clearance field and the weather disagreed about what month it was.
+    ///
+    /// `snowfall` is the share of the republic's clearance that the day's fall
+    /// undoes, zero on a day nothing fell. When the pack has gone entirely the
+    /// whole field is reset rather than decayed, so a road ploughed last
+    /// February is not still credited for it next December.
+    Weather {
+        ground: crate::ground::Ground,
+        snowfall: f64,
+    },
     /// A garage takes delivery of a vehicle its establishment allows.
     Commission {
         garage: BuildingId,
@@ -391,6 +405,12 @@ pub enum Mutation {
         journey: Journey,
         burn: Tonnes,
     },
+    /// A plough went through: these cells are swept.
+    ///
+    /// The same shape as [`Mutation::Wear`] and emitted at the same moment for
+    /// the same reason — work happens at leg boundaries, and what a leg did to
+    /// the ground it crossed is known only once it has crossed it.
+    Clear { cells: Vec<usize> },
     /// A coach set its group down at housing, and they became citizens.
     ///
     /// One kind for both halves, because a group that had left the coach
@@ -460,6 +480,7 @@ pub enum MutationKind {
     Emigrate,
     Immigrate,
     GiveUp,
+    Clear,
     Board,
     Settle,
 }
@@ -497,7 +518,7 @@ impl Mutation {
             Mutation::Build { .. } => MutationKind::Build,
             Mutation::Lay { .. } => MutationKind::Lay,
             Mutation::String { .. } => MutationKind::String,
-            Mutation::Weather(_) => MutationKind::Weather,
+            Mutation::Weather { .. } => MutationKind::Weather,
             Mutation::Offer(_) => MutationKind::Offer,
             Mutation::CloseContract { .. } => MutationKind::CloseContract,
             Mutation::DropContract { .. } => MutationKind::DropContract,
@@ -515,6 +536,7 @@ impl Mutation {
             Mutation::Immigrate { .. } => MutationKind::Immigrate,
             Mutation::GiveUp { .. } => MutationKind::GiveUp,
             Mutation::Board { .. } => MutationKind::Board,
+            Mutation::Clear { .. } => MutationKind::Clear,
             Mutation::Settle { .. } => MutationKind::Settle,
         }
     }
@@ -595,6 +617,7 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
             MutationKind::Free,
             MutationKind::Recover,
             MutationKind::Wear,
+            MutationKind::Clear,
             MutationKind::Board,
             MutationKind::Settle,
         ],
@@ -638,6 +661,17 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
     // different vehicles: a bus depot's coaches must never be spent on
     // foundations, nor a construction office's buses on immigrants.
     ("settling", &[MutationKind::Dispatch, MutationKind::Bog]),
+    // The fourth pool, and the fourth dispatcher. What it ranks is a stretch of
+    // buried road rather than a consignee, which is why it is not a branch of
+    // `dispatch`.
+    //
+    // **No `Bog`, and that is a consequence of the vehicle rather than an
+    // omission.** A plough's ground capability is a recovery vehicle's — above
+    // the whole scale — so the roll can never come up against it, exactly as
+    // intended: a machine that got stuck in the snow it was sent to shift would
+    // need a machine sent after it. Declaring `Bog` here would have been a
+    // declaration nothing could reach, which constrains nothing and looks fine.
+    ("clearing", &[MutationKind::Dispatch]),
     (
         "contracts",
         &[
@@ -702,6 +736,11 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                 if let Some(b) = world.buildings.get_mut(building) {
                     let room = b.storage_cap().saturating_sub(b.stock.get(resource));
                     b.stock.add(resource, tonnes.min(room));
+                }
+            }
+            Mutation::Clear { cells } => {
+                for &cell in cells {
+                    world.lattice.clear(cell);
                 }
             }
             &Mutation::Provision { building, fraction } => {
@@ -842,8 +881,13 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     }
                 }
             }
-            &Mutation::Weather(ground) => {
+            &Mutation::Weather { ground, snowfall } => {
                 world.ground = ground;
+                if ground.snow <= 0.0 {
+                    world.lattice.thaw();
+                } else if snowfall > 0.0 {
+                    world.lattice.bury(snowfall);
+                }
             }
             &Mutation::Lay { site, builder_days } => {
                 let Some(road) = world.roadworks.get(site) else {
@@ -3696,7 +3740,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                         .next_f64()
                         < odds);
             if out_by_itself {
-                let drag = crossing.drag_along(from, to);
+                let drag = crossing.drag_for(journey.leg_on_road(), from, to);
                 let speed = journey.speed_on(leg, def.on_road, def.cross_country, drag);
                 // It starts the crossing again rather than picking up where it
                 // stopped: it is at a standstill in a field, not idling at a
@@ -3762,7 +3806,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
         if !journey.on_last_leg() {
             let ahead = journey.leg + 1;
             let (from, to) = journey.leg_ends(ahead);
-            let drag = crossing.drag_along(from, to);
+            let drag = crossing.drag_for(journey.limit[ahead as usize].is_some(), from, to);
             let speed = journey.speed_on(ahead, def.on_road, def.cross_country, drag);
             let (leg, leg_start, leg_end) = journey.next_leg(speed);
             // The leg just finished did happen, so it moved the lorry and burnt
@@ -3777,6 +3821,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                 burn,
             });
             out.extend(wore(world, v, journey.leg));
+            out.extend(swept(world, v, journey.leg));
             // The crossing about to be attempted, evaluated against the ground
             // as it is *now* rather than as it was when the plan was made.
             if sticks(world, &crossing, v.id, v.capability(), journey, ahead, day) {
@@ -3810,8 +3855,10 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
             continue;
         };
 
-        // Whatever it just drove over, it packed down a little.
+        // Whatever it just drove over, it packed down a little -- and if it
+        // had a blade on the front, it swept clear.
         out.extend(wore(world, v, journey.leg));
+        out.extend(swept(world, v, journey.leg));
 
         match v.state {
             VehicleState::Returning => out.push(Mutation::Park {
@@ -3850,7 +3897,7 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                     let leg = plan.leg;
                     let (a, b) = plan.leg_ends(leg);
                     let stuck_def = stuck.def();
-                    let drag = crossing.drag_along(a, b);
+                    let drag = crossing.drag_for(plan.leg_on_road(), a, b);
                     let speed =
                         plan.speed_on(leg, stuck_def.on_road, stuck_def.cross_country, drag);
                     out.push(Mutation::Recover {
@@ -3962,6 +4009,18 @@ pub fn fleet(world: &World) -> Vec<Mutation> {
                         }),
                     }
                 }
+                // Reached the far end of what it was sent to clear. There is
+                // nothing to pick up: it turns round, and the way home is
+                // swept exactly as the way out was.
+                Some(Job::Plough { .. }) => out.push(Mutation::Load {
+                    vehicle: v.id,
+                    from: v.home,
+                    resource: Resource::Fuel,
+                    tonnes: Tonnes::ZERO,
+                    journey: home_run.clone(),
+                    state: VehicleState::Returning,
+                    burn,
+                }),
                 Some(Job::Ferry { .. }) | None => {}
             },
             // A bus is `Delivering` from the moment it leaves the office,
@@ -4083,6 +4142,27 @@ fn wore(world: &World, v: &crate::fleet::Vehicle, leg: u32) -> Option<Mutation> 
     })
 }
 
+/// The snow a plough just pushed off the leg it finished.
+///
+/// The counterpart of [`wore`], and the mirror image of it in one telling way:
+/// wear is refused **on** a road because tarmac does not rut, and clearing is
+/// wanted on a road above all, because that is what a plough is for. It clears
+/// off-road legs too — the machine has a blade on the front and the snow does
+/// not care what is underneath — which is what lets a plough open the way to an
+/// outlying works that has no road yet.
+fn swept(world: &World, v: &crate::fleet::Vehicle, leg: u32) -> Option<Mutation> {
+    if v.def().role != crate::fleet::Role::Clearance {
+        return None;
+    }
+    let journey = v.journey.as_ref()?;
+    let (from, to) = journey.leg_ends(leg);
+    let cells = world.lattice.cells_along(from, to);
+    if cells.is_empty() {
+        return None;
+    }
+    Some(Mutation::Clear { cells })
+}
+
 /// Whether a vehicle sticks setting out on a given leg today.
 ///
 /// A pure function of who, which leg, and what day, so it gives the same
@@ -4174,8 +4254,16 @@ pub fn tracks(world: &World) -> Vec<Mutation> {
 pub fn weather(world: &World) -> Vec<Mutation> {
     let (temperature, rain) = world.weather_on_day(world.clock.day_index());
     let mut ground = world.ground;
+    let before = ground.snow;
     ground.advance(temperature, rain);
-    vec![Mutation::Weather(ground)]
+    // What fell today, as a share of a stopping depth. A day that melted snow
+    // buries nothing: the pack shrinking does not undo a plough's work, and
+    // taking the absolute difference would have had a thaw covering the roads.
+    let fell = (ground.snow - before).max(0.0);
+    vec![Mutation::Weather {
+        ground,
+        snowfall: (fell / crate::ground::SNOW_BLOCKS_MM).clamp(0.0, 1.0),
+    }]
 }
 
 /// Vehicles arriving on a garage's strength.
@@ -4882,6 +4970,158 @@ pub fn settling(world: &World) -> Vec<Mutation> {
     out
 }
 
+/// How buried a stretch has to be before a plough is worth sending.
+///
+/// Below this the snow is a nuisance rather than a problem and the diesel is
+/// better spent elsewhere — a republic that sent a machine out for a dusting
+/// would spend its winter driving ploughs around empty roads.
+pub const PLOUGH_AT: f64 = 0.25;
+
+/// Pushing the winter off the roads.
+///
+/// **Its own dispatcher rather than a branch of `dispatch`**, for the reason
+/// every other pool here has one: what it ranks is nothing like a haul. Freight
+/// ranks by downtime averted, crews by the commissioning order, settling by who
+/// has waited longest — and this ranks by how buried a stretch of road is and
+/// how much traffic it carries, which is a question about the map rather than
+/// about a consignee.
+///
+/// It sends a plough to the far end of the worst-buried road it can reach and
+/// lets it come home again. Nothing is loaded and nothing is delivered: the work
+/// happens under the wheels at every leg boundary, which is why this needs no
+/// arrival machinery beyond turning the machine round. See [`swept`].
+///
+/// **A road is picked over open ground deliberately.** A plough could clear
+/// anything, and clearing a field helps nobody: what a republic loses to snow is
+/// the roads it built, and those are the thing worth the diesel.
+pub fn clearing(world: &World) -> Vec<Mutation> {
+    // Nothing lying, nothing to do. The cheap exit matters: this runs every
+    // tick and for most of the year the answer is no.
+    if world.ground.snow_load() <= 0.0 {
+        return Vec::new();
+    }
+    let mut ploughs = available(world, crate::fleet::Role::Clearance);
+    if ploughs.is_empty() {
+        return Vec::new();
+    }
+
+    let crossing = world.crossing();
+    let now = world.clock.ticks() as f64;
+    let mut drawn: BTreeMap<BuildingId, Tonnes> = BTreeMap::new();
+    let mut out = Vec::new();
+
+    // Where a plough is already headed, so two are not sent to the same drift.
+    // The lesson `crews` learnt twice, applied before it could be relearnt here.
+    let mut coming: Vec<Point> = world
+        .fleet
+        .all()
+        .iter()
+        .filter_map(|v| match v.job {
+            Some(Job::Plough { to }) => Some(to),
+            _ => None,
+        })
+        .collect();
+
+    // Every road segment, worst buried first. Ties on the segment's own ends so
+    // the answer does not depend on how the network happens to be ordered.
+    let mut buried: Vec<(f64, Point, Point)> = world
+        .roads
+        .segments()
+        .iter()
+        .filter_map(|segment| {
+            let (from, to) = world.roads.segment_ends(segment)?;
+            let cells = world.lattice.cells_along(from, to);
+            if cells.is_empty() {
+                return None;
+            }
+            let cover: f64 = cells
+                .iter()
+                .map(|&c| world.ground.snow_load() * (1.0 - world.lattice.cleared_at(c)))
+                .sum::<f64>()
+                / cells.len() as f64;
+            (cover >= PLOUGH_AT).then_some((cover, from, to))
+        })
+        .collect();
+    buried.sort_by(|(ca, fa, ta), (cb, fb, tb)| {
+        cb.total_cmp(ca)
+            .then_with(|| fa.x.0.total_cmp(&fb.x.0))
+            .then_with(|| fa.y.0.total_cmp(&fb.y.0))
+            .then_with(|| ta.x.0.total_cmp(&tb.x.0))
+            .then_with(|| ta.y.0.total_cmp(&tb.y.0))
+    });
+
+    for (_, from, to) in buried {
+        if ploughs.is_empty() {
+            break;
+        }
+        // The far end from whichever plough takes it, so the machine drives the
+        // whole segment rather than touching one end of it.
+        if coming
+            .iter()
+            .any(|at| at.distance_to(to).0 < crate::ground::GROUND_CELL.0)
+        {
+            continue;
+        }
+
+        let mut nearest: Vec<(f64, usize)> = ploughs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| {
+                let v = world.fleet.get(*id)?;
+                Some((v.at.distance_to(from).0, i))
+            })
+            .collect();
+        nearest.sort_by(|(da, ia), (db, ib)| da.total_cmp(db).then_with(|| ia.cmp(ib)));
+
+        for (_, index) in nearest {
+            let id = ploughs[index];
+            let (Some(v), Some(yard)) = (
+                world.fleet.get(id),
+                world
+                    .fleet
+                    .get(id)
+                    .and_then(|v| world.buildings.get(v.home))
+                    .map(|b| b.centre),
+            ) else {
+                continue;
+            };
+            let def = v.def();
+            let leg = |a: Point, b: Point| plan_leg(world, &crossing, def, a, b, now);
+            let (Some(outbound), Some(home_run)) = (leg(v.at, to), leg(to, yard)) else {
+                continue;
+            };
+            // The rule that does not bend: a vehicle never accepts a job it
+            // cannot finish. A plough stranded in a drift is the one thing worse
+            // than a buried road.
+            let whole = outbound.distance() + home_run.distance();
+            let held = world
+                .buildings
+                .get(v.home)
+                .map(|b| b.stock.get(Resource::Fuel))
+                .unwrap_or(Tonnes::ZERO)
+                .saturating_sub(drawn.get(&v.home).copied().unwrap_or(Tonnes::ZERO));
+            let top_up = def.tank.saturating_sub(v.fuel).min(held);
+            if (v.fuel + top_up).0 < v.fuel_for(whole).0 {
+                continue;
+            }
+
+            // No bogging roll, deliberately: see the write set. A plough is
+            // above the scale by construction.
+            out.push(Mutation::Dispatch {
+                vehicle: id,
+                job: Job::Plough { to },
+                journey: outbound,
+                refuel: top_up,
+            });
+            *drawn.entry(v.home).or_default() += top_up;
+            coming.push(to);
+            ploughs.remove(index);
+            break;
+        }
+    }
+    out
+}
+
 /// Goods moving along a belt or a pipe, without a lorry.
 ///
 /// **Per tick, like the fleet**, because a belt runs continuously and the point
@@ -5206,6 +5446,7 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
         // systems happened to be listed the other way round.
         crews,
         settling,
+        clearing,
     ] {
         let mutations = system(world);
         apply(world, &mutations);
@@ -8490,6 +8731,7 @@ mod tests {
                     ("dispatch", dispatch),
                     ("crews", crews),
                     ("settling", settling),
+                    ("clearing", clearing),
                 ] {
                     let m = system(&world);
                     note(name, &m);
@@ -10991,6 +11233,105 @@ mod tests {
             ordered.0 <= 60.0 + 1e-6,
             "the order was for 60 t and {:.1} t turned up",
             ordered.0
+        );
+    }
+
+    /// The winter arrives, a plough goes out, and the road comes back.
+    ///
+    /// The whole mechanic end to end, and the premises are asserted first
+    /// because every one of them is a way this could pass while doing nothing:
+    /// a republic with no snow, no ploughs or no roads would sail through a test
+    /// that only looked at the end state.
+    #[test]
+    fn a_republic_ploughs_its_own_roads_out() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Taiga,
+        });
+        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+
+        // Road out to the crossing. The founding does not lay one — the
+        // trajectory runner orders it, and so does a player — so it is ordered
+        // here rather than assumed, and finished outright because six weeks of
+        // waiting for a crew would make this a construction test.
+        let depot = base.depot.expect("a council depot");
+        let yard = w.buildings.get(depot).unwrap().centre;
+        let house = base.customs.expect("a crossing");
+        let border = w.buildings.get(house).unwrap().centre;
+        lay(&mut w, crate::roadworks::Grade::Gravel, yard, border);
+
+        // A day for the founding to staff itself and put the ploughs on the
+        // depot's strength.
+        for _ in 0..(TICKS_PER_DAY * 2) {
+            w.tick();
+        }
+
+        let ploughs = w
+            .fleet
+            .all()
+            .iter()
+            .filter(|v| v.def().role == crate::fleet::Role::Clearance)
+            .count();
+        assert!(
+            ploughs > 0,
+            "the premise: the council depot keeps ploughs, and without one \
+             nothing below is testing anything"
+        );
+        assert!(
+            !w.roads.segments().is_empty(),
+            "the premise: the founding lays a track to its crossing, and a \
+             republic with no roads has nothing to clear"
+        );
+
+        // Midwinter, laid on rather than waited for: this test is about the
+        // plough, and driving it there through six simulated months would make
+        // it a test of the taiga calendar.
+        w.ground.snow = crate::ground::SNOW_BLOCKS_MM * 2.0;
+        w.ground.frost = 1.0;
+        w.lattice.bury(1.0);
+        let before = w.roads_unswept();
+        assert!(
+            before > 0.9,
+            "the premise: the republic has to actually be under snow, and it is \
+             {before:.2} buried"
+        );
+
+        let road = w.roads.segments()[0].clone();
+        let (from, to) = w.roads.segment_ends(&road).expect("a segment has ends");
+        let buried_leg = w.crossing().road_drag_along(from, to);
+        assert!(
+            buried_leg > 1.0,
+            "the premise: a buried road has to cost something, and this one \
+             drags {buried_leg:.2}"
+        );
+
+        let mut went_out = 0;
+        for _ in 0..(TICKS_PER_DAY * 5) {
+            for m in w.tick() {
+                if let Mutation::Dispatch { job, .. } = &m
+                    && matches!(job, Job::Plough { .. })
+                {
+                    went_out += 1;
+                }
+            }
+            // Hold the winter: `weather` would otherwise melt the pack and the
+            // thaw would clear the lattice for reasons that are not a plough.
+            w.ground.snow = crate::ground::SNOW_BLOCKS_MM * 2.0;
+        }
+
+        assert!(went_out > 0, "nothing was sent out into the snow");
+        let after = w.roads_unswept();
+        assert!(
+            after < before,
+            "ploughs went out {went_out} times and the republic is as buried as \
+             it was: {before:.3} then {after:.3}"
+        );
+        let swept_leg = w.crossing().road_drag_along(from, to);
+        assert!(
+            swept_leg < buried_leg,
+            "the road was ploughed and a lorry is no quicker on it: {buried_leg:.2} \
+             then {swept_leg:.2}"
         );
     }
 

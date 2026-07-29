@@ -170,7 +170,16 @@ impl Ground {
 
     /// What the going is on a particular surface today.
     pub fn going_on(&self, surface: Surface) -> f64 {
-        (self.softness() * going(surface)).clamp(0.0, 1.0)
+        ((self.softness() + self.snow_load()) * going(surface)).clamp(0.0, 1.0)
+    }
+
+    /// How much of a stopping depth of snow is lying, `0.0` bare to `1.0`.
+    ///
+    /// Republic-wide, like everything else on this struct: it does not snow on
+    /// half a ten-kilometre map. Where it has been *cleared* is a property of
+    /// the place and lives on [`Lattice`].
+    pub fn snow_load(&self) -> f64 {
+        (self.snow / SNOW_BLOCKS_MM).clamp(0.0, 1.0)
     }
 
     /// The same, rolled forward `days` from here.
@@ -256,6 +265,17 @@ pub struct Lattice {
     /// hundred is where the smoke goes. A million-cell field would cost a
     /// hundred times as much to sweep and say nothing more.
     pollution: Vec<f32>,
+    /// How recently a plough came through, `0.0` buried to `1.0` clear.
+    ///
+    /// **How much snow lies is one figure for the whole republic and lives on
+    /// [`Ground`]; where it has been pushed aside is a place, and lives here.**
+    /// That split is the same one the rest of this module already makes — the
+    /// weather is regional at ten kilometres and the surface is not — and it is
+    /// what makes clearing a road a thing you can watch happen on the map.
+    ///
+    /// One everywhere when nothing is lying, so a republic in July is not
+    /// carrying a field of stale clearance values that mean nothing.
+    cleared: Vec<f32>,
 }
 
 impl Lattice {
@@ -313,6 +333,8 @@ impl Lattice {
             surface,
             wear: vec![0.0; total],
             pollution: vec![0.0; total],
+            // Clear until it snows.
+            cleared: vec![1.0; total],
         }
     }
 
@@ -348,6 +370,59 @@ impl Lattice {
 
     pub fn wear_at(&self, index: usize) -> f64 {
         f64::from(self.wear[index])
+    }
+
+    /// How clear of snow a cell is, `0.0` buried to `1.0` swept.
+    pub fn cleared_at(&self, index: usize) -> f64 {
+        f64::from(self.cleared[index])
+    }
+
+    /// The clearance at a point, or clear off the map.
+    pub fn cleared_near(&self, at: Point) -> f64 {
+        self.cell_of(at).map_or(1.0, |c| self.cleared_at(c))
+    }
+
+    /// A plough came through here.
+    pub fn clear(&mut self, index: usize) {
+        self.cleared[index] = 1.0;
+    }
+
+    /// Snow falling on everything, `by` being the share of clearance it undoes.
+    ///
+    /// Applied to the **whole lattice** rather than to roads, because snow does
+    /// not know where the roads are. What knows is the plough.
+    pub fn bury(&mut self, by: f64) {
+        let by = by.clamp(0.0, 1.0);
+        for cell in &mut self.cleared {
+            *cell = (f64::from(*cell) * (1.0 - by)) as f32;
+        }
+    }
+
+    /// Everything is clear, because there is nothing lying.
+    ///
+    /// Called when the pack goes, so a republic does not spend its summer
+    /// carrying a field of stale clearance values — and so a road ploughed last
+    /// February is not still credited for it next December.
+    pub fn thaw(&mut self) {
+        for cell in &mut self.cleared {
+            *cell = 1.0;
+        }
+    }
+
+    /// How buried the whole lattice is on average, `0.0` clear to `1.0`.
+    ///
+    /// **Not what a panel should show.** Nobody ploughs a field, so over a 6 km
+    /// republic — three and a half thousand cells of empty countryside against
+    /// nine kilometres of road — this sits near one all winter whatever the
+    /// ploughs achieve. `World::roads_unswept` is the figure a player can act
+    /// on; this one exists because the tests that check burial and thaw are
+    /// about the lattice rather than about a road network.
+    pub fn buried_share(&self) -> f64 {
+        if self.cleared.is_empty() {
+            return 0.0;
+        }
+        let total: f64 = self.cleared.iter().map(|c| 1.0 - f64::from(*c)).sum();
+        total / self.cleared.len() as f64
     }
 
     /// Wear a cell in, capped at a made track.
@@ -524,7 +599,28 @@ pub struct Crossing<'a> {
     pub lattice: &'a Lattice,
     /// Today's softness, from [`Ground::softness`].
     pub softness: f64,
+    /// Today's snow, as a share of what would stop a vehicle — from
+    /// [`Ground::snow_load`].
+    pub snow: f64,
 }
+
+/// Millimetres of water equivalent of lying snow that stop a vehicle outright.
+///
+/// Sixty is roughly six hundred millimetres of settled snow, which is a real
+/// winter rather than a flurry. Measured against the climates that exist: the
+/// taiga passes forty in a normal winter, the plains hover well below it, and
+/// the steppe barely troubles it — so this is a taiga problem first, a plains
+/// nuisance second, and something the south hardly notices. That gradient is the
+/// point, and it is the same land-is-the-difficulty argument the whole design
+/// rests on rather than a number aimed at an outcome.
+pub const SNOW_BLOCKS_MM: f64 = 60.0;
+
+/// How much longer a fully buried road takes to drive than a swept one.
+///
+/// A road under snow is still a road — it has a surface under it and it goes
+/// where it went — so this is deliberately gentler than [`MUD_DRAG`] on open
+/// ground. What it costs a republic is hours, not journeys.
+pub const SNOW_DRAG: f64 = 3.0;
 
 /// How much of the going a made track takes away.
 ///
@@ -535,13 +631,64 @@ pub const WEAR_RELIEF: f64 = 0.8;
 
 impl Crossing<'_> {
     /// How bad the going is in one cell today, `0.0` firm to `1.0` impassable.
+    ///
+    /// Mud and snow are **added rather than maxed**, and they are different
+    /// things: mud is the ground giving way and snow is a load on top of it.
+    /// Wear relieves the first and not the second, which is right — a packed
+    /// track drains where a field does not, and it fills with snow exactly like
+    /// the field beside it. What relieves snow is a plough.
+    ///
+    /// This is also what stops midwinter reading as the easy season it used to.
+    /// Frozen ground is hard however wet it is — that rule stands and it is
+    /// still why the thaw is the worst going of the year — but a frozen field
+    /// under half a metre of snow is not a road, and until now it was.
     pub fn going_in(&self, index: usize) -> f64 {
         let surface = f64::from(self.lattice.surface[index]);
         if !surface.is_finite() {
             return f64::INFINITY;
         }
         let relief = 1.0 - WEAR_RELIEF * self.lattice.wear_at(index);
-        (self.softness * surface * relief).clamp(0.0, 1.0)
+        let mud = self.softness * relief;
+        let snow = self.snow * (1.0 - self.lattice.cleared_at(index));
+        ((mud + snow) * surface).clamp(0.0, 1.0)
+    }
+
+    /// How much longer a **road** leg takes today.
+    ///
+    /// One where the road is swept, up to `1.0 + SNOW_DRAG` where it is buried.
+    /// Nothing else touches a road leg: a road does not bog, and mud on the
+    /// field beside it is not the lorry's problem. Snow is the one thing that
+    /// slows a road, and clearing it is the one thing the player can do about
+    /// it — which is exactly the shape a mechanic wants.
+    pub fn road_drag_along(&self, from: Point, to: Point) -> f64 {
+        if self.snow <= 0.0 {
+            return 1.0;
+        }
+        let cells = self.lattice.cells_along(from, to);
+        if cells.is_empty() {
+            return 1.0;
+        }
+        let buried: f64 = cells
+            .iter()
+            .map(|&c| self.snow * (1.0 - self.lattice.cleared_at(c)))
+            .sum::<f64>()
+            / cells.len() as f64;
+        1.0 + SNOW_DRAG * buried.clamp(0.0, 1.0)
+    }
+
+    /// The drag on a leg, whichever kind of leg it is.
+    ///
+    /// **One entry point on purpose.** A road leg and an open-ground leg are
+    /// slowed by different things, and every caller that reached for
+    /// `drag_along` and passed it to a road leg was passing mud that a road does
+    /// not have. Asking one function which drag applies is what keeps the two
+    /// from being mixed up at a call site.
+    pub fn drag_for(&self, on_road: bool, from: Point, to: Point) -> f64 {
+        if on_road {
+            self.road_drag_along(from, to)
+        } else {
+            self.drag_along(from, to)
+        }
     }
 
     /// How much longer a cell takes to cross than firm open ground.
@@ -965,6 +1112,151 @@ mod tests {
             frost: 0.0,
         };
         assert_eq!(dry.softness(), 0.0);
+    }
+
+    /// Snow is a load on top of the ground, not a kind of mud — so a swept
+    /// midwinter road is still the best going of the year and a buried one is
+    /// not.
+    ///
+    /// **This is the rule that made snow worth modelling at all.** Frozen
+    /// ground is hard however wet it is, and that stands: it is why the thaw
+    /// and not January is the worst going. But a frozen field under half a
+    /// metre of snow is not a road, and until clearance existed it was — a
+    /// republic in deep winter drove at exactly its July pace.
+    #[test]
+    fn snow_costs_the_going_and_a_plough_buys_it_back() {
+        let mut lattice = Lattice::from_terrain(&crate::terrain::Terrain::flat(Metres(1_000.0)));
+        let midwinter = Ground {
+            moisture: 1.0,
+            water: 1.0,
+            // Well past what stops a vehicle.
+            snow: SNOW_BLOCKS_MM * 1.5,
+            // Set hard: the ground itself is the best it gets all year.
+            frost: 1.0,
+        };
+        assert_eq!(
+            midwinter.softness(),
+            0.0,
+            "the premise: frozen ground is firm, so anything measured below is \
+             the snow and not the mud"
+        );
+
+        // The pack has to have *fallen* on the republic: `cleared` is how clear
+        // of today's snow a cell is, and a lattice nobody has snowed on is
+        // clear by definition.
+        lattice.bury(1.0);
+        let cell = lattice
+            .cell_of(Point::new(Metres(500.0), Metres(500.0)))
+            .expect("mid-map");
+        let buried = Crossing {
+            lattice: &lattice,
+            softness: midwinter.softness(),
+            snow: midwinter.snow_load(),
+        };
+        let under_snow = buried.going_in(cell);
+        assert!(
+            under_snow >= 1.0,
+            "half a metre of snow on frozen ground and the going is {under_snow:.2}"
+        );
+
+        lattice.clear(cell);
+        let swept = Crossing {
+            lattice: &lattice,
+            softness: midwinter.softness(),
+            snow: midwinter.snow_load(),
+        };
+        assert_eq!(
+            swept.going_in(cell),
+            0.0,
+            "a ploughed cell on frozen ground should be the firmest going there is"
+        );
+    }
+
+    /// A road is not immune to the weather any more, and that is the whole
+    /// mechanic: without it a plough would have nothing to buy back.
+    #[test]
+    fn a_buried_road_leg_drags_and_a_swept_one_does_not() {
+        let mut lattice = Lattice::from_terrain(&crate::terrain::Terrain::flat(Metres(2_000.0)));
+        let (a, b) = (
+            Point::new(Metres(200.0), Metres(1_000.0)),
+            Point::new(Metres(1_800.0), Metres(1_000.0)),
+        );
+        lattice.bury(1.0);
+        let deep = Crossing {
+            lattice: &lattice,
+            softness: 0.0,
+            snow: 1.0,
+        };
+        let under_snow = deep.road_drag_along(a, b);
+        assert!(
+            (under_snow - (1.0 + SNOW_DRAG)).abs() < 1e-9,
+            "a wholly buried road dragged {under_snow:.2}"
+        );
+
+        for cell in lattice.cells_along(a, b) {
+            lattice.clear(cell);
+        }
+        let ploughed = Crossing {
+            lattice: &lattice,
+            softness: 0.0,
+            snow: 1.0,
+        };
+        assert_eq!(
+            ploughed.road_drag_along(a, b),
+            1.0,
+            "a swept road should cost nothing over a summer one"
+        );
+
+        // And with nothing lying there is no snow term at all, which is what
+        // keeps the other three hundred days of the year free of this.
+        let summer = Crossing {
+            lattice: &lattice,
+            softness: 0.5,
+            snow: 0.0,
+        };
+        assert_eq!(
+            summer.road_drag_along(a, b),
+            1.0,
+            "mud is not a road's problem"
+        );
+    }
+
+    /// Falling snow buries what was cleared, and the pack going takes the
+    /// bookkeeping with it.
+    ///
+    /// The second half is what stops a road ploughed last February still being
+    /// credited for it next December — a bug that would have been invisible for
+    /// nine months at a time.
+    #[test]
+    fn a_fall_buries_and_a_thaw_forgets() {
+        let mut lattice = Lattice::from_terrain(&crate::terrain::Terrain::flat(Metres(500.0)));
+        assert_eq!(
+            lattice.buried_share(),
+            0.0,
+            "a republic starts its life with clear roads"
+        );
+
+        lattice.bury(1.0);
+        assert_eq!(lattice.buried_share(), 1.0);
+
+        let cell = 0;
+        lattice.clear(cell);
+        assert!(lattice.cleared_at(cell) > 0.0, "the plough went through");
+        assert!(
+            lattice.buried_share() > 0.0,
+            "one cleared cell is not a cleared republic"
+        );
+
+        // Half a fall on top of a swept road takes half of it back.
+        lattice.bury(0.5);
+        assert!((lattice.cleared_at(cell) - 0.5).abs() < 1e-6);
+
+        lattice.thaw();
+        assert_eq!(
+            lattice.buried_share(),
+            0.0,
+            "the snow went and the ledger with it"
+        );
     }
 
     /// The seasonal event the model exists to produce, and nothing in the code

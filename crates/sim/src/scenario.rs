@@ -370,16 +370,26 @@ pub fn found(world: &mut World, citizens: usize) -> StartingBase {
     // an oil chain or a trade rule that buys fuel. That deadline is the point of
     // granting a finite amount rather than waiving the cost.
     //
-    // **In the motor depot rather than the council yard**, and the reason is a
-    // rule in `serve`: a supplier is anyone holding a resource who does not
-    // *consume* it. The council depot keeps snow ploughs now, so it declares a
-    // fuel appetite like every other garage — which makes it a place fuel goes
-    // and not a place fuel comes from. Twenty tonnes left there would have been
-    // twenty tonnes no lorry in the republic could draw on.
-    if let Some(motor_depot) = base.motor_depot
-        && let Some(b) = world.buildings.get_mut(motor_depot)
-    {
-        b.stock.add(Resource::Fuel, Tonnes(20.0));
+    // **Split between the two garages, in their own tanks**, and that is forced
+    // by a rule in `serve`: a supplier is anyone holding a resource who does not
+    // *consume* it. Both depots burn diesel, so neither can pass any to the
+    // other — a republic with no refinery has no fuel supplier at all, and
+    // whichever yard the grant landed in was the only one with any.
+    //
+    // Measured, on a taiga trajectory: with the whole grant in the motor depot
+    // the council depot's ploughs never turned a wheel, and the roads sat 89%
+    // unswept through a winter with the mechanic working perfectly well. Moscow
+    // fuels the vehicles it sends, which is what this now says.
+    //
+    // It is still a grant and not an allowance: it runs out, and what replaces
+    // it is an oil chain or a trade rule that buys fuel. Imports land at a
+    // customs house, which consumes nothing and can therefore supply both.
+    for (yard, tonnes) in [(base.motor_depot, 14.0), (base.depot, 6.0)] {
+        if let Some(id) = yard
+            && let Some(b) = world.buildings.get_mut(id)
+        {
+            b.stock.add(Resource::Fuel, Tonnes(tonnes));
+        }
     }
 
     // Settlers, spread evenly over what housing exists.

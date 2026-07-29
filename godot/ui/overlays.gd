@@ -69,6 +69,7 @@ static func field_texture(republic: Node, mode: int) -> ImageTexture:
 	match mode:
 		Mode.GOING: flat = republic.going_field()
 		Mode.WEAR: flat = republic.wear_field()
+		Mode.SNOW: flat = republic.snow_field()
 		_: flat = republic.pollution_field()
 	if flat.size() < cells * cells:
 		return null

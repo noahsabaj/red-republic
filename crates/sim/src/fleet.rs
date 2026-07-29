@@ -533,6 +533,14 @@ pub enum Job {
         group: crate::migration::GroupId,
         to: BuildingId,
     },
+    /// Drive out there and back, pushing the snow off everything on the way.
+    ///
+    /// **Named by a place rather than by a building**, which is what makes it
+    /// unlike every other job here: what a plough is sent to is a stretch of
+    /// buried ground, and a stretch of ground is not a consignee. There is
+    /// nothing to load, nothing to set down and nobody to collect — the work is
+    /// the journey, and it happens under the wheels at every leg boundary.
+    Plough { to: crate::units::Point },
 }
 
 impl Job {

@@ -129,9 +129,18 @@ func refresh(republic: Node, overlay_mode: int, speed_names: Array) -> void:
 	clock_line.text = "%s    %s" % [republic.date_text(), speed_names[republic.speed()]]
 
 	var rain: float = republic.precipitation_mm()
-	weather_line.text = "%.1f °C%s" % [
+	# Snow goes on the weather line and only when there is any, because it is
+	# the one piece of weather the player can DO something about -- a republic
+	# that is 70% buried in January has ploughs that are losing, and that has to
+	# be readable without opening an overlay to find it.
+	var snow: PackedFloat32Array = republic.snow()
+	var snow_text := ""
+	if snow.size() >= 2 and snow[0] > 0.01:
+		snow_text = "    snow %.0f%%  ·  %.0f%% unswept" % [snow[0] * 100.0, snow[1] * 100.0]
+	weather_line.text = "%.1f °C%s%s" % [
 		republic.temperature_c(),
 		"    %.0f mm" % rain if rain > 0.05 else "",
+		snow_text,
 	]
 
 	# Five days ahead. Heating follows today's temperature and never the month,
