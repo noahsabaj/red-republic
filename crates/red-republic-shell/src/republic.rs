@@ -583,6 +583,35 @@ impl Republic {
         }
     }
 
+    /// Where one species of tree stands, as a `MultiMesh` instance buffer.
+    ///
+    /// Sixteen floats an instance — a 3x4 transform then an RGBA colour — which
+    /// is exactly the layout `MultiMesh.buffer` takes, so the Godot side is one
+    /// assignment with no per-tree work. `species` and `species_count` partition
+    /// the same set of sites between the meshes, so three calls plant one wood
+    /// rather than three overlapping ones.
+    ///
+    /// Forest was a colour on the ground until this existed. The first attempt
+    /// scattered in GDScript by walking the finished mesh's 361,201 vertices and
+    /// hung a render for eight minutes.
+    #[func]
+    fn forest_buffer(
+        &self,
+        species: i64,
+        species_count: i64,
+        spacing_m: f64,
+    ) -> PackedFloat32Array {
+        match &self.world {
+            Some(w) => crate::terrain_mesh::forest_buffer(
+                w.terrain(),
+                species.max(0) as u32,
+                species_count.max(0) as u32,
+                Metres(spacing_m),
+            ),
+            None => PackedFloat32Array::new(),
+        }
+    }
+
     // ---- Small reads. A raw call is 0.21 µs, so these are free. ------------
 
     /// Where the town was founded, in metres. What the camera opens on.

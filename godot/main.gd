@@ -35,6 +35,7 @@ const Kit := preload("res://building_kit.gd")
 const Art := preload("res://building_art.gd")
 const Overlays := preload("res://ui/overlays.gd")
 const Store := preload("res://settings_store.gd")
+const Forest := preload("res://forest.gd")
 const SaveFiles := preload("res://saves.gd")
 
 ## The default posting, for a run that skips the founding screen.
@@ -58,6 +59,10 @@ enum Screen { MENU, FOUNDING, PLAYING, PAUSED, SETTINGS, SAVES, REFERENCE, RADIO
 @onready var sounds: Node = $Sounds
 @onready var rig: Node3D = $CameraRig
 @onready var terrain_node: MeshInstance3D = $Terrain
+## Holds one MultiMeshInstance3D per tree species. A plain Node3D rather than a
+## MultiMeshInstance3D itself, because there are three species and a MultiMesh
+## carries exactly one mesh.
+@onready var forest_node: Node3D = $Forest
 @onready var buildings_node: MultiMeshInstance3D = $Buildings
 @onready var vehicles_node: MultiMeshInstance3D = $Vehicles
 @onready var newcomers_node: MultiMeshInstance3D = $Newcomers
@@ -937,6 +942,14 @@ func _build_terrain() -> void:
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, republic.terrain_surface())
 	terrain_node.mesh = mesh
+
+	# The woods, from the same arrays. Forest was a colour on the ground and
+	# nothing else until now, which is the largest single thing between this and
+	# a game that looks real -- and the reason bare forest floor read as desert
+	# the moment the flat green was replaced with a photograph of leaf litter.
+	var planted := Forest.plant(forest_node, republic, Forest.species_meshes())
+	if OS.is_debug_build():
+		print("planted %d trees" % planted)
 
 	# Vertex colour carries the surface kind as a one-hot channel -- red grass,
 	# green forest, blue rock, black water -- and terrain.gdshader decides what

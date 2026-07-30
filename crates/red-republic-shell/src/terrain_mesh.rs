@@ -139,3 +139,129 @@ fn surface_colour(surface: Option<Surface>) -> Color {
 pub fn height_at(terrain: &Terrain, at: Point) -> f64 {
     terrain.height_at(at).unwrap_or(Metres(0.0)).0
 }
+
+/// Floats per `MultiMesh` instance: a 3x4 transform, then an RGBA colour.
+const FLOATS_PER_TREE: usize = 16;
+
+/// Where the trees of one species stand, as a `MultiMesh` instance buffer.
+///
+/// # Why this is here and not in GDScript
+///
+/// The first version walked the finished mesh's 361,201 vertices in GDScript,
+/// which hung a render for eight minutes before anyone killed it. This does the
+/// same work against the terrain directly and hands back a buffer laid out
+/// exactly as Godot's `MultiMesh` wants it, so the shell side is one
+/// `set_buffer` call and there is no per-instance work anywhere.
+///
+/// That is the marshalling rule the whole boundary is built on, applied to the
+/// largest thing that crosses it: never a structure per entity, always one
+/// packed array with a documented stride. Here the stride is
+/// [`FLOATS_PER_TREE`] — twelve for the transform, four for the colour.
+///
+/// # Determinism
+///
+/// Placement is a pure function of the cell it is in, so a republic's woods are
+/// in the same place every time it is loaded. This is presentation and nothing
+/// in the simulation depends on it; it still must not *look* like it changes,
+/// because a forest that reshuffles itself on every load is the loudest possible
+/// tell that the world is not real.
+///
+/// # Colour
+///
+/// The colour written here is a neutral brightness lift — grey, never a hue.
+/// What species of tree is what colour is an art decision and it stays on the
+/// Godot side in the material, the same rule that keeps the terrain's tones in
+/// the shader. This only says *how much* light this particular tree catches.
+pub fn forest_buffer(
+    terrain: &Terrain,
+    species: u32,
+    species_count: u32,
+    spacing: Metres,
+) -> PackedFloat32Array {
+    let mut out = PackedFloat32Array::new();
+    if species_count == 0 {
+        return out;
+    }
+
+    let cells = terrain.cells();
+    let cell = terrain.cell_size().0;
+    // How many cells apart to consider planting. A wood wants trees every
+    // several metres, and the terrain is sampled every ten.
+    let step = ((spacing.0 / cell).round() as u32).max(1);
+
+    let mut cy = 0;
+    while cy < cells {
+        let mut cx = 0;
+        while cx < cells {
+            let centre = terrain.cell_centre(cx, cy);
+            if matches!(terrain.surface_at(centre), Some(Surface::Forest)) {
+                let h = splitmix(u64::from(cx) << 32 | u64::from(cy));
+                // Which species stands here. Deciding it from the same hash for
+                // every species means the three calls partition the same set of
+                // sites rather than each planting its own overlapping forest.
+                if (h % u64::from(species_count)) as u32 == species {
+                    let jitter_x = unit(h >> 8) - 0.5;
+                    let jitter_z = unit(h >> 20) - 0.5;
+                    let x = centre.x.0 + jitter_x * 2.0 * spacing.0;
+                    let z = centre.y.0 + jitter_z * 2.0 * spacing.0;
+                    let ground = terrain
+                        .height_at(Point {
+                            x: Metres(x),
+                            y: Metres(z),
+                        })
+                        .unwrap_or(Metres(0.0))
+                        .0;
+
+                    // Real stands have saplings in them, and a wood of identical
+                    // trees is the giveaway.
+                    let scale = 0.55 + unit(h >> 32) * 0.95;
+                    let yaw = unit(h >> 44) * std::f64::consts::TAU;
+                    let (sin, cos) = yaw.sin_cos();
+
+                    // Godot's instance transform is a 3x4 matrix stored row by
+                    // row: three basis columns then the origin, per row.
+                    out.push((scale * cos) as f32);
+                    out.push(0.0);
+                    out.push((scale * sin) as f32);
+                    out.push(x as f32);
+
+                    out.push(0.0);
+                    out.push(scale as f32);
+                    out.push(0.0);
+                    out.push(ground as f32);
+
+                    out.push((-scale * sin) as f32);
+                    out.push(0.0);
+                    out.push((scale * cos) as f32);
+                    out.push(z as f32);
+
+                    let lift = 0.78 + unit(h >> 52) * 0.44;
+                    out.push(lift as f32);
+                    out.push(lift as f32);
+                    out.push(lift as f32);
+                    out.push(1.0);
+                }
+            }
+            cx += step;
+        }
+        cy += step;
+    }
+
+    debug_assert_eq!(out.len() % FLOATS_PER_TREE, 0);
+    out
+}
+
+/// SplitMix64. Cheap, well-distributed, and a pure function of its input, which
+/// is the only property that matters here.
+fn splitmix(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = x;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// The low bits of a hash as a `0.0..1.0`.
+fn unit(h: u64) -> f64 {
+    f64::from((h & 0xFFFF) as u32) / 65535.0
+}

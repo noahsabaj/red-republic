@@ -39,6 +39,8 @@ fov = 60.0
 
 [node name="Terrain" type="MeshInstance3D" parent="."]
 
+[node name="Forest" type="Node3D" parent="."]
+
 [node name="Buildings" type="MultiMeshInstance3D" parent="."]
 
 [node name="Vehicles" type="MultiMeshInstance3D" parent="."]
