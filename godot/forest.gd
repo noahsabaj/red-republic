@@ -36,6 +36,20 @@ extends RefCounted
 ## the argument: density is the one thing here that trades directly against it.
 const SPACING := 34.0
 
+## Chunks per side the forest is split into, so Godot can cull the woods behind
+## the camera.
+##
+## A `MultiMesh` is one cullable unit: all of it is submitted or none of it is.
+## With the whole map in three of them, every tree on a 6 km posting was drawn
+## every frame whatever the camera was looking at — which is why halving the tree
+## count saved 1.7 ms of 9 and turning off shadows saved 0.7 more. Neither was
+## where the cost was.
+##
+## Eight is a balance: 64 chunks times three species is 192 draw calls if every
+## one of them has trees in it, which is cheap, while each chunk is 750 m across
+## and so genuinely leaves the frustum.
+const CHUNKS := 8
+
 
 ## Tint per species, multiplied into the instance colour.
 ##
@@ -82,58 +96,63 @@ static func plant(parent: Node3D, republic: Node, meshes: Array) -> int:
 		return 0
 
 	var planted := 0
-	for s in meshes.size():
-		var buffer: PackedFloat32Array = republic.forest_buffer(s, meshes.size(), SPACING)
-		var count := buffer.size() / FLOATS_PER_TREE
-		if count == 0:
-			continue
-
-		var mm := MultiMesh.new()
-		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.use_colors = true
-		mm.mesh = meshes[s]
-		# Order matters: `instance_count` allocates, `buffer` fills. Assigning
-		# the buffer first silently does nothing.
-		mm.instance_count = count
-		mm.buffer = buffer
-
-		var node := MultiMeshInstance3D.new()
-		node.multimesh = mm
-		node.name = "Species%d" % s
-		# The species tint lives here rather than in the buffer, because what
-		# colour a spruce is happens to be an art decision and Rust does not get
-		# those. The buffer's colour is a neutral brightness lift that multiplies
-		# against this.
-		var mat := StandardMaterial3D.new()
-		mat.albedo_color = TINTS[s % TINTS.size()]
-		mat.vertex_color_use_as_albedo = true
-		mat.roughness = 0.95
-		node.material_override = mat
-
-		# Beyond this the canopy is smaller than a pixel and the wood is carried
-		# by the forest-floor colour underneath it.
-		#
-		# **No `visibility_range_fade_mode`.** Setting it to FADE_SELF forces the
-		# material into transparent rendering, which for tens of thousands of
-		# dense overlapping canopies means no early-Z and a depth sort every
-		# frame. A hard cutoff pops slightly at three kilometres; the alternative
-		# was seconds per frame.
-		node.visibility_range_end = 3200.0
-
-		# Trees do not cast into the shadow map, and this is the single largest
-		# frame saving in the whole forest.
-		#
-		# Measured: halving the wood from 48,892 trees to 21,715 saved only 1.7 ms
-		# of about 9 ms, which says the cost is not per-tree at all -- it is that
-		# every one of these MultiMeshes is drawn again into each of four shadow
-		# cascades at 8192 square. Turning that off is worth several times what
-		# thinning the wood was.
-		#
-		# What it costs is dappling on the forest floor, which at the distance a
-		# wood is ever seen from is carried by the canopy being dark anyway. They
-		# still RECEIVE shadow, so a hillside still shades its own trees.
-		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		parent.add_child(node)
-		planted += count
-
+	for chunk in CHUNKS * CHUNKS:
+		for s in meshes.size():
+			planted += _plant_chunk(parent, republic, meshes, s, chunk)
 	return planted
+
+
+## One species in one chunk of the map.
+static func _plant_chunk(
+	parent: Node3D, republic: Node, meshes: Array, s: int, chunk: int
+) -> int:
+	var buffer: PackedFloat32Array = republic.forest_buffer(
+		s, meshes.size(), SPACING, chunk, CHUNKS
+	)
+	var count := buffer.size() / FLOATS_PER_TREE
+	if count == 0:
+		return 0
+
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	mm.mesh = meshes[s]
+	# Order matters: `instance_count` allocates, `buffer` fills. Assigning
+	# the buffer first silently does nothing.
+	mm.instance_count = count
+	mm.buffer = buffer
+
+	var node := MultiMeshInstance3D.new()
+	node.multimesh = mm
+	node.name = "Species%d_%d" % [s, chunk]
+	# The species tint lives here rather than in the buffer, because what
+	# colour a spruce is happens to be an art decision and Rust does not get
+	# those. The buffer's colour is a neutral brightness lift that multiplies
+	# against this.
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = TINTS[s % TINTS.size()]
+	mat.vertex_color_use_as_albedo = true
+	mat.roughness = 0.95
+	node.material_override = mat
+
+	# Beyond this the canopy is smaller than a pixel and the wood is carried
+	# by the forest-floor colour underneath it.
+	#
+	# **No `visibility_range_fade_mode`.** Setting it to FADE_SELF forces the
+	# material into transparent rendering, which for tens of thousands of
+	# dense overlapping canopies means no early-Z and a depth sort every
+	# frame. A hard cutoff pops slightly at three kilometres; the alternative
+	# was seconds per frame.
+	node.visibility_range_end = 3200.0
+
+	# Trees do not cast into the shadow map.
+	#
+	# Worth 0.7 ms of about 9, which is real but was not the answer: chunking
+	# above is. Kept because it is free and the two compose.
+	#
+	# What it costs is dappling on the forest floor, which at the distance a
+	# wood is ever seen from is carried by the canopy being dark anyway. They
+	# still RECEIVE shadow, so a hillside still shades its own trees.
+	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(node)
+	return count

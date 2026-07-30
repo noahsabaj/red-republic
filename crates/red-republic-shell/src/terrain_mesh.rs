@@ -177,9 +177,11 @@ pub fn forest_buffer(
     species: u32,
     species_count: u32,
     spacing: Metres,
+    chunk: u32,
+    chunks_per_side: u32,
 ) -> PackedFloat32Array {
     let mut out = PackedFloat32Array::new();
-    if species_count == 0 {
+    if species_count == 0 || chunks_per_side == 0 {
         return out;
     }
 
@@ -189,10 +191,30 @@ pub fn forest_buffer(
     // several metres, and the terrain is sampled every ten.
     let step = ((spacing.0 / cell).round() as u32).max(1);
 
-    let mut cy = 0;
-    while cy < cells {
-        let mut cx = 0;
-        while cx < cells {
+    // Only this chunk's cells.
+    //
+    // **A `MultiMesh` is a single cullable unit**, so a whole map's woods in one
+    // of them is a whole map's woods submitted every frame however little of it
+    // the camera can see. Measured: halving the tree count saved 1.7 ms of 9,
+    // and turning off shadow casting saved 0.7 more — neither is where the cost
+    // is. Splitting the forest into a grid is, because Godot can then throw away
+    // the chunks behind the camera before they reach the GPU.
+    //
+    // Each call walks only its own cells, so the total work across every chunk
+    // is the same single pass over the map it always was.
+    let per_chunk = cells.div_ceil(chunks_per_side);
+    let cx0 = (chunk % chunks_per_side) * per_chunk;
+    let cy0 = (chunk / chunks_per_side) * per_chunk;
+    let cx1 = (cx0 + per_chunk).min(cells);
+    let cy1 = (cy0 + per_chunk).min(cells);
+
+    // Aligned to the planting lattice, so a tree sits in exactly one chunk
+    // however the boundaries fall — otherwise a site on a seam is planted twice
+    // or not at all.
+    let mut cy = cy0.next_multiple_of(step);
+    while cy < cy1 {
+        let mut cx = cx0.next_multiple_of(step);
+        while cx < cx1 {
             let centre = terrain.cell_centre(cx, cy);
             if matches!(terrain.surface_at(centre), Some(Surface::Forest)) {
                 let h = splitmix(u64::from(cx) << 32 | u64::from(cy));

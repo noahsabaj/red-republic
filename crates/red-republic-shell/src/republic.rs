@@ -600,6 +600,8 @@ impl Republic {
         species: i64,
         species_count: i64,
         spacing_m: f64,
+        chunk: i64,
+        chunks_per_side: i64,
     ) -> PackedFloat32Array {
         match &self.world {
             Some(w) => crate::terrain_mesh::forest_buffer(
@@ -607,6 +609,8 @@ impl Republic {
                 species.max(0) as u32,
                 species_count.max(0) as u32,
                 Metres(spacing_m),
+                chunk.max(0) as u32,
+                chunks_per_side.max(1) as u32,
             ),
             None => PackedFloat32Array::new(),
         }
