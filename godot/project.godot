@@ -75,3 +75,15 @@ textures/default_filters/anisotropic_filtering_level=3
 ; spend over that; 8192 is.
 lights_and_shadows/directional_shadow/size=8192
 lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
+
+[shader_globals]
+
+; How dark it is, 0 broad daylight to 1 the middle of the night.
+;
+; A global rather than a parameter on every material, because it is one value
+; the whole scene shares and there are a hundred and thirty building materials
+; that want it. `main.gd` writes it once a frame from the sun's elevation.
+night={
+"type": "float",
+"value": 0.0
+}

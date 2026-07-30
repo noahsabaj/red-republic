@@ -211,6 +211,32 @@ impl Republic {
         }
     }
 
+    /// Run forward to a given hour of the day, going round midnight if need be.
+    ///
+    /// **A capture flag needs to be able to reach the state it captures.** The
+    /// day/night work landed with no way to render anything but the hour a run
+    /// happened to found at, which is the same shape as the sky work shipping
+    /// with the pitch pinned at fifty degrees: five screenshots taken at five
+    /// hours came back identical and would have been read as five hours looking
+    /// the same.
+    ///
+    /// Time is spent rather than skipped, exactly as [`Republic::advance_days`]
+    /// spends it. There is no way in this game to make time pass without it
+    /// passing.
+    #[func]
+    fn advance_to_hour(&mut self, hour: f64) {
+        let per_day = red_republic_sim::time::TICKS_PER_DAY;
+        let Some(world) = self.world.as_mut() else {
+            return;
+        };
+        let wanted = ((hour.clamp(0.0, 24.0) / 24.0) * per_day as f64) as u64 % per_day;
+        let now = world.clock().ticks() % per_day;
+        let ticks = (wanted + per_day - now) % per_day;
+        for _ in 0..ticks {
+            world.tick();
+        }
+    }
+
     /// The grant a posting opens with, in roubles.
     ///
     /// Read from the simulation rather than copied into GDScript, for the reason
@@ -548,6 +574,20 @@ impl Republic {
             Some(w) => w.clock().ticks() as f64 + self.fraction,
             None => 0.0,
         }
+    }
+
+    /// How far through the day it is, `0.0` midnight to `1.0` midnight.
+    ///
+    /// **Fractional, not whole ticks**, for the same reason [`Republic::now`]
+    /// is: at real-time speed the simulation advances once a minute, and a sun
+    /// that jumped once a minute would read as a strobe rather than as a day.
+    /// The renderer interpolates; the simulation does not care what o'clock it
+    /// is, because everything it decides about the dark it decides from a
+    /// roster.
+    #[func]
+    fn time_of_day(&self) -> f64 {
+        let ticks = red_republic_sim::time::TICKS_PER_DAY as f64;
+        (self.now() % ticks) / ticks
     }
 
     // ---- Bulk reads. Packed arrays only; see `marshal`. --------------------

@@ -49,6 +49,25 @@ uniform float cloud_scale = 16.0;
 uniform float cloud_drift = 0.004;
 uniform float cloud_altitude = 0.12;
 
+// How dark it is, 0 broad daylight to 1 the middle of the night — the same
+// global every lit window reads.
+//
+// **The sky has to be told, and cannot work it out.** `LIGHT0_DIRECTION` is the
+// only thing it has, and at night `main.gd` deliberately points that at a moon:
+// a DirectionalLight below the horizon lights the underside of the world and
+// nothing else, so the light is mirrored back up, made cold and made faint.
+// That is the right answer for the ground and it leaves the sky computing a
+// scattering solution for a sun that is very much up — a night frame came back
+// with a dark republic under a bright blue afternoon.
+global uniform float night;
+
+// A night sky, mixed toward rather than computed. Scattering at night is
+// starlight and airglow, which this model has no term for and which is not
+// worth a term: what it has to do is be dark, be blue, and keep the clouds
+// readable as shapes against it.
+uniform vec3 night_zenith : source_color = vec3(0.012, 0.020, 0.045);
+uniform vec3 night_horizon : source_color = vec3(0.045, 0.058, 0.090);
+
 
 // Value noise. Deliberately not a texture: the sky is the one surface with no
 // scale reference, so a tiling artefact in it is visible from anywhere on the
@@ -175,5 +194,12 @@ void sky() {
 		colour = mix(colour, cloud, amount * sky_mask);
 	}
 
-	COLOR = mix(ground_colour, colour, sky_mask);
+	// Down to night, last of all, so the clouds and the horizon gradient go with
+	// it rather than being computed in daylight and dimmed afterwards.
+	vec3 dark = mix(night_horizon, night_zenith, clamp(EYEDIR.y, 0.0, 1.0));
+	// Clouds keep a little of their shape against the night sky rather than
+	// disappearing into it, which is what a real overcast night looks like.
+	colour = mix(colour, mix(dark, colour * 0.10 + dark, 0.55), night);
+
+	COLOR = mix(ground_colour * mix(1.0, 0.12, night), colour, sky_mask);
 }

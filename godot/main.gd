@@ -182,6 +182,8 @@ func _found_default() -> void:
 	_enter_republic()
 	if _advance_days > 0:
 		republic.advance_days(_advance_days)
+	if _start_hour >= 0.0:
+		republic.advance_to_hour(_start_hour)
 	if _view_distance > 0.0:
 		rig.set_distance(_view_distance)
 	if _view_pitch > 0.0:
@@ -668,6 +670,8 @@ func _open_named_screen(name: String) -> void:
 			_found_default()
 			republic.found_fixture_town(143)
 			republic.advance_days(2)
+			if _start_hour >= 0.0:
+				republic.advance_to_hour(_start_hour)
 			_enter_republic()
 			_set_screen(Screen.PLAYING)
 		"labour":
@@ -699,6 +703,7 @@ func _apply_interface_scale() -> void:
 
 func _process(delta: float) -> void:
 	if _screen == Screen.PLAYING:
+		_run_the_sun()
 		_update_ghost()
 		_update_way()
 		_refresh_buildings()
@@ -958,6 +963,9 @@ func _read_arguments() -> void:
 			"--pitch":
 				if i + 1 < args.size():
 					_view_pitch = float(args[i + 1])
+			"--hour":
+				if i + 1 < args.size():
+					_start_hour = float(args[i + 1])
 			"--advance":
 				if i + 1 < args.size():
 					_advance_days = int(args[i + 1])
@@ -1004,6 +1012,93 @@ func _fit_shadows(metres: float) -> void:
 
 ## Sun, sky and air. Presentation only -- the weather the simulation models is a
 ## different thing entirely, and this does not read it.
+## How high the sun sits at noon, and how far it swings across the day.
+##
+## Not an ephemeris. The republic has a latitude in the fiction and none in the
+## simulation, and a real solar position would buy a shadow angle nobody can
+## check against anything. What the arc has to do is be legible: the light moves
+## while you watch it, the shadows swing, and dusk arrives.
+const SUN_PEAK_DEGREES := 58.0
+
+## The speed above which the sun stands still.
+##
+## **Noah's call, and the reason is physiological rather than aesthetic.** At
+## speed 1 a day takes twenty-four real minutes and the movement reads as
+## movement. At speed 5 a second buys eight hours, so the sun would cross the
+## sky every three seconds — unpleasant to look at and a genuine
+## photosensitivity risk. Above this the light is pinned at the hour it was
+## frozen at, which is also the only honest thing to do: nothing in the
+## simulation cares what o'clock it is.
+const SUN_FOLLOWS_UP_TO := 2
+
+## How dark it gets, `0.0` broad daylight to `1.0` the middle of the night.
+##
+## Written to the `night` global shader parameter, so every window in the
+## republic reads it without the scene walking a hundred and thirty materials.
+var _night := 0.0
+## The live environment, so the day/night pass can reach into it.
+var _environment: Environment = null
+## Whether the sun has been placed at least once since the look was applied.
+## Without it the early-out below would leave the light wherever `_apply_look`
+## put it on the first frame of a run that starts at midnight.
+var _sun_set_once := false
+## The hour a capture run should stand at, or negative for whatever the founding
+## gave it. See `Republic::advance_to_hour` for why this exists at all.
+var _start_hour := -1.0
+
+
+## Swing the sun, and take the light down with it.
+##
+## Real-time is this game's thesis and a sun that never moved was the largest
+## thing on the screen quietly saying otherwise.
+func _run_the_sun() -> void:
+	if republic.speed() > SUN_FOLLOWS_UP_TO:
+		return
+	var f: float = republic.time_of_day()
+	# Midnight at 0, sunrise at a quarter, noon at a half. `sin` of the whole
+	# turn gives exactly that with no branch and no table.
+	var height := sin(TAU * (f - 0.25))
+	var day := clampf(height, 0.0, 1.0)
+	var night := clampf(-height * 1.6, 0.0, 1.0)
+	if absf(night - _night) < 0.002 and _sun_set_once:
+		return
+	_sun_set_once = true
+	_night = night
+	RenderingServer.global_shader_parameter_set("night", night)
+
+	var sun: DirectionalLight3D = $Sun
+	var env: Environment = _environment
+	if env == null:
+		return
+
+	if height > 0.0:
+		# Daylight. The sun rises in the east and sets in the west, and it goes
+		# warm and low at both ends of that — which is where the long shadows
+		# and the whole reason to watch a day pass come from.
+		var elevation := SUN_PEAK_DEGREES * height
+		sun.rotation_degrees = Vector3(-elevation, 90.0 + 360.0 * (f - 0.25), 0.0)
+		var low := 1.0 - clampf(height * 2.2, 0.0, 1.0)
+		sun.light_color = _look.sun_colour.lerp(Color(1.0, 0.62, 0.36), low)
+		sun.light_energy = _look.sun_energy * clampf(0.15 + day * 1.05, 0.0, 1.6)
+	else:
+		# **A moon, not a sun below the horizon.** A DirectionalLight aimed up
+		# from underneath lights the underside of everything and nothing else,
+		# so the frame goes black with the sky still glowing. Mirroring the
+		# elevation and going cold and faint is what every game does and what
+		# a moon actually is.
+		sun.rotation_degrees = Vector3(-SUN_PEAK_DEGREES * -height * 0.7, 270.0 + 360.0 * (f - 0.25), 0.0)
+		sun.light_color = Color(0.62, 0.70, 0.92)
+		sun.light_energy = _look.sun_energy * 0.09
+
+	# Ambient follows, or a night with a bright sky-lit ground is just a day
+	# with a blue filter on it.
+	env.ambient_light_energy = _look.ambient_energy * lerpf(1.0, 0.14, night)
+	# And a little more exposure at night, because a player still has to be able
+	# to see the republic they are running. This is the one number here that is
+	# a legibility decision rather than a physical one, and it is small.
+	env.tonemap_exposure = _look.tonemap_exposure * lerpf(1.0, 1.18, night)
+
+
 func _apply_look() -> void:
 	var sun: DirectionalLight3D = $Sun
 	sun.light_color = _look.sun_colour
@@ -1122,6 +1217,10 @@ func _apply_look() -> void:
 	env.adjustment_saturation = _look.grade_saturation
 
 	$Sky.environment = env
+	# Held so the day/night pass can move exposure and ambient without rebuilding
+	# the whole environment sixty times a second.
+	_environment = env
+	_sun_set_once = false
 
 	# Physical exposure, which is what makes the tonemapper's numbers mean
 	# something rather than being a multiplier somebody tuned by eye.
