@@ -147,7 +147,7 @@ func _ready() -> void:
 
 ## Found the constants above, for a run with no founding screen.
 func _found_default() -> void:
-	republic.found(SEED, EXTENT_M, CLIMATE, republic.founding_settlers())
+	republic.found(SEED, EXTENT_M, CLIMATE)
 	# Named, because an unnamed republic is a state nothing should be able to
 	# observe and a capture run would otherwise be the one place it is. It also
 	# means a screenshot of the HUD shows the name line doing its job rather than

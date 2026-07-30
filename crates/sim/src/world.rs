@@ -937,6 +937,21 @@ impl World {
                 .map(Done::Commissioned)
                 .map_err(Refused::Placement),
 
+            // The site goes down exactly as an ordinary one does — same border
+            // rule, same ground checks, same commissioning order — and is then
+            // marked as somebody else's job. Everything that makes it different
+            // happens in the `contracting` system, which is the only thing that
+            // reads `contractor`.
+            Command::ContractBuild { kind, at, market } => self
+                .place(kind, at)
+                .inspect(|&id| {
+                    if let Some(b) = self.buildings.get_mut(id) {
+                        b.contractor = Some(market);
+                    }
+                })
+                .map(Done::Commissioned)
+                .map_err(Refused::Placement),
+
             // Two refusals here, and both exist to make an orphaned crew
             // unrepresentable rather than to detect one afterwards. Pulling down
             // a site with a gang standing on it, or an office whose gangs are
@@ -2183,7 +2198,7 @@ mod tests {
                 name: "Zheleznogorsk".to_string(),
             })
             .expect("a plain name is accepted");
-        crate::scenario::found(&mut world, crate::scenario::SETTLERS);
+        crate::scenario::town(&mut world, crate::scenario::SETTLERS);
         for _ in 0..TICKS_PER_DAY * 40 {
             world.tick();
         }
@@ -2329,7 +2344,7 @@ mod tests {
         use crate::fleet::Destination;
 
         let mut world = World::new(spec(1961));
-        let base = crate::scenario::found(&mut world, 120);
+        let base = crate::scenario::town(&mut world, 120);
         let office = base.construction_office.expect("the founding places one");
 
         // A site far enough out that the crew is genuinely away from the yard.
@@ -2430,7 +2445,7 @@ mod tests {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        crate::scenario::found(&mut world, 120);
+        crate::scenario::town(&mut world, 120);
         simulate_days(&mut world, 20);
 
         // Premise: somebody is actually driving to the thing being demolished.

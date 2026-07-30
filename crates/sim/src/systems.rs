@@ -362,6 +362,25 @@ pub enum Mutation {
     /// A penalty for undelivered goods. Separate from [`Mutation::Export`]
     /// because no goods move: this is money leaving and nothing coming back.
     Fine { market: Market, amount: f64 },
+    /// A day's work by a foreign firm on a site the republic contracted out.
+    ///
+    /// **One kind, and coarse on purpose**, for the same reason [`Mutation::
+    /// Wages`] is: the work and the bill are one transaction. A day a
+    /// contractor worked is a day the republic owes for, and the two can never
+    /// happen apart — a version that advanced the site and paid separately
+    /// could leave a republic with a building it never bought.
+    ///
+    /// `paid` is what the treasury could actually cover, which is not always
+    /// `owed`: `Treasury::debit` refuses to go negative, so a republic that has
+    /// run out simply stops making progress. That is the right failure — a
+    /// stalled site is on the screen, and it is the same shape as an unpaid
+    /// wage bill sending foreign workers home.
+    Contracted {
+        site: BuildingId,
+        market: Market,
+        builder_days: f64,
+        paid: f64,
+    },
     /// How well a home's people are being served, component by component.
     ///
     /// The counterpart of [`Mutation::Provision`], one level up: provisioning
@@ -527,6 +546,7 @@ pub enum MutationKind {
     Fine,
     DefaultOnLoan,
     Wages,
+    Contracted,
     Content,
     Morale,
     Schooling,
@@ -586,6 +606,7 @@ impl Mutation {
             Mutation::DefaultOnLoan { .. } => MutationKind::DefaultOnLoan,
             Mutation::Fine { .. } => MutationKind::Fine,
             Mutation::Wages { .. } => MutationKind::Wages,
+            Mutation::Contracted { .. } => MutationKind::Contracted,
             Mutation::Content { .. } => MutationKind::Content,
             Mutation::Morale { .. } => MutationKind::Morale,
             Mutation::Schooling { .. } => MutationKind::Schooling,
@@ -616,6 +637,9 @@ impl Mutation {
 /// anything, and it does so silently.
 pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
     ("power", &[MutationKind::Powered]),
+    // One kind, because a contracted day's work and the bill for it are one
+    // transaction — see `Mutation::Contracted`.
+    ("contracting", &[MutationKind::Contracted]),
     ("heating", &[MutationKind::Heated, MutationKind::Consume]),
     // Construction consumes as well as builds: the plant a crew works with is
     // owned by its office and wears out in proportion to the builder-days
@@ -891,6 +915,25 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                 world.treasury.debit(*market, *paid);
                 for &(office, heads) in dismissed {
                     world.crews.let_go(office, *market, heads);
+                }
+            }
+            &Mutation::Contracted {
+                site,
+                market,
+                builder_days,
+                paid,
+            } => {
+                world.treasury.debit(market, paid);
+                if let Some(b) = world.buildings.get_mut(site) {
+                    b.work_done += builder_days;
+                }
+                // A finished contract stops being a contract. Without this the
+                // firm would go on billing for a building that is already up.
+                if let Some(b) = world.buildings.get(site)
+                    && b.is_built()
+                    && let Some(b) = world.buildings.get_mut(site)
+                {
+                    b.contractor = None;
                 }
             }
             &Mutation::Import {
@@ -1913,6 +1956,88 @@ pub const MACHINERY_PER_BUILDER_DAY: f64 = 0.02;
 ///
 /// Sites are worked in commissioning order, which now decides which site gets a
 /// crew rather than which site gets the days.
+/// Builder-days a contracted firm works in a day, per site.
+///
+/// A gang of your own is ten people and works ten builder-days a day. A firm
+/// brings its own gang and works rather faster, because it brings enough of them
+/// — you are buying capacity you do not have to house, feed or train.
+const CONTRACTOR_DAYS: f64 = 18.0;
+
+/// What one contracted builder-day costs, in the bloc's own currency.
+///
+/// Several times what your own crews cost, which is the entire argument for
+/// building a Construction Office and training people. A republic that never
+/// stops contracting is a republic spending its grant on what it could have
+/// done itself — and that is a decision the player gets to make badly.
+const CONTRACTOR_RATE: f64 = 340.0;
+
+/// Foreign firms working the sites the republic paid them to.
+///
+/// **The bootstrap.** A blank map has no Construction Office, no crews and no
+/// materials, so nothing the republic owns can raise a building; this is the
+/// only thing that can, and it is why a posting opens with money rather than a
+/// town. After the opening it should be the expensive option nobody reaches for
+/// twice.
+///
+/// A contracted site needs no crew and no materials — that is what is being
+/// bought. It does still take its turn in the commissioning order, because a
+/// republic with three contracts running is spending three times as fast and
+/// should see them finish in the order it asked for them.
+///
+/// **A republic that runs out simply stops.** `Treasury::debit` refuses to go
+/// negative, so an unaffordable day buys proportionally less work rather than
+/// going into debt. That is the same failure shape as an unpaid wage bill, and
+/// the same reason: a stalled site is visible and an overdraft nobody agreed to
+/// is not.
+pub fn contracting(world: &World) -> Vec<Mutation> {
+    let mut out = Vec::new();
+    let mut purse: Vec<(Market, f64)> = Market::ALL
+        .iter()
+        .map(|&m| (m, world.treasury.of(m)))
+        .collect();
+
+    // Commissioning order, which for a building is its id.
+    let mut sites: Vec<_> = world
+        .buildings
+        .all()
+        .iter()
+        .filter(|b| !b.is_built() && b.contractor.is_some())
+        .map(|b| {
+            (
+                b.id,
+                b.contractor.expect("filtered"),
+                b.def().labour - b.work_done,
+            )
+        })
+        .collect();
+    sites.sort_by_key(|&(id, _, _)| id);
+
+    for (site, market, remaining) in sites {
+        let Some(slot) = purse.iter_mut().find(|(m, _)| *m == market) else {
+            continue;
+        };
+        let wanted = CONTRACTOR_DAYS.min(remaining.max(0.0));
+        if wanted <= 0.0 {
+            continue;
+        }
+        let owed = wanted * CONTRACTOR_RATE;
+        // What the purse can actually cover, which decides how much of the day
+        // the firm works rather than putting the republic into debt for it.
+        let paid = owed.min(slot.1.max(0.0));
+        if paid <= 0.0 {
+            continue;
+        }
+        slot.1 -= paid;
+        out.push(Mutation::Contracted {
+            site,
+            market,
+            builder_days: wanted * (paid / owed),
+            paid,
+        });
+    }
+    out
+}
+
 pub fn construction(world: &World) -> Vec<Mutation> {
     let day = tick_days();
 
@@ -1991,6 +2116,19 @@ fn sites_in_order(world: &World) -> Vec<(u64, Destination, f64)> {
     let mut sites: Vec<(u64, Destination, f64)> = Vec::new();
     for b in world.buildings.all() {
         if b.is_built() || !b.has_materials() {
+            continue;
+        }
+        // A site somebody else is being paid to build is not a site your crews
+        // work, and it does not want your gravel either. You bought the labour
+        // and the materials together, which is what makes a contractor cost
+        // several times a builder-day and what makes it worth stopping.
+        //
+        // Without this a contracted site is worked twice over: billed to a
+        // foreign firm AND staffed from your own offices. Caught by the
+        // both-directions write-set guard, which found `contracting` never
+        // emitting because the ordinary crews finished every contract before
+        // the day boundary it runs on.
+        if b.contractor.is_some() {
             continue;
         }
         let remaining = (b.def().labour - b.work_done).max(0.0);
@@ -5946,6 +6084,11 @@ pub fn run_tick(world: &mut World) -> Vec<Mutation> {
             // come second: an advance falling due is a deadline the republic
             // agreed to, and a day's pay is not.
             |w: &mut World| wages(w),
+            // After wages, and for the same reason wages come after loans: all
+            // three spend the same purse, and which one gets the last rouble is
+            // part of the simulation's definition rather than an accident of
+            // ordering. Your own people are paid before somebody else's firm.
+            |w: &mut World| contracting(w),
             // People, after labour: contentment reads how many of a home's
             // working-age residents hold a job, and that is what the labour
             // pass has just decided.
@@ -8177,7 +8320,7 @@ mod tests {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let base = crate::scenario::town(&mut w, crate::scenario::SETTLERS);
         let house = base.customs.expect("the founding opens a crossing");
         let post = w
             .frontier
@@ -8273,7 +8416,7 @@ mod tests {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let base = crate::scenario::town(&mut w, crate::scenario::SETTLERS);
         let house = base.customs.expect("a crossing");
         let post = w
             .frontier
@@ -8359,7 +8502,7 @@ mod tests {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let base = crate::scenario::town(&mut w, crate::scenario::SETTLERS);
         let office = base.construction_office.expect("the founding places one");
         let market = w.bloc_near(w.buildings.get(office).unwrap().centre);
         w.treasury.credit(market, 5_000.0);
@@ -8429,7 +8572,7 @@ mod tests {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let base = crate::scenario::town(&mut w, crate::scenario::SETTLERS);
         let office = base.construction_office.expect("an office");
         let market = w.bloc_near(w.buildings.get(office).unwrap().centre);
         w.treasury.credit(market, 5_000.0);
@@ -8917,7 +9060,7 @@ mod tests {
         // included. A founding is allowed to be short of people; a *guard* is
         // not, because the systems at the tail of the commissioning order are
         // then never exercised and their declarations stop being checked.
-        let base = crate::scenario::found(&mut world, 240);
+        let base = crate::scenario::town(&mut world, 240);
         // Both rules point at the bloc of the house the founding actually
         // opened, because a house clears only for the bloc whose frontier post
         // it stands at. Which post the founding picks is decided by the land,
@@ -8942,6 +9085,15 @@ mod tests {
             .sell(Resource::Coal, trading_bloc)
             .buy(Resource::Machinery, trading_bloc, Tonnes(4.0));
         world.treasury.credit(trading_bloc, 500.0);
+
+        // A site somebody else is building, so `contracting` has something to
+        // work and something to bill for. Without one it never emits, and the
+        // both-directions guard correctly calls its declaration a superset.
+        //
+        // Contracted to `Market::East` specifically and funded separately from
+        // the trade float above: a contractor is paid in its own bloc's
+        // currency, and 500 roubles buys under two builder-days. A fixture that
+        // could not pay would exercise the refusal rather than the work.
 
         // An advance this fixture will never repay, so `loans` has a default to
         // emit. Taken through `issue` rather than written in, because that is
@@ -9264,6 +9416,9 @@ mod tests {
                     let m = wages(&world);
                     note("wages", &m);
                     apply(&mut world, &m);
+                    let m = contracting(&world);
+                    note("contracting", &m);
+                    apply(&mut world, &m);
                     let m = weather(&world);
                     note("weather", &m);
                     apply(&mut world, &m);
@@ -9567,6 +9722,46 @@ mod tests {
             world.clock.advance();
         }
 
+        // `contracting` gets a world of its own, and that is the point.
+        //
+        // Putting a contracted site into the town above broke it: `demography`
+        // stopped emitting `Birth`, whatever kind was contracted and whether or
+        // not it ever finished. The town fixture is a judgement — "a republic
+        // that works" — and everything built on it depends on every threshold
+        // that judgement is compared against, which is the lesson this file has
+        // now learned four separate times.
+        //
+        // So rather than widen a balanced fixture until it tips, this exercises
+        // the one system that needs an empty map on an empty map. It is also the
+        // honest setting for it: contracting exists *because* a blank slate has
+        // no crews, and a republic with a working Construction Office should
+        // never reach for it.
+        {
+            let mut blank = World::new(WorldSpec {
+                seed: 1961,
+                extent: Metres(6_000.0),
+                climate: ClimateId::Plains,
+            });
+            let centre = crate::scenario::found(&mut blank);
+            if let Some(at) = crate::scenario::find_site(
+                &blank,
+                BuildingKind::ConstructionOffice,
+                centre,
+                Metres(800.0),
+            ) {
+                let _ = blank.issue(crate::Command::ContractBuild {
+                    kind: BuildingKind::ConstructionOffice,
+                    at,
+                    market: Market::East,
+                });
+                for _ in 0..5 {
+                    let m = contracting(&blank);
+                    note("contracting", &m);
+                    apply(&mut blank, &m);
+                }
+            }
+        }
+
         seen
     }
 
@@ -9650,6 +9845,69 @@ mod tests {
             "twenty crews were sent across saturated ground and every one of \
              them arrived — a bus is not being rolled for the crossing it is \
              about to make"
+        );
+    }
+
+    /// The bootstrap: a republic that owns nothing can still get a building up.
+    ///
+    /// This is the one path off a blank map, so it is the one that must work
+    /// with no Construction Office, no crews, no materials and nobody living
+    /// here — which is exactly the state `scenario::found` leaves a world in.
+    #[test]
+    fn a_contracted_firm_builds_what_the_republic_cannot() {
+        let mut w = World::new(WorldSpec {
+            seed: 1961,
+            extent: Metres(6_000.0),
+            climate: ClimateId::Plains,
+        });
+        let centre = crate::scenario::found(&mut w);
+
+        // The premise, asserted rather than assumed: nothing here.
+        assert_eq!(w.buildings.all().len(), 0, "a posting starts empty");
+        assert_eq!(w.population.count(), 0, "and nobody lives on it");
+        let opening = w.treasury.of(Market::East);
+        assert!(opening > 0.0, "but it does start with roubles");
+        assert_eq!(w.treasury.of(Market::West), 0.0, "and no hard currency");
+
+        let at =
+            crate::scenario::find_site(&w, BuildingKind::ConstructionOffice, centre, Metres(800.0))
+                .expect("somewhere to put an office");
+        let done = w.issue(crate::Command::ContractBuild {
+            kind: BuildingKind::ConstructionOffice,
+            at,
+            market: Market::East,
+        });
+        assert!(done.is_ok(), "the contract was refused: {done:?}");
+
+        let site = w
+            .buildings
+            .all()
+            .first()
+            .map(|b| b.id)
+            .expect("the site went down");
+        assert!(
+            !w.buildings.get(site).unwrap().is_built(),
+            "it starts as a site"
+        );
+
+        for _ in 0..(30 * crate::time::TICKS_PER_DAY) {
+            w.tick();
+        }
+
+        let b = w.buildings.get(site).expect("still there");
+        assert!(
+            b.is_built(),
+            "a month of a paid firm did not finish an office: {:.0} of {:.0} builder-days",
+            b.work_done,
+            b.def().labour
+        );
+        assert!(
+            w.treasury.of(Market::East) < opening,
+            "the office went up and nobody was billed for it"
+        );
+        assert!(
+            b.contractor.is_none(),
+            "a finished contract is still billing"
         );
     }
 
@@ -11221,7 +11479,7 @@ mod tests {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let base = crate::scenario::town(&mut w, crate::scenario::SETTLERS);
         let depot = base.depot.expect("the founding sites a council depot");
         let near_depot = w.buildings.get(depot).unwrap().centre;
         let site =
@@ -11297,7 +11555,7 @@ mod tests {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let base = crate::scenario::town(&mut w, crate::scenario::SETTLERS);
         // A founded republic burns coal in its boiler and its power plant, so
         // there is always somebody who would like this stock.
         let plant = base.plant.expect("the founding lights a power plant");
@@ -11898,7 +12156,7 @@ mod tests {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let base = crate::scenario::town(&mut w, crate::scenario::SETTLERS);
         let centre = base.centre;
 
         // Hands to spare. The founding sends **exactly** enough people for its
@@ -12045,7 +12303,7 @@ mod tests {
             extent: Metres(6_000.0),
             climate: ClimateId::Taiga,
         });
-        let base = crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        let base = crate::scenario::town(&mut w, crate::scenario::SETTLERS);
 
         // Road out to the crossing. The founding does not lay one — the
         // trajectory runner orders it, and so does a player — so it is ordered
@@ -12417,7 +12675,7 @@ mod tests {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        crate::scenario::found(&mut w, crate::scenario::SETTLERS);
+        crate::scenario::town(&mut w, crate::scenario::SETTLERS);
         let km = w
             .network(crate::journey::Medium::Water)
             .total_length()

@@ -45,7 +45,7 @@ fn main() {
     // here and the founding offered more jobs than that, so the tail of the
     // priority order — the customs house — stood empty and the money column
     // printed a flat zero for a decade. That read as balance.
-    let base = scenario::found(&mut world, scenario::SETTLERS);
+    let base = scenario::town(&mut world, scenario::SETTLERS);
 
     println!("Red Republic — trajectory");
     println!(

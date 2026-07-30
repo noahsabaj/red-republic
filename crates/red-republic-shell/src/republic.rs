@@ -142,7 +142,7 @@ impl Republic {
     /// `climate` indexes `ClimateId::ALL`: 0 plains, 1 taiga, 2 steppe,
     /// 3 maritime.
     #[func]
-    fn found(&mut self, seed: i64, extent_m: f64, climate: i64, settlers: i64) {
+    fn found(&mut self, seed: i64, extent_m: f64, climate: i64) {
         let climate = *ClimateId::ALL
             .get(climate.clamp(0, ClimateId::ALL.len() as i64 - 1) as usize)
             .unwrap_or(&ClimateId::Plains);
@@ -151,8 +151,9 @@ impl Republic {
             extent: Metres(extent_m),
             climate,
         });
-        let base = red_republic_sim::scenario::found(&mut world, settlers.max(0) as usize);
-        self.centre = base.centre;
+        // The map is empty. `found` picks the site and opens the rouble grant;
+        // every building after that is the player's to contract or to build.
+        self.centre = red_republic_sim::scenario::found(&mut world);
         self.world = Some(world);
         self.fraction = 0.0;
     }
@@ -173,14 +174,15 @@ impl Republic {
         }
     }
 
-    /// The settlers Moscow sends with a posting.
+    /// The grant a posting opens with, in roubles.
     ///
-    /// Read from the simulation rather than copied into GDScript. The shell held
-    /// its own number once and the two drifted apart, which is how a founding
-    /// ended up with more jobs than people and a customs house nobody worked.
+    /// Read from the simulation rather than copied into GDScript, for the reason
+    /// the settler count used to be: the shell held its own number once and the
+    /// two drifted apart. This replaces `founding_settlers`, which described a
+    /// hand of buildings and people that a republic is no longer given.
     #[func]
-    fn founding_settlers(&self) -> i64 {
-        red_republic_sim::scenario::SETTLERS as i64
+    fn founding_grant(&self) -> f64 {
+        red_republic_sim::scenario::GRANT_ROUBLES
     }
 
     /// Whether a republic has been founded yet.
@@ -297,9 +299,7 @@ impl Republic {
             // founding screen exactly as it was rather than half-founded.
             return GString::from(why.to_string().as_str());
         }
-        let base =
-            red_republic_sim::scenario::found(&mut world, red_republic_sim::scenario::SETTLERS);
-        self.centre = base.centre;
+        self.centre = red_republic_sim::scenario::found(&mut world);
         self.world = Some(world);
         self.fraction = 0.0;
         self.speed = 0;

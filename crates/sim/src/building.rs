@@ -1096,6 +1096,20 @@ pub struct Building {
     /// this reaches its def's `labour`, and a site produces nothing, employs
     /// nobody, and houses nobody.
     pub work_done: f64,
+    /// The bloc whose firm is building this, if it was contracted out.
+    ///
+    /// **This is how a republic gets its first building.** A blank map has no
+    /// Construction Office, no crews and no materials, so nothing the republic
+    /// owns can raise anything — a contracted site needs none of them. It
+    /// advances on its own and bills the treasury daily in that bloc's own
+    /// currency, which with a rouble-only grant means the Eastern Bloc builds
+    /// your republic until you have earned otherwise.
+    ///
+    /// `None` on everything the republic builds itself, which after the opening
+    /// should be nearly everything: contractors are several times the price of
+    /// your own crews, and that difference is what makes a Construction Office
+    /// worth having.
+    pub contractor: Option<crate::trade::Market>,
     /// The body this building works, once sited.
     pub tapped: Option<crate::geology::DepositId>,
     /// What the player has told this place to keep on hand, per resource.
@@ -1233,6 +1247,22 @@ impl Building {
     /// whose construction needs more brick than it will ever store could never
     /// be built at all.
     pub fn intake_capacity(&self, resource: Resource) -> Tonnes {
+        // A contracted site wants nothing delivered. The firm building it
+        // brings its own materials — that is a large part of what the money
+        // buys — so a republic hauling bricks to one would be paying twice and
+        // sending lorries it needs elsewhere.
+        //
+        // Here rather than in the dispatcher for the reason everything else
+        // about intake is here: every part of freight reads this one answer, so
+        // what is ranked, what a lorry is told to load, and what a lorry already
+        // on its way counts against can never disagree.
+        //
+        // Found through the write-set guard, and the symptom was three systems
+        // away from the cause: contracted sites pulled the fleet off the town's
+        // resupply, contentment fell, and `demography` stopped emitting `Birth`.
+        if self.contractor.is_some() && !self.is_built() {
+            return Tonnes::ZERO;
+        }
         if self.is_built() {
             // A tank will not take coal, and it says so here rather than in the
             // dispatcher: every part of freight reads this one answer, so what
@@ -1407,6 +1437,7 @@ impl Buildings {
             drink: 0.0,
             content: crate::wellbeing::Contentment::NOTHING,
             work_done: 0.0,
+            contractor: None,
             tapped: None,
             orders: Stock::EMPTY,
         };
@@ -1449,6 +1480,7 @@ impl Buildings {
             drink: 0.0,
             content: crate::wellbeing::Contentment::NOTHING,
             work_done: 0.0,
+            contractor: None,
             tapped,
             orders: Stock::EMPTY,
         });
@@ -1621,6 +1653,7 @@ mod tests {
             drink: 0.0,
             content: crate::wellbeing::Contentment::NOTHING,
             work_done: BuildingKind::StorageTank.def().labour,
+            contractor: None,
             tapped: None,
             orders: {
                 // A standing order for both, so the refusal that follows is
@@ -1641,6 +1674,7 @@ mod tests {
         // liquid.
         let site = Building {
             work_done: 0.0,
+            contractor: None,
             ..tank
         };
         assert!(

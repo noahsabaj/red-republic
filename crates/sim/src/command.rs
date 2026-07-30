@@ -56,6 +56,24 @@ pub enum Command {
     /// Commission a building. It goes up as a site and is built by the crew.
     Place { kind: BuildingKind, at: Point },
 
+    /// Pay a foreign firm to put a building up, instead of building it yourself.
+    ///
+    /// **This is how a republic that owns nothing starts.** A blank map has no
+    /// Construction Office, no crews and no materials, so [`Command::Place`]
+    /// puts down a site nothing can ever work. A contracted site needs none of
+    /// them: it advances on its own and bills the treasury daily in `market`'s
+    /// own currency, exactly as foreign labour does.
+    ///
+    /// It is deliberately expensive. Contractors cost several times what your
+    /// own crews do, which is the whole argument for a Construction Office and
+    /// the reason the opening is a question of what to buy rather than a free
+    /// hand.
+    ContractBuild {
+        kind: BuildingKind,
+        at: Point,
+        market: Market,
+    },
+
     /// Pull a building down.
     Demolish { building: BuildingId },
 

@@ -471,12 +471,32 @@ func _write_briefing() -> void:
 			% [west, card["crossings_east"]]
 		)
 
+	# This used to promise settlers and a town. It does not any more, because a
+	# posting no longer comes with one: the map is empty and the grant is the
+	# whole of what Moscow sends. Product text is a claim, and that one stopped
+	# being true the day the founding stopped placing buildings.
 	lines.append(
-		"[i]Moscow sends %d settlers and the buildings to start. There is no bus depot, "
-		% _republic.founding_settlers()
-		+ "no landfill and no hotel — those are yours to build.[/i]"
+		"[i]Moscow sends %s roubles and nothing else. No buildings, no people. "
+		% _thousands(_republic.founding_grant())
+		+ "Hire a Bloc firm to raise the first of it, and hard currency is "
+		+ "something you will have to earn.[/i]"
 	)
 	_briefing.text = "\n\n".join(lines)
+
+
+## Group a whole number with thin spaces, so 2500000 reads as 2 500 000.
+##
+## Spaces rather than commas: this is a Soviet republic counting roubles, and
+## the space is the convention across most of the world that is not the one this
+## game is deliberately not set in.
+func _thousands(value: float) -> String:
+	var digits := str(int(round(value)))
+	var out := ""
+	for i in digits.length():
+		if i > 0 and (digits.length() - i) % 3 == 0:
+			out += " "
+		out += digits[i]
+	return out
 
 
 func _land_sentence(card: Dictionary) -> String:
