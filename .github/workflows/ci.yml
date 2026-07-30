@@ -2,8 +2,9 @@ name: CI
 
 # The gate, run on the machine that is not Noah's.
 #
-# `archive/` is excluded from the Cargo workspace and has its own frozen
-# toolchain, so nothing here touches it. It is never built or released again.
+# The frozen 1.x build used to sit in `archive/` and had to be excluded from the
+# Cargo workspace so nothing here touched it. It was moved out of the repository
+# on 2026-07-30, so there is nothing left to exclude and nothing left to avoid.
 
 on:
   push:
