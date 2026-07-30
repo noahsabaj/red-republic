@@ -158,6 +158,10 @@ Taken 2026-07-28 in the interview that set the scope above. Everything here was 
 
   `--check` founds a republic, writes a save, lists it, reads it back, compares, and quits. It is what CI runs, and it earned its place on its first run by failing with `os error 123`: the Rust side was being handed Godot's `user://` virtual path, which `std::fs` has never heard of.
 
+**Versions are CalVer — `YYYY.M.PATCH`, decided 2026-07-30, and the first one is `2026.7.0`.** Bump the year and month at release time; the patch counts releases inside that month and returns to 0 when either changes. **There is exactly one version number in the repository**, `workspace.package.version` in the root `Cargo.toml`: the menu asks the loaded binary for it and `tools/package.ps1` reads it from `cargo metadata` for the installer and the executable's version resource, so a release is one edit.
+
+Semver was the alternative and was rejected on what the number is *for*. Semver's promise is about an API and this ships no API; a date answers the question somebody holding an installer actually has, which is how current their build is. **The cost is real and is written down rather than discovered later: a version can now never announce that the game is finished.** That signal lives in the goal at the top of this file and its three conditions, which is the only thing that was ever going to test it. **This also retires a problem rather than solving it** — the 1.x build was `1.10.0`, so any 0.x number for the official build read as a downgrade; a date is not comparable to it at all. The 1.x install was removed from the machine the same day and the build moved to `D:\archive`.
+
 ## Commands
 
 - `cargo test` — the gate. Run before committing.

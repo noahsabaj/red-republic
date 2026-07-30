@@ -37,9 +37,10 @@ pub struct Build;
 impl Build {
     /// The version of the loaded simulation binary, as the menu shows it.
     ///
-    /// A release build gives `0.1.0`; anything else appends the marker, because
-    /// a development build is a different artifact and a bug report that cannot
-    /// tell them apart is a bug report that wastes a round trip.
+    /// A release build gives the bare CalVer, `2026.7.0`; anything else appends
+    /// the marker, because a development build is a different artifact and a bug
+    /// report that cannot tell them apart is a bug report that wastes a round
+    /// trip.
     #[func]
     fn version() -> GString {
         let mut line = String::from(env!("CARGO_PKG_VERSION"));
@@ -64,10 +65,17 @@ mod tests {
     /// Thin, and it earns its place by direction rather than by depth: this
     /// asserts the *shape* the installer and the executable's version resource
     /// both require. Windows `FILEVERSION` is four comma-separated integers, so
-    /// `tools/package.ps1` appends a `.0` to a three-part semver — and a version
-    /// like `0.2.0-rc1` would render an invalid resource and fail the export
-    /// with a message about the preset rather than about the version. Failing
-    /// here instead names the actual cause.
+    /// `tools/package.ps1` appends a `.0` to the three-part CalVer — and a
+    /// version like `2026.7.0-rc1` would render an invalid resource and fail the
+    /// export with a message about the preset rather than about the version.
+    /// Failing here instead names the actual cause.
+    ///
+    /// It does **not** catch the natural CalVer slip of writing the month as
+    /// `2026.07.0`, and it does not need to: Cargo rejects that at manifest
+    /// parse with `invalid leading zero in minor version number`, before this or
+    /// anything else in the workspace gets to run. Checked, because the first
+    /// version of this comment claimed the test covered it and it does not —
+    /// `"07"` is non-empty and all digits, so it passes every assertion here.
     #[test]
     fn the_version_is_three_plain_numbers() {
         let version = env!("CARGO_PKG_VERSION");

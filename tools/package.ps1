@@ -70,10 +70,11 @@ $meta = cargo metadata --format-version 1 --no-deps --manifest-path (Join-Path $
 $pkg = $meta.packages | Where-Object { $_.name -eq 'red-republic-shell' }
 if (-not $pkg) { Die 'red-republic-shell is not in the workspace metadata' }
 $Version = $pkg.version
-# A Windows version resource is four comma-separated integers and a semver is
+# A Windows version resource is four comma-separated integers and the CalVer is
 # three. `the_version_is_three_plain_numbers` in build_info.rs is what stops a
 # pre-release suffix reaching this line and failing the export with a message
-# about the preset rather than about the version.
+# about the preset rather than about the version. A zero-padded month never gets
+# this far either, but for a different reason: Cargo refuses the manifest.
 $Version4 = "$Version.0"
 Write-Host "    version $Version"
 
