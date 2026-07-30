@@ -28,6 +28,7 @@
 use godot::prelude::*;
 
 pub mod audio;
+pub mod build_info;
 pub mod marshal;
 pub mod reference;
 pub mod republic;

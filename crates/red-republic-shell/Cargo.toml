@@ -10,10 +10,12 @@ authors.workspace = true
 [lib]
 # A cdylib because Godot loads it as a GDExtension.
 #
-# The name is long on purpose. Crate names shorter than about thirteen bytes
-# trip a PDB-rename warning on Windows and fall back to loading the original
-# PDB, which silently breaks hot reload — measured on this machine, not read
-# somewhere.
+# The PDB-rename warning on Windows is NOT about how long this name is, and an
+# earlier comment here said it was. The check is against the path the DLL
+# embeds, and the replacement name is always longer than the original, so no
+# name avoids it: `red_republic_shell` is 18 bytes and still trips it. Every
+# release export prints it. It is cosmetic, it costs hot reload, and nothing
+# should be renamed chasing it.
 name = "red_republic_shell"
 crate-type = ["cdylib"]
 
