@@ -148,6 +148,13 @@ jobs:
             echo "::error::this build cannot round-trip its own save"
             exit 1
           fi
+          # "Settings that work" is a clause of the release standard, and looking
+          # at the screen only shows the controls exist. This is the half a player
+          # would notice: a value written on one run being there on the next.
+          if ! grep -q "^settings check ok" run.log; then
+            echo "::error::this build cannot round-trip its own settings"
+            exit 1
+          fi
 
   # Does it install on a machine that has never heard of Rust or Godot?
   #
@@ -263,6 +270,11 @@ jobs:
           }
           if ($check -notmatch 'save check ok') {
             throw "the installed game cannot round-trip its own save"
+          }
+          # On a clean machine this is the first time settings are written at all,
+          # which is exactly the case a developer machine cannot reproduce.
+          if ($check -notmatch 'settings check ok') {
+            throw "the installed game cannot round-trip its own settings"
           }
           # `release` is what distinguishes the shipped artifact from a
           # development build that happens to have been copied here.

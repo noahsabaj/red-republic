@@ -191,7 +191,42 @@ func _found_default() -> void:
 			"development" if OS.is_debug_build() else "release",
 		])
 		_check_saves()
+		_check_settings()
 		get_tree().quit()
+
+
+## Write settings, read them back through a fresh store, and check they survived.
+##
+## "Settings that work" is a clause of the release standard that nothing checked.
+## Rendering the screen shows that the controls appear and says nothing at all
+## about whether a value written on one run is there on the next, which is the
+## half a player would notice.
+##
+## Round-tripped through a scratch file rather than `settings.cfg`, because
+## proving a write works by overwriting somebody's real configuration is a bad
+## trade — and this runs on the developer's machine as well as on CI.
+func _check_settings() -> void:
+	var scratch := "user://settings-check.cfg"
+	var written := Store.new()
+	# Values no default holds, so a store that quietly dropped the write and
+	# handed back its own default would fail here rather than pass.
+	written.set_value("audio/master", 0.37)
+	var flipped := not bool(Store.new().get_value("display/vsync"))
+	written.set_value("display/vsync", flipped)
+	written.save_to_disk(scratch)
+
+	var read_back := Store.new()
+	read_back.load_from_disk(scratch)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(scratch))
+
+	if not is_equal_approx(float(read_back.get_value("audio/master")), 0.37):
+		printerr("settings check FAILED: audio/master came back %s" % [
+			read_back.get_value("audio/master")])
+		return
+	if bool(read_back.get_value("display/vsync")) != flipped:
+		printerr("settings check FAILED: display/vsync came back at its default")
+		return
+	print("settings check ok")
 
 
 ## Write a save, list it, read it back, and check it is the same republic.
