@@ -121,16 +121,45 @@ templates/ folder into the directory above.
 
 # ---- build --------------------------------------------------------------------
 
+# BOTH profiles, and the debug one is not an oversight to remove.
+#
+# `red_republic.gdextension` maps `windows.debug.x86_64` to target/debug and
+# `windows.release.x86_64` to target/release. The Godot *editor* is what runs the
+# import and the export, and it loads the debug entry -- so with only a release
+# build present the editor cannot resolve a single GDExtension class, every
+# script referencing one fails to parse, and the export ships a project whose
+# scenes are placeholder nodes.
+#
+# This was invisible on the development desktop, where target/debug is always
+# populated, and failed on the first CI run that had never built debug. The
+# release build is what the player gets; the debug build is what the toolchain
+# needs to produce it.
 if (-not $SkipBuild) {
-    Step 'building the release cdylib'
+    Step 'building the cdylib (debug for the editor, release for the game)'
+    cargo build -p red-republic-shell
+    if ($LASTEXITCODE -ne 0) { Die 'cargo build (debug) failed' }
     cargo build --release -p red-republic-shell
-    if ($LASTEXITCODE -ne 0) { Die 'cargo build failed' }
+    if ($LASTEXITCODE -ne 0) { Die 'cargo build (release) failed' }
 } else {
     Step 'skipping cargo build (-SkipBuild)'
 }
 
 $dll = Join-Path $Root 'target\release\red_republic_shell.dll'
 if (-not (Test-Path $dll)) { Die "no release cdylib at $dll" }
+
+# Checked separately so the failure names the cause. Without it the symptom is a
+# wall of `Cannot get class` and `Identifier not declared` from the import pass,
+# which reads as a GDScript problem and sends you to the wrong file.
+$editorDll = Join-Path $Root 'target\debug\red_republic_shell.dll'
+if (-not (Test-Path $editorDll)) {
+    Die @"
+no debug cdylib at $editorDll.
+The Godot editor loads the debug entry of red_republic.gdextension to run the
+import and the export, so without it no GDExtension class resolves and every
+script that uses one fails to parse. Run without -SkipBuild, or:
+    cargo build -p red-republic-shell
+"@
+}
 
 # ---- the export preset --------------------------------------------------------
 
@@ -223,7 +252,9 @@ Step 'checking the exported build'
 $console = Join-Path $staging 'RedRepublic.console.exe'
 if (-not (Test-Path $console)) { Die 'no console wrapper was exported, so nothing can read the check output' }
 $check = & $console --headless -- --check 2>&1 | Out-String
-Write-Host ($check -split "`n" | Where-Object { $_ -match 'Initialize godot-rust|^build |^save check|SCRIPT ERROR' } | Out-String)
+Write-Host ($check -split "`n" |
+    Where-Object { $_ -match 'Initialize godot-rust|^build |^save check|^settings check|SCRIPT ERROR' } |
+    Out-String)
 
 if ($check -match 'SCRIPT ERROR|Assertion failed|unauthored') { Die 'the exported build did not load cleanly' }
 if ($check -notmatch 'save check ok') { Die 'the exported build cannot round-trip its own save' }
