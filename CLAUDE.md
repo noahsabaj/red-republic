@@ -336,15 +336,17 @@ Verified by looking at it, not only by the numbers: the panel renders real build
 
 `crates/red-republic-shell` and `godot/` exist. The republic is a `Node3D`; Godot calls `tick()` and reads. Six speeds, the terrain as one `ArrayMesh`, buildings as a `MultiMesh` uploaded only when the count changes, vehicles interpolated per frame through `Journey::position_at`, and roads drawn from `RoadNetwork::segments`.
 
-**Measured on the founded 6 km republic, vsync off, 600 frames:**
+**Measured on the founded 6 km republic, vsync off, 600 frames.** The first column is the bare renderer as it stood through M13; the second is with the art work's lighting fundamentals in — real shadows, MSAA 4×, TAA, SSAO at building scale, SSIL and glow:
 
-| speed | frame p50 | frame p95 |
-|---|---|---|
-| 0 paused | 0.65 ms | 1.30 ms |
-| 1 real-time | 0.61 ms | 1.27 ms |
-| 5 (8 h/s) | 0.61 ms | 1.29 ms |
+| speed | p50 before | p50 after | p95 after |
+|---|---|---|---|
+| 0 paused | 0.65 ms | 3.03 ms | 3.03 ms |
+| 1 real-time | 0.61 ms | 3.07 ms | 5.86 ms |
+| 5 (8 h/s) | 0.61 ms | 4.55 ms | 4.89 ms |
 
-**Flat across every speed** — about 4% of a 60 fps budget with the simulation genuinely running. At this size the renderer is not the constraint and neither is the tick.
+**Still flat across every speed, and now about 18% of a 60 fps budget** with the simulation genuinely running. Five times the cost for a game that has form in it, and the renderer is still not the constraint.
+
+**Both columns are honest and the second was nearly impossible to take.** `--bench` reported exactly 16.67 ms at every speed and every load, because M12's settings screen defaults vsync on and applies it at startup — silently disarming the measurement that `project.godot`'s `vsync_mode=0` was supposed to protect, and which a comment in `_maybe_bench` claimed was load-bearing. The benchmark turns vsync off itself now. **A measurement tool that an unrelated feature can disarm is worse than no measurement**, because it answers.
 
 **Three bugs got through every number and were caught only by looking at a rendered frame**, which is the argument for `-- --shot <path>` existing as a permanent check rather than a one-off:
 

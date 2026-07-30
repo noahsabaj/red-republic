@@ -52,3 +52,26 @@ window/vsync/vsync_mode=0
 renderer/rendering_method="forward_plus"
 ; The republic is watched from above and from a distance; a far plane short of
 ; the map diagonal clips the far side of a 16 km posting.
+
+; Anti-aliasing, and until 2026-07-30 there was NONE of it -- this section held
+; one line. Every edge in the game stair-stepped, which is half of what "extremely
+; ugly" meant: a roof against the sky, the shore of a lake, a power line.
+;
+; Both MSAA and TAA, because they cover different things. MSAA fixes geometry
+; edges and does nothing for the alpha-tested foliage arriving with the trees;
+; TAA fixes that and the shimmer of a tiled ground texture at distance, and
+; costs a little smearing while the camera moves.
+anti_aliasing/quality/msaa_3d=2
+anti_aliasing/quality/use_taa=true
+; Sky and fog gradients over 6 km are exactly where 8-bit banding shows.
+anti_aliasing/quality/use_debanding=true
+
+; A 6 km map is seen almost edge-on at the horizon, which is the case trilinear
+; filtering blurs to mush and anisotropic exists for.
+textures/default_filters/anisotropic_filtering_level=3
+
+; The shadow map is stretched across whatever range `main.gd::_fit_shadows` asks
+; for, which on a framed posting is kilometres. 4096 is not enough resolution to
+; spend over that; 8192 is.
+lights_and_shadows/directional_shadow/size=8192
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3

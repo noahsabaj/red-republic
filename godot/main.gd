@@ -595,10 +595,19 @@ func _day_number() -> int:
 
 ## Time frames with the simulation genuinely running, then report and quit.
 ##
-## Vsync is off in project.godot, and that is load-bearing: with it on every
-## p50 comes back as exactly 16.67 ms whatever the load, so a scene that is
-## drowning reports a healthy number. Measured on this machine -- it silently
-## invalidated a whole probe run before anyone noticed.
+## **This turns vsync off itself, and it has to.** With vsync on, every p50 comes
+## back as exactly 16.67 ms whatever the load, so a scene that is drowning
+## reports a healthy number -- it silently invalidated a whole probe run once.
+## The old defence was `window/vsync/vsync_mode=0` in project.godot, and a
+## comment here saying so was load-bearing. It stopped being true the moment M12
+## gave the game a settings screen: `settings_store.gd` defaults `display/vsync`
+## to true and `main.gd` applies it at startup, a few lines before any of this
+## runs. Measured on 2026-07-30 -- the first bench of the art work came back
+## 16.67/16.67, which is the tell.
+##
+## So the benchmark takes responsibility for its own preconditions rather than
+## trusting a setting three files away that somebody else owns. A measurement
+## tool that can be silently disarmed by an unrelated feature is worse than none.
 ##
 ## Real-time is the thesis, so "does it hold frame rate while the republic is
 ## actually being simulated" is not a nice-to-have measurement. It is the
@@ -606,6 +615,8 @@ func _day_number() -> int:
 func _maybe_bench(delta: float) -> void:
 	if _bench_frames <= 0:
 		return
+	if _bench_times.is_empty():
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	_bench_times.append(delta * 1000.0)
 	if _bench_times.size() < _bench_frames:
 		return
@@ -705,6 +716,17 @@ func _unhandled_input(event: InputEvent) -> void:
 func _notification(what: int) -> void:
 	if what != NOTIFICATION_APPLICATION_FOCUS_OUT:
 		return
+	# Not during a capture or a benchmark. Both are launched from a terminal that
+	# keeps focus, so the game reliably never has it, and the pause overlay would
+	# slide over the frame being captured -- which is exactly what happened on the
+	# first render of the art work: a shot meant to show the world came back
+	# showing the pause menu, and only because the run before it happened to win
+	# the focus race did the two look different at all.
+	#
+	# A measurement tool that photographs its own UI is not measuring anything,
+	# and the failure is intermittent, which is worse.
+	if _shot_path != "" or _bench_frames > 0:
+		return
 	if _screen != Screen.PLAYING or _store == null:
 		return
 	if bool(_store.get_value("play/pause_on_focus_loss")):
@@ -750,6 +772,32 @@ func _read_arguments() -> void:
 				_check_only = true
 
 
+## Keep the shadow range around the camera.
+##
+## **This is the fix for the reason this game had no shadows at all.**
+## `shadow_enabled` has been true since M3, and `directional_shadow_max_distance`
+## was never set -- so it sat at Godot's default of **100 metres** while the
+## camera opens at about 1,080 m on a 6 km map and can boom out to 9,600 m.
+## Every shadow was being culled before it was drawn. Nothing errored, the light
+## reported itself as casting, and three art directions were chosen from renders
+## that could not contain a shadow.
+##
+## The range has to follow the boom because it is measured from the camera and a
+## fixed value cannot serve both ends of a 240x zoom: a range wide enough for the
+## whole map spreads four cascades so thin that a lorry casts a smear, and one
+## tight enough for a lorry leaves the map bare. `distance_changed` is what makes
+## this cheap -- it fires on camera moves rather than every frame.
+func _fit_shadows(metres: float) -> void:
+	var sun: DirectionalLight3D = $Sun
+	# Far enough past the pivot to cover the ground behind it, capped so the
+	# cascades keep usable resolution when the whole posting is in frame.
+	sun.directional_shadow_max_distance = clampf(metres * 2.5, 400.0, 8000.0)
+	# Bias scales with the range: what stops acne at 400 m detaches a shadow from
+	# its building at 8 km, and the artefact you get for guessing is the one that
+	# looks like the mesh is floating.
+	sun.shadow_normal_bias = clampf(metres / 900.0, 1.0, 6.0)
+
+
 ## Sun, sky and air. Presentation only -- the weather the simulation models is a
 ## different thing entirely, and this does not read it.
 func _apply_look() -> void:
@@ -758,6 +806,20 @@ func _apply_look() -> void:
 	sun.light_energy = _look.sun_energy
 	sun.rotation_degrees = Vector3(-_look.sun_elevation, _look.sun_azimuth, 0.0)
 	sun.shadow_enabled = true
+	# Four cascades blended, so the seam between them is not a visible line
+	# across the ground on a map this size.
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+	sun.directional_shadow_blend_splits = true
+	sun.directional_shadow_split_1 = 0.06
+	sun.directional_shadow_split_2 = 0.16
+	sun.directional_shadow_split_3 = 0.42
+	sun.directional_shadow_fade_start = 0.9
+	# A sun is half a degree across, and softening the penumbra with distance is
+	# most of what makes a shadow look like light rather than a stencil.
+	sun.light_angular_distance = 0.6
+	if not rig.distance_changed.is_connected(_fit_shadows):
+		rig.distance_changed.connect(_fit_shadows)
+	_fit_shadows(rig.get_distance())
 
 	var sky_mat := ProceduralSkyMaterial.new()
 	sky_mat.sky_top_color = _look.sky_top
@@ -772,24 +834,66 @@ func _apply_look() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = _look.ambient_colour
+	# Ambient off the sky rather than a flat colour, which is both the physical
+	# answer and the one that keeps shading coherent when the sky changes: a
+	# north-facing wall picks up the blue overhead and a south-facing one does
+	# not. The old flat 0.75 was doing something else entirely -- filling every
+	# shadow evenly, which is exactly how you erase form.
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+	env.ambient_light_sky_contribution = 1.0
 	env.ambient_light_energy = _look.ambient_energy
-	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.tonemap_mode = Environment.TONE_MAPPER_ACES
 	env.tonemap_exposure = _look.tonemap_exposure
+	env.tonemap_white = 6.0
 	# Distance fog rather than volumetric: the job is to give a 6 km map depth,
 	# not to render weather, and it costs nothing.
 	env.fog_enabled = true
+	env.fog_mode = Environment.FOG_MODE_EXPONENTIAL
 	env.fog_light_color = _look.fog_colour
 	env.fog_density = _look.fog_density
-	# The sky is already the right colour; letting fog repaint it flattens the
-	# horizon into a single wash and takes the depth cue with it.
-	env.fog_sky_affect = 0.0
-	env.fog_aerial_perspective = 0.35
+	# Some sky affect, not none. Zero leaves a hard line where the ground meets
+	# the sky, which is what the horizon looked like: two flat bands meeting.
+	# Aerial perspective is what makes the far side of a 6 km map read as far
+	# away rather than as the same ground painted smaller.
+	env.fog_sky_affect = 0.35
+	env.fog_aerial_perspective = 0.7
+	# No height fog. A first pass set `fog_height_density` to 0.6, which reads as
+	# a modest number and is not one -- Godot's default is 0.0, and 0.6 made the
+	# air below the reference height opaque. The frame came back as a flat pale
+	# wash with the HUD floating on it and no world at all. Distance fog alone is
+	# what this map wants.
+	# Radius in metres. The default is 1 m, which from a kilometre up contributes
+	# nothing at all -- it was enabled and invisible. At building scale it is
+	# what settles a structure onto the ground.
 	env.ssao_enabled = true
-	env.ssao_intensity = 1.2
+	env.ssao_radius = 12.0
+	env.ssao_intensity = 2.0
+	env.ssao_power = 1.5
+	env.ssao_detail = 0.5
+	# One bounce of indirect colour. Cheap next to SDFGI and it is what stops a
+	# shadowed wall going flat grey.
+	env.ssil_enabled = true
+	env.ssil_radius = 24.0
+	env.ssil_intensity = 1.0
+	# Sun glint off water and metal. Subtle on purpose: this is a planning game
+	# in daylight, not a bloom demo.
+	env.glow_enabled = true
+	env.glow_intensity = 0.5
+	env.glow_bloom = 0.05
+	env.glow_hdr_threshold = 1.1
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SOFTLIGHT
+	env.adjustment_enabled = true
+	env.adjustment_brightness = _look.grade_brightness
+	env.adjustment_contrast = _look.grade_contrast
+	env.adjustment_saturation = _look.grade_saturation
 
 	$Sky.environment = env
+
+	# Physical exposure, which is what makes the tonemapper's numbers mean
+	# something rather than being a multiplier somebody tuned by eye.
+	var attrs := CameraAttributesPractical.new()
+	attrs.auto_exposure_enabled = false
+	$Sky.camera_attributes = attrs
 
 
 func _build_terrain() -> void:
