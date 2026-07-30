@@ -1,10 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/sim", "crates/red-republic-shell"]
-# archive/src-tauri is a Rust package too — the frozen 1.x desktop shell. It
-# sits inside this workspace directory but is not part of this project, and
-# without an explicit exclude Cargo refuses to build it on its own terms.
-exclude = ["archive"]
+# There used to be an `exclude = ["archive"]` here, because the frozen 1.x build
+# carried its own Tauri Rust package inside this directory and Cargo refused to
+# build the workspace without being told to ignore it. The 1.x build was moved
+# out of the repository on 2026-07-30, so there is nothing left to exclude.
 
 [workspace.package]
 version = "0.1.0"

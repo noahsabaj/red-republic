@@ -33,12 +33,9 @@ godot/export_presets.cfg
 # ---- Packaging output ----
 /dist
 
-# ---- archive/: the frozen 1.x TypeScript build ----
-archive/node_modules
-archive/dist
-archive/dist-ssr
-archive/src-tauri/target
-archive/src-tauri/gen
+# The frozen 1.x TypeScript build used to live in `archive/` and had five ignore
+# rules here for its own build output. It was moved out of the repository on
+# 2026-07-30, so those rules are gone with it.
 *.local
 
 # ---- Logs ----

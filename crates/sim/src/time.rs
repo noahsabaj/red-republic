@@ -26,8 +26,9 @@
 //! Twelve thirty-day months, a 360-day year, founding on 1 March 1960 — taken
 //! unchanged from the archived build. It is a simplification, deliberately:
 //! equal months make seasonal balance legible, and every balance figure ported
-//! from `archive/` was tuned against this calendar. Changing it would silently
-//! invalidate all of them.
+//! from the 1.x build was tuned against this calendar. Changing it would
+//! silently invalidate all of them. (That build lived in `archive/` here until
+//! 2026-07-30 and is still reachable through this repository's history.)
 
 use crate::units::Seconds;
 
