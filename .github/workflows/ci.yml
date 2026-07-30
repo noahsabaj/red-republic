@@ -296,8 +296,25 @@ jobs:
             throw "the uninstaller left the game behind"
           }
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: RedRepublic-windows-installer
-          path: dist/*-setup.exe
-          if-no-files-found: error
+      # The installer is deliberately NOT uploaded as a workflow artifact.
+      #
+      # This repository is public, and artifacts on a public repository are
+      # downloadable by anyone who can see the Actions tab. Uploading would mean
+      # every CI run publishes a playable Windows build to the internet, which is
+      # distribution — and building the installer is part of finishing while
+      # putting it in front of anyone is a separate decision that belongs to Noah,
+      # in the conversation where it happens.
+      #
+      # Nothing is lost from the check: the job already exports it, installs it,
+      # runs the installed game and uninstalls it again, which is the whole claim
+      # under test. The artifact would only have been a convenience.
+      #
+      # To get a build, run `pwsh tools/package.ps1` locally. If this should
+      # publish one day, `actions/upload-artifact` on `dist/*-setup.exe` is the
+      # line to add, and it should go with a tag rather than with every push.
+      - name: Report the installer
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist/*-setup.exe | Select-Object -First 1
+          "built {0} ({1:N1} MB), not uploaded — see the note in ci.yml" -f `
+            $setup.Name, ($setup.Length / 1MB)
