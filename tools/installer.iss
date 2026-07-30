@@ -38,10 +38,10 @@
 #define ExeName "RedRepublic.exe"
 
 [Setup]
-; Fixed for the life of the application. This is what tells Windows that version
-; 0.2.0 is an upgrade of 0.1.0 rather than a second program, so it must never be
-; regenerated -- changing it would leave a player with two entries in Apps and
-; Features and two copies on disk.
+; Fixed for the life of the application. This is what tells Windows that
+; 2026.8.0 is an upgrade of 2026.7.0 rather than a second program, so it must
+; never be regenerated -- changing it would leave a player with two entries in
+; Apps and Features and two copies on disk.
 AppId={{6765B1FA-C9BB-404B-9BF9-7DD8EE6649BB}
 AppName={#AppName}
 AppVersion={#AppVersion}

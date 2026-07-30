@@ -601,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "red-republic-shell"
-version = "0.1.0"
+version = "2026.7.0"
 dependencies = [
  "godot",
  "red-republic-sim",
@@ -609,7 +609,7 @@ dependencies = [
 
 [[package]]
 name = "red-republic-sim"
-version = "0.1.0"
+version = "2026.7.0"
 dependencies = [
  "bevy_ecs",
  "postcard",

@@ -7,7 +7,24 @@ members = ["crates/sim", "crates/red-republic-shell"]
 # out of the repository on 2026-07-30, so there is nothing left to exclude.
 
 [workspace.package]
-version = "0.1.0"
+# CalVer: YYYY.M.PATCH, and this is the only version number in the repository.
+# The menu reads it off the loaded binary and tools/package.ps1 reads it from
+# cargo metadata for the installer and the executable's version resource, so a
+# release is one edit here.
+#
+# Bump the year and month at release time; the patch counts releases within that
+# month and returns to 0 when either changes. Neither leading zeros nor a
+# pre-release suffix: `the_version_is_three_plain_numbers` in build_info.rs holds
+# the shape, because a Windows FILEVERSION is four plain integers and an invalid
+# one fails the export with a message about the preset rather than the version.
+#
+# Chosen over semver deliberately. Semver's promise is about an API and this
+# ships no API; what a date says instead is how current a build is, which is the
+# question somebody holding an installer actually has. The cost, stated because
+# it is real: a version number can now never announce that the game is finished.
+# That signal lives in the goal at the top of CLAUDE.md and its three conditions,
+# which is the only place that ever tested it anyway.
+version = "2026.7.0"
 edition = "2024"
 rust-version = "1.95"
 license = "LicenseRef-Proprietary"
