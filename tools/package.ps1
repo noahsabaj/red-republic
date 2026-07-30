@@ -254,12 +254,13 @@ $console = Join-Path $staging 'RedRepublic.console.exe'
 if (-not (Test-Path $console)) { Die 'no console wrapper was exported, so nothing can read the check output' }
 $check = & $console --headless -- --check 2>&1 | Out-String
 Write-Host ($check -split "`n" |
-    Where-Object { $_ -match 'Initialize godot-rust|^build |^save check|^settings check|SCRIPT ERROR' } |
+    Where-Object { $_ -match 'Initialize godot-rust|^build |^save check|^settings check|^build check|SCRIPT ERROR' } |
     Out-String)
 
 if ($check -match 'SCRIPT ERROR|Assertion failed|unauthored') { Die 'the exported build did not load cleanly' }
 if ($check -notmatch 'save check ok') { Die 'the exported build cannot round-trip its own save' }
 if ($check -notmatch 'settings check ok') { Die 'the exported build cannot round-trip its own settings' }
+if ($check -notmatch 'build check ok') { Die 'the exported build cannot put up a building' }
 # `release` is what makes this the shipped artifact rather than a development
 # build that happens to live in dist/. A debug export reports `development`,
 # which is the negative control this assertion was calibrated against.

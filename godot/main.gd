@@ -80,6 +80,7 @@ enum Screen { MENU, FOUNDING, PLAYING, PAUSED, SETTINGS, SAVES, REFERENCE, RADIO
 @onready var reference: CanvasLayer = $Reference
 @onready var radio: CanvasLayer = $Radio
 @onready var pause_menu: CanvasLayer = $Pause
+@onready var build_menu: CanvasLayer = $Build
 
 var _buildings_shown := -1
 var _roads_shown := -1
@@ -119,6 +120,12 @@ var _last_autosave_day := -1
 var _extent := EXTENT_M
 ## Set once a republic exists, so the meshes are only built for a real world.
 var _built := false
+## What the build menu picked, or -1 for nothing. `_build_market` is -1 to build
+## it with the republic's own crews, or a bloc index to contract it out.
+var _build_kind := -1
+var _build_market := -1
+## The translucent box that follows the cursor while placing.
+var _ghost: MeshInstance3D = null
 
 
 func _ready() -> void:
@@ -201,7 +208,41 @@ func _found_default() -> void:
 		])
 		_check_saves()
 		_check_settings()
+		_check_building()
 		get_tree().quit()
+
+
+## Contract a building and check one goes up.
+##
+## **This is the only way to play now**, so it is worth a line in the check that
+## CI runs. A blank map has no crews and no materials, so if contracting is
+## broken there is no path from a founded republic to a built anything — and the
+## symptom would be an empty map that stays empty, which looks exactly like a
+## republic nobody has got round to building yet.
+##
+## Goes through the same `contract` binding the build menu calls, rather than
+## through the simulation directly, because the binding is the part only the
+## shell can get wrong.
+func _check_building() -> void:
+	# Annotated, not inferred: a gdext `#[func]` returns an untyped Variant, so
+	# `:=` cannot infer from one and the file fails to parse.
+	var centre: float = republic.map_extent() * 0.5
+	var before: int = republic.building_count()
+	# Walk outward for ground that will take it: the site the founding picked is
+	# chosen for coal, not for being flat.
+	var why := "nowhere tried"
+	for ring in 12:
+		var at: float = centre + float(ring) * 90.0
+		why = String(republic.contract(0, at, at, 0))
+		if why == "":
+			break
+	if why != "":
+		printerr("build check FAILED: %s" % why)
+		return
+	if republic.building_count() != before + 1:
+		printerr("build check FAILED: the contract was accepted and no site appeared")
+		return
+	print("build check ok: contracted %s" % republic.building_kind_name(0))
 
 
 ## Write settings, read them back through a fresh store, and check they survived.
@@ -375,6 +416,8 @@ func _connect_screens() -> void:
 	pause_menu.reference_pressed.connect(func(): _open_stacked(Screen.REFERENCE, Screen.PAUSED))
 	pause_menu.radio_pressed.connect(func(): _open_stacked(Screen.RADIO, Screen.PAUSED))
 	pause_menu.abandon_pressed.connect(_on_abandon)
+	build_menu.chose.connect(_begin_placement)
+	build_menu.closed.connect(func(): _set_screen(Screen.PLAYING))
 
 
 func _on_new_posting() -> void:
@@ -529,6 +572,12 @@ func _open_named_screen(name: String) -> void:
 			# ever seen.
 			_found_default()
 			_set_screen(Screen.PAUSED)
+		"build":
+			# Over a real republic too, because the menu reads the treasury and a
+			# purse line with no world behind it is the one part of this screen a
+			# capture would not be checking.
+			_found_default()
+			build_menu.open(republic)
 		_:
 			push_error("no screen called '%s'" % name)
 			_set_screen(Screen.MENU)
@@ -544,6 +593,7 @@ func _apply_interface_scale() -> void:
 
 func _process(delta: float) -> void:
 	if _screen == Screen.PLAYING:
+		_update_ghost()
 		_refresh_buildings()
 		_refresh_roads()
 		_refresh_lines()
@@ -671,6 +721,19 @@ func _maybe_capture() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Placing is a mouse mode, so it gets first refusal on clicks. Left commits,
+	# right cancels — the convention every builder uses, and the reason right
+	# drag still orbits is that the camera only sees motion events.
+	if _build_kind >= 0 and event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			_commit_placement()
+			get_viewport().set_input_as_handled()
+			return
+		if event.button_index == MOUSE_BUTTON_RIGHT:
+			_cancel_placement()
+			get_viewport().set_input_as_handled()
+			return
+
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 
@@ -678,6 +741,11 @@ func _unhandled_input(event: InputEvent) -> void:
 	# means depends on where you are: out of the game into the pause overlay, and
 	# out of a stacked screen back to whatever opened it.
 	if event.keycode == KEY_ESCAPE:
+		# Placing takes priority: escape out of the ghost first, and only out of
+		# the game once there is nothing in hand.
+		if _build_kind >= 0:
+			_cancel_placement()
+			return
 		match _screen:
 			Screen.PLAYING:
 				_set_screen(Screen.PAUSED)
@@ -699,7 +767,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	var speeds := {
 		KEY_0: 0, KEY_1: 1, KEY_2: 2, KEY_3: 3, KEY_4: 4, KEY_5: 5,
 	}
-	if speeds.has(event.keycode):
+	if event.keycode == KEY_B:
+		build_menu.open(republic)
+	elif speeds.has(event.keycode):
 		republic.set_speed(speeds[event.keycode])
 	elif event.keycode == KEY_SPACE:
 		republic.set_speed(0 if republic.speed() > 0 else 1)
@@ -1431,6 +1501,97 @@ func _refresh_overlay() -> void:
 		survey_node.mesh = Overlays.survey_mesh(republic, _ground_height)
 	else:
 		survey_node.mesh = null
+
+
+## Where the cursor is pointing on the ground, in world metres.
+##
+## The terrain has no collision body — it is one `ArrayMesh` and giving a
+## million triangles a collider to answer a mouse position would be absurd. So
+## this intersects the camera ray with a flat plane, samples the real ground
+## height there, and repeats: three passes converge to well under a metre on
+## terrain this gentle, which is finer than the 10 m cells anything is placed on.
+func _cursor_ground() -> Vector3:
+	var camera: Camera3D = rig.camera
+	var mouse := get_viewport().get_mouse_position()
+	var from := camera.project_ray_origin(mouse)
+	var dir := camera.project_ray_normal(mouse)
+	var height := 0.0
+	var hit := Vector3.ZERO
+	for _pass in 3:
+		# Looking up, or along the horizon: nothing to hit.
+		if absf(dir.y) < 0.0001:
+			return hit
+		var t := (height - from.y) / dir.y
+		if t < 0.0:
+			return hit
+		hit = from + dir * t
+		height = _ground_height(hit.x, hit.z)
+	hit.y = height
+	return hit
+
+
+## Start placing a building the build menu chose.
+func _begin_placement(kind: int, market: int) -> void:
+	_build_kind = kind
+	_build_market = market
+	_set_screen(Screen.PLAYING)
+	if _ghost == null:
+		_ghost = MeshInstance3D.new()
+		var mat := StandardMaterial3D.new()
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.albedo_color = Color(0.4, 0.9, 0.45, 0.45)
+		# Unshaded, so the ghost reads as an overlay rather than as a building
+		# that is already there and lit like its neighbours.
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_ghost.material_override = mat
+		add_child(_ghost)
+	var size: Vector2 = republic.building_kind_size(kind)
+	var box := BoxMesh.new()
+	box.size = Vector3(size.x, 8.0, size.y)
+	_ghost.mesh = box
+	_ghost.visible = true
+
+
+func _cancel_placement() -> void:
+	_build_kind = -1
+	_build_market = -1
+	if _ghost != null:
+		_ghost.visible = false
+
+
+## Move the ghost and colour it by whether the placement would be accepted.
+##
+## The preview asks `can_place`, which is the same rule the commit uses — a
+## preview that asked a different question would render green over ground the
+## placement then refuses, which is worse than no preview.
+func _update_ghost() -> void:
+	if _build_kind < 0 or _ghost == null:
+		return
+	var at := _cursor_ground()
+	_ghost.position = Vector3(at.x, at.y + 4.0, at.z)
+	var why := String(republic.can_place(_build_kind, at.x, at.z))
+	var mat: StandardMaterial3D = _ghost.material_override
+	mat.albedo_color = (
+		Color(0.4, 0.9, 0.45, 0.45) if why == "" else Color(0.9, 0.35, 0.3, 0.45)
+	)
+	hud.set_placing(String(republic.building_kind_name(_build_kind)), why)
+
+
+## Commit the placement under the cursor.
+func _commit_placement() -> void:
+	var at := _cursor_ground()
+	var why := ""
+	if _build_market < 0:
+		why = String(republic.place(_build_kind, at.x, at.z))
+	else:
+		why = String(republic.contract(_build_kind, at.x, at.z, _build_market))
+	if why != "":
+		hud.set_placing(String(republic.building_kind_name(_build_kind)), why)
+		return
+	# Stay in placement mode: putting up a row of houses should not mean six
+	# trips back to the menu.
+	_buildings_shown = -1
+	hud.set_placing(String(republic.building_kind_name(_build_kind)), "")
 
 
 func _ground_height(x: float, z: float) -> float:

@@ -16,6 +16,7 @@ extends CanvasLayer
 ## reuses them. Nothing here creates a node per datum.
 
 const Overlays := preload("res://ui/overlays.gd")
+const Style := preload("res://ui/theme.gd")
 
 ## Both tables are pooled rather than rebuilt, because building a Label costs
 ## about 165 times what updating one costs and a panel that rebuilds itself is a
@@ -456,6 +457,24 @@ func _refresh_grid_line(republic: Node) -> void:
 
 func set_hint(text: String) -> void:
 	hint.text = text
+
+
+## What is in hand while placing, and why the ground under the cursor refuses it.
+##
+## The refusal is a sentence rather than a code, because `Command` was built to
+## return one: 1.x's reason strings are what drove its toasts and its disabled
+## buttons, and retrofitting that is a known mistake this build got to skip. An
+## empty `kind` clears the line.
+func set_placing(kind: String, why: String) -> void:
+	if kind == "":
+		overlay_line.text = "overlay:  none"
+		return
+	if why == "":
+		overlay_line.text = "placing:  %s   ·   left click to build, right click or esc to stop" % kind
+		overlay_line.add_theme_color_override("font_color", Style.INK_DIM)
+	else:
+		overlay_line.text = "placing:  %s   ·   %s" % [kind, why]
+		overlay_line.add_theme_color_override("font_color", Style.ALARM)
 
 
 func _thousands(value: float) -> String:

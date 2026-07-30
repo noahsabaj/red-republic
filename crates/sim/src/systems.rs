@@ -1961,7 +1961,7 @@ pub const MACHINERY_PER_BUILDER_DAY: f64 = 0.02;
 /// A gang of your own is ten people and works ten builder-days a day. A firm
 /// brings its own gang and works rather faster, because it brings enough of them
 /// — you are buying capacity you do not have to house, feed or train.
-const CONTRACTOR_DAYS: f64 = 18.0;
+pub const CONTRACTOR_DAYS: f64 = 18.0;
 
 /// What one contracted builder-day costs, in the bloc's own currency.
 ///
@@ -1969,7 +1969,7 @@ const CONTRACTOR_DAYS: f64 = 18.0;
 /// building a Construction Office and training people. A republic that never
 /// stops contracting is a republic spending its grant on what it could have
 /// done itself — and that is a decision the player gets to make badly.
-const CONTRACTOR_RATE: f64 = 340.0;
+pub const CONTRACTOR_RATE: f64 = 340.0;
 
 /// Foreign firms working the sites the republic paid them to.
 ///

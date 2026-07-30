@@ -47,6 +47,15 @@ fn climate_at(index: i64) -> ClimateId {
         .unwrap_or(&ClimateId::Plains)
 }
 
+/// A bloc index from GDScript, clamped rather than trusted: 0 East, 1 West.
+fn market_at(index: i64) -> red_republic_sim::trade::Market {
+    if index <= 0 {
+        red_republic_sim::trade::Market::East
+    } else {
+        red_republic_sim::trade::Market::West
+    }
+}
+
 /// A shelf filter from the two indices the founding screen holds.
 fn filter(size: i64, climate: i64) -> ShelfFilter {
     let sizes = red_republic_sim::founding::SIZES;
@@ -1548,6 +1557,67 @@ impl Republic {
             Ok(_) => GString::from(""),
             Err(why) => GString::from(why.to_string().as_str()),
         }
+    }
+
+    /// Pay a foreign firm to build it instead. `market` is 0 East, 1 West.
+    ///
+    /// The only way to raise anything on a blank map, which is what every map
+    /// now starts as: there is no Construction Office to work a site and nobody
+    /// to staff one. Returns the refusal sentence, or empty on success.
+    #[func]
+    fn contract(&mut self, kind: i64, x: f64, y: f64, market: i64) -> GString {
+        let Some(world) = self.world.as_mut() else {
+            return GString::from("no republic has been founded");
+        };
+        let Some(&kind) = red_republic_sim::building::BUILDINGS
+            .get(kind.max(0) as usize)
+            .map(|d| &d.kind)
+        else {
+            return GString::from("no such building");
+        };
+        match world.issue(Command::ContractBuild {
+            kind,
+            at: Point::new(Metres(x), Metres(y)),
+            market: market_at(market),
+        }) {
+            Ok(_) => GString::from(""),
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
+    /// What a build menu needs to show about one kind, in one packed read.
+    ///
+    /// `[workers, builder_days, contract_cost, width_m, depth_m]`. A packed
+    /// array rather than a dictionary per kind, for the reason every bulk read
+    /// across this boundary is: measured at 316x apart. This one is small, but
+    /// the menu asks it for every kind on the roster every time it opens.
+    ///
+    /// `contract_cost` is what a foreign firm charges to raise it, which is the
+    /// number that actually decides the opening — a player with a rouble grant
+    /// and no crews is choosing what they can afford, not what they want.
+    #[func]
+    fn building_kind_facts(&self, index: i64) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        let Some(def) = red_republic_sim::building::BUILDINGS.get(index.max(0) as usize) else {
+            return out;
+        };
+        out.push(def.workers as f32);
+        out.push(def.labour as f32);
+        out.push((def.labour * red_republic_sim::systems::CONTRACTOR_RATE) as f32);
+        out.push(def.width.0 as f32);
+        out.push(def.depth.0 as f32);
+        out
+    }
+
+    /// What the treasury holds: `[roubles, dollars]`.
+    #[func]
+    fn purse(&self) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        if let Some(w) = &self.world {
+            out.push(w.treasury().of(red_republic_sim::trade::Market::East) as f32);
+            out.push(w.treasury().of(red_republic_sim::trade::Market::West) as f32);
+        }
+        out
     }
 
     /// Whether a building of this kind could go here — the placement preview.
