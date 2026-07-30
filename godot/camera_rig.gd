@@ -65,6 +65,19 @@ func get_distance() -> float:
 	return _distance
 
 
+## Tilt the camera, in degrees above horizontal. Capture runs use this.
+##
+## The sky is only visible below about 25 degrees, and until this existed the
+## pitch was fixed at 50 and could only be changed by dragging a mouse -- so
+## `--shot` could not photograph the sky at all, and a whole sky shader was
+## written, rendered and pronounced broken on the evidence of frames that
+## contained none of it. Every pixel sampled was the below-horizon half of the
+## dome, which is correctly a flat colour.
+func set_pitch(degrees: float) -> void:
+	_pitch = clampf(deg_to_rad(degrees), MIN_PITCH, MAX_PITCH)
+	_apply()
+
+
 ## Put the camera at a chosen boom length. Used by capture runs so a look can be
 ## judged at the distance a player actually watches a lorry from, rather than
 ## from the altitude that frames a whole posting.

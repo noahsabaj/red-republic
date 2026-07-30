@@ -87,6 +87,8 @@ var _start_speed := 0
 var _bench_frames := 0
 var _look: Looks.Look = null
 var _view_distance := 0.0
+## Degrees above horizontal for a capture run. Zero means leave the default 50.
+var _view_pitch := 0.0
 var _kind_nodes: Array[MultiMeshInstance3D] = []
 var _overlay := Overlays.Mode.NONE
 var _start_overlay := ""
@@ -152,6 +154,8 @@ func _found_default() -> void:
 		republic.advance_days(_advance_days)
 	if _view_distance > 0.0:
 		rig.set_distance(_view_distance)
+	if _view_pitch > 0.0:
+		rig.set_pitch(_view_pitch)
 	match _start_overlay:
 		"going": _overlay = Overlays.Mode.GOING
 		"tracks": _overlay = Overlays.Mode.WEAR
@@ -754,6 +758,9 @@ func _read_arguments() -> void:
 			"--dist":
 				if i + 1 < args.size():
 					_view_distance = float(args[i + 1])
+			"--pitch":
+				if i + 1 < args.size():
+					_view_pitch = float(args[i + 1])
 			"--advance":
 				if i + 1 < args.size():
 					_advance_days = int(args[i + 1])
@@ -821,15 +828,25 @@ func _apply_look() -> void:
 		rig.distance_changed.connect(_fit_shadows)
 	_fit_shadows(rig.get_distance())
 
-	var sky_mat := ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = _look.sky_top
-	sky_mat.sky_horizon_color = _look.sky_horizon
-	sky_mat.ground_bottom_color = _look.ground_horizon
-	sky_mat.ground_horizon_color = _look.ground_horizon
-	sky_mat.sun_angle_max = 12.0
+	# A custom sky shader rather than ProceduralSkyMaterial, which is a two-colour
+	# gradient with a blob for the sun and was most of why the horizon read as two
+	# flat bands meeting. `sky.gdshader` does Rayleigh and Mie scattering off the
+	# sun's actual direction and puts cloud cover on top, so the sky changes with
+	# the light instead of being painted behind it.
+	var sky_mat := ShaderMaterial.new()
+	sky_mat.shader = load("res://sky.gdshader")
+	sky_mat.set_shader_parameter("zenith_colour", _look.sky_top)
+	sky_mat.set_shader_parameter("horizon_colour", _look.sky_horizon)
+	sky_mat.set_shader_parameter("ground_colour", _look.ground_horizon)
+	sky_mat.set_shader_parameter("cloud_cover", _look.cloud_cover)
 
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
+	# The sky feeds ambient light through a cubemap, and regenerating it every
+	# frame for clouds that drift at four thousandths of a unit a second is waste.
+	# Incremental spreads the update over several frames.
+	sky.process_mode = Sky.PROCESS_MODE_INCREMENTAL
+	sky.radiance_size = Sky.RADIANCE_SIZE_128
 
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
@@ -855,7 +872,7 @@ func _apply_look() -> void:
 	# the sky, which is what the horizon looked like: two flat bands meeting.
 	# Aerial perspective is what makes the far side of a 6 km map read as far
 	# away rather than as the same ground painted smaller.
-	env.fog_sky_affect = 0.35
+	env.fog_sky_affect = 0.18
 	env.fog_aerial_perspective = 0.7
 	# No height fog. A first pass set `fog_height_density` to 0.6, which reads as
 	# a modest number and is not one -- Godot's default is 0.0, and 0.6 made the
@@ -875,6 +892,22 @@ func _apply_look() -> void:
 	env.ssil_enabled = true
 	env.ssil_radius = 24.0
 	env.ssil_intensity = 1.0
+	# Volumetric fog on top of the distance fog, for the air near the town to
+	# have body and for the sun to rake through it. Godot caps the volume at
+	# 1,024 m, so this is a local effect around the camera rather than the
+	# map-wide depth cue -- that is what the exponential fog above is for, and
+	# the two do different jobs.
+	#
+	# Density is per metre and multiplies against the *length*, which is the trap
+	# this walked into twice. Godot's default 0.01 is tuned for the default 64 m
+	# volume; at 1,024 m the same figure is sixteen optical depths and the frame
+	# comes back as a white sheet with the HUD on it. The useful figure here is
+	# two orders of magnitude smaller.
+	env.volumetric_fog_enabled = true
+	env.volumetric_fog_density = 0.00015
+	env.volumetric_fog_length = 1024.0
+	env.volumetric_fog_gi_inject = 0.6
+	env.volumetric_fog_albedo = _look.fog_colour
 	# Sun glint off water and metal. Subtle on purpose: this is a planning game
 	# in daylight, not a bloom demo.
 	env.glow_enabled = true

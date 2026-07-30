@@ -65,6 +65,11 @@ class Look:
 	var grade_brightness: float
 	var grade_contrast: float
 	var grade_saturation: float
+	## Share of the sky under cloud. Presentation only — this is emphatically not
+	## the weather the simulation models, which is a temperature and a
+	## precipitation figure per day and is read by heating demand and the ground,
+	## never by anything in here.
+	var cloud_cover: float
 
 
 ## C. Survey — the map Moscow drew, stood up in three dimensions.
@@ -106,8 +111,11 @@ static func current() -> Look:
 	# and falls back to it.
 	l.ambient_colour = Color(0.60, 0.66, 0.72)
 	l.ambient_energy = 0.35
-	l.sky_top = Color(0.30, 0.42, 0.55)
-	l.sky_horizon = Color(0.72, 0.79, 0.84)
+	# A real zenith is much deeper than this used to be. The old pair was two
+	# steps of the same pale blue, which is what a two-colour gradient sky needs
+	# to avoid banding and what a scattering sky does not.
+	l.sky_top = Color(0.11, 0.28, 0.58)
+	l.sky_horizon = Color(0.66, 0.76, 0.84)
 	l.ground_horizon = Color(0.40, 0.44, 0.45)
 	l.fog_colour = Color(0.74, 0.80, 0.86)
 	# Per metre, and the old 0.000011 gave 3.2% at three kilometres while the
@@ -126,4 +134,7 @@ static func current() -> Look:
 	l.grade_brightness = 1.0
 	l.grade_contrast = 1.06
 	l.grade_saturation = 1.05
+	# Enough to break the sky up and cast some variety of light, not enough to
+	# make every screenshot overcast.
+	l.cloud_cover = 0.45
 	return l
