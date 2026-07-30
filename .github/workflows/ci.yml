@@ -220,13 +220,20 @@ jobs:
       # Pinned rather than whatever the runner image happens to ship, because an
       # installer built by a different compiler than the one this was written
       # against is a different artifact.
+      # pwsh rather than bash, and that is not a style choice: Inno Setup's
+      # installer takes a native Windows path in /DIR, and bash's $PWD on a
+      # Windows runner is a `/d/a/...` MSYS path. Handing it one does not fail --
+      # the silent installer simply never returns, which reads as a slow download
+      # rather than a wrong argument.
       - name: Fetch Inno Setup
-        shell: bash
+        shell: pwsh
         run: |
-          curl -sSLo is6.exe \
+          curl.exe -sSLo is6.exe `
             https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
-          ./is6.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CURRENTUSER /DIR="$PWD/inno"
-          ls inno/ISCC.exe
+          $p = Start-Process -FilePath "$PWD\is6.exe" -Wait -PassThru -ArgumentList `
+            '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/CURRENTUSER',"/DIR=$PWD\inno"
+          if ($p.ExitCode -ne 0) { throw "the Inno Setup installer exited $($p.ExitCode)" }
+          if (-not (Test-Path "$PWD\inno\ISCC.exe")) { throw "no ISCC.exe after installing Inno Setup" }
 
       - name: Package
         shell: pwsh

@@ -32,6 +32,8 @@ var _list: VBoxContainer = null
 var _now_playing: Label = null
 var _player: AudioStreamPlayer = null
 var _tracks: Array[String] = []
+var _stop_button: Button = null
+var _next_button: Button = null
 var _current := -1
 
 
@@ -74,13 +76,17 @@ func _ready() -> void:
 	var footer := HBoxContainer.new()
 	footer.add_theme_constant_override("separation", 8)
 
-	var stop := Style.button("Stop")
-	stop.pressed.connect(_stop)
-	footer.add_child(stop)
+	# Held rather than dropped, because `_rebuild` disables them when there is
+	# nothing to play. A transport that responds to nothing is the same lie the
+	# empty state below exists to refuse, and the main menu already answers it
+	# the same way by disabling Continue with no republic in progress.
+	_stop_button = Style.button("Stop")
+	_stop_button.pressed.connect(_stop)
+	footer.add_child(_stop_button)
 
-	var next := Style.button("Next")
-	next.pressed.connect(_on_finished)
-	footer.add_child(next)
+	_next_button = Style.button("Next")
+	_next_button.pressed.connect(_on_finished)
+	footer.add_child(_next_button)
 
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -120,7 +126,13 @@ func _rebuild() -> void:
 	for child in _list.get_children():
 		child.queue_free()
 
-	if _tracks.is_empty():
+	var silent := _tracks.is_empty()
+	if _stop_button != null:
+		_stop_button.disabled = silent
+	if _next_button != null:
+		_next_button.disabled = silent
+
+	if silent:
 		# The honest empty state. Not a placeholder track and not a fake
 		# playlist: this build genuinely has no music, and saying where music
 		# would go is more use to a player than pretending.
