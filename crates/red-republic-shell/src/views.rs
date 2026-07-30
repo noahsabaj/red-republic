@@ -655,3 +655,64 @@ pub fn fleet_by_medium(world: &World) -> PackedFloat32Array {
     }
     out
 }
+
+/// Floats per workplace in [`workplaces`].
+pub const WORKPLACE_STRIDE: usize = 7;
+
+/// Every standing workplace and its roster, as
+/// `[id, kind_index, staff, jobs, shifts, hours, rule]` per line.
+///
+/// `rule` says where this building's working day comes from, so the panel can
+/// show it without asking three more questions: `0` the national standard, `1` a
+/// rule about its kind, `2` an exception for this building alone. That is the
+/// difference between "12" and "12, because you set it here" — and it is what
+/// tells a player which control to reach for to change it.
+///
+/// Sites and buildings nobody works are left out. A roster on a house is a
+/// control that does nothing, and the command refuses one.
+pub fn workplaces(world: &World) -> PackedFloat32Array {
+    let mut out = PackedFloat32Array::new();
+    let policy = world.shift_policy();
+    for b in world.buildings().all() {
+        if !b.is_built() || b.def().workers == 0 {
+            continue;
+        }
+        let kind = red_republic_sim::building::BUILDINGS
+            .iter()
+            .position(|d| d.kind == b.kind)
+            .unwrap_or_default();
+        let rule = if policy.of_building(b.id).is_some() {
+            2.0
+        } else if policy.of_kind(b.kind).is_some() {
+            1.0
+        } else {
+            0.0
+        };
+        out.push(b.id.0 as f32);
+        out.push(kind as f32);
+        out.push(b.staff as f32);
+        out.push(b.jobs() as f32);
+        out.push(f32::from(b.shifts));
+        out.push(b.hours as f32);
+        out.push(rule);
+    }
+    out
+}
+
+/// The working-hours rule for each kind that has one, as `[kind_index, hours]`.
+///
+/// Only the kinds with a rule of their own: the panel lists every kind the
+/// republic has standing anyway, and sending a row for each would be sending the
+/// national standard back a hundred times over.
+pub fn kind_shift_rules(world: &World) -> PackedFloat32Array {
+    let mut out = PackedFloat32Array::new();
+    for (kind, hours) in world.shift_policy().kind_rules() {
+        let index = red_republic_sim::building::BUILDINGS
+            .iter()
+            .position(|d| d.kind == kind)
+            .unwrap_or_default();
+        out.push(index as f32);
+        out.push(hours as f32);
+    }
+    out
+}

@@ -42,6 +42,7 @@ pub mod resource;
 pub mod rng;
 pub mod roadworks;
 pub mod scenario;
+pub mod shifts;
 pub mod systems;
 pub mod terrain;
 pub mod time;

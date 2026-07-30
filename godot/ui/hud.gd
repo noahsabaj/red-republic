@@ -130,7 +130,7 @@ func _build_people_rows(rows: int) -> void:
 		_people_labels.append(label)
 
 
-func refresh(republic: Node, overlay_mode: int, speed_names: Array) -> void:
+func refresh(republic: Republic, overlay_mode: int, speed_names: Array) -> void:
 	# The republic's own name leads the clock line. It is the one thing on this
 	# panel the player wrote themselves, and a game that forgets what you called
 	# your republic is a game that has not noticed you were there.
@@ -195,7 +195,7 @@ func refresh(republic: Node, overlay_mode: int, speed_names: Array) -> void:
 ## how content, how healthy, how loyal, and which component is dragging hardest.
 ## The second is a flow: who arrived, who left, and who is standing at the
 ## border right now waiting for a coach nobody has sent.
-func _refresh_people_lines(republic: Node) -> void:
+func _refresh_people_lines(republic: Republic) -> void:
 	var content: PackedFloat32Array = republic.contentment()
 	var health: PackedFloat32Array = republic.wellbeing()
 	# The overall score is the last entry, whatever the roster of components is.
@@ -242,7 +242,7 @@ func _weakest(content: PackedFloat32Array) -> String:
 	return "%s %d%%" % [_content_names[worst], int(round(content[worst] * 100.0))]
 
 
-func _refresh_migration_line(republic: Node) -> void:
+func _refresh_migration_line(republic: Republic) -> void:
 	var totals: PackedInt32Array = republic.migration_totals()
 	if totals.size() < 5:
 		migration_line.text = ""
@@ -277,7 +277,7 @@ func _refresh_migration_line(republic: Node) -> void:
 ## site with a gang and no bricks look identical without this. The waiting count
 ## is the one that costs: a gang beside a finished building is people no office
 ## can post anywhere until a bus goes and fetches them.
-func _refresh_crews(republic: Node) -> void:
+func _refresh_crews(republic: Republic) -> void:
 	var parties: PackedFloat32Array = republic.crew_parties()
 	var stride := 5
 	var riding := 0
@@ -317,14 +317,14 @@ func _refresh_crews(republic: Node) -> void:
 ##
 ## Off until a post is named, because auto-import spends hard currency and a
 ## default that spent it would be spending it before the player chose a bloc.
-func _import_policy_text(republic: Node) -> String:
+func _import_policy_text(republic: Republic) -> String:
 	var post: int = republic.import_post()
 	if post == 0:
 		return "imports:  none"
 	return "imports:  through post %d" % post
 
 
-func _refresh_stock(republic: Node) -> void:
+func _refresh_stock(republic: Republic) -> void:
 	var held: PackedFloat32Array = republic.stockpiles()
 	stock_title.text = "STOCKPILES"
 	for row in _stock_rows:
@@ -355,7 +355,7 @@ func _refresh_stock(republic: Node) -> void:
 ## education and the contentment breakdown are all facts the simulation has and
 ## the player cannot see -- and a republic whose pupils outnumber its workers is
 ## about to be short of hands in a way no population count shows.
-func _refresh_people(republic: Node) -> void:
+func _refresh_people(republic: Republic) -> void:
 	people_title.text = "THE PEOPLE"
 	var who: PackedInt32Array = republic.demographics()
 	var content: PackedFloat32Array = republic.contentment()
@@ -407,7 +407,7 @@ func _refresh_people(republic: Node) -> void:
 ##
 ## Sized off `Medium::ALL` rather than off four names typed here. Three separate
 ## things broke the last time a roster grew under a literal length.
-func _refresh_ways_line(republic: Node) -> void:
+func _refresh_ways_line(republic: Republic) -> void:
 	var lengths: PackedFloat32Array = republic.way_lengths()
 	var fleet: PackedFloat32Array = republic.fleet_by_medium()
 	var ways := _way_names.size()
@@ -433,7 +433,7 @@ func _refresh_ways_line(republic: Node) -> void:
 ## "dark" and "cold" are now questions about wire and pipe as well as about
 ## generation, and a republic short of one looks exactly like a republic short
 ## of the other unless both numbers are on the same line.
-func _refresh_grid_line(republic: Node) -> void:
+func _refresh_grid_line(republic: Republic) -> void:
 	var grid: PackedFloat32Array = republic.utility_totals()
 	var kinds := _utility_names.size()
 	if kinds == 0 or grid.size() != kinds * 2 + 2:

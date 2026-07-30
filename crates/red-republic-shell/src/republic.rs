@@ -167,6 +167,26 @@ impl Republic {
         self.fraction = 0.0;
     }
 
+    /// Stand the fixture town up on top of a founded republic — **for capture
+    /// runs only**.
+    ///
+    /// A blank map is what a player is given and it is also a republic with
+    /// nothing in it, so `--screen labour` on one renders a heading and an empty
+    /// table. That capture would pass while checking nothing: the layout bugs
+    /// this repository has actually shipped were all in rows, and a screen with
+    /// no rows has none to get wrong.
+    ///
+    /// `scenario::town` is the nineteen-building hand the founding used to
+    /// deal, kept as the fixture forty-odd simulation tests measure against.
+    /// Using it here is the same use — something to look at — and it is reached
+    /// only from `--screen`, never from a menu.
+    #[func]
+    fn found_fixture_town(&mut self, citizens: i64) {
+        if let Some(world) = self.world.as_mut() {
+            red_republic_sim::scenario::town(world, citizens.max(0) as usize);
+        }
+    }
+
     /// Run the republic forward whole days, as fast as the machine will.
     ///
     /// For capture and measurement runs that need a republic with roads worn
@@ -1106,6 +1126,110 @@ impl Republic {
             resource,
             tonnes: red_republic_sim::Tonnes(tonnes.max(0.0)),
         }) {
+            Ok(_) => GString::from(""),
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
+    // ---- Shifts -----------------------------------------------------------
+    //
+    // The roster is the one place a player decides how much of the day the
+    // republic is awake for, so all three levels of it are readable and
+    // writable from here. Hours are refused rather than clamped on the way in;
+    // every setter hands back the refusal so the panel can print it.
+
+    /// The national working day, in hours per shift.
+    #[func]
+    fn national_shift_hours(&self) -> f64 {
+        self.world
+            .as_ref()
+            .map_or(red_republic_sim::shifts::STANDARD_HOURS, |w| {
+                w.shift_policy().national()
+            })
+    }
+
+    /// The shortest and longest shift the republic will roster, and the most
+    /// crews one building may run: `[min_hours, max_hours, max_shifts]`.
+    ///
+    /// Read rather than repeated in GDScript, so a slider cannot offer a value
+    /// the command will refuse.
+    #[func]
+    fn shift_limits(&self) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        out.push(red_republic_sim::shifts::MIN_HOURS as f32);
+        out.push(red_republic_sim::shifts::MAX_HOURS as f32);
+        out.push(f32::from(red_republic_sim::shifts::MAX_SHIFTS));
+        out
+    }
+
+    #[func]
+    fn set_national_shift_hours(&mut self, hours: f64) -> GString {
+        self.command(Command::SetNationalShiftHours { hours })
+    }
+
+    /// The rule for each kind that has one: `[kind_index, hours]` per line.
+    #[func]
+    fn kind_shift_rules(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::kind_shift_rules)
+    }
+
+    /// Set a rule for a whole category of workplace; a negative `hours` clears
+    /// it so the national standard applies again.
+    #[func]
+    fn set_kind_shift_hours(&mut self, kind: i64, hours: f64) -> GString {
+        let Some(&kind) = red_republic_sim::building::BUILDINGS
+            .get(kind.max(0) as usize)
+            .map(|d| &d.kind)
+        else {
+            return GString::from("no such building");
+        };
+        self.command(Command::SetShiftHours {
+            scope: red_republic_sim::command::ShiftScope::Kind(kind),
+            hours: (hours >= 0.0).then_some(hours),
+        })
+    }
+
+    /// Every standing workplace and its roster:
+    /// `[id, kind_index, staff, jobs, shifts, hours, rule]` per line.
+    #[func]
+    fn workplaces(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::workplaces)
+    }
+
+    /// How many crews one workplace runs. Zero mothballs it.
+    #[func]
+    fn set_shifts(&mut self, building: i64, shifts: i64) -> GString {
+        self.command(Command::SetShifts {
+            building: red_republic_sim::BuildingId(building.max(0) as u32),
+            shifts: shifts.clamp(0, 255) as u8,
+        })
+    }
+
+    /// An exception for one building; a negative `hours` clears it.
+    #[func]
+    fn set_building_shift_hours(&mut self, building: i64, hours: f64) -> GString {
+        self.command(Command::SetShiftHours {
+            scope: red_republic_sim::command::ShiftScope::Building(red_republic_sim::BuildingId(
+                building.max(0) as u32,
+            )),
+            hours: (hours >= 0.0).then_some(hours),
+        })
+    }
+
+    /// Issue a command and hand back the refusal, or an empty string.
+    ///
+    /// The shape every setter above wants, written once: a player-facing
+    /// refusal is a sentence, and a panel that invents its own wording is a
+    /// second place the rules are described.
+    fn command(&mut self, command: Command) -> GString {
+        let Some(world) = self.world.as_mut() else {
+            return GString::from("no republic has been founded");
+        };
+        match world.issue(command) {
             Ok(_) => GString::from(""),
             Err(why) => GString::from(why.to_string().as_str()),
         }

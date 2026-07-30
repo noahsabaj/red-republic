@@ -82,7 +82,17 @@ use serde::{Deserialize, Serialize};
 /// [`Command::NameRepublic`], is recorded in the journal like every other
 /// input, and a replay reproduces it. A save written before it existed
 /// describes a republic with no name, and there is nowhere to invent one from.
-pub const SAVE_VERSION: u32 = 13;
+///
+/// 14: **the empty map, and the roster.** Two changes, one version, because
+/// either alone would have made older saves unreplayable and there is no point
+/// spending two numbers on one break. `scenario::found` stopped placing
+/// nineteen buildings and a hundred and forty-three settlers — so a journal
+/// written against the old founding replays into a republic that never had them,
+/// which is a different world wearing the same commands. And every building
+/// gained a shift count and a working day, which nothing before this version
+/// wrote. A save from before it is refused with the reason rather than loaded
+/// into a republic it does not describe.
+pub const SAVE_VERSION: u32 = 14;
 
 /// The longest a republic's name may be, in characters.
 ///
@@ -92,6 +102,23 @@ pub const SAVE_VERSION: u32 = 13;
 /// byte limit would let "Новосибирск" fail where a Latin name of the same
 /// length passed.
 pub const NAME_LIMIT: usize = 48;
+
+/// A working day the republic will roster, or a refusal that says the range.
+///
+/// Refused rather than clamped, for the same reason a long name is: a player who
+/// asked for twenty hours and was quietly given sixteen has been overruled
+/// without being told, and the panel would then show a number nobody chose.
+fn check_hours(hours: f64) -> Result<(), Refused> {
+    if hours.is_finite() && (crate::shifts::MIN_HOURS..=crate::shifts::MAX_HOURS).contains(&hours) {
+        Ok(())
+    } else {
+        Err(Refused::ShiftOutOfRange {
+            asked: hours,
+            min: crate::shifts::MIN_HOURS,
+            max: crate::shifts::MAX_HOURS,
+        })
+    }
+}
 
 /// The first version the format ever carried.
 ///
@@ -1144,6 +1171,58 @@ impl World {
                 Ok(Done::Nothing)
             }
 
+            Command::SetNationalShiftHours { hours } => {
+                check_hours(hours)?;
+                self.buildings.set_national_hours(hours);
+                Ok(Done::Nothing)
+            }
+
+            Command::SetShiftHours { scope, hours } => {
+                if let Some(h) = hours {
+                    check_hours(h)?;
+                }
+                match scope {
+                    crate::command::ShiftScope::Kind(kind) => {
+                        if hours.is_none() && self.buildings.shift_policy().of_kind(kind).is_none()
+                        {
+                            return Err(Refused::NoSuchShiftRule);
+                        }
+                        self.buildings.set_kind_hours(kind, hours);
+                    }
+                    crate::command::ShiftScope::Building(id) => {
+                        if self.buildings.get(id).is_none() {
+                            return Err(Refused::NoSuchBuilding(id));
+                        }
+                        if hours.is_none()
+                            && self.buildings.shift_policy().of_building(id).is_none()
+                        {
+                            return Err(Refused::NoSuchShiftRule);
+                        }
+                        self.buildings.set_building_hours(id, hours);
+                    }
+                }
+                Ok(Done::Nothing)
+            }
+
+            Command::SetShifts { building, shifts } => {
+                let Some(b) = self.buildings.get(building) else {
+                    return Err(Refused::NoSuchBuilding(building));
+                };
+                // A roster on a house is a control that does nothing, and a
+                // control that does nothing is worse than an absent one.
+                if b.def().workers == 0 {
+                    return Err(Refused::NotAWorkplace);
+                }
+                if shifts > crate::shifts::MAX_SHIFTS {
+                    return Err(Refused::TooManyShifts {
+                        asked: shifts,
+                        limit: crate::shifts::MAX_SHIFTS,
+                    });
+                }
+                self.buildings.set_shifts(building, shifts);
+                Ok(Done::Nothing)
+            }
+
             Command::AddTradeRule { .. }
             | Command::RemoveTradeRule { .. }
             | Command::MoveTradeRule { .. } => {
@@ -1170,9 +1249,16 @@ impl World {
         }
     }
 
+    // ---- Command helpers ----------------------------------------------------
+
     /// Everything the player has done, in order.
     pub fn journal(&self) -> &Journal {
         &self.journal
+    }
+
+    /// What the republic has decided about working hours.
+    pub fn shift_policy(&self) -> &crate::shifts::ShiftPolicy {
+        self.buildings.shift_policy()
     }
 
     // ---- Views -------------------------------------------------------------

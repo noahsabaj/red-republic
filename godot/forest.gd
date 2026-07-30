@@ -89,7 +89,7 @@ const FLOATS_PER_TREE := 16
 ## All of the work is on the Rust side -- see `terrain_mesh::forest_buffer`,
 ## which returns the instance buffer already in the layout `MultiMesh` wants.
 ## This assigns it and sets up the material, and does nothing per tree.
-static func plant(parent: Node3D, republic: Node, meshes: Array) -> int:
+static func plant(parent: Node3D, republic: Republic, meshes: Array) -> int:
 	for child in parent.get_children():
 		child.queue_free()
 	if meshes.is_empty():
@@ -104,7 +104,7 @@ static func plant(parent: Node3D, republic: Node, meshes: Array) -> int:
 
 ## One species in one chunk of the map.
 static func _plant_chunk(
-	parent: Node3D, republic: Node, meshes: Array, s: int, chunk: int
+	parent: Node3D, republic: Republic, meshes: Array, s: int, chunk: int
 ) -> int:
 	var buffer: PackedFloat32Array = republic.forest_buffer(
 		s, meshes.size(), SPACING, chunk, CHUNKS

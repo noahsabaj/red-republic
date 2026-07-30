@@ -1687,7 +1687,7 @@ pub fn power(world: &World) -> Vec<Mutation> {
         };
         let span = world.utilities.span_of(network, Utility::Power);
         let kept = (1.0 - Utility::Power.def().loss_per_km * span.as_km()).clamp(0.0, 1.0);
-        supply.entry(network).or_default().available += def.power_output * b.staffing() * kept;
+        supply.entry(network).or_default().available += def.power_output * b.activity() * kept;
     }
 
     // The stations that actually serve anybody: built, staffed, and on a
@@ -1820,7 +1820,7 @@ pub fn heating(world: &World) -> Vec<Mutation> {
         if def.power_draw > 0.0 && !boiler.powered {
             continue;
         }
-        let capacity = def.heat_output * boiler.staffing();
+        let capacity = def.heat_output * boiler.activity();
         if capacity <= 0.0 {
             continue;
         }
@@ -1852,7 +1852,7 @@ pub fn heating(world: &World) -> Vec<Mutation> {
         // And burn only in proportion to what it actually manages to make.
         let mut fuel_factor: f64 = 1.0;
         for &(resource, rate) in def.inputs {
-            let needed = rate * day * boiler.staffing() * throttle;
+            let needed = rate * day * boiler.activity() * throttle;
             if needed > 0.0 {
                 fuel_factor =
                     fuel_factor.min((boiler.stock.get(resource).0 / needed).clamp(0.0, 1.0));
@@ -1866,7 +1866,7 @@ pub fn heating(world: &World) -> Vec<Mutation> {
             out.push(Mutation::Consume {
                 building: boiler.id,
                 resource,
-                tonnes: Tonnes(rate * day * boiler.staffing() * running),
+                tonnes: Tonnes(rate * day * boiler.activity() * running),
             });
         }
         let made = capacity * running * kept;
@@ -2587,7 +2587,7 @@ pub fn trade(world: &World) -> Vec<Mutation> {
     houses.sort_by_key(|b| b.id);
 
     for house in houses {
-        let mut clearance = Tonnes(CUSTOMS_THROUGHPUT_PER_DAY * house.staffing() * day);
+        let mut clearance = Tonnes(CUSTOMS_THROUGHPUT_PER_DAY * house.activity() * day);
         if !clearance.is_positive() {
             continue;
         }
@@ -3119,7 +3119,7 @@ pub fn production(world: &World) -> Vec<Mutation> {
         if def.burns_its_own_inputs() {
             continue;
         }
-        let mut efficiency = b.staffing();
+        let mut efficiency = b.activity();
         if def.power_draw > 0.0 && !b.powered {
             // Unpowered work stops. The archived build had a per-building
             // brownout fraction; that authored property is worth restoring,
@@ -4789,7 +4789,7 @@ fn service_cover(world: &World, home: Point, need: crate::building::Need) -> f64
                 .serves
                 .iter()
                 .filter(|&&(what, _)| what == need)
-                .map(|&(_, share)| share * b.staffing())
+                .map(|&(_, share)| share * b.activity())
                 .sum::<f64>()
         })
         .sum::<f64>()
@@ -4897,8 +4897,6 @@ pub fn contentment(world: &World) -> Vec<Mutation> {
             continue;
         };
         let target_loyalty = scores.get(&record.home.0).copied().unwrap_or(0.0);
-        let loyalty = record.wellbeing.loyalty
-            + (target_loyalty - record.wellbeing.loyalty) * crate::wellbeing::LOYALTY_DRIFT;
 
         let served = crate::wellbeing::HEALTH_UNSERVED
             + (1.0 - crate::wellbeing::HEALTH_UNSERVED) * cover_at(home.centre);
@@ -4910,9 +4908,25 @@ pub fn contentment(world: &World) -> Vec<Mutation> {
         // costs the people in it health, scaled by how much of it the shops in
         // reach actually had. A republic that makes none pays nothing.
         let drink = crate::wellbeing::ALCOHOL_HEALTH_COST * home.drink.clamp(0.0, 1.0);
-        let target_health = (served * wear.max(0.25) - drink).clamp(0.0, 1.0);
+        // **What a long shift costs, and the reason shift length is not free.**
+        // Adding a crew is a straight trade — three times the output for three
+        // times the people. Lengthening a shift is not: it buys half again as
+        // much day out of the crew already there. So it is charged to the crew,
+        // in the two currencies people are actually paid in. Loyalty is the one
+        // that bites, because it already reaches emigration.
+        let (tired, resentful) = record
+            .workplace
+            .0
+            .and_then(|id| world.buildings.get(id))
+            .map(|work| crate::shifts::overwork_cost(work.hours))
+            .unwrap_or((0.0, 0.0));
+        let target_health = (served * wear.max(0.25) - drink - tired).clamp(0.0, 1.0);
         let health = record.wellbeing.health
             + (target_health - record.wellbeing.health) * crate::wellbeing::HEALTH_DRIFT;
+
+        let target_loyalty = (target_loyalty - resentful).clamp(0.0, 1.0);
+        let loyalty = record.wellbeing.loyalty
+            + (target_loyalty - record.wellbeing.loyalty) * crate::wellbeing::LOYALTY_DRIFT;
 
         updates.push((
             record.id,
@@ -5960,7 +5974,7 @@ pub fn sanitation(world: &World) -> Vec<Mutation> {
         let made = if def.residents > 0 {
             def.waste * f64::from(residents.get(&b.id).copied().unwrap_or(0))
         } else {
-            def.waste * b.staffing()
+            def.waste * b.activity()
         };
         if made <= 0.0 {
             continue;
@@ -5996,7 +6010,7 @@ pub fn pollution(world: &World) -> Vec<Mutation> {
         }
         // Activity, not establishment: a works standing idle for want of ore
         // makes no smoke, and a republic can see that in the overlay.
-        let running = b.staffing()
+        let running = b.activity()
             * if def.power_draw > 0.0 && !b.powered {
                 0.0
             } else {
@@ -6492,6 +6506,226 @@ mod tests {
             "worn output was {worn} against {healthy}, ratio {}, wanted {WORN_EFFICIENCY}",
             worn / healthy
         );
+    }
+
+    /// The whole shift mechanic in one measurement: a second crew is a second
+    /// day's work out of the same building, and it costs a second crew.
+    ///
+    /// **Both halves matter and only the pair proves anything.** Output alone
+    /// would pass on a change that gave the republic free goods; labour alone
+    /// would pass on one that took the people and produced nothing with them.
+    #[test]
+    fn a_second_shift_is_a_second_day_of_work_and_a_second_crew() {
+        fn planks_and_staff(shifts: u8, hands: usize) -> (f64, u32) {
+            let mut w = bare();
+            let mill = place(&mut w, BuildingKind::Sawmill, at(1_000.0, 1_000.0));
+            staff_up(&mut w, at(1_100.0, 1_000.0), hands);
+            let b = w.buildings.get_mut(mill).unwrap();
+            b.stock.add(Resource::Wood, Tonnes(400.0));
+            b.stock.add(Resource::Machinery, Tonnes(50.0));
+            w.issue(crate::command::Command::SetShifts {
+                building: mill,
+                shifts,
+            })
+            .expect("a sawmill is a workplace");
+            for _ in 0..TICKS_PER_DAY {
+                w.tick();
+            }
+            let b = w.buildings.get(mill).unwrap();
+            (b.stock.get(Resource::Planks).0, b.staff)
+        }
+
+        let crew = BuildingKind::Sawmill.def().workers as usize;
+        let (one, one_staff) = planks_and_staff(1, crew);
+        let (two, two_staff) = planks_and_staff(2, crew * 2);
+        assert_eq!(one_staff as usize, crew, "one shift wants one crew");
+        assert_eq!(two_staff as usize, crew * 2, "two shifts want two");
+        assert!(
+            (two / one - 2.0).abs() < 1e-6,
+            "two shifts made {two} against one shift's {one}"
+        );
+
+        // And the half that makes it a decision rather than a free upgrade: ask
+        // for two shifts with one crew's worth of people and you get one shift's
+        // output, because only one crew turned up.
+        let (short, short_staff) = planks_and_staff(2, crew);
+        assert_eq!(short_staff as usize, crew);
+        assert!(
+            (short / one - 1.0).abs() < 1e-6,
+            "a half-filled double shift made {short} against {one}"
+        );
+    }
+
+    /// A longer shift buys hours out of the crew already there. It is the one
+    /// lever in this mechanic that costs no extra people, which is exactly why
+    /// it has to cost something — see the test below for what.
+    #[test]
+    fn a_long_shift_buys_hours_out_of_the_crew_already_there() {
+        fn planks_in_a_day(hours: f64) -> f64 {
+            let mut w = bare();
+            let mill = place(&mut w, BuildingKind::Sawmill, at(1_000.0, 1_000.0));
+            staff_up(&mut w, at(1_100.0, 1_000.0), 10);
+            let b = w.buildings.get_mut(mill).unwrap();
+            b.stock.add(Resource::Wood, Tonnes(400.0));
+            b.stock.add(Resource::Machinery, Tonnes(50.0));
+            w.issue(crate::command::Command::SetNationalShiftHours { hours })
+                .expect("a rosterable day");
+            for _ in 0..TICKS_PER_DAY {
+                w.tick();
+            }
+            // **One day, not a month.** A sawmill holds forty tonnes and fills
+            // its bin in well under one, so a stock read at day thirty says
+            // "full" whatever the roster was — which is how the first version of
+            // this test reported a ratio of 1.0 and proved nothing at all.
+            w.buildings.get(mill).unwrap().stock.get(Resource::Planks).0
+        }
+
+        let standard = planks_in_a_day(crate::shifts::STANDARD_HOURS);
+        let long = planks_in_a_day(12.0);
+        assert!(standard > 0.0, "the mill made nothing at all");
+        assert!(
+            (long / standard - 1.5).abs() < 1e-6,
+            "a twelve-hour day made {long} against an eight-hour day's {standard}"
+        );
+    }
+
+    /// And what it costs: the people standing in it.
+    ///
+    /// **Two crews in one republic, living in the same block**, one on a long
+    /// shift and one on a standard one. That is the fixture doing real work —
+    /// comparing two separate republics could not isolate this, because a mill
+    /// running half again as long also makes half again as much smoke and
+    /// rubbish, and those land on contentment too. Sabotaging the constant with
+    /// two republics left the assertion passing on the pollution alone.
+    #[test]
+    fn a_long_shift_costs_the_people_who_work_it_their_loyalty() {
+        let mut w = bare();
+        let long = place(&mut w, BuildingKind::Sawmill, at(1_050.0, 1_000.0));
+        let normal = place(&mut w, BuildingKind::Sawmill, at(1_150.0, 1_000.0));
+        // One block, so both crews go home to exactly the same contentment.
+        staff_up(&mut w, at(1_100.0, 1_060.0), 12);
+        for id in [long, normal] {
+            let b = w.buildings.get_mut(id).unwrap();
+            b.stock.add(Resource::Wood, Tonnes(4_000.0));
+            b.stock.add(Resource::Machinery, Tonnes(500.0));
+        }
+        w.issue(crate::command::Command::SetShiftHours {
+            scope: crate::command::ShiftScope::Building(long),
+            hours: Some(14.0),
+        })
+        .expect("a rosterable day");
+
+        for _ in 0..TICKS_PER_DAY * 60 {
+            w.tick();
+        }
+
+        let mean_at = |id: BuildingId| {
+            let people: Vec<f64> = w
+                .population
+                .records()
+                .iter()
+                .filter(|c| c.workplace.0 == Some(id))
+                .map(|c| c.wellbeing.loyalty)
+                .collect();
+            assert!(!people.is_empty(), "nobody ended up working at {}", id.0);
+            people.iter().sum::<f64>() / people.len() as f64
+        };
+
+        let tired = mean_at(long);
+        let rested = mean_at(normal);
+        assert!(
+            rested - tired > 0.01,
+            "fourteen-hour days cost their crew nothing: {tired} against {rested} \
+             at the mill next door"
+        );
+    }
+
+    /// Zero shifts mothballs a workplace: it takes nobody and makes nothing.
+    ///
+    /// A real thing to want — a factory starving its neighbours of labour it
+    /// cannot feed — and the reason the roster goes down to zero rather than
+    /// stopping at one.
+    #[test]
+    fn a_building_nobody_is_rostered_for_takes_nobody_and_makes_nothing() {
+        let mut w = bare();
+        let mill = place(&mut w, BuildingKind::Sawmill, at(1_000.0, 1_000.0));
+        staff_up(&mut w, at(1_100.0, 1_000.0), 10);
+        w.buildings
+            .get_mut(mill)
+            .unwrap()
+            .stock
+            .add(Resource::Wood, Tonnes(400.0));
+        w.issue(crate::command::Command::SetShifts {
+            building: mill,
+            shifts: 0,
+        })
+        .expect("closing a workplace is allowed");
+        for _ in 0..TICKS_PER_DAY {
+            w.tick();
+        }
+        let b = w.buildings.get(mill).unwrap();
+        assert_eq!(b.staff, 0, "a closed mill was staffed anyway");
+        assert_eq!(
+            b.stock.get(Resource::Planks),
+            Tonnes::ZERO,
+            "a closed mill made planks"
+        );
+    }
+
+    /// A rule made today covers a building put up yesterday, and one put up
+    /// tomorrow.
+    ///
+    /// This is the invariant the whole design rests on: `Building::hours` is the
+    /// resolved answer, cached where twenty systems read it, and it can never
+    /// disagree with the policy because both live in `Buildings` and every path
+    /// that changes either one goes through it. The test walks every building in
+    /// a played republic and checks the pair.
+    #[test]
+    fn every_building_agrees_with_the_rule_that_covers_it() {
+        let mut w = bare();
+        let mill = place(&mut w, BuildingKind::Sawmill, at(1_000.0, 1_000.0));
+        let clinic = place(&mut w, BuildingKind::Clinic, at(1_400.0, 1_000.0));
+
+        w.issue(crate::command::Command::SetNationalShiftHours { hours: 10.0 })
+            .unwrap();
+        w.issue(crate::command::Command::SetShiftHours {
+            scope: crate::command::ShiftScope::Kind(BuildingKind::Clinic),
+            hours: Some(12.0),
+        })
+        .unwrap();
+        w.issue(crate::command::Command::SetShiftHours {
+            scope: crate::command::ShiftScope::Building(mill),
+            hours: Some(14.0),
+        })
+        .unwrap();
+
+        // Built after every rule was made, and covered by the kind rule anyway.
+        let later = place(&mut w, BuildingKind::Clinic, at(1_800.0, 1_000.0));
+
+        assert_eq!(w.buildings.get(mill).unwrap().hours, 14.0);
+        assert_eq!(w.buildings.get(clinic).unwrap().hours, 12.0);
+        assert_eq!(w.buildings.get(later).unwrap().hours, 12.0);
+
+        // Clear the building's exception and it falls back to the national
+        // standard, because a sawmill has no rule of its own kind.
+        w.issue(crate::command::Command::SetShiftHours {
+            scope: crate::command::ShiftScope::Building(mill),
+            hours: None,
+        })
+        .unwrap();
+
+        let policy = w.shift_policy().clone();
+        for b in w.buildings.all() {
+            assert_eq!(
+                b.hours,
+                policy.hours_for(b.kind, b.id),
+                "{:?} {} is rostered for {} against a policy of {}",
+                b.kind,
+                b.id.0,
+                b.hours,
+                policy.hours_for(b.kind, b.id)
+            );
+        }
     }
 
     /// Wear is proportional to activity, so a building nobody staffs wears

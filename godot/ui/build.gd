@@ -37,7 +37,7 @@ const Style := preload("res://ui/theme.gd")
 signal chose(kind: int, market: int)
 signal closed
 
-var _republic: Node = null
+var _republic: Republic = null
 var _rows: VBoxContainer = null
 var _purse: Label = null
 var _built := false
@@ -48,7 +48,7 @@ func _ready() -> void:
 	visible = false
 
 
-func open(republic: Node) -> void:
+func open(republic: Republic) -> void:
 	_republic = republic
 	if not _built:
 		_build()
@@ -63,9 +63,11 @@ func close() -> void:
 
 
 func _build() -> void:
-	# Near-opaque. At 0.86 the HUD read straight through a full-screen list and
-	# the whole thing looked like two screens printed on top of each other.
-	add_child(Style.backdrop(0.97))
+	# Opaque. At 0.86 the HUD read straight through a full-screen list and the
+	# whole thing looked like two screens printed on top of each other; 0.97 was
+	# the first attempt at that and a rendered frame showed it still ghosting,
+	# because the paper is dark and the text over it is not.
+	add_child(Style.backdrop(1.0))
 
 	var margin := MarginContainer.new()
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)

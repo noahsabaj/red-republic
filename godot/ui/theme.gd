@@ -151,6 +151,14 @@ static func button(text: String, primary: bool = false) -> Button:
 ## Opaque for the menu, and semi-transparent for the pause overlay so the
 ## republic stays visible behind it -- a player pausing to think should still be
 ## looking at the thing they are thinking about.
+##
+## **Anything less than fully opaque shows the HUD through it, and 0.97 is not
+## close enough.** The paper is dark and the HUD's text is not, so even three
+## per cent of it reads as a ghost of another screen printed underneath. The
+## build menu was set to 0.97 after 0.86 was caught doing exactly this, and a
+## rendered frame of the labour screen showed it still happening -- the first
+## fix moved the number and not the problem. A full-screen modal takes 1.0.
+## Numbers below that belong to overlays that are *meant* to be see-through.
 static func backdrop(alpha: float = 1.0) -> ColorRect:
 	var rect := ColorRect.new()
 	rect.color = Color(PAPER.r, PAPER.g, PAPER.b, alpha)

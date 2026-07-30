@@ -811,12 +811,17 @@ pub fn assign_labour(
     let mut workplaces: Vec<_> = buildings
         .all()
         .iter()
-        .filter(|b| b.is_built() && b.def().workers > 0)
+        .filter(|b| b.is_built() && b.jobs() > 0)
         .collect();
     workplaces.sort_by_key(|b| b.id);
 
     for workplace in workplaces {
-        let jobs = workplace.def().workers as usize;
+        // **Every shift, not every post.** The authored `workers` is one crew,
+        // so a works the player has put on three shifts is asking the republic
+        // for three crews — and it goes short exactly as it would if it were
+        // three separate factories. That is the whole cost of running the night,
+        // and it is charged here rather than anywhere else.
+        let jobs = workplace.jobs() as usize;
         // What the job needs to have been taught. A republic with no school is
         // a republic whose next generation cannot run its own mines, which is
         // the entire point of the attribute — and it is checked here rather

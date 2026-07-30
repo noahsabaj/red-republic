@@ -55,7 +55,16 @@ const DEFAULT_NAME := "Novo-Uralsk"
 ## player left it running -- see `_set_screen`.
 enum Screen { MENU, FOUNDING, PLAYING, PAUSED, SETTINGS, SAVES, REFERENCE, RADIO }
 
-@onready var republic: Node = $Republic
+## **Typed as `Republic`, not as `Node`, and that is a bug fix rather than
+## tidiness.** gdext registers `Republic` as a real Godot class with typed method
+## signatures, but a variable declared `Node` makes every call on it a dynamic
+## one returning `Variant` — so `var x := republic.anything()` is a *parse error*,
+## and a GDScript parse error makes `--check` hang for ever instead of failing.
+## That cost three separate stalls in one day, twice at eight minutes, before
+## anybody asked why the annotations were needed at all. Naming the class is what
+## makes the whole failure unrepresentable: the compiler now knows what every
+## binding returns.
+@onready var republic: Republic = $Republic
 @onready var sounds: Node = $Sounds
 @onready var rig: Node3D = $CameraRig
 @onready var terrain_node: MeshInstance3D = $Terrain
@@ -81,6 +90,7 @@ enum Screen { MENU, FOUNDING, PLAYING, PAUSED, SETTINGS, SAVES, REFERENCE, RADIO
 @onready var radio: CanvasLayer = $Radio
 @onready var pause_menu: CanvasLayer = $Pause
 @onready var build_menu: CanvasLayer = $Build
+@onready var labour_screen: CanvasLayer = $Labour
 
 var _buildings_shown := -1
 var _roads_shown := -1
@@ -209,6 +219,7 @@ func _found_default() -> void:
 		_check_saves()
 		_check_settings()
 		_check_building()
+		_check_labour()
 		get_tree().quit()
 
 
@@ -224,10 +235,8 @@ func _found_default() -> void:
 ## through the simulation directly, because the binding is the part only the
 ## shell can get wrong.
 func _check_building() -> void:
-	# Annotated, not inferred: a gdext `#[func]` returns an untyped Variant, so
-	# `:=` cannot infer from one and the file fails to parse.
-	var centre: float = republic.map_extent() * 0.5
-	var before: int = republic.building_count()
+	var centre := republic.map_extent() * 0.5
+	var before := republic.building_count()
 	# Walk outward for ground that will take it: the site the founding picked is
 	# chosen for coal, not for being flat.
 	var why := "nowhere tried"
@@ -243,6 +252,31 @@ func _check_building() -> void:
 		printerr("build check FAILED: the contract was accepted and no site appeared")
 		return
 	print("build check ok: contracted %s" % republic.building_kind_name(0))
+
+
+## Set the working day and read it back off a building.
+##
+## The roster is three levels deep and every level is resolved on the Rust side,
+## so the thing only the shell can get wrong is whether a number the player types
+## reaches the simulation and comes back changed. A refusal is a sentence, so a
+## silently-ignored setter looks identical to a working one from GDScript — which
+## is exactly the failure this line catches.
+func _check_labour() -> void:
+	var was: float = republic.national_shift_hours()
+	var why := String(republic.set_national_shift_hours(12.0))
+	if why != "":
+		printerr("labour check FAILED: %s" % why)
+		return
+	if not is_equal_approx(republic.national_shift_hours(), 12.0):
+		printerr("labour check FAILED: the standard was accepted and did not change")
+		return
+	# And the refusal path, because a setter that accepts everything is a setter
+	# that is not reading the rules.
+	if String(republic.set_national_shift_hours(40.0)) == "":
+		printerr("labour check FAILED: a forty-hour shift was accepted")
+		return
+	var _restore := republic.set_national_shift_hours(was)
+	print("labour check ok: the working day is the republic's to set")
 
 
 ## Write settings, read them back through a fresh store, and check they survived.
@@ -364,8 +398,9 @@ func _enter_republic() -> void:
 	hud.set_utility_names(republic.utility_names())
 	hud.set_way_names(republic.way_names())
 	hud.set_hint(
-		"0-5 speed  ·  space pause  ·  esc menu  ·  F none  G going  T tracks  "
-		+ "R survey  P smoke  N snow  ·  WASD pan  ·  right-drag orbit  ·  wheel zoom"
+		"0-5 speed  ·  space pause  ·  B build  ·  L labour  ·  esc menu  ·  "
+		+ "F none  G going  T tracks  R survey  P smoke  N snow  ·  "
+		+ "WASD pan  ·  right-drag orbit  ·  wheel zoom"
 	)
 	_refresh_buildings()
 	_refresh_roads()
@@ -418,6 +453,7 @@ func _connect_screens() -> void:
 	pause_menu.abandon_pressed.connect(_on_abandon)
 	build_menu.chose.connect(_begin_placement)
 	build_menu.closed.connect(func(): _set_screen(Screen.PLAYING))
+	labour_screen.closed.connect(func(): _set_screen(Screen.PLAYING))
 
 
 func _on_new_posting() -> void:
@@ -578,6 +614,20 @@ func _open_named_screen(name: String) -> void:
 			# capture would not be checking.
 			_found_default()
 			build_menu.open(republic)
+		"labour":
+			# Needs a republic with workplaces standing in it: on a blank map the
+			# table under the two policy controls is empty, and a capture of a
+			# screen with no rows checks nothing — every layout bug this project
+			# has shipped was in a row. `found_fixture_town` is the nineteen-
+			# building hand the founding used to deal, kept as a fixture, and it
+			# is reachable from here and from nowhere a player goes.
+			_found_default()
+			republic.found_fixture_town(143)
+			# A day, so the labour pass has run and the manning column reports
+			# people rather than a republic of empty posts.
+			republic.advance_days(2)
+			_enter_republic()
+			labour_screen.open(republic)
 		_:
 			push_error("no screen called '%s'" % name)
 			_set_screen(Screen.MENU)
@@ -769,6 +819,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	}
 	if event.keycode == KEY_B:
 		build_menu.open(republic)
+	elif event.keycode == KEY_L:
+		labour_screen.open(republic)
 	elif speeds.has(event.keycode):
 		republic.set_speed(speeds[event.keycode])
 	elif event.keycode == KEY_SPACE:

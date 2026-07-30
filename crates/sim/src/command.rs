@@ -184,6 +184,34 @@ pub enum Command {
     /// rule is served first, and that ranking is the player's to make.
     MoveTradeRule { from: u32, to: u32 },
 
+    /// Set the national working day, in hours per shift.
+    ///
+    /// Its own command rather than a scope on [`Command::SetShiftHours`],
+    /// because the national standard is the thing everything else falls back to
+    /// and therefore is the one rule that cannot be cleared. Folding it in would
+    /// have made "clear the national standard" a state the type allowed and the
+    /// handler had to refuse.
+    SetNationalShiftHours { hours: f64 },
+
+    /// Set — or with `None` clear — an exception to the national working day.
+    ///
+    /// *"Doctors work twelve, but at this hospital fourteen."* A rule about a
+    /// kind covers every such building including ones not yet built; a rule
+    /// about one building beats it. Clearing falls back to the rule above
+    /// rather than freezing whatever number was in force.
+    SetShiftHours {
+        scope: ShiftScope,
+        hours: Option<f64>,
+    },
+
+    /// How many crews a workplace runs, `0..=`[`crate::shifts::MAX_SHIFTS`].
+    ///
+    /// **The decision night is made of.** One crew is a day shift and is what
+    /// every authored output rate describes; three is round the clock, three
+    /// times the goods and three times the people — who have to be housed, fed
+    /// and carried to work in the dark. Zero mothballs the place.
+    SetShifts { building: BuildingId, shifts: u8 },
+
     /// Name the republic. The second beat of founding.
     ///
     /// A command rather than a field on [`crate::world::WorldSpec`] for two
@@ -199,6 +227,20 @@ pub enum Command {
     /// second file that can be lost, renamed or copied apart from the republic
     /// it belongs to.
     NameRepublic { name: String },
+}
+
+/// Which buildings a working-hours exception covers.
+///
+/// The national standard is deliberately absent: it is what these fall back to,
+/// so it is the one rule with nothing above it and the one that cannot be
+/// cleared. It has its own command instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShiftScope {
+    /// Every building of a kind, including ones not yet built. A rule, rather
+    /// than a batch edit over what happens to stand today.
+    Kind(BuildingKind),
+    /// One building, beating any rule about its kind.
+    Building(BuildingId),
 }
 
 /// What an accepted command produced.
@@ -285,6 +327,20 @@ pub enum Refused {
     /// Refused rather than truncated, because a name the player typed and the
     /// game silently shortened is not the name they chose.
     NameTooLong { asked: usize, limit: usize },
+    /// A working day outside what the republic will roster.
+    ///
+    /// Refused rather than clamped for the reason a truncated name is: a player
+    /// who asked for a twenty-hour shift and got sixteen has been silently
+    /// overruled, and the panel would show a number they did not choose.
+    ShiftOutOfRange { asked: f64, min: f64, max: f64 },
+    /// More crews than a building may run.
+    TooManyShifts { asked: u8, limit: u8 },
+    /// A roster set on something with no jobs to roster — a house, a store, a
+    /// pylon. Refused rather than ignored, because a shift count sitting on a
+    /// building nothing will ever read is a control that lies.
+    NotAWorkplace,
+    /// That building had no working-hours exception of its own to clear.
+    NoSuchShiftRule,
 }
 
 impl std::fmt::Display for Refused {
@@ -343,6 +399,19 @@ impl std::fmt::Display for Refused {
                 1 => write!(f, "there is only one trade rule, and it is not {index}"),
                 n => write!(f, "there is no trade rule {index}; there are {n}"),
             },
+            Refused::ShiftOutOfRange { asked, min, max } => write!(
+                f,
+                "a shift of {asked:.0} hours is not one the republic will roster; \
+                 between {min:.0} and {max:.0}"
+            ),
+            Refused::TooManyShifts { asked, limit } => write!(
+                f,
+                "{asked} shifts is more than the {limit} that fit in a day"
+            ),
+            Refused::NotAWorkplace => write!(f, "nobody works there, so there is no shift to set"),
+            Refused::NoSuchShiftRule => {
+                write!(f, "that building keeps the standard working day already")
+            }
         }
     }
 }

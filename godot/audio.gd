@@ -143,7 +143,7 @@ func quieten() -> void:
 ## Called on the day boundary. The caller decides when that is, because it already
 ## tracks the date for the overlays and two places watching the same clock is two
 ## places to get it wrong.
-func follow(republic: Node) -> void:
+func follow(republic: Republic) -> void:
 	if not republic.is_founded():
 		quieten()
 		return

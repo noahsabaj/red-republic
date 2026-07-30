@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3]
+[gd_scene load_steps=14 format=3]
 
 [ext_resource type="Script" path="res://main.gd" id="1_main"]
 [ext_resource type="Script" path="res://camera_rig.gd" id="2_rig"]
@@ -6,6 +6,7 @@
 [ext_resource type="Script" path="res://audio.gd" id="4_audio"]
 [ext_resource type="Script" path="res://ui/menu.gd" id="5_menu"]
 [ext_resource type="Script" path="res://ui/build.gd" id="12_build"]
+[ext_resource type="Script" path="res://ui/labour.gd" id="13_labour"]
 [ext_resource type="Script" path="res://ui/founding.gd" id="6_founding"]
 [ext_resource type="Script" path="res://ui/settings.gd" id="7_settings"]
 [ext_resource type="Script" path="res://ui/saves.gd" id="8_saves"]
@@ -80,6 +81,9 @@ script = ExtResource("10_radio")
 
 [node name="Build" type="CanvasLayer" parent="."]
 script = ExtResource("12_build")
+
+[node name="Labour" type="CanvasLayer" parent="."]
+script = ExtResource("13_labour")
 
 [node name="Pause" type="CanvasLayer" parent="."]
 script = ExtResource("11_pause")

@@ -43,7 +43,7 @@ const MINIMAP_PX := 168
 signal posting_taken
 signal cancelled
 
-var _republic: Node = null
+var _republic: Republic = null
 var _cards: Array = []
 var _selected := -1
 var _master_seed := 0
@@ -183,7 +183,7 @@ func _build_posting() -> Control:
 
 
 ## Open the screen. `master_seed` seeds the whole shelf.
-func open(republic: Node, master_seed: int) -> void:
+func open(republic: Republic, master_seed: int) -> void:
 	_republic = republic
 	_master_seed = master_seed
 	# The limit comes from the simulation so the box cannot accept a name the

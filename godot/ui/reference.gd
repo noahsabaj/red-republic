@@ -74,7 +74,7 @@ func _ready() -> void:
 
 ## Build the document. Cheap enough to redo on every open, and redoing it is what
 ## keeps it honest -- a cached document is a document that can be stale.
-func open(republic: Node) -> void:
+func open(republic: Republic) -> void:
 	_lines = republic.reference()
 	_compose()
 

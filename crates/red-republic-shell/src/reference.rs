@@ -113,6 +113,25 @@ fn playing(push: &mut impl FnMut(String)) {
             .into(),
     );
 
+    push(">A building runs the hours you staff it for".into());
+    push(
+        ".Every workplace runs a number of crews, and each crew works a shift. One \
+         crew on a standard day is what a building's figures describe; more crews \
+         is proportionally more work out of it, and proportionally more people. An \
+         hour nobody is rostered for is an hour that produces nothing, so running \
+         the night is a thing you pay for in workers rather than a switch."
+            .into(),
+    );
+
+    push(">A longer shift is paid for by the people working it".into());
+    push(
+        ".Shift length is national policy, with exceptions by trade and by \
+         building. Lengthening a shift buys more of the day out of the crew you \
+         already have — and costs them health and loyalty in proportion, every \
+         day. Loyalty is what decides whether people stay."
+            .into(),
+    );
+
     push(">Freight is vehicles".into());
     push(
         ".Garages own vehicles, and a depot's establishment is fixed: wanting more \

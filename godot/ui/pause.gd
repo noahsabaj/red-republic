@@ -87,7 +87,7 @@ func _ready() -> void:
 
 
 ## Name the republic being paused, so the panel is about somewhere.
-func show_for(republic: Node) -> void:
+func show_for(republic: Republic) -> void:
 	_abandon_armed = false
 	_abandon.text = "Abandon the posting"
 	var name: String = republic.republic_name()
