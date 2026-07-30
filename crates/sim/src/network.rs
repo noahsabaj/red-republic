@@ -165,11 +165,32 @@ pub struct Segment {
     pub to: NodeId,
     pub length: Metres,
     pub speed: Speed,
+    /// Whether this stretch was built with street lighting.
+    ///
+    /// **Authored when the road is ordered and never changed after**, which is
+    /// what separates it from [`Segment::alight`]: lamps are a thing you paid
+    /// for, and whether they are burning tonight is a question for the grid.
+    /// Only paved road may carry them — see [`crate::roadworks::GradeDef`].
+    #[serde(default)]
+    pub lamps: bool,
+    /// Whether those lamps are on, set by the power system and never authored.
+    ///
+    /// A lit road is a real consumer: it draws through a Transformer Station in
+    /// reach exactly as a building does, and a republic short of generation puts
+    /// its streets out along with everything else. That is the point — lighting
+    /// the town is an infrastructure project rather than a checkbox.
+    #[serde(default)]
+    pub alight: bool,
 }
 
 impl Segment {
     pub fn travel_time(&self) -> Seconds {
         self.speed.time_to_cover(self.length)
+    }
+
+    /// Whether somebody could walk this in the dark: lamps that are burning.
+    pub fn is_lit(&self) -> bool {
+        self.lamps && self.alight
     }
 }
 
@@ -273,6 +294,16 @@ impl Network {
     /// # Panics
     /// If either node is unknown, or if the two are the same.
     pub fn connect(&mut self, a: NodeId, b: NodeId, speed: Speed) -> usize {
+        self.connect_lit(a, b, speed, false)
+    }
+
+    /// The same, for a stretch built with street lighting.
+    ///
+    /// A separate entry point rather than a fourth argument on `connect`,
+    /// because unlit is what nearly every caller means — rails, tramway, water,
+    /// the tracks traffic wears into the ground — and threading `false` through
+    /// all of them would say nothing.
+    pub fn connect_lit(&mut self, a: NodeId, b: NodeId, speed: Speed, lamps: bool) -> usize {
         assert_ne!(a, b, "a road segment needs two different junctions");
         let pa = self.position_of(a).expect("unknown junction");
         let pb = self.position_of(b).expect("unknown junction");
@@ -284,10 +315,46 @@ impl Network {
             to: b,
             length,
             speed,
+            lamps,
+            alight: false,
         });
         self.adjacency[a.0 as usize].push((b, index));
         self.adjacency[b.0 as usize].push((a, index));
         index
+    }
+
+    /// Turn one stretch's lamps on or off. The power system's write, and the
+    /// only thing that ever touches [`Segment::alight`].
+    pub(crate) fn set_alight(&mut self, segment: usize, on: bool) {
+        if let Some(s) = self.segments.get_mut(segment) {
+            s.alight = on;
+        }
+    }
+
+    /// The middle of a stretch — where a substation has to reach to light it.
+    pub fn midpoint_of(&self, segment: usize) -> Option<Point> {
+        let s = self.segments.get(segment)?;
+        let a = self.position_of(s.from)?;
+        let b = self.position_of(s.to)?;
+        Some(Point::new(
+            Metres((a.x.0 + b.x.0) / 2.0),
+            Metres((a.y.0 + b.y.0) / 2.0),
+        ))
+    }
+
+    /// How much lit street the republic has, and how much of it is burning.
+    pub fn lit_length(&self) -> (Metres, Metres) {
+        let mut built = 0.0;
+        let mut alight = 0.0;
+        for s in &self.segments {
+            if s.lamps {
+                built += s.length.0;
+                if s.alight {
+                    alight += s.length.0;
+                }
+            }
+        }
+        (Metres(built), Metres(alight))
     }
 
     /// Total length of road laid.
@@ -343,6 +410,22 @@ impl Network {
 
     /// Shortest route by travel time.
     pub fn route(&self, from: NodeId, to: NodeId) -> Option<Route> {
+        self.route_where(from, to, |_| true)
+    }
+
+    /// The shortest route that only uses segments `allow` accepts.
+    ///
+    /// **One search rather than a filter over the answer, and the difference is
+    /// real.** Asking whether the quickest route happens to be lit gets the
+    /// wrong answer whenever a longer lit road exists beside a shorter dark one
+    /// — which is exactly the situation a republic that has just lit its main
+    /// street is in.
+    pub fn route_where(
+        &self,
+        from: NodeId,
+        to: NodeId,
+        allow: impl Fn(&Segment) -> bool,
+    ) -> Option<Route> {
         let n = self.nodes.len();
         if from.0 as usize >= n || to.0 as usize >= n {
             return None;
@@ -379,6 +462,9 @@ impl Network {
             for &(neighbour, segment) in &self.adjacency[index] {
                 let next = neighbour.0 as usize;
                 if settled[next] {
+                    continue;
+                }
+                if !allow(&self.segments[segment]) {
                     continue;
                 }
                 let step = self.segments[segment].travel_time().0;
@@ -632,6 +718,8 @@ mod tests {
     fn a_segment_from_elsewhere_has_no_ends_here() {
         let r = straight(2);
         let stray = Segment {
+            lamps: false,
+            alight: false,
             from: NodeId(0),
             to: NodeId(99),
             length: Metres(1.0),

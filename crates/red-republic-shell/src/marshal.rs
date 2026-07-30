@@ -165,10 +165,15 @@ pub fn vehicle_positions(world: &World, now: f64) -> PackedFloat32Array {
     out
 }
 
-/// Floats per road segment: two end points and the limit on it.
-pub const ROAD_STRIDE: usize = 7;
+/// Floats per road segment: two end points, the limit on it, and its lamps.
+pub const ROAD_STRIDE: usize = 8;
 
-/// Every road segment as `[ax, ay, az, bx, by, bz, speed_kph]`.
+/// Every road segment as `[ax, ay, az, bx, by, bz, speed_kph, lamps]`.
+///
+/// `lamps` is `0` none, `1` built but dark, `2` burning. Three states rather
+/// than two because they mean different things to a player: a street with no
+/// lamps is a road you did not pay for, and a street with dark lamps is a grid
+/// that has run short — the second is a thing to go and fix.
 ///
 /// The speed limit travels with the segment because a grade is a decision
 /// rather than a nicer word — a lorry does 25 km/h on a dirt track whatever it
@@ -189,6 +194,11 @@ pub fn road_segments(world: &World) -> PackedFloat32Array {
             out.push(p.z);
         }
         out.push((segment.speed.as_mps() * 3.6) as f32);
+        out.push(match (segment.lamps, segment.alight) {
+            (false, _) => 0.0,
+            (true, false) => 1.0,
+            (true, true) => 2.0,
+        });
     }
     out
 }

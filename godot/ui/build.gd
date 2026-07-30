@@ -35,6 +35,9 @@ const Style := preload("res://ui/theme.gd")
 ## Emitted when the player picks something to place. `market` is -1 to build it
 ## with your own crews, or 0 East / 1 West to contract it out.
 signal chose(kind: int, market: int)
+## Emitted when the player picks a way to lay. `lamps` asks for street lighting,
+## which only paved road may carry.
+signal chose_way(grade: int, lamps: bool)
 signal closed
 
 var _republic: Republic = null
@@ -92,9 +95,27 @@ func _build() -> void:
 	))
 	column.add_child(Style.divider())
 
+	# **Two columns: things that stand still, and things that go somewhere.**
+	# A road was as unbuildable from this game as a factory was before this menu
+	# existed, and on a map that starts empty a republic that cannot lay road
+	# cannot connect anything it builds.
+	var columns := HBoxContainer.new()
+	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	columns.clip_contents = true
+	columns.add_theme_constant_override("separation", 24)
+	column.add_child(columns)
+
+	var left := VBoxContainer.new()
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left.size_flags_stretch_ratio = 2.0
+	left.add_theme_constant_override("separation", 4)
+	left.add_child(Style.heading("BUILDINGS", Style.SIZE_HEAD))
+	columns.add_child(left)
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	column.add_child(scroll)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	left.add_child(scroll)
 
 	_rows = VBoxContainer.new()
 	_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -104,6 +125,8 @@ func _build() -> void:
 	for kind in _republic.building_kind_count():
 		_rows.add_child(_row(kind))
 
+	columns.add_child(_ways_column())
+
 	column.add_child(Style.divider())
 	var footer := HBoxContainer.new()
 	footer.add_theme_constant_override("separation", 8)
@@ -111,6 +134,78 @@ func _build() -> void:
 	back.pressed.connect(close)
 	footer.add_child(back)
 	column.add_child(footer)
+
+
+## Roads, rails, tramway, tunnels — everything laid between two points.
+##
+## Lit is a *variant of the road* rather than a thing you place, which is the
+## whole design: nobody wants to site four hundred lamp posts. Only the grades
+## the simulation says may carry lamps get the button, read off the authored
+## table rather than decided here.
+func _ways_column() -> Control:
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_theme_constant_override("separation", 4)
+	box.add_child(Style.heading("WAYS", Style.SIZE_HEAD))
+	box.add_child(Style.small(
+		"Laid between two points, in your own materials and your own builder-days. "
+		+ "Street lighting draws off the grid and is what lets a night shift walk home.",
+		Style.INK_FAINT
+	))
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	box.add_child(scroll)
+
+	var rows := VBoxContainer.new()
+	rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	rows.add_theme_constant_override("separation", 3)
+	scroll.add_child(rows)
+
+	var names := _republic.grade_names()
+	var facts: PackedFloat32Array = _republic.grade_facts()
+	var stride := 4
+	for grade in names.size():
+		var o := grade * stride
+		if o + stride > facts.size():
+			break
+		var line := VBoxContainer.new()
+		line.add_theme_constant_override("separation", 2)
+
+		var top := HBoxContainer.new()
+		top.add_theme_constant_override("separation", 8)
+		var name_label := Style.body(String(names[grade]), Style.INK)
+		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		top.add_child(name_label)
+		top.add_child(Style.small(
+			"%.0f km/h  ·  %.0f builder-days / km" % [facts[o], facts[o + 1]], Style.INK_FAINT
+		))
+		line.add_child(top)
+
+		var bottom := HBoxContainer.new()
+		bottom.add_theme_constant_override("separation", 6)
+		var spacer := Control.new()
+		spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		bottom.add_child(spacer)
+		var plain := Style.button("Lay")
+		plain.pressed.connect(func(): _pick_way(grade, false))
+		bottom.add_child(plain)
+		if facts[o + 3] > 0.5:
+			var lit := Style.button("Lay with lamps")
+			lit.pressed.connect(func(): _pick_way(grade, true))
+			bottom.add_child(lit)
+		line.add_child(bottom)
+
+		var holder := Style.card(Style.PAPER_RAISED, Style.RULE, 7)
+		Style.card_body(holder).add_child(line)
+		rows.add_child(holder)
+	return box
+
+
+func _pick_way(grade: int, lamps: bool) -> void:
+	visible = false
+	chose_way.emit(grade, lamps)
 
 
 ## One building: what it is, what it needs, and the two ways to get it.
@@ -122,38 +217,48 @@ func _row(kind: int) -> Control:
 	var width := facts[3] if facts.size() > 3 else 0.0
 	var depth := facts[4] if facts.size() > 4 else 0.0
 
-	var line := HBoxContainer.new()
-	line.add_theme_constant_override("separation", 12)
+	# **Two lines, and the widths expand rather than being pinned.** Fixed
+	# minimums of 240 and 320 were fine while this was the only column on the
+	# screen; beside the ways list they made the row demand more than its half
+	# and pushed the whole right-hand column off the edge — visible in a
+	# rendered frame and in nothing else.
+	var stack := VBoxContainer.new()
+	stack.add_theme_constant_override("separation", 2)
 
+	var top := HBoxContainer.new()
+	top.add_theme_constant_override("separation", 8)
 	var name_label := Style.body(String(_republic.building_kind_name(kind)), Style.INK)
-	name_label.custom_minimum_size = Vector2(240, 0)
-	line.add_child(name_label)
-
+	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	top.add_child(name_label)
 	var detail := Style.small(
 		"%.0f x %.0f m  ·  %d workers  ·  %.0f builder-days" % [width, depth, workers, days],
 		Style.INK_FAINT
 	)
-	detail.custom_minimum_size = Vector2(320, 0)
-	line.add_child(detail)
+	detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	top.add_child(detail)
+	stack.add_child(top)
 
+	var bottom := HBoxContainer.new()
+	bottom.add_theme_constant_override("separation", 6)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	line.add_child(spacer)
+	bottom.add_child(spacer)
 
 	var own := Style.button("Build")
 	own.pressed.connect(func(): _pick(kind, -1))
-	line.add_child(own)
+	bottom.add_child(own)
 
 	# East only for now: a republic starts with roubles and no dollars, so a
 	# Western contract is a button that can only ever refuse until something has
 	# been exported. It appears when there is hard currency to spend.
 	var east := Style.button("Contract  %s ₽" % _thousands(contract_cost))
 	east.pressed.connect(func(): _pick(kind, 0))
-	line.add_child(east)
+	bottom.add_child(east)
+	stack.add_child(bottom)
 
 	# `card` gives the panel, `card_body` the padded slot inside it.
 	var holder := Style.card(Style.PAPER_RAISED, Style.RULE, 7)
-	Style.card_body(holder).add_child(line)
+	Style.card_body(holder).add_child(stack)
 	return holder
 
 

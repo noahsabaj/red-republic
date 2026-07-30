@@ -828,13 +828,18 @@ pub fn assign_labour(
         // than in the schooling pass because reachability and qualification are
         // the same question: whether this person can hold this job.
         let needs = workplace.def().schooling;
+        // **Whether getting here means being out in the dark.** A place running
+        // more than a day shift needs a lit way in or a seat on something, and
+        // that is the join between the roster and the street lamps: without it
+        // lighting a road would be a decoration nothing ever read.
+        let dark = workplace.works_after_dark();
 
         // Rank: walkers first, then by journey time, then by id.
         let mut candidates: Vec<(u8, f64, CitizenId, Commute)> = available
             .iter()
             .filter(|&&(_, _, taught)| taught >= needs)
             .filter_map(|&(id, home, _)| {
-                let commute = transport::reach_by(home, workplace.centre, ways, &services)?;
+                let commute = transport::reach_at(home, workplace.centre, ways, &services, dark)?;
                 let rank = match commute.mode {
                     Mode::Foot => 0,
                     Mode::Ride(_) => 1,

@@ -82,6 +82,14 @@ pub enum Command {
         from: Point,
         to: Point,
         grade: Grade,
+        /// Build it with street lighting.
+        ///
+        /// **A variant of the road rather than something you place**, which is
+        /// the whole design: nobody wants to site four hundred lamp posts. It
+        /// is refused on any grade but paved, it adds steel, electronics and
+        /// builder-days by the kilometre, and the finished lamps draw off the
+        /// grid like any other consumer.
+        lamps: bool,
     },
 
     /// Order a power line or a heat main.

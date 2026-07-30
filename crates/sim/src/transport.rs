@@ -172,6 +172,63 @@ pub fn reach(home: Point, work: Point, roads: &Network) -> Option<Commute> {
 /// which is the only ordering that does not amount to the simulation deciding
 /// who deserves the metro.
 pub fn reach_by(home: Point, work: Point, ways: Ways<'_>, services: &[Service]) -> Option<Commute> {
+    reach_at(home, work, ways, services, false)
+}
+
+/// How far somebody may walk to a shift that starts or ends in the dark, when
+/// the way there is not lit.
+///
+/// **Not zero, and that matters.** Nobody needs a street lamp to cross the yard
+/// to the works next door, and a rule that said otherwise would make the first
+/// night shift in a republic impossible rather than expensive. What it does say
+/// is that walking two kilometres across an unlit field at four in the morning
+/// is not a commute anybody makes.
+pub const NIGHT_WALK: Metres = Metres(400.0);
+
+/// [`reach_by`], for a workplace whose roster reaches into the dark.
+///
+/// **This is what makes street lighting a mechanic rather than a decoration.**
+/// Three rules, and each is the honest physical answer:
+///
+/// - **A ride is a ride whatever the hour.** A bus, a tram and a train are lit
+///   and they go where they go; the passenger is not the one out in the dark.
+///   So a republic can answer the night with lamps *or* with a bus service, and
+///   both cost.
+/// - **A short walk is always fine.** Up to [`NIGHT_WALK`], which is roughly
+///   "the estate the works is on".
+/// - **Beyond that, the whole route must be lit.** Not "the quickest route
+///   happens to be lit" — the search only ever traverses lit road, so a longer
+///   lit way round beats a shorter dark one, which is exactly the position a
+///   republic that has just lit its main street is in.
+pub fn reach_at(
+    home: Point,
+    work: Point,
+    ways: Ways<'_>,
+    services: &[Service],
+    in_the_dark: bool,
+) -> Option<Commute> {
+    if in_the_dark {
+        let straight = home.distance_to(work);
+        if straight.0 <= NIGHT_WALK.0 {
+            return Some(Commute::on_foot(straight));
+        }
+        if let Some(lit) = lit_walk(home, work, ways.roads) {
+            return Some(lit);
+        }
+        // No lamps and too far to walk in the dark. A seat is the other answer,
+        // and the ranking below is unchanged — which is the whole point.
+        let mut ranked: Vec<&Service> = services.iter().filter(|s| s.seats > 0).collect();
+        ranked.sort_by(|a, b| {
+            b.medium
+                .commercial_speed()
+                .as_mps()
+                .total_cmp(&a.medium.commercial_speed().as_mps())
+                .then_with(|| a.medium.cmp(&b.medium))
+        });
+        return ranked
+            .into_iter()
+            .find_map(|service| ride_on(home, work, ways.of(service.medium), service.medium));
+    }
     let straight = crate::citizen::commute_distance(home, work, ways.roads);
     if straight.0 <= MAX_WALK.0 {
         return Some(Commute::on_foot(straight));
@@ -187,6 +244,23 @@ pub fn reach_by(home: Point, work: Point, ways: Ways<'_>, services: &[Service]) 
     ranked
         .into_iter()
         .find_map(|service| ride_on(home, work, ways.of(service.medium), service.medium))
+}
+
+/// A walk to work along lit road only, or `None` if there is not one inside the
+/// ordinary walking bound.
+///
+/// The two ends still have to be within [`crate::citizen::ROAD_ACCESS`] of a
+/// junction, and the last few metres off the road at either end are counted the
+/// way the daytime route counts them — somebody walking from a lit street to a
+/// door thirty metres away is not lost in the dark.
+fn lit_walk(home: Point, work: Point, roads: &Network) -> Option<Commute> {
+    let a = roads.nearest_node(home, crate::citizen::ROAD_ACCESS)?;
+    let b = roads.nearest_node(work, crate::citizen::ROAD_ACCESS)?;
+    let route = roads.route_where(a, b, |segment| segment.is_lit())?;
+    let distance = roads.position_of(a)?.distance_to(home)
+        + route.distance
+        + roads.position_of(b)?.distance_to(work);
+    (distance.0 <= MAX_WALK.0).then(|| Commute::on_foot(distance))
 }
 
 /// One passenger service the republic runs today: the way it rides and how

@@ -760,6 +760,7 @@ impl World {
         from: Point,
         to: Point,
         grade: Grade,
+        lamps: bool,
     ) -> Result<RoadSiteId, RoadError> {
         for end in [from, to] {
             if !self
@@ -784,7 +785,7 @@ impl World {
         // now", and the construction system breaks the tie in the buildings'
         // favour because the building with that number was ordered first.
         let ordered = self.buildings.commissioned();
-        self.roadworks.order(from, to, grade, ordered)
+        self.roadworks.order(from, to, grade, lamps, ordered)
     }
 
     /// Order a power line or a heat main between two points.
@@ -1025,8 +1026,13 @@ impl World {
                 None => Err(Refused::NoCrewThere),
             },
 
-            Command::OrderRoad { from, to, grade } => self
-                .order_road(from, to, grade)
+            Command::OrderRoad {
+                from,
+                to,
+                grade,
+                lamps,
+            } => self
+                .order_road(from, to, grade, lamps)
                 .map(Done::Ordered)
                 .map_err(Refused::Road),
 
@@ -1250,6 +1256,27 @@ impl World {
     }
 
     // ---- Command helpers ----------------------------------------------------
+
+    /// Lay a short lit street through a town, finished, for a capture run.
+    ///
+    /// **Not a player action, and it is here rather than behind the `fixtures`
+    /// feature for one reason: what it exists to serve is a picture.** Street
+    /// lighting needs paved road, paved needs asphalt, and asphalt is four
+    /// buildings deep in a chain no fixture has built — so a screenshot run
+    /// would never render a lamp, and the two geometry bugs this project has
+    /// actually shipped (a map wound inside out, a camera aimed at a corner)
+    /// were both invisible to every number and visible in one frame.
+    ///
+    /// It is paired with [`crate::scenario::town`], which is itself a fixture,
+    /// and nothing that founds a real republic calls either.
+    pub fn lay_demo_street(&mut self, centre: Point) {
+        let to = Point::new(centre.x + Metres(500.0), centre.y);
+        if let Ok(id) = self.order_road(centre, to, Grade::Paved, true)
+            && let Some(site) = self.roadworks.remove(id)
+        {
+            crate::roadworks::open(&mut self.roads, &site);
+        }
+    }
 
     /// Everything the player has done, in order.
     pub fn journal(&self) -> &Journal {
@@ -2165,6 +2192,7 @@ mod tests {
                     from: at(300.0, 300.0),
                     to: at(700.0, 300.0),
                     grade: Grade::Dirt,
+                    lamps: false,
                 },
             ),
             (40, Command::RemoveTradeRule { index: 0 }),

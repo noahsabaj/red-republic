@@ -1254,6 +1254,20 @@ impl Building {
         (f64::from(self.staff) / f64::from(jobs)).clamp(0.0, 1.0)
     }
 
+    /// Whether somebody working here travels in the dark.
+    ///
+    /// **A threshold rather than a daylight model, and that is deliberate.** A
+    /// working period longer than this cannot fit inside daylight in any climate
+    /// the republic is posted to — two shifts is sixteen hours and a single long
+    /// one is twelve or more — so no calendar, latitude or sunrise table is
+    /// needed to answer the only question the labour pass actually asks. A place
+    /// running one ordinary day shift never travels in the dark, which is what
+    /// keeps street lighting a thing a republic grows into rather than a tax on
+    /// the opening.
+    pub fn works_after_dark(&self) -> bool {
+        self.hours_covered() > crate::shifts::DAYLIGHT_HOURS
+    }
+
     /// How much work this place does today, where `1.0` is one fully-staffed
     /// standard shift — what every authored rate describes.
     ///

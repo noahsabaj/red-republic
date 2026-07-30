@@ -136,6 +136,14 @@ var _build_kind := -1
 var _build_market := -1
 ## The translucent box that follows the cursor while placing.
 var _ghost: MeshInstance3D = null
+## Laying a way: the grade in hand, whether it takes lamps, and where the first
+## click landed. A road is two points rather than one, so it is its own mode
+## beside the building ghost rather than a shape the ghost can take.
+var _way_grade := -1
+var _way_lamps := false
+var _way_from := Vector3.ZERO
+var _way_started := false
+var _way_ghost: MeshInstance3D = null
 
 
 func _ready() -> void:
@@ -220,6 +228,7 @@ func _found_default() -> void:
 		_check_settings()
 		_check_building()
 		_check_labour()
+		_check_road()
 		get_tree().quit()
 
 
@@ -277,6 +286,43 @@ func _check_labour() -> void:
 		return
 	var _restore := republic.set_national_shift_hours(was)
 	print("labour check ok: the working day is the republic's to set")
+
+
+## Lay a road, and check the lamp rule refuses what it should.
+##
+## A road was orderable from the simulation and from nowhere else for six
+## milestones — the binding existed and no `.gd` file called it. On a map that
+## starts empty that is the difference between a republic and a set of buildings
+## nothing can reach, so it gets a line in the check that CI runs.
+func _check_road() -> void:
+	var centre := republic.map_extent() * 0.5
+	var before := republic.road_length_km()
+	# Dirt, because a founded republic has no gravel and no asphalt, and this is
+	# a check that the order goes through rather than that the crew finish it.
+	var why := "nowhere tried"
+	for ring in 8:
+		var a: float = centre + float(ring) * 120.0
+		why = String(republic.order_way(0, a, a, a + 600.0, a, false))
+		if why == "":
+			break
+	if why != "":
+		printerr("road check FAILED: %s" % why)
+		return
+	if republic.road_site_count() < 1:
+		printerr("road check FAILED: the order was accepted and no site appeared")
+		return
+	# And the refusal that makes lamps a paved-only thing. A dirt track with
+	# street lighting has to come back with a sentence, not a road.
+	if String(republic.order_way(0, centre, centre, centre + 600.0, centre, true)) == "":
+		printerr("road check FAILED: a dirt track was given street lamps")
+		return
+	# The *site* count, not the network length: nothing routes over a road until
+	# the crew have finished it, so a freshly ordered road adds zero kilometres
+	# of drivable way and saying otherwise would be reporting a road that is not
+	# there yet.
+	print("road check ok: %d way(s) ordered from %.1f km of road, and lamps stay on the tarmac" % [
+		republic.road_site_count(), before
+	])
 
 
 ## Write settings, read them back through a fresh store, and check they survived.
@@ -452,6 +498,7 @@ func _connect_screens() -> void:
 	pause_menu.radio_pressed.connect(func(): _open_stacked(Screen.RADIO, Screen.PAUSED))
 	pause_menu.abandon_pressed.connect(_on_abandon)
 	build_menu.chose.connect(_begin_placement)
+	build_menu.chose_way.connect(_begin_way)
 	build_menu.closed.connect(func(): _set_screen(Screen.PLAYING))
 	labour_screen.closed.connect(func(): _set_screen(Screen.PLAYING))
 
@@ -614,6 +661,15 @@ func _open_named_screen(name: String) -> void:
 			# capture would not be checking.
 			_found_default()
 			build_menu.open(republic)
+		"town":
+			# Not a screen: the map, with the fixture town standing on it. The
+			# only way a capture ever sees buildings, a lit street or lamp
+			# geometry, because a founded republic is an empty field.
+			_found_default()
+			republic.found_fixture_town(143)
+			republic.advance_days(2)
+			_enter_republic()
+			_set_screen(Screen.PLAYING)
 		"labour":
 			# Needs a republic with workplaces standing in it: on a blank map the
 			# table under the two policy controls is empty, and a capture of a
@@ -644,6 +700,7 @@ func _apply_interface_scale() -> void:
 func _process(delta: float) -> void:
 	if _screen == Screen.PLAYING:
 		_update_ghost()
+		_update_way()
 		_refresh_buildings()
 		_refresh_roads()
 		_refresh_lines()
@@ -784,6 +841,16 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 
+	if _way_grade >= 0 and event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			_click_way()
+			get_viewport().set_input_as_handled()
+			return
+		if event.button_index == MOUSE_BUTTON_RIGHT:
+			_cancel_way()
+			get_viewport().set_input_as_handled()
+			return
+
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 
@@ -795,6 +862,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		# the game once there is nothing in hand.
 		if _build_kind >= 0:
 			_cancel_placement()
+			return
+		if _way_grade >= 0:
+			_cancel_way()
 			return
 		match _screen:
 			Screen.PLAYING:
@@ -1310,12 +1380,24 @@ func _refresh_roads() -> void:
 	# and colour here because they differ in what a lorry can do on them, and
 	# that has to be visible without opening a panel.
 	var flat: PackedFloat32Array = republic.road_segments()
-	var stride := 7
+	var stride := 8
 	var count := flat.size() / stride
-	if count == _roads_shown:
+	# **The count is not enough on its own any more.** Lamps go out when the
+	# grid runs short, which changes nothing about how many segments there are —
+	# so a signature over the lamp column rides along, and a town going dark
+	# redraws.
+	var signature := 0
+	var k := stride - 1
+	while k < flat.size():
+		signature = signature * 3 + int(flat[k])
+		k += stride
+	var stamp := count * 7919 + signature
+	if stamp == _roads_shown:
 		return
-	_roads_shown = count
+	_roads_shown = stamp
 	var mesh := ImmediateMesh.new()
+	var lamps: Array[Vector3] = []
+	var burning: Array[bool] = []
 	if count > 0:
 		var mat := StandardMaterial3D.new()
 		mat.vertex_color_use_as_albedo = true
@@ -1326,6 +1408,7 @@ func _refresh_roads() -> void:
 			var a := Vector3(flat[o], flat[o + 1], flat[o + 2])
 			var b := Vector3(flat[o + 3], flat[o + 4], flat[o + 5])
 			var kph := flat[o + 6]
+			var lit := int(flat[o + 7])
 			var along := b - a
 			along.y = 0.0
 			if along.length() < 0.01:
@@ -1336,6 +1419,19 @@ func _refresh_roads() -> void:
 			var half := lerpf(2.6, 4.4, t)
 			var tone := _look.road_dirt.lerp(_look.road_paved, t)
 			var side := along.normalized().cross(Vector3.UP).normalized() * half
+			if lit > 0:
+				# Kerbed street, a shade paler than the tarmac beside it, and
+				# lamp posts down one side. Placed by the renderer rather than
+				# by the player: a lit road is a variant of the road, not four
+				# hundred things to site.
+				tone = tone.lerp(Color(0.46, 0.46, 0.45), 0.35)
+				var run := along.length()
+				var spacing := 34.0
+				var posts := maxi(1, int(run / spacing))
+				for post in posts:
+					var f := (float(post) + 0.5) / float(posts)
+					lamps.append(a.lerp(b, f) + side.normalized() * (half + 1.4))
+					burning.append(lit > 1)
 			# Lifted clear of the ground so it does not z-fight the terrain.
 			var lift := Vector3(0.0, 0.35, 0.0)
 			var p0 := a - side + lift
@@ -1351,7 +1447,57 @@ func _refresh_roads() -> void:
 				mesh.surface_set_color(tone)
 				mesh.surface_add_vertex(v)
 		mesh.surface_end()
+	_draw_lamps(mesh, lamps, burning)
 	roads_node.mesh = mesh
+
+
+## Lamp posts, as a second surface on the road mesh.
+##
+## **Emissive geometry rather than `OmniLight3D` nodes**, and that is a measured
+## decision rather than a shortcut: a town has hundreds of these, and hundreds of
+## shadow-casting point lights is the one thing in the night work that could
+## break the frame target outright. A glowing head over a lit street reads
+## correctly at the distance this camera actually sits at, and it costs two
+## triangles.
+func _draw_lamps(mesh: ImmediateMesh, at: Array[Vector3], burning: Array[bool]) -> void:
+	if at.is_empty():
+		return
+	var post_mat := StandardMaterial3D.new()
+	post_mat.vertex_color_use_as_albedo = true
+	post_mat.roughness = 0.7
+	post_mat.emission_enabled = true
+	post_mat.emission = Color(1.0, 0.86, 0.62)
+	# Scaled by vertex colour: a dark lamp writes black here and glows not at
+	# all, which is what lets one material serve both states.
+	post_mat.emission_operator = BaseMaterial3D.EMISSION_OP_MULTIPLY
+	mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, post_mat)
+	for i in at.size():
+		var base := at[i]
+		var head := base + Vector3(0.0, 7.0, 0.0)
+		var tone := Color(0.34, 0.34, 0.33)
+		var glow := Color(1.0, 0.88, 0.66) if burning[i] else Color(0.20, 0.20, 0.21)
+		# The column, as a thin cross of two quads so it reads from any bearing.
+		# Typed, because an untyped Array literal yields Variant and every
+		# expression built from one stops being inferrable — the same parse
+		# error the Republic node was causing, from a different direction.
+		for axis: Vector3 in [Vector3(0.42, 0.0, 0.0), Vector3(0.0, 0.0, 0.42)]:
+			var p0 := base - axis
+			var p1 := base + axis
+			var p2 := head + axis
+			var p3 := head - axis
+			for v in [p0, p1, p2, p0, p2, p3]:
+				mesh.surface_set_color(tone)
+				mesh.surface_add_vertex(v)
+		# The lantern: a small horizontal quad that carries the glow.
+		var r := 0.9
+		var q0 := head + Vector3(-r, 0.0, -r)
+		var q1 := head + Vector3(r, 0.0, -r)
+		var q2 := head + Vector3(r, 0.0, r)
+		var q3 := head + Vector3(-r, 0.0, r)
+		for v in [q0, q3, q2, q0, q2, q1]:
+			mesh.surface_set_color(glow)
+			mesh.surface_add_vertex(v)
+	mesh.surface_end()
 
 
 ## Power lines and heat mains, drawn as thin ribbons above the ground.
@@ -1644,6 +1790,106 @@ func _commit_placement() -> void:
 	# trips back to the menu.
 	_buildings_shown = -1
 	hud.set_placing(String(republic.building_kind_name(_build_kind)), "")
+
+
+## Start laying a way: click once for each end.
+##
+## **A road was as unbuildable as a building was before the build menu existed.**
+## `order_way` has been on the shell since M6 and no `.gd` file ever called it,
+## which on a map that now starts empty means a republic could put up a factory
+## and never connect it to anything.
+func _begin_way(grade: int, lamps: bool) -> void:
+	_cancel_placement()
+	_way_grade = grade
+	_way_lamps = lamps
+	_way_started = false
+	_set_screen(Screen.PLAYING)
+	if _way_ghost == null:
+		_way_ghost = MeshInstance3D.new()
+		var mat := StandardMaterial3D.new()
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.vertex_color_use_as_albedo = true
+		_way_ghost.material_override = mat
+		add_child(_way_ghost)
+	_way_ghost.visible = true
+
+
+func _cancel_way() -> void:
+	_way_grade = -1
+	_way_started = false
+	if _way_ghost != null:
+		_way_ghost.visible = false
+	hud.set_placing("", "")
+
+
+## First click sets the near end, second orders the way and starts the next one
+## from where this ended -- so a chain of road is a chain of clicks.
+func _click_way() -> void:
+	var at := _cursor_ground()
+	if not _way_started:
+		_way_from = at
+		_way_started = true
+		return
+	var why := String(
+		republic.order_way(_way_grade, _way_from.x, _way_from.z, at.x, at.z, _way_lamps)
+	)
+	hud.set_placing(_way_label(), why)
+	if why == "":
+		_roads_shown = -1
+		_way_from = at
+
+
+func _way_label() -> String:
+	var names := republic.grade_names()
+	var name := String(names[_way_grade]) if _way_grade < names.size() else "way"
+	return "%s%s" % [name, " with lamps" if _way_lamps else ""]
+
+
+## The rubber band between the first click and the cursor.
+##
+## Drawn rather than described, because the whole question a player is asking
+## while laying a road is "does this line go where I think it does" -- and on
+## ground with relief in it, an unlit line at a fixed height would answer wrongly.
+func _update_way() -> void:
+	if _way_grade < 0 or _way_ghost == null:
+		return
+	var at := _cursor_ground()
+	if not _way_started:
+		hud.set_placing(_way_label(), "click the near end")
+		_way_ghost.mesh = null
+		return
+	var mesh := ImmediateMesh.new()
+	var along := at - _way_from
+	along.y = 0.0
+	if along.length() > 0.5:
+		var side := along.normalized().cross(Vector3.UP).normalized() * 3.5
+		var lift := Vector3(0.0, 0.6, 0.0)
+		var tone := Color(0.45, 0.85, 0.5, 0.5)
+		mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, null)
+		# Stepped along the ground rather than a single quad, so the band follows
+		# the relief it is being drawn over.
+		var steps := clampi(int(along.length() / 40.0), 1, 64)
+		for i in steps:
+			var t0 := float(i) / float(steps)
+			var t1 := float(i + 1) / float(steps)
+			var a := _way_from.lerp(at, t0)
+			var b := _way_from.lerp(at, t1)
+			a.y = _ground_height(a.x, a.z)
+			b.y = _ground_height(b.x, b.z)
+			var p0 := a - side + lift
+			var p1 := a + side + lift
+			var p2 := b + side + lift
+			var p3 := b - side + lift
+			for v in [p0, p3, p2, p0, p2, p1]:
+				mesh.surface_set_color(tone)
+				mesh.surface_add_vertex(v)
+		mesh.surface_end()
+	_way_ghost.mesh = mesh
+	hud.set_placing(
+		_way_label(),
+		"%.0f m  ·  click the far end, right click or esc to stop" % _way_from.distance_to(at)
+	)
 
 
 func _ground_height(x: float, z: float) -> float:

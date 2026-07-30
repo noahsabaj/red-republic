@@ -112,6 +112,7 @@ fn main() {
             from: base.centre,
             to: crossing,
             grade: red_republic_sim::roadworks::Grade::Dirt,
+            lamps: false,
         }) {
             Ok(_) => println!(
                 "ordered a dirt track to the crossing: {:.1} km",

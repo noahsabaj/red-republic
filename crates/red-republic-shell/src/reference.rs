@@ -141,6 +141,17 @@ fn playing(push: &mut impl FnMut(String)) {
             .into(),
     );
 
+    push(">The dark is an obstacle you build against".into());
+    push(
+        ".A shift that starts or ends in the dark needs a lit way to work or a \
+         seat on something. Street lighting is a variant of paved road rather \
+         than something you place: it takes materials and builder-days by the \
+         kilometre and it draws off the grid, so a lit street wants a \
+         transformer in reach and a republic short of power puts its lamps out \
+         first. A bus is the other answer, and it costs fuel instead."
+            .into(),
+    );
+
     push(">Roads are preferred, never required".into());
     push(
         ".A vehicle costs the road route against the open-ground straight line and \

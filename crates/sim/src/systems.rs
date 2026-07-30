@@ -58,6 +58,13 @@ pub enum Mutation {
     Powered { building: BuildingId, on: bool },
     /// Whether the boilers could reach it.
     Heated { building: BuildingId, on: bool },
+    /// Which stretches of street are lit tonight.
+    ///
+    /// A census like [`Mutation::Morale`] rather than one mutation per segment,
+    /// and for the same reason: every lit segment is re-answered every tick, so
+    /// several hundred separate mutations would be a lot of machinery to express
+    /// one pass. Carries only the segments that have lamps at all.
+    Lamps { segments: Vec<(usize, bool)> },
     /// Ore out of the ground and into a bin. One kind, not two: the deposit
     /// draw and the bin fill are one transaction and must never land apart.
     Extract {
@@ -547,6 +554,7 @@ pub enum MutationKind {
     DefaultOnLoan,
     Wages,
     Contracted,
+    Lamps,
     Content,
     Morale,
     Schooling,
@@ -569,6 +577,7 @@ impl Mutation {
     pub fn kind(&self) -> MutationKind {
         match self {
             Mutation::Staff { .. } => MutationKind::Staff,
+            Mutation::Lamps { .. } => MutationKind::Lamps,
             Mutation::Powered { .. } => MutationKind::Powered,
             Mutation::Heated { .. } => MutationKind::Heated,
             Mutation::Extract { .. } => MutationKind::Extract,
@@ -636,7 +645,10 @@ impl Mutation {
 /// first — a write-set that has quietly become a superset stops constraining
 /// anything, and it does so silently.
 pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
-    ("power", &[MutationKind::Powered]),
+    // Two kinds, and they are one pass: a Transformer Station's grid decides
+    // both whether a factory runs and whether the street outside it is lit, and
+    // splitting them would mean asking the same question twice with two answers.
+    ("power", &[MutationKind::Powered, MutationKind::Lamps]),
     // One kind, because a contracted day's work and the bill for it are one
     // transaction — see `Mutation::Contracted`.
     ("contracting", &[MutationKind::Contracted]),
@@ -794,6 +806,11 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
             &Mutation::Powered { building, on } => {
                 if let Some(b) = world.buildings.get_mut(building) {
                     b.powered = on;
+                }
+            }
+            Mutation::Lamps { segments } => {
+                for &(segment, on) in segments {
+                    world.roads.set_alight(segment, on);
                 }
             }
             &Mutation::Heated { building, on } => {
@@ -1705,6 +1722,23 @@ pub fn power(world: &World) -> Vec<Mutation> {
         })
         .collect();
 
+    // **The nearest station in reach of a point, and through it its grid.**
+    // Written once because two different consumers ask it now: a building, and
+    // a lit stretch of street. A lamp is wired to a substation exactly as a
+    // factory is, so it is the same query and must stay the same answer.
+    let feeder = |at: Point| -> Option<u32> {
+        stations
+            .iter()
+            .filter(|(s, _)| s.distance_to(at).0 <= TRANSFORMER_RANGE.0)
+            .min_by(|(a, na), (c, nc)| {
+                a.distance_to(at)
+                    .0
+                    .total_cmp(&c.distance_to(at).0)
+                    .then_with(|| na.cmp(nc))
+            })
+            .map(|(_, n)| *n)
+    };
+
     let mut out = Vec::new();
     let mut consumers: Vec<_> = world
         .buildings
@@ -1716,25 +1750,42 @@ pub fn power(world: &World) -> Vec<Mutation> {
 
     for b in consumers {
         let draw = b.def().power_draw;
-        // The nearest station in reach, and through it the network it is on.
-        let network = stations
-            .iter()
-            .filter(|(at, _)| at.distance_to(b.centre).0 <= TRANSFORMER_RANGE.0)
-            .min_by(|(a, na), (c, nc)| {
-                a.distance_to(b.centre)
-                    .0
-                    .total_cmp(&c.distance_to(b.centre).0)
-                    .then_with(|| na.cmp(nc))
-            })
-            .map(|(_, n)| *n);
-        let on = match network.and_then(|n| supply.get_mut(&n).map(|s| (n, s))) {
-            Some((_, s)) if s.drawn + draw <= s.available => {
+        let on = match feeder(b.centre).and_then(|n| supply.get_mut(&n)) {
+            Some(s) if s.drawn + draw <= s.available => {
                 s.drawn += draw;
                 true
             }
             _ => false,
         };
         out.push(Mutation::Powered { building: b.id, on });
+    }
+
+    // **The streets are served last, and that is a decision rather than an
+    // accident of ordering.** A republic short of generation should put its
+    // lamps out before it stops a factory: the works is what pays for the
+    // lamps. It is also visible — a town that goes dark at the edges is a
+    // power shortage a player can see from the camera.
+    let mut lamps = Vec::new();
+    for (index, segment) in world.roads.segments().iter().enumerate() {
+        if !segment.lamps {
+            continue;
+        }
+        let draw = crate::roadworks::LAMP_MW_PER_KM * segment.length.as_km();
+        // The middle of the stretch, because that is what a substation has to
+        // reach — a segment is at most `JUNCTION_SPACING` long, so its midpoint
+        // is never far from either end.
+        let midpoint = world.roads.midpoint_of(index);
+        let on = match midpoint.and_then(feeder).and_then(|n| supply.get_mut(&n)) {
+            Some(s) if s.drawn + draw <= s.available => {
+                s.drawn += draw;
+                true
+            }
+            _ => false,
+        };
+        lamps.push((index, on));
+    }
+    if !lamps.is_empty() {
+        out.push(Mutation::Lamps { segments: lamps });
     }
     out
 }
@@ -6728,6 +6779,140 @@ mod tests {
         }
     }
 
+    /// A night shift needs a lit way to work, and the lamps need a grid.
+    ///
+    /// **This is the join, and without it street lighting is decoration.** The
+    /// same republic three ways, differing only in the road between the estate
+    /// and the works: unlit, lit but with nothing to power it, and lit off a
+    /// live grid. Only the third staffs its night shift.
+    #[test]
+    fn a_night_shift_needs_a_lit_road_and_the_lamps_need_a_grid() {
+        use crate::network::default_road_speed;
+        use crate::utility::Utility;
+
+        // Far enough apart that nobody walks it in the dark, near enough that
+        // the day shift walks it easily.
+        let estate = at(1_000.0, 1_000.0);
+        let gate = at(1_050.0, 1_000.0);
+        let yard = at(2_150.0, 1_000.0);
+        let works_at = at(2_200.0, 1_000.0);
+
+        let build = |lamps: bool, powered: bool| {
+            let mut w = bare();
+            let works = place(&mut w, BuildingKind::Sawmill, works_at);
+            // Enough for the mill's two crews AND the whole power chain. The
+            // labour pass fills in commissioning order, so twenty people left
+            // the transformer station -- last in the queue -- with nobody in
+            // it, and an unstaffed substation feeds no lamps.
+            staff_up(&mut w, estate, 60);
+            let b = w.buildings.get_mut(works).unwrap();
+            b.stock.add(Resource::Wood, Tonnes(400.0));
+
+            let a = w.roads.add_node(gate);
+            let z = w.roads.add_node(yard);
+            w.roads.connect_lit(a, z, default_road_speed(), lamps);
+
+            if powered {
+                // A plant, a line, a substation: the whole chain, because what
+                // this test is about is that a lamp is an ordinary consumer.
+                let plant = place(&mut w, BuildingKind::PowerPlant, at(1_600.0, 1_400.0));
+                w.buildings
+                    .get_mut(plant)
+                    .unwrap()
+                    .stock
+                    .add(Resource::Coal, Tonnes(200.0));
+                let station = place(
+                    &mut w,
+                    BuildingKind::TransformerStation,
+                    at(1_600.0, 1_050.0),
+                );
+                energise(
+                    &mut w,
+                    Utility::Power,
+                    at(1_600.0, 1_400.0),
+                    at(1_600.0, 1_050.0),
+                );
+                w.utilities.attach_all(plant, at(1_600.0, 1_400.0));
+                w.utilities.attach_all(station, at(1_600.0, 1_050.0));
+            }
+
+            // Two crews, so somebody is walking home in the dark.
+            w.issue(crate::command::Command::SetShifts {
+                building: works,
+                shifts: 2,
+            })
+            .expect("a sawmill is a workplace");
+            for _ in 0..TICKS_PER_DAY * 2 {
+                w.tick();
+            }
+            (w.buildings.get(works).unwrap().staff, w)
+        };
+
+        let (dark, _) = build(false, true);
+        let (unpowered, w_unpowered) = build(true, false);
+        let (lit, w_lit) = build(true, true);
+
+        assert!(
+            w_lit.roads.lit_length().1.0 > 0.0,
+            "the grid never lit the street this test is about"
+        );
+        assert!(
+            w_unpowered.roads.lit_length().1.0 <= 0.0,
+            "lamps burned with no power station anywhere"
+        );
+        assert_eq!(
+            dark, 0,
+            "a night shift was staffed across an unlit road: {dark} turned up"
+        );
+        assert_eq!(
+            unpowered, 0,
+            "lamps nobody generates for lit the way anyway"
+        );
+        assert!(
+            lit > 0,
+            "a lit road off a live grid still could not staff a night shift"
+        );
+    }
+
+    /// And the other answer to the dark, because a rule with one answer is a
+    /// rule that only ever says no: a bus is lit and it goes where it goes.
+    #[test]
+    fn a_bus_answers_the_dark_as_well_as_a_lamp_does() {
+        use crate::network::default_road_speed;
+
+        let mut w = bare();
+        let works = place(&mut w, BuildingKind::Sawmill, at(2_200.0, 1_000.0));
+        staff_up(&mut w, at(1_000.0, 1_000.0), 20);
+        w.buildings
+            .get_mut(works)
+            .unwrap()
+            .stock
+            .add(Resource::Wood, Tonnes(400.0));
+
+        // Unlit road, and a depot with fuel and drivers to run it.
+        let a = w.roads.add_node(at(1_050.0, 1_000.0));
+        let z = w.roads.add_node(at(2_150.0, 1_000.0));
+        w.roads.connect(a, z, default_road_speed());
+        let depot = place(&mut w, BuildingKind::BusDepot, at(1_100.0, 1_100.0));
+        let d = w.buildings.get_mut(depot).unwrap();
+        d.staff = BuildingKind::BusDepot.def().workers;
+        d.stock.add(Resource::Fuel, Tonnes(40.0));
+
+        w.issue(crate::command::Command::SetShifts {
+            building: works,
+            shifts: 2,
+        })
+        .unwrap();
+        for _ in 0..TICKS_PER_DAY * 2 {
+            w.tick();
+        }
+
+        assert!(
+            w.buildings.get(works).unwrap().staff > 0,
+            "nobody could be carried to a night shift on an unlit road"
+        );
+    }
+
     /// Wear is proportional to activity, so a building nobody staffs wears
     /// nothing — the half of the rule that a fixed daily drain would get wrong.
     #[test]
@@ -8290,7 +8475,7 @@ mod tests {
 
         let ends = (at(1_400.0, 1_000.0), at(2_400.0, 1_000.0));
         let road = w
-            .order_road(ends.0, ends.1, roadworks::Grade::Gravel)
+            .order_road(ends.0, ends.1, roadworks::Grade::Gravel, false)
             .expect("flat open ground");
 
         // An ordered road is not a road. Nothing routes over it and nothing is
@@ -8367,6 +8552,7 @@ mod tests {
                     // Dirt, so the only thing deciding is the queue rather than
                     // which site happened to have its gravel first.
                     roadworks::Grade::Dirt,
+                    false,
                 )
                 .expect("flat open ground")
             };
@@ -8967,6 +9153,7 @@ mod tests {
                 at(1_500.0, 1_000.0),
                 at(2_500.0, 1_000.0),
                 roadworks::Grade::Gravel,
+                false,
             )
             .expect("flat open ground");
 
@@ -9379,10 +9566,32 @@ mod tests {
         .map(|(dx, dy)| Point::new(centre.x + Metres(dx), centre.y + Metres(dy)))
         .find(|&far| {
             world
-                .order_road(centre, far, crate::roadworks::Grade::Dirt)
+                .order_road(centre, far, crate::roadworks::Grade::Dirt, false)
                 .is_ok()
         })
         .expect("some direction out of town takes a dirt track");
+
+        // **A lit street, laid straight into the network rather than ordered.**
+        // `power` declares `Lamps` and can only emit it where lamps exist, so
+        // without one here the both-directions guard correctly reports the
+        // declaration as a superset — the fourth time this fixture has had to
+        // grow to keep a declaration honest.
+        //
+        // Opened immediately, the same shortcut the line tests take: street
+        // lighting needs paved road, paved road needs asphalt, and asphalt is
+        // four buildings deep in a chain a founded town has not built. Waiting
+        // for it through construction would mean this guard proved nothing
+        // about lamps for however many simulated years that took.
+        if let Ok(id) = world.order_road(
+            centre,
+            Point::new(centre.x + Metres(400.0), centre.y),
+            crate::roadworks::Grade::Paved,
+            true,
+        ) && let Some(site) = world.roadworks.remove(id)
+        {
+            crate::roadworks::open(&mut world.roads, &site);
+        }
+
         if let Some(site) =
             crate::scenario::find_site(&world, BuildingKind::Woodcutter, far, Metres(500.0))
         {
@@ -9521,7 +9730,7 @@ mod tests {
             // A spur onto the main road, ordered like the road itself. Both
             // ends of a spur land on a junction the main road will lay, so the
             // three roads become one network rather than three islands.
-            let _ = world.order_road(yard, join, crate::roadworks::Grade::Dirt);
+            let _ = world.order_road(yard, join, crate::roadworks::Grade::Dirt, false);
         }
 
         // A power line ordered and left to the crew, so `construction`'s
@@ -9783,6 +9992,7 @@ mod tests {
                 centre,
                 Point::new(centre.x + away, centre.y + out),
                 crate::roadworks::Grade::Dirt,
+                false,
             ) else {
                 continue;
             };
@@ -11054,12 +11264,12 @@ mod tests {
 
         let (west, east) = (at(1_800.0, 1_000.0), at(2_300.0, 1_000.0));
         assert_eq!(
-            w.order_road(west, east, Grade::Gravel),
+            w.order_road(west, east, Grade::Gravel, false),
             Err(crate::roadworks::RoadError::NeedsABridge),
             "a gravel road was laid across a river"
         );
         assert!(
-            w.order_road(west, east, Grade::Bridge).is_ok(),
+            w.order_road(west, east, Grade::Bridge, false).is_ok(),
             "a bridge could not span the river it exists for"
         );
         // And it is not merely a road with a different name: a kilometre of it
@@ -11073,8 +11283,13 @@ mod tests {
         );
         // A road that stays on one bank is unaffected.
         assert!(
-            w.order_road(at(1_000.0, 1_000.0), at(1_800.0, 1_000.0), Grade::Gravel)
-                .is_ok(),
+            w.order_road(
+                at(1_000.0, 1_000.0),
+                at(1_800.0, 1_000.0),
+                Grade::Gravel,
+                false
+            )
+            .is_ok(),
             "a road nowhere near the water was refused"
         );
     }
@@ -12129,7 +12344,7 @@ mod tests {
     /// span. Most tests here are about running a republic rather than building
     /// one; the construction of a way has its own tests.
     fn lay(world: &mut World, grade: crate::roadworks::Grade, from: Point, to: Point) {
-        let id = world.order_road(from, to, grade).expect("orderable");
+        let id = world.order_road(from, to, grade, false).expect("orderable");
         let site = world.roadworks.remove(id).expect("just ordered");
         crate::roadworks::open(world.network_for(grade), &site);
     }
@@ -13151,7 +13366,7 @@ mod tests {
             crate::roadworks::Grade::Tramway,
         ] {
             assert_eq!(
-                w.order_road(a, b, grade),
+                w.order_road(a, b, grade, false),
                 Err(crate::roadworks::RoadError::NeedsABridge),
                 "{} crossed a river for nothing",
                 grade.def().name
@@ -13163,7 +13378,7 @@ mod tests {
             crate::roadworks::Grade::MetroTunnel,
         ] {
             assert!(
-                w.order_road(a, b, grade).is_ok(),
+                w.order_road(a, b, grade, false).is_ok(),
                 "{} could not span a river",
                 grade.def().name
             );

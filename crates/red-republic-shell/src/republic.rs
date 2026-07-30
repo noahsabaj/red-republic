@@ -183,7 +183,15 @@ impl Republic {
     #[func]
     fn found_fixture_town(&mut self, citizens: i64) {
         if let Some(world) = self.world.as_mut() {
-            red_republic_sim::scenario::town(world, citizens.max(0) as usize);
+            let base = red_republic_sim::scenario::town(world, citizens.max(0) as usize);
+            // A lit street through the middle of it, opened rather than ordered.
+            // **Here so that every capture of the fixture renders lamp
+            // geometry**, which is the only way a winding or culling mistake in
+            // it gets caught — this project has shipped two of those and both
+            // were invisible to every number. Paved lit road is four buildings
+            // deep in a chain the fixture has not built, so waiting for the crew
+            // would mean no capture ever saw one.
+            world.lay_demo_street(base.centre);
         }
     }
 
@@ -1067,7 +1075,15 @@ impl Republic {
     /// Order a way of any grade — a road, a bridge or a railway. Empty string
     /// on success, or the reason it was refused.
     #[func]
-    fn order_way(&mut self, grade: i64, ax: f64, ay: f64, bx: f64, by: f64) -> GString {
+    fn order_way(
+        &mut self,
+        grade: i64,
+        ax: f64,
+        ay: f64,
+        bx: f64,
+        by: f64,
+        lamps: bool,
+    ) -> GString {
         let Some(world) = self.world.as_mut() else {
             return GString::from("no republic has been founded");
         };
@@ -1081,6 +1097,7 @@ impl Republic {
             from: Point::new(Metres(ax), Metres(ay)),
             to: Point::new(Metres(bx), Metres(by)),
             grade,
+            lamps,
         }) {
             Ok(_) => GString::from(""),
             Err(why) => GString::from(why.to_string().as_str()),
@@ -1094,6 +1111,87 @@ impl Republic {
         let mut out = PackedStringArray::new();
         for def in red_republic_sim::roadworks::GRADES {
             out.push(def.name);
+        }
+        out
+    }
+
+    /// What each grade costs and what it can do, in `GRADES` order:
+    /// `[speed_kph, builder_days_per_km, medium_index, takes_lamps]` per grade.
+    ///
+    /// `takes_lamps` is what greys out the lighting option, and it is read off
+    /// the authored table rather than decided in GDScript — a panel that made
+    /// its own rule about which roads take lamps would be a second copy of a
+    /// rule the simulation already refuses on.
+    #[func]
+    fn grade_facts(&self) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        for def in red_republic_sim::roadworks::GRADES {
+            out.push((def.speed.as_mps() * 3.6) as f32);
+            out.push(def.labour as f32);
+            out.push(
+                red_republic_sim::journey::Medium::ALL
+                    .iter()
+                    .position(|&m| m == def.carries)
+                    .unwrap_or_default() as f32,
+            );
+            out.push(if def.lamps { 1.0 } else { 0.0 });
+        }
+        out
+    }
+
+    /// How much road the republic has laid, in kilometres.
+    #[func]
+    fn road_length_km(&self) -> f64 {
+        self.world.as_ref().map_or(0.0, |w| {
+            w.network(red_republic_sim::journey::Medium::Road)
+                .total_length()
+                .as_km()
+        })
+    }
+
+    /// How many ways are ordered and not yet drivable.
+    #[func]
+    fn road_site_count(&self) -> i64 {
+        self.world
+            .as_ref()
+            .map_or(0, |w| w.roadworks().len() as i64)
+    }
+
+    /// Lit street: `[built_km, burning_km]`.
+    ///
+    /// Two numbers rather than one, because they mean different things to a
+    /// player: the first is what was paid for and the second is what is on. A
+    /// gap between them is a grid that has run short, which is a thing to fix
+    /// rather than a thing to build.
+    #[func]
+    fn lit_road_km(&self) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        if let Some(w) = &self.world {
+            let (built, alight) = w
+                .network(red_republic_sim::journey::Medium::Road)
+                .lit_length();
+            out.push(built.as_km() as f32);
+            out.push(alight.as_km() as f32);
+        }
+        out
+    }
+
+    /// What a kilometre of street lighting costs on top of the road under it:
+    /// `[builder_days, megawatts, tonnes...]` interleaved as
+    /// `[resource_index, tonnes]` after the first two.
+    #[func]
+    fn lamp_cost(&self) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        out.push(red_republic_sim::roadworks::LAMP_LABOUR as f32);
+        out.push(red_republic_sim::roadworks::LAMP_MW_PER_KM as f32);
+        for &(resource, tonnes) in red_republic_sim::roadworks::LAMP_MATERIALS {
+            out.push(
+                red_republic_sim::Resource::ALL
+                    .iter()
+                    .position(|&r| r == resource)
+                    .unwrap_or_default() as f32,
+            );
+            out.push(tonnes as f32);
         }
         out
     }

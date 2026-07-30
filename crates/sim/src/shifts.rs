@@ -66,6 +66,14 @@ pub const MIN_HOURS: f64 = 4.0;
 /// hours a second crew is the only honest way to cover the day.
 pub const MAX_HOURS: f64 = 16.0;
 
+/// The longest working period that still fits inside daylight.
+///
+/// Not a sunrise table — see [`crate::building::Building::works_after_dark`] for
+/// why one is not needed. Twelve hours is generous for a winter posting and mean
+/// for a summer one, and the answer it gates is binary, so a figure in the
+/// middle of the year is the honest one.
+pub const DAYLIGHT_HOURS: f64 = 12.0;
+
 /// How many crews one building may run. Three is the whole day at the standard
 /// length, which is the ceiling that matters.
 pub const MAX_SHIFTS: u8 = 3;
