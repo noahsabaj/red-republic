@@ -873,7 +873,11 @@ func _apply_look() -> void:
 	# Aerial perspective is what makes the far side of a 6 km map read as far
 	# away rather than as the same ground painted smaller.
 	env.fog_sky_affect = 0.18
-	env.fog_aerial_perspective = 0.7
+	# 0.7 was too much once the ground had real texture on it: aerial perspective
+	# blends the distance towards the sky, and against a bright sky it washed the
+	# far half of the map to near-white. The flat-colour ground it was tuned
+	# against had nothing to lose.
+	env.fog_aerial_perspective = 0.45
 	# No height fog. A first pass set `fog_height_density` to 0.6, which reads as
 	# a modest number and is not one -- Godot's default is 0.0, and 0.6 made the
 	# air below the reference height opaque. The frame came back as a flat pale
@@ -936,17 +940,34 @@ func _build_terrain() -> void:
 
 	# Vertex colour carries the surface kind as a one-hot channel -- red grass,
 	# green forest, blue rock, black water -- and terrain.gdshader decides what
-	# each looks like. Keeping the tones there rather than in Rust is what lets
-	# the art direction change without recompiling the simulation's renderer.
+	# each looks like. Keeping that decision there rather than in Rust is what
+	# lets the art direction change without recompiling the simulation's
+	# renderer, and it is why swapping flat colours for photographed materials
+	# needed no change on the Rust side at all.
 	var mat := ShaderMaterial.new()
 	mat.shader = load("res://terrain.gdshader")
-	mat.set_shader_parameter("grass_colour", _look.grass)
-	mat.set_shader_parameter("forest_colour", _look.forest)
-	mat.set_shader_parameter("rock_colour", _look.rock)
+	for surface in ["grass", "forest", "rock", "dirt", "shore"]:
+		mat.set_shader_parameter("%s_colour" % surface, _surface_texture(surface, "colour"))
+		mat.set_shader_parameter("%s_normal" % surface, _surface_texture(surface, "normal"))
+		mat.set_shader_parameter("%s_rough" % surface, _surface_texture(surface, "roughness"))
+	mat.set_shader_parameter("snow_colour", _surface_texture("snow", "colour"))
+	mat.set_shader_parameter("snow_normal", _surface_texture("snow", "normal"))
 	mat.set_shader_parameter("water_colour", _look.water)
 	mat.set_shader_parameter("contour_strength", _look.contour_strength)
+	mat.set_shader_parameter("map_extent", _extent)
 	_terrain_material = mat
 	terrain_node.material_override = mat
+
+
+## One CC0 surface map, imported by Godot from `godot/art/textures/`.
+##
+## The colour maps are sRGB and the normal and roughness maps are not, and
+## getting that wrong is quiet: an sRGB-decoded normal map still looks like a
+## normal map, it just lights everything at the wrong angle. Godot's importer
+## decides from the `.import` file beside each texture, which is why those are
+## committed alongside the images.
+func _surface_texture(surface: String, map: String) -> Texture2D:
+	return load("res://art/textures/%s_%s.jpg" % [surface, map])
 
 
 ## One mesh per building kind, assembled from the kit, each with its own
@@ -1378,6 +1399,20 @@ func _refresh_overlay() -> void:
 		return
 	_overlay_dirty = false
 	_overlay_day = day
+
+	# Winter on the ground rather than only in a number. `Ground::snow` has
+	# accumulated and melted since the ground model landed, and until now the
+	# only things that read it were the snow overlay and the ploughs -- so a
+	# republic under half a metre of snow was rendered in high summer green.
+	# Same rule as the boilers: the state decides, never the calendar.
+	#
+	# Daily, on the same event as the overlay, because snow does not change
+	# between frames and a shader parameter set sixty times a second to the same
+	# value is the per-tick cost this whole boundary is designed to avoid.
+	var winter: PackedFloat32Array = republic.snow()
+	if winter.size() > 0:
+		_terrain_material.set_shader_parameter("snow_amount", winter[0])
+
 	Overlays.apply(_terrain_material, republic, _overlay, _extent)
 	if _overlay == Overlays.Mode.SURVEY:
 		survey_node.mesh = Overlays.survey_mesh(republic, _ground_height)

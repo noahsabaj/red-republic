@@ -120,9 +120,13 @@ static func current() -> Look:
 	l.fog_colour = Color(0.74, 0.80, 0.86)
 	# Per metre, and the old 0.000011 gave 3.2% at three kilometres while the
 	# comment above claimed 5-15%. That is not depth, it is nothing, and it is
-	# why the far side of the map read as hard as the near side. 0.00009 puts
-	# roughly 24% at 3 km, which is a hazy but not soupy day.
-	l.fog_density = 0.00009
+	# why the far side of the map read as hard as the near side.
+	#
+	# 0.00009 was the first correction and overshot: 24% at 3 km is a genuinely
+	# hazy day, which was invisible on flat-colour ground and drowned the far
+	# half of the map once the ground had detail worth seeing. 0.00005 is about
+	# 14% at 3 km — depth, with the distance still legible.
+	l.fog_density = 0.00005
 	l.grass = Color(0.42, 0.48, 0.35)
 	l.forest = Color(0.24, 0.34, 0.26)
 	l.rock = Color(0.55, 0.55, 0.53)
