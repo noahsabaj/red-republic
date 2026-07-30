@@ -176,21 +176,19 @@ func _found_default() -> void:
 	# worth a CI job's time.
 	if _check_only:
 		# Which artifact is this? A packaged build is a genuinely different thing
-		# from a development one -- optimised, no debug prints, vsync on -- and
-		# every one of those differences is a project setting or a cargo profile
-		# that can silently fail to apply. The packaging job asserts on this line,
-		# so "the shipped build turns vsync back on" is a tested claim rather than
-		# a comment in project.godot hoping somebody did it.
+		# from a development one -- a different cargo profile, different Godot
+		# export templates, no debug prints -- and an export that silently produced
+		# the development one would look exactly like success. The packaging job
+		# asserts on this line, which is the only thing in the output that can tell
+		# them apart.
 		#
-		# `get_setting_with_override` and not `get_setting`: only the former
-		# resolves the `.template_release` feature tag, and the latter would report
-		# the development default from inside a correctly exported build. Read off
-		# ProjectSettings rather than DisplayServer because this runs headless,
-		# where there is no window to ask.
-		print("build %s: vsync %s, debug %s" % [
+		# It deliberately reports nothing else. An earlier version printed the
+		# resolved vsync project setting too, which was worse than useless: the
+		# settings store applies its own vsync a few lines after this runs, so the
+		# number named a value nothing downstream reads.
+		print("build %s: %s" % [
 			Build.semver(),
-			ProjectSettings.get_setting_with_override("display/window/vsync/vsync_mode"),
-			"yes" if OS.is_debug_build() else "no",
+			"development" if OS.is_debug_build() else "release",
 		])
 		_check_saves()
 		get_tree().quit()

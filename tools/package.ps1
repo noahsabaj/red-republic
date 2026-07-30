@@ -227,13 +227,12 @@ Write-Host ($check -split "`n" | Where-Object { $_ -match 'Initialize godot-rust
 
 if ($check -match 'SCRIPT ERROR|Assertion failed|unauthored') { Die 'the exported build did not load cleanly' }
 if ($check -notmatch 'save check ok') { Die 'the exported build cannot round-trip its own save' }
-# vsync 1 and debug no are what make this the shipped artifact rather than a
-# development one that happens to live in dist/. A debug export reports
-# `vsync 0, debug yes`, which is the negative control this assertion was
-# calibrated against.
-if ($check -notmatch "build $([regex]::Escape($Version)): vsync 1, debug no") {
+# `release` is what makes this the shipped artifact rather than a development
+# build that happens to live in dist/. A debug export reports `development`,
+# which is the negative control this assertion was calibrated against.
+if ($check -notmatch "build $([regex]::Escape($Version)): release") {
     Write-Host $check
-    Die "the exported build does not identify as a shipped $Version build (expected 'build $Version`: vsync 1, debug no')"
+    Die "the exported build does not identify as a shipped $Version build (expected 'build $Version`: release')"
 }
 
 if ($NoInstaller) {

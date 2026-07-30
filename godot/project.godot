@@ -34,17 +34,18 @@ window/size/viewport_height=900
 ; With it on, every frame measurement comes back as exactly 16.67 ms whatever
 ; the load, so a benchmark reports a healthy number for a scene that is
 ; drowning. Measured on this machine; it silently invalidated a whole probe run
-; before anyone noticed. The shipped build turns it back on.
-window/vsync/vsync_mode=0
-; And this is the line that actually turns it back on, rather than the sentence
-; above promising somebody would. `template_release` is the feature tag an
-; exported release build carries and neither the editor nor a debug export does,
-; so measurement keeps its honest default and a player gets a game that does not
-; render a thousand frames a second to display sixty.
+; before anyone noticed.
 ;
-; It is asserted rather than trusted: `--check` prints the mode it is actually
-; running at, and the packaging job fails if the shipped build comes back at 0.
-window/vsync/vsync_mode.template_release=1
+; This value decides only the first moments of a run, and it is NOT what a player
+; ends up with. `settings_store.gd` owns that: `display/vsync` defaults true
+; there, and `main.gd` calls `apply()` at startup, which sets the mode on the
+; DisplayServer unconditionally. So this line is the development default, the
+; store holds the shipped one, and a player's vsync is decided in exactly one
+; place.
+window/vsync/vsync_mode=0
+; A `.template_release` override sat here and was removed: it set a value that
+; `apply()` overwrites a moment later, so it was a second copy of a shipped
+; default that only looked like it did something.
 
 [rendering]
 

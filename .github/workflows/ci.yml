@@ -257,9 +257,9 @@ jobs:
           if ($check -notmatch 'save check ok') {
             throw "the installed game cannot round-trip its own save"
           }
-          # vsync on and no debug marker are what distinguish the shipped artifact
-          # from a development build that happens to have been copied here.
-          if ($check -notmatch 'vsync 1, debug no') {
+          # `release` is what distinguishes the shipped artifact from a
+          # development build that happens to have been copied here.
+          if ($check -notmatch 'build \d+\.\d+\.\d+: release') {
             throw "the installed game does not identify as a shipped build"
           }
 
