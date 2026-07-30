@@ -114,11 +114,13 @@ func _ready() -> void:
 
 
 func _build_line() -> String:
-	# There is no version string anywhere in the project yet, so this says what
-	# is actually known rather than inventing a number. M13 is where a real one
-	# arrives with the installer, and a placeholder "v1.0.0" here would be
-	# exactly the placeholder string the release standard forbids.
-	return "development build"
+	# Asked of the loaded simulation binary rather than read from a setting, and
+	# that is the point: the only version number typed anywhere in this
+	# repository is `workspace.package.version` in the root Cargo.toml, and this
+	# reports the version of the DLL actually in memory. A second copy in
+	# project.godot would be a number that could disagree with the binary a
+	# player is running, which is worse than no number at all.
+	return "Red Republic %s" % Build.version()
 
 
 ## Say whether there is a republic in progress, and describe it.

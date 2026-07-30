@@ -91,9 +91,15 @@ func reset() -> void:
 		_values[row["key"]] = row["default"]
 
 
-func load_from_disk() -> void:
+## Read stored values over the defaults.
+##
+## `path` exists so `--check` can round-trip through a scratch file instead of
+## the player's own settings. Testing persistence against `PATH` would mean
+## writing over a real configuration to prove writing works, which is a bad
+## trade on the one machine where the settings are somebody's.
+func load_from_disk(path: String = PATH) -> void:
 	var file := ConfigFile.new()
-	if file.load(PATH) != OK:
+	if file.load(path) != OK:
 		# No settings file is the normal state on a first run, not an error. The
 		# defaults are already in place.
 		return
@@ -110,13 +116,13 @@ func load_from_disk() -> void:
 				_values[row["key"]] = stored
 
 
-func save_to_disk() -> void:
+func save_to_disk(path: String = PATH) -> void:
 	var file := ConfigFile.new()
 	for row in DEFAULTS:
 		var parts: PackedStringArray = String(row["key"]).split("/")
 		if parts.size() == 2:
 			file.set_value(parts[0], parts[1], _values[row["key"]])
-	file.save(PATH)
+	file.save(path)
 
 
 ## Push the display and audio settings at the engine.

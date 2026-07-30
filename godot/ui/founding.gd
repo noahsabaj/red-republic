@@ -474,7 +474,7 @@ func _write_briefing() -> void:
 	lines.append(
 		"[i]Moscow sends %d settlers and the buildings to start. There is no bus depot, "
 		% _republic.founding_settlers()
-		+ "no landfill and no hotel -- those are yours to build.[/i]"
+		+ "no landfill and no hotel — those are yours to build.[/i]"
 	)
 	_briefing.text = "\n\n".join(lines)
 
@@ -486,7 +486,7 @@ func _land_sentence(card: Dictionary) -> String:
 	if reach < 1500.0:
 		return "Coal is under the site itself."
 	if reach < 4000.0:
-		return "Coal is %.1f km out -- a road before it is a mine." % (reach / 1000.0)
+		return "Coal is %.1f km out — a road before it is a mine." % (reach / 1000.0)
 	return "Coal is %.1f km out. This is a haulage problem before it is a republic." % (
 		reach / 1000.0
 	)

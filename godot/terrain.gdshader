@@ -7,12 +7,17 @@ shader_type spatial;
 // tone. That is deliberate: it keeps what the ground looks like out of Rust, so
 // the art direction can change without recompiling the simulation's renderer.
 //
-// These tones are a working placeholder, not the chosen look. The map has about
-// 65 m of relief over 6 km, which is gentle enough that a fully saturated
-// albedo hides it completely -- the first render of this scene looked
-// perfectly flat and the ground was not. Muted tones let the lighting do its
-// job, which is also what makes the shading a usable check that the mesh
-// normals are right.
+// These values are fallbacks, not the look. `main.gd` sets all five uniforms
+// from `looks.gd` every time the terrain is built, so what a player sees is
+// whichever look is selected -- survey, the one chosen from renders of the
+// running game. They matter only where nothing drives them, which in practice
+// means the shader opened on its own in the editor.
+//
+// They are muted for the reason the chosen look is muted, and it is worth
+// keeping: the map has about 65 m of relief over 6 km, gentle enough that a
+// fully saturated albedo hides it completely. The first render of this scene
+// looked perfectly flat and the ground was not. Letting the lighting do the work
+// is also what makes the shading a usable check that the mesh normals are right.
 
 uniform vec3 grass_colour : source_color = vec3(0.35, 0.42, 0.24);
 uniform vec3 forest_colour : source_color = vec3(0.20, 0.29, 0.17);

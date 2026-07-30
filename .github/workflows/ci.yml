@@ -148,3 +148,173 @@ jobs:
             echo "::error::this build cannot round-trip its own save"
             exit 1
           fi
+          # "Settings that work" is a clause of the release standard, and looking
+          # at the screen only shows the controls exist. This is the half a player
+          # would notice: a value written on one run being there on the next.
+          if ! grep -q "^settings check ok" run.log; then
+            echo "::error::this build cannot round-trip its own settings"
+            exit 1
+          fi
+
+  # Does it install on a machine that has never heard of Rust or Godot?
+  #
+  # This is the one condition in the goal with no automatic check, and it is the
+  # one that will drift: everything else is measured, and "a stranger could
+  # install it" was attention alone. A GitHub runner is a better witness for it
+  # than the development desktop, which has Godot, Steam, Rust, the export
+  # templates and the built cdylib all sitting in the right places -- an export
+  # that quietly depended on any of those would work there and nowhere else.
+  #
+  # So: export, build the installer, install it silently, run the *installed*
+  # game, and uninstall it again. The install step is what makes the claim in
+  # CLAUDE.md a tested one rather than a sentence.
+  package:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Only the two templates a Windows x86_64 release export actually reads,
+      # plus the version.txt Godot matches them by. The full .tpz is 1.2 GB and
+      # holds every platform; caching the extracted subset instead keeps this at
+      # about 105 MB and turns every run after the first into a cache hit.
+      - name: Cache export templates
+        id: templates
+        uses: actions/cache@v4
+        with:
+          path: templates
+          key: godot-export-templates-4.7.1-stable-windows-x86_64
+
+      - name: Fetch export templates
+        if: steps.templates.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          curl -sSLo tpz.zip \
+            https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_export_templates.tpz
+          # The archive holds a single top-level templates/ directory, which is
+          # already the name this job caches under.
+          unzip -q tpz.zip
+          test -f templates/version.txt
+          find templates -type f \
+            ! -name 'version.txt' \
+            ! -name 'windows_release_x86_64.exe' \
+            ! -name 'windows_release_x86_64_console.exe' \
+            -delete
+          du -sh templates
+          ls templates
+
+      - name: Install export templates
+        shell: bash
+        run: |
+          dest="$APPDATA/Godot/export_templates/$(cat templates/version.txt)"
+          mkdir -p "$dest"
+          cp templates/* "$dest/"
+          ls "$dest"
+
+      # The editor build, pinned, from godotengine.org rather than the
+      # auto-updating Steam copy the development desktop uses.
+      - name: Fetch Godot
+        shell: bash
+        run: |
+          curl -sSLo godot.zip \
+            https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_win64.exe.zip
+          unzip -q godot.zip
+          mv Godot_v4.7.1-stable_win64.exe godot.exe
+
+      # Pinned rather than whatever the runner image happens to ship, because an
+      # installer built by a different compiler than the one this was written
+      # against is a different artifact.
+      # pwsh rather than bash, and that is not a style choice: Inno Setup's
+      # installer takes a native Windows path in /DIR, and bash's $PWD on a
+      # Windows runner is a `/d/a/...` MSYS path. Handing it one does not fail --
+      # the silent installer simply never returns, which reads as a slow download
+      # rather than a wrong argument.
+      - name: Fetch Inno Setup
+        shell: pwsh
+        run: |
+          curl.exe -sSLo is6.exe `
+            https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+          $p = Start-Process -FilePath "$PWD\is6.exe" -Wait -PassThru -ArgumentList `
+            '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/CURRENTUSER',"/DIR=$PWD\inno"
+          if ($p.ExitCode -ne 0) { throw "the Inno Setup installer exited $($p.ExitCode)" }
+          if (-not (Test-Path "$PWD\inno\ISCC.exe")) { throw "no ISCC.exe after installing Inno Setup" }
+
+      - name: Package
+        shell: pwsh
+        run: ./tools/package.ps1 -Godot "$PWD/godot.exe" -Iscc "$PWD/inno/ISCC.exe"
+
+      # The claim under test: a machine with no Rust on the PATH of the installed
+      # game, no Godot, no Steam, and no build tree can run it. Installed to a
+      # scratch directory rather than the default so the uninstall check below has
+      # somewhere unambiguous to look.
+      - name: Install it
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist/*-setup.exe | Select-Object -First 1
+          $target = "$PWD/installed"
+          $p = Start-Process -FilePath $setup.FullName -Wait -PassThru -ArgumentList `
+            '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOICONS',"/DIR=$target"
+          if ($p.ExitCode -ne 0) { throw "the installer exited $($p.ExitCode)" }
+          Get-ChildItem $target
+
+      - name: Run the installed game
+        shell: pwsh
+        run: |
+          $check = & "$PWD/installed/RedRepublic.console.exe" --headless -- --check 2>&1 | Out-String
+          Write-Host $check
+          if ($check -match 'SCRIPT ERROR|Assertion failed|unauthored') {
+            throw "the installed game did not load cleanly"
+          }
+          if ($check -notmatch 'save check ok') {
+            throw "the installed game cannot round-trip its own save"
+          }
+          # On a clean machine this is the first time settings are written at all,
+          # which is exactly the case a developer machine cannot reproduce.
+          if ($check -notmatch 'settings check ok') {
+            throw "the installed game cannot round-trip its own settings"
+          }
+          # `release` is what distinguishes the shipped artifact from a
+          # development build that happens to have been copied here.
+          if ($check -notmatch 'build \d+\.\d+\.\d+: release') {
+            throw "the installed game does not identify as a shipped build"
+          }
+
+      # An installer that cannot be cleanly removed is not finished. Checked
+      # because it is cheap and because nothing else would ever notice.
+      - name: Uninstall it
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "$PWD/installed/unins000.exe" -Wait -PassThru `
+            -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
+          if ($p.ExitCode -ne 0) { throw "the uninstaller exited $($p.ExitCode)" }
+          Start-Sleep -Seconds 5
+          if (Test-Path "$PWD/installed/RedRepublic.exe") {
+            Get-ChildItem "$PWD/installed"
+            throw "the uninstaller left the game behind"
+          }
+
+      # The installer is deliberately NOT uploaded as a workflow artifact.
+      #
+      # This repository is public, and artifacts on a public repository are
+      # downloadable by anyone who can see the Actions tab. Uploading would mean
+      # every CI run publishes a playable Windows build to the internet, which is
+      # distribution — and building the installer is part of finishing while
+      # putting it in front of anyone is a separate decision that belongs to Noah,
+      # in the conversation where it happens.
+      #
+      # Nothing is lost from the check: the job already exports it, installs it,
+      # runs the installed game and uninstalls it again, which is the whole claim
+      # under test. The artifact would only have been a convenience.
+      #
+      # To get a build, run `pwsh tools/package.ps1` locally. If this should
+      # publish one day, `actions/upload-artifact` on `dist/*-setup.exe` is the
+      # line to add, and it should go with a tag rather than with every push.
+      - name: Report the installer
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist/*-setup.exe | Select-Object -First 1
+          "built {0} ({1:N1} MB), not uploaded — see the note in ci.yml" -f `
+            $setup.Name, ($setup.Length / 1MB)
