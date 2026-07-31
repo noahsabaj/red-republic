@@ -25,6 +25,9 @@ use red_republic_sim::ground::{
 };
 use red_republic_sim::journey::{MIN_LEG_TICKS, Medium, SHUNTING, TERMINAL_REACH};
 use red_republic_sim::mapgen::{DEFAULT_PLAN, GEOLOGY_STREAM};
+use red_republic_sim::network::{
+    AIRWAY_SPEED, FAIRWAY_SPACING, NAVIGABLE_BEAM, NAVIGABLE_SPEED, default_road_speed,
+};
 use red_republic_sim::resource::{Form, Resource};
 use red_republic_sim::shifts::{
     DAYLIGHT_HOURS, MAX_HOURS, MAX_SHIFTS, MIN_HOURS, OVERWORK_HEALTH, OVERWORK_LOYALTY,
@@ -251,6 +254,11 @@ fn main() {
     }
     // People: how far somebody will walk, how long they will travel, and the
     // ages that decide what they are doing with their life.
+    canon.push(FAIRWAY_SPACING.0);
+    canon.push(NAVIGABLE_BEAM.0);
+    canon.push(NAVIGABLE_SPEED.as_kph());
+    canon.push(AIRWAY_SPEED.as_kph());
+    canon.push(default_road_speed().as_kph());
     canon.push(MAX_WALK.0);
     canon.push(ROAD_ACCESS.0);
     canon.push(walking_speed().as_kph());
@@ -485,6 +493,16 @@ fn main() {
     // Climate is balance, and the two halves are authored together on purpose:
     // the taiga is cold and dry, the maritime posting is mild and wet, and those
     // are different problems rather than one dial.
+    out.push_str(&format!(
+        "  \"network\": {{ \"fairway_spacing_m\": {}, \"navigable_beam_m\": {}, \"navigable_kph\": {}, \"airway_kph\": {}, \"default_road_kph\": {} }},
+",
+        n(FAIRWAY_SPACING.0),
+        n(NAVIGABLE_BEAM.0),
+        n(NAVIGABLE_SPEED.as_kph()),
+        n(AIRWAY_SPEED.as_kph()),
+        n(default_road_speed().as_kph())
+    ));
+
     // People, and the journeys they make.
     out.push_str(&format!(
         "  \"people\": {{ \"max_walk_m\": {}, \"road_access_m\": {}, \"walk_kph\": {}, \"working_age\": [{}, {}], \"school_age\": [{}, {}], \"university_age\": [{}, {}], \"school_days\": {}, \"university_days\": {}, \"max_commute_s\": {}, \"stop_walk_m\": {}, \"night_walk_m\": {}, \"fuel_per_seat_day\": {} }},

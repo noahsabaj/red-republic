@@ -131,6 +131,21 @@ public sealed class Tables
 
     public MineralPlan[] MineralPlan { get; private set; } = [];
 
+    // ---- the network ----
+
+    /// <summary>How finely a fairway is sampled off the water.</summary>
+    public double FairwaySpacing { get; private set; }
+
+    /// <summary>
+    /// How wide the water has to be before a barge can turn in it. A stream a
+    /// metre across is water on the map and is not a waterway.
+    /// </summary>
+    public double NavigableBeam { get; private set; }
+
+    public double NavigableKph { get; private set; }
+    public double AirwayKph { get; private set; }
+    public double DefaultRoadKph { get; private set; }
+
     // ---- people, and the journeys they make ----
 
     /// <summary>How far somebody will walk to work before they need carrying.</summary>
@@ -571,6 +586,13 @@ public sealed class Tables
 
     private void LoadPeople(JsonElement m)
     {
+        var net = m.GetProperty("network");
+        FairwaySpacing = net.GetProperty("fairway_spacing_m").GetDouble();
+        NavigableBeam = net.GetProperty("navigable_beam_m").GetDouble();
+        NavigableKph = net.GetProperty("navigable_kph").GetDouble();
+        AirwayKph = net.GetProperty("airway_kph").GetDouble();
+        DefaultRoadKph = net.GetProperty("default_road_kph").GetDouble();
+
         var p = m.GetProperty("people");
         MaxWalkM = p.GetProperty("max_walk_m").GetDouble();
         RoadAccessM = p.GetProperty("road_access_m").GetDouble();
@@ -822,6 +844,11 @@ public sealed class Tables
         }
 
         // People last, matching the order the dumper pushes them in.
+        h.Push(FairwaySpacing);
+        h.Push(NavigableBeam);
+        h.Push(NavigableKph);
+        h.Push(AirwayKph);
+        h.Push(DefaultRoadKph);
         h.Push(MaxWalkM);
         h.Push(RoadAccessM);
         h.Push(WalkKph);
