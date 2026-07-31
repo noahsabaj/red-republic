@@ -1347,6 +1347,34 @@ impl Republic {
         })
     }
 
+    /// Where one workplace stands in the labour plan: `0` last, `1` ordinary,
+    /// `2` first — an index into `Priority::ALL`, the same one `workplaces`
+    /// reports.
+    ///
+    /// An index rather than a name because the panel already has the names from
+    /// `priority_names`, and matching on a translated string in GDScript is how
+    /// a control quietly stops working.
+    #[func]
+    fn set_priority(&mut self, building: i64, standing: i64) -> GString {
+        let all = red_republic_sim::Priority::ALL;
+        let Some(&priority) = all.get(standing.clamp(0, all.len() as i64 - 1) as usize) else {
+            return GString::from("there is no such standing");
+        };
+        self.command(Command::SetPriority {
+            building: red_republic_sim::BuildingId(building.max(0) as u32),
+            priority,
+        })
+    }
+
+    /// What the standings are called, worst first.
+    #[func]
+    fn priority_names(&self) -> PackedStringArray {
+        red_republic_sim::Priority::ALL
+            .iter()
+            .map(|p| GString::from(p.name()))
+            .collect()
+    }
+
     /// An exception for one building; a negative `hours` clears it.
     #[func]
     fn set_building_shift_hours(&mut self, building: i64, hours: f64) -> GString {

@@ -295,7 +295,48 @@ func _check_labour() -> void:
 		printerr("labour check FAILED: a forty-hour shift was accepted")
 		return
 	var _restore := republic.set_national_shift_hours(was)
-	print("labour check ok: the working day is the republic's to set")
+
+	# And the standing, which is the lever that decides who is manned at all when
+	# the republic is short of hands.
+	#
+	# **Not read back through `workplaces`, and the first version of this check
+	# was silently useless because it tried.** That view lists only *built*
+	# workplaces, and a `--check` republic has founded an empty map moments
+	# earlier, so the array was always empty, the round-trip never ran, and the
+	# line printed "ok" every time. A check that cannot reach its subject and
+	# says nothing is worse than no check. What is actually reachable here is
+	# both ends of the binding — a standing that is accepted and one that is
+	# refused — and those are what only the shell can get wrong.
+	if republic.priority_names().size() < 2:
+		printerr("labour check FAILED: the republic names no standings")
+		return
+	# A workplace, so the accept path has a subject. Index 3 is the woodcutter
+	# post; the house the build check contracts has no roster at all.
+	var centre := republic.map_extent() * 0.5
+	var sited := "nowhere tried"
+	for ring in 12:
+		var at: float = centre - float(ring) * 90.0
+		sited = String(republic.contract(3, at, at, 0))
+		if sited == "":
+			break
+	if sited != "":
+		printerr("labour check FAILED: nowhere would take a workplace: %s" % sited)
+		return
+	# Ids are one-based and handed out in commissioning order, so the post just
+	# contracted is the last one. `building_count() - 1` is the house, and using
+	# it is what made the first run of this check fail against a working setter.
+	var post := republic.building_count()
+	var moved := String(republic.set_priority(post, 0))
+	if moved != "":
+		printerr("labour check FAILED: a standing on a workplace was refused: %s" % moved)
+		return
+	# And the refusal path, because a setter that accepts everything is a setter
+	# that is not reading the rules. Building 1 is the house the build check
+	# contracted, and a house is nobody's workplace.
+	if String(republic.set_priority(1, 0)) == "":
+		printerr("labour check FAILED: a standing was accepted on a building with no roster")
+		return
+	print("labour check ok: the working day and the labour plan are the republic's to set")
 
 
 ## Lay a road, and check the lamp rule refuses what it should.

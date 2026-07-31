@@ -220,6 +220,20 @@ pub enum Command {
     /// and carried to work in the dark. Zero mothballs the place.
     SetShifts { building: BuildingId, shifts: u8 },
 
+    /// Where a workplace stands when there are not enough people for all of
+    /// them.
+    ///
+    /// **The plan's central decision, and until now nothing could express it.**
+    /// The labour pass fills workplaces to capacity in standing order, so this
+    /// is what says the mine is manned before the offices are — the difference
+    /// between a republic that eats and one that does not. Its opening position
+    /// comes from [`crate::building::BuildingDef::priority`]; this is how the
+    /// player disagrees with the table.
+    SetPriority {
+        building: BuildingId,
+        priority: crate::building::Priority,
+    },
+
     /// Name the republic. The second beat of founding.
     ///
     /// A command rather than a field on [`crate::world::WorldSpec`] for two

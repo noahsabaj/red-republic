@@ -9682,30 +9682,54 @@ mod tests {
         assert_eq!(w.treasury.rubles, 10_000.0);
     }
 
-    /// An unstaffed customs house clears nothing, however good the policy.
+    /// A crossing is manned by the bloc on the other side, so it clears from the
+    /// day it opens.
+    ///
+    /// **This replaces `an_unstaffed_crossing_clears_nothing`, whose premise is
+    /// gone.** That test asserted the opposite, and it was the single widest
+    /// failure in the republic: a customs house stands at the frontier while the
+    /// housing stands in the town, so it was never staffed, and an unstaffed
+    /// house has `activity() == 0` — which switched off *all* trade, import and
+    /// export alike, in silence. A posting whose nearest Eastern crossing lay
+    /// across water could never trade at all.
+    ///
+    /// Worth recording that the old test had also stopped reaching its subject:
+    /// it sold to `Market::East` while `bloc_near` reported the post it had
+    /// found as Western, so no rule matched and it passed on a technicality
+    /// rather than on the staffing it was named for. This one asks the frontier
+    /// which bloc it is dealing with rather than assuming.
     #[test]
-    fn an_unstaffed_crossing_clears_nothing() {
+    fn a_crossing_needs_no_roster_and_clears_the_day_it_opens() {
         let mut w = bare();
         let on_border = w
             .frontier
             .nearest_crossing(at(2_000.0, 2_000.0), None)
             .expect("a frontier always has posts")
             .at;
+        let bloc = w.frontier.bloc_near(on_border);
         let customs = w.place_built(BuildingKind::Customs, on_border).unwrap();
+        assert_eq!(
+            w.buildings.get(customs).unwrap().staff,
+            0,
+            "nobody from the republic works a frontier post"
+        );
         w.buildings
             .get_mut(customs)
             .unwrap()
             .stock
             .add(Resource::Coal, Tonnes(100.0));
-        w.trade_policy = crate::trade::TradePolicy::new().sell(Resource::Coal, Market::East);
+        w.trade_policy = crate::trade::TradePolicy::new().sell(Resource::Coal, bloc);
 
         for _ in 0..TICKS_PER_DAY {
             w.tick();
         }
-        assert_eq!(w.treasury.rubles, 0.0);
-        assert_eq!(
-            w.buildings.get(customs).unwrap().stock.get(Resource::Coal),
-            Tonnes(100.0)
+        assert!(
+            w.buildings.get(customs).unwrap().stock.get(Resource::Coal) < Tonnes(100.0),
+            "an empty roster must not stop a crossing clearing"
+        );
+        assert!(
+            w.treasury.of(bloc) > 0.0,
+            "and the republic must be paid for what crossed"
         );
     }
 

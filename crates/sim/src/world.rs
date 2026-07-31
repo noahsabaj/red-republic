@@ -92,7 +92,15 @@ use serde::{Deserialize, Serialize};
 /// gained a shift count and a working day, which nothing before this version
 /// wrote. A save from before it is refused with the reason rather than loaded
 /// into a republic it does not describe.
-pub const SAVE_VERSION: u32 = 14;
+/// 15: **the labour plan.** Every building gained a standing, which nothing
+/// before this version wrote, and the labour pass now fills workplaces in that
+/// order rather than in commissioning order. Both halves break a replay: a save
+/// from 14 carries no standing to read, and even defaulting one would replay its
+/// journal into a republic that allocated its people by a different rule and so
+/// grew a different way. The bug this fixes is worth the number — before it,
+/// whichever workplace was commissioned first absorbed the entire workforce and
+/// nothing else in the republic was ever staffed at all.
+pub const SAVE_VERSION: u32 = 15;
 
 /// The longest a republic's name may be, in characters.
 ///
@@ -1207,6 +1215,20 @@ impl World {
                         self.buildings.set_building_hours(id, hours);
                     }
                 }
+                Ok(Done::Nothing)
+            }
+
+            Command::SetPriority { building, priority } => {
+                let Some(b) = self.buildings.get(building) else {
+                    return Err(Refused::NoSuchBuilding(building));
+                };
+                // Same rule as a roster, for the same reason: a standing on a
+                // house or a customs house is a control that decides nothing,
+                // because neither ever competes for a citizen.
+                if b.def().workers == 0 {
+                    return Err(Refused::NotAWorkplace);
+                }
+                self.buildings.set_priority(building, priority);
                 Ok(Done::Nothing)
             }
 

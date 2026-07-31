@@ -657,10 +657,18 @@ pub fn fleet_by_medium(world: &World) -> PackedFloat32Array {
 }
 
 /// Floats per workplace in [`workplaces`].
-pub const WORKPLACE_STRIDE: usize = 7;
+pub const WORKPLACE_STRIDE: usize = 8;
 
 /// Every standing workplace and its roster, as
-/// `[id, kind_index, staff, jobs, shifts, hours, rule]` per line.
+/// `[id, kind_index, staff, jobs, shifts, hours, rule, standing]` per line.
+///
+/// `standing` is the labour plan: `0` last, `1` ordinary, `2` first — the index
+/// into [`red_republic_sim::Priority::ALL`]. It rides along with the roster
+/// rather than in a view of its own because it answers the same question the
+/// panel is already asking. A row reading `9/16` is only half an answer; *why*
+/// it is nine is the standing, and a player who cannot see it cannot tell a
+/// works the republic has no hands for from one it has ranked below everything
+/// else.
 ///
 /// `rule` says where this building's working day comes from, so the panel can
 /// show it without asking three more questions: `0` the national standard, `1` a
@@ -695,6 +703,12 @@ pub fn workplaces(world: &World) -> PackedFloat32Array {
         out.push(f32::from(b.shifts));
         out.push(b.hours as f32);
         out.push(rule);
+        out.push(
+            red_republic_sim::Priority::ALL
+                .iter()
+                .position(|p| *p == b.priority)
+                .unwrap_or_default() as f32,
+        );
     }
     out
 }
