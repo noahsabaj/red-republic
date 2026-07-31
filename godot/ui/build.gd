@@ -58,6 +58,12 @@ const WAY_COLUMNS := [
 	["", 2.4, HORIZONTAL_ALIGNMENT_RIGHT],
 ]
 
+## How wide the two action buttons are held at, so that a column of them is a
+## column. Both are as wide as their longest label needs and no wider.
+const CONTRACT_WIDTH := 168
+const LAMPS_WIDTH := 128
+const LAY_WIDTH := 64
+
 var _republic: Republic = null
 var _purse: Label = null
 var _crews: Label = null
@@ -182,6 +188,11 @@ func _building_row(
 	# Western contract is a button that can only ever refuse until something has
 	# been exported.
 	var east := Parts.button("CONTRACT  %s ₽" % Parts.thousands(contract_cost))
+	# **A fixed width, so the two buttons are two columns.** The price is part of
+	# the label and a five-digit one is narrower than a six-digit one, so without
+	# this every Build button in the list sat at a slightly different place --
+	# which is the one thing a table is for.
+	east.custom_minimum_size = Vector2(CONTRACT_WIDTH, P.BUTTON_HEIGHT)
 	east.pressed.connect(func(): _pick(kind, 0))
 	actions.add_child(east)
 	line.add_child(Parts.cell(actions, BUILDING_COLUMNS[4][1]))
@@ -215,13 +226,23 @@ func _way_rows(into: VBoxContainer) -> void:
 		var actions := HBoxContainer.new()
 		actions.alignment = BoxContainer.ALIGNMENT_END
 		actions.add_theme_constant_override("separation", P.GAP_TIGHT)
-		var plain := Parts.button("LAY")
-		plain.pressed.connect(func(): _pick_way(grade, false))
-		actions.add_child(plain)
+		# **The lamps button keeps its place whether or not a grade takes lamps.**
+		# Only paved road may carry them, so without a reserved slot the Lay button
+		# on every other grade sat a hundred pixels right of the one beside it.
+		var lit_slot := Control.new()
+		lit_slot.custom_minimum_size = Vector2(LAMPS_WIDTH, 0)
 		if facts[o + 3] > 0.5:
 			var lit := Parts.button("WITH LAMPS")
+			lit.custom_minimum_size = Vector2(LAMPS_WIDTH, P.BUTTON_HEIGHT)
 			lit.pressed.connect(func(): _pick_way(grade, true))
 			actions.add_child(lit)
+		else:
+			actions.add_child(lit_slot)
+
+		var plain := Parts.button("LAY")
+		plain.custom_minimum_size = Vector2(LAY_WIDTH, P.BUTTON_HEIGHT)
+		plain.pressed.connect(func(): _pick_way(grade, false))
+		actions.add_child(plain)
 		line.add_child(Parts.cell(actions, WAY_COLUMNS[3][1]))
 
 
