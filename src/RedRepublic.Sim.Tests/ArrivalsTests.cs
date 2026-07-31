@@ -161,6 +161,59 @@ public sealed class ArrivalsTests
             "a blank map with a block standing empty on it drew nobody in a year");
     }
 
+    /// <summary>
+    /// <b>A site is served whatever the quantity.</b>
+    /// </summary>
+    /// <remarks>
+    /// The minimum load exists to stop a lorry being sent for four kilograms of
+    /// something a farm produces continuously. A site's outstanding bill is
+    /// finite and terminal, so refusing to deliver it does not defer the trip —
+    /// it cancels the building. The trajectory runner found the difference: a
+    /// span wanting seven hundred kilograms of steel, two hundred tonnes of it
+    /// standing at the customs house, six idle lorries, and a republic dark for
+    /// three years because nothing would roll for less than a load.
+    /// </remarks>
+    [Fact]
+    public void A_site_wanting_less_than_a_load_still_gets_its_delivery()
+    {
+        var world = World.Found(new WorldSpec(1961, 1500.0, 0), T);
+        var steel = T.ResourceIndex("Steel");
+
+        var depot = Built(world, "Depot");
+        var garage = Built(world, "MotorDepot");
+        world.Buildings.Stock.Add(world.Buildings.IndexOf(depot), steel, 200.0);
+        world.Buildings.Stock.Add(
+            world.Buildings.IndexOf(garage), T.ResourceIndex("Fuel"), 50.0);
+
+        var at = world.Buildings.IndexOf(depot);
+        var ordered = world.Issue(Command.OrderLine(
+            T.UtilityIndex("Power"),
+            world.Buildings.XAt(at), world.Buildings.YAt(at),
+            world.Buildings.XAt(at) + T.MinLine + 1.0, world.Buildings.YAt(at)));
+        Assert.True(ordered.Accepted, ordered.Refusal);
+
+        var site = world.LineWorks.Get(ordered.Id);
+        Assert.NotNull(site);
+        Assert.True(
+            site.Wants(steel, T) < T.MinLoad,
+            "the shortest span the republic will survey still wants a full load");
+
+        for (var day = 0; day < 30; day++)
+        {
+            for (var i = 0; i < SimClock.TicksPerDay; i++)
+            {
+                world.Tick();
+            }
+
+            if (world.LineWorks.Stock.Get(world.LineWorks.IndexOf(site.Id), steel) > 0.0)
+            {
+                return;
+            }
+        }
+
+        Assert.Fail("no lorry ever rolled for a site wanting less than a load");
+    }
+
     /// <summary>The first idle passenger vehicle in a garage, or -1.</summary>
     private static int Coach(World world, int garage)
     {

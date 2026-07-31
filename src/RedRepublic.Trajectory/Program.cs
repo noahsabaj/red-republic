@@ -100,6 +100,7 @@ internal static class Program
             {
                 Console.WriteLine($"  {line}");
             }
+
         }
 
         Console.WriteLine();

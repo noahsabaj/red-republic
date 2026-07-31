@@ -1162,6 +1162,16 @@ public static class Systems
         // ranking as a factory waiting on ore rather than in a queue of its own.
         // A site the republic is waiting on outranks a topped-up works: the thing
         // is not there yet.
+        //
+        // <b>A site is served whatever the quantity</b>, where a finished works
+        // has to want a load worth rolling for. The minimum exists to stop a
+        // lorry being sent for four kilograms of something a farm produces
+        // continuously; a site's outstanding bill is finite and terminal, so
+        // refusing to deliver it does not defer the trip, it cancels the
+        // building. The trajectory runner found exactly that: a span wanting
+        // seven hundred kilograms of steel, two hundred tonnes of it standing at
+        // the customs house, six idle lorries, and a republic that sat dark for
+        // three years because nothing would roll for less than a load.
         foreach (var road in world.RoadWorks.Sites)
         {
             var i = world.RoadWorks.IndexOf(road.Id);
@@ -1170,7 +1180,7 @@ public static class Systems
             {
                 var outstanding = (road.Wants(r, t) * remaining)
                     - world.RoadWorks.Stock.Get(i, r);
-                if (outstanding > t.MinLoad)
+                if (outstanding > 1e-9)
                 {
                     wanted.Add((Destination.RoadSite(road.Id), r, outstanding, 2.0));
                 }
@@ -1185,7 +1195,7 @@ public static class Systems
             {
                 var outstanding = (bill.Tonnes * line.Kilometres * left)
                     - world.LineWorks.Stock.Get(i, bill.Resource);
-                if (outstanding > t.MinLoad)
+                if (outstanding > 1e-9)
                 {
                     wanted.Add((Destination.LineSite(line.Id), bill.Resource, outstanding, 2.0));
                 }
@@ -1208,7 +1218,7 @@ public static class Systems
                 for (var i = 0; i < res.Length; i++)
                 {
                     var outstanding = world.Buildings.MaterialOutstanding(b, res[i]);
-                    if (outstanding > t.MinLoad)
+                    if (outstanding > 1e-9)
                     {
                         // A site the republic is waiting on outranks a topped-up
                         // works: the building is not there yet.
@@ -2391,9 +2401,14 @@ public static class Systems
             // republic that bought twenty builders and could not put them on a
             // site would have paid a placement fee for nothing.
             var staff = world.Buildings.StaffAt(office) + world.Crews.HiredAt(officeId);
+            // A gang this office already has and is not using costs nothing to
+            // post: its heads are counted against the establishment either way.
+            // Requiring spare capacity for it is what left twenty hired builders
+            // standing at a frontier post for three years while the office read
+            // as fully committed to them.
+            var idle = Idle(world, officeId);
             var out_ = world.Crews.Posted(officeId);
-            var spare = staff - out_;
-            if (spare < t.BuildersPerSite)
+            if (idle is null && staff - out_ < t.BuildersPerSite)
             {
                 continue;
             }
@@ -2406,13 +2421,11 @@ public static class Systems
                     continue;
                 }
 
-                // A gang this office already has and is not using — the hands it
-                // hired from abroad, or one that finished a site — before it
-                // draws anybody new off its own staff. Without this a republic
-                // that bought twenty builders would leave them standing at the
-                // frontier post it hired them to, which is what the trajectory
-                // runner reported as a grid ordered and never laid.
-                var party = Idle(world, officeId);
+                // The gang it already has before anybody new off its own staff:
+                // the hands it hired from abroad, or one that has finished a
+                // site. Without this a republic that bought twenty builders
+                // leaves them standing at the frontier post it hired them to.
+                var party = idle;
                 if (party is not null)
                 {
                     party.X = x;
