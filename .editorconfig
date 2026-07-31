@@ -1,0 +1,45 @@
+# Analyser settings for the C# build.
+#
+# The default is `latest-recommended` with warnings as errors, because a warning
+# that is not an error is a warning nobody reads. What follows are the rules
+# turned off, each with the reason — a suppression with no argument beside it is
+# how a ruleset becomes decoration.
+
+root = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+end_of_line = lf
+charset = utf-8
+insert_final_newline = true
+
+# CA1716 — a type name that collides with a reserved word in another .NET
+# language. The word is `Date`, and the language is Visual Basic. Nothing here
+# is or will be consumed from VB: this is a game with one binary, and the rule
+# is about library authors publishing to an unknown audience. Renaming a
+# calendar date to something that is not "date" would make the code worse to
+# read in exchange for an interop concern that does not exist.
+dotnet_diagnostic.CA1716.severity = none
+
+# CA1002 — do not expose List<T>. Applies to public API surface meant for
+# unknown consumers; this assembly has exactly one consumer and returning a
+# concrete list avoids an interface dispatch in passes that run 480 times a
+# second.
+dotnet_diagnostic.CA1002.severity = none
+
+# CA1815 — override Equals on value types. Every value type here that wants
+# equality is a `record struct`, which generates it. The ones that do not want
+# it are spans-in-disguise that are never compared.
+dotnet_diagnostic.CA1815.severity = none
+
+# CA5394 — do not use insecure randomness. There is no System.Random in this
+# project at all; the simulation has one generator and it is a seeded xoshiro,
+# because a save has to resume the same future. If this ever fires it is on
+# something that should not exist rather than on a security question.
+dotnet_diagnostic.CA5394.severity = none
+
+# The simulation deals in numbers, and the numbers have names taken from the
+# domain. `BWidth`, `VTank`, `TonnesLo` are readable in context and mangling
+# them to satisfy a naming heuristic would not help anyone.
+dotnet_diagnostic.CA1707.severity = none

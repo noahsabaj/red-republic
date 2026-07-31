@@ -182,68 +182,78 @@ jobs:
             exit 1
           fi
 
-  # The gate for `game/`, the Godot project the port is building.
+  # The gate for the port: the C# simulation and the Godot project over it.
   #
-  # `cargo test` cannot see a line of it, so without this job the whole port is
-  # unchecked. It replaces the Rust gate for everything that has moved across,
-  # and it runs on Linux for the same reason `loads` does: "do the tests pass"
-  # is not an OS-specific question.
+  # Two steps, and the split is the point. `dotnet test` needs no engine at all,
+  # because `src/RedRepublic.Sim` has no reference to Godot — that is what the
+  # boundary buys, and it is why the whole simulation suite runs in a fifth of a
+  # second. Only the second step needs the editor.
   #
-  # This job is where the checksum guard earns its keep. `game/data/manifest.json`
-  # carries the balance table out of `crates/sim`, and `tests/test_tables.gd`
-  # rehashes every number in it and refuses to run if the hash moved — so a
-  # table that arrives one ulp out fails here rather than becoming a republic
-  # that quietly diverges from the one its seed promised.
+  # This is where the checksum guard earns its keep. `game/data/manifest.json`
+  # carries the balance table out of `crates/sim`, and the loader rehashes every
+  # number in it by its bits and refuses to start if the hash moved — so a table
+  # that arrives one ulp out fails here rather than becoming a republic that
+  # quietly diverges from the one its seed promised.
   port:
     runs-on: ubuntu-latest
-    # A GDScript parse error hangs rather than fails, exactly as in `loads`.
     timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v5
 
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # The simulation and its suite, with no engine in the loop. If this fails,
+      # the game cannot be right whatever the editor says.
+      - name: Test the simulation
+        run: dotnet test src/RedRepublic.Sim.Tests/RedRepublic.Sim.Tests.csproj -c Release --nologo
+
+      # A standalone .NET build from godotengine.org, pinned. The editor on
+      # Noah's desktop auto-updates, which can break the build with no commit to
+      # blame; CI is where a pinned version actually gets used.
       - name: Fetch Godot
         run: |
-          curl -sSLo godot.zip \
-            https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_linux.x86_64.zip
+          curl -sSLo godot.zip             https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_mono_linux_x86_64.zip
           unzip -q godot.zip
-          mv Godot_v4.7.1-stable_linux.x86_64 godot-bin
+          mv Godot_v4.7.1-stable_mono_linux_x86_64/Godot_v4.7.1-stable_mono_linux.x86_64 godot-bin
           chmod +x godot-bin
 
       # Twice, and only the second believed — a resource that references an
-      # asset can only resolve on a pass after the one that imported it. Same
-      # rule as `loads`, and it bites on a virgin checkout, which CI always is.
+      # asset can only resolve on a pass after the one that imported it. A
+      # virgin checkout is what CI always is.
       - name: Import
         run: |
           ./godot-bin --headless --import --path game 2>&1 | tee first-import.log || true
           ./godot-bin --headless --import --path game 2>&1 | tee import.log
           if grep -qiE "Parse Error|Failed to load script" import.log; then
-            echo "::error::the Godot project does not parse — see the log above"
+            echo "::error::the Godot project does not load — see the log above"
             exit 1
           fi
 
-      - name: Test
+      # And then actually run it. Building is not loading: the checksum is
+      # verified at startup, so only a real run reaches it.
+      #
+      # `--check` founds a republic, prints the line saying so, and quits. Both
+      # alternatives are wrong here: a screenshot run waits for a frame that
+      # never arrives under --headless and spins for ever, and a plain run never
+      # exits, so the job would hang on a success.
+      - name: Found a republic
         run: |
-          ./godot-bin --headless --path game --script res://tests/harness.gd 2>&1 | tee test.log
-          # The harness exits non-zero on failure, but a GDScript parse error can
-          # take the whole run down before it ever reports — in which case the
-          # log has no verdict at all. Absence of "ok" is the failure this catches,
-          # and it is the one that otherwise reads as success.
-          if ! grep -q "^ok$" test.log; then
-            echo "::error::the port's test suite did not report success"
+          ./godot-bin --headless --path game -- --check 2>&1 | tee run.log
+          if grep -qiE "SCRIPT ERROR|Unhandled exception|Assertion failed" run.log; then
+            echo "::error::the republic did not load cleanly — see the log above"
             exit 1
           fi
-          # And a second layer, because the first one lied once.
-          #
-          # A GDScript runtime error aborts the function it happens in and hands
-          # control back as though the call returned; there are no exceptions.
-          # The suite printed `ok` while four tests crashed on a misspelled
-          # method, and every check they would have made simply never ran.
-          # `tests/case.gd` now makes each test mark its own last line and the
-          # runner turns a missing mark into a failure — but that is the same
-          # process reporting on itself, and this is not.
-          if grep -qE "SCRIPT ERROR|Parse Error" test.log; then
-            echo "::error::a script error was raised during the run — see the log above"
+          # A run that quietly does nothing prints nothing, which is the failure
+          # these lines exist to tell apart from success.
+          if ! grep -q "^tables ok" run.log; then
+            echo "::error::the balance table did not cross intact"
+            exit 1
+          fi
+          if ! grep -q "^founded on" run.log; then
+            echo "::error::no republic was founded"
             exit 1
           fi
 
