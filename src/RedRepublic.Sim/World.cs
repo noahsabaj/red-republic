@@ -34,6 +34,7 @@ public sealed class World
         Fleet = new Fleet(tables);
         RoadWorks = new RoadWorks(tables);
         LineWorks = new LineWorks(tables);
+        Grid = new Networks(tables);
         Crews = new Crews();
         Migration = new Migration();
         Tourism = new Tourism();
@@ -92,6 +93,12 @@ public sealed class World
     public RoadWorks RoadWorks { get; }
 
     public LineWorks LineWorks { get; }
+
+    /// <summary>
+    /// The energised lines, and who is plugged into them. What makes a power
+    /// station a thing that stands somewhere rather than a number.
+    /// </summary>
+    public Networks Grid { get; }
 
     public Crews Crews { get; }
 

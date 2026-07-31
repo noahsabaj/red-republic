@@ -593,6 +593,28 @@ public sealed class Tables
 
     public int ResourceIndex(string id) => IndexIn(Resources, id);
 
+    /// <summary>
+    /// Which row of the utility table a kind of line is, by its authored id.
+    /// </summary>
+    /// <remarks>
+    /// The systems name the two they are about — a power pass is about power —
+    /// and this is how they say so without a list of indices in the logic. An id
+    /// nothing answers to throws, because a power system that silently walked the
+    /// wrong network would be a blackout nobody could explain.
+    /// </remarks>
+    public int UtilityIndex(string id)
+    {
+        for (var i = 0; i < Utilities.Length; i++)
+        {
+            if (Utilities[i].Id == id)
+            {
+                return i;
+            }
+        }
+
+        throw new KeyNotFoundException($"no utility is authored as \"{id}\"");
+    }
+
     private void LoadVehicles(JsonElement vs)
     {
         var ids = new List<string>();

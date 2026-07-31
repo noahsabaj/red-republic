@@ -93,4 +93,29 @@ public static class Units
         var dy = ay - by;
         return (dx * dx) + (dy * dy);
     }
+
+    /// <summary>
+    /// The perpendicular distance from a point to a segment, or to the nearer end
+    /// when the foot of the perpendicular falls outside it.
+    /// </summary>
+    /// <remarks>
+    /// What decides whether a building is beside a line: a factory next to the
+    /// middle of a span is next to the span, and one past the end of it is as far
+    /// away as the end is rather than as far as the infinite line would be.
+    /// </remarks>
+    public static double DistanceToSegment(
+        double x, double y, double fromX, double fromY, double toX, double toY)
+    {
+        var dx = toX - fromX;
+        var dy = toY - fromY;
+        var length2 = (dx * dx) + (dy * dy);
+        if (length2 <= double.Epsilon)
+        {
+            return Distance(x, y, fromX, fromY);
+        }
+
+        var along = Math.Clamp(
+            (((x - fromX) * dx) + ((y - fromY) * dy)) / length2, 0.0, 1.0);
+        return Distance(x, y, fromX + (dx * along), fromY + (dy * along));
+    }
 }

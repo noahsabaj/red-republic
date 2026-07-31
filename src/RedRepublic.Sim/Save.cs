@@ -42,7 +42,7 @@ public static class Save
     /// refused with a sentence rather than read as garbage — the failure mode
     /// that costs a player their republic is the one that half-works.
     /// </remarks>
-    public const int Version = 1;
+    public const int Version = 2;
 
     public static byte[] Write(World world)
     {
@@ -104,6 +104,41 @@ public static class Save
             }
         }
 
+        // The lines. Energised spans go in as geometry in the order they were
+        // built, and the grid is rebuilt from them on load rather than stored —
+        // the union-find and every attachment are a pure function of that order
+        // and of where the buildings stand, which are both already in the file.
+        // The same reasoning that keeps a million cells of terrain out of it.
+        var lines = world.Grid.Lines;
+        w.Int(lines.Count);
+        foreach (var l in lines)
+        {
+            w.Int(l.Kind);
+            w.Double(l.FromX);
+            w.Double(l.FromY);
+            w.Double(l.ToX);
+            w.Double(l.ToY);
+        }
+
+        w.Int(world.LineWorks.Sites.Count);
+        foreach (var s in world.LineWorks.Sites)
+        {
+            w.Int(s.Id);
+            w.Int(s.Kind);
+            w.Double(s.FromX);
+            w.Double(s.FromY);
+            w.Double(s.ToX);
+            w.Double(s.ToY);
+            w.Long(s.Ordered);
+            w.Double(s.WorkDone);
+
+            var i = world.LineWorks.IndexOf(s.Id);
+            for (var res = 0; res < world.Tables.Resources.Length; res++)
+            {
+                w.Double(world.LineWorks.Stock.Get(i, res));
+            }
+        }
+
         var p = world.Citizens;
         w.Int(p.Count);
         for (var i = 0; i < p.Count; i++)
@@ -130,6 +165,8 @@ public static class Save
             w.Int(command.C);
             w.Double(command.X);
             w.Double(command.Y);
+            w.Double(command.ToX);
+            w.Double(command.ToY);
             w.Double(command.Amount);
             w.Bool(command.Flag);
             w.String(command.Text);
@@ -211,6 +248,37 @@ public static class Save
             }
         }
 
+        // Re-energise in the order they were built, then plug everything in.
+        // Both are order-dependent, and both orders are in the file.
+        var lines = r.Int();
+        for (var i = 0; i < lines; i++)
+        {
+            var kind = r.Int();
+            var site = new LineSite(0, kind, r.Double(), r.Double(), r.Double(), r.Double(), 0);
+            world.Grid.Energise(site);
+        }
+
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            world.Grid.AttachAll(
+                world.Buildings.IdAt(b), world.Buildings.XAt(b), world.Buildings.YAt(b));
+        }
+
+        var lineSites = r.Int();
+        for (var i = 0; i < lineSites; i++)
+        {
+            var id = r.Int();
+            var kind = r.Int();
+            world.LineWorks.Restore(
+                id, kind, r.Double(), r.Double(), r.Double(), r.Double(), r.Long(), r.Double());
+
+            var at = world.LineWorks.IndexOf(id);
+            for (var res = 0; res < tables.Resources.Length; res++)
+            {
+                world.LineWorks.Stock.Set(at, res, r.Double());
+            }
+        }
+
         var citizens = r.Int();
         for (var i = 0; i < citizens; i++)
         {
@@ -238,7 +306,7 @@ public static class Save
             world.Journal.Record(tick, new Command(
                 (CommandKind)r.Int(),
                 r.Int(), r.Int(), r.Int(),
-                r.Double(), r.Double(), r.Double(),
+                r.Double(), r.Double(), r.Double(), r.Double(), r.Double(),
                 r.Bool(), r.String()));
         }
 

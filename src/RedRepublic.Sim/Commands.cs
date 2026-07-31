@@ -56,6 +56,8 @@ public sealed record Command(
     int C = -1,
     double X = 0.0,
     double Y = 0.0,
+    double ToX = 0.0,
+    double ToY = 0.0,
     double Amount = 0.0,
     bool Flag = false,
     string Text = "")
@@ -68,8 +70,15 @@ public sealed record Command(
 
     public static Command Demolish(int building) => new(CommandKind.Demolish, building);
 
+    /// <summary>
+    /// Order a power line or a heat main. It is a site until the crew and the
+    /// steel reach it, and it carries nothing until then.
+    /// </summary>
+    public static Command OrderLine(int utility, double fromX, double fromY, double toX, double toY) =>
+        new(CommandKind.OrderLine, utility, X: fromX, Y: fromY, ToX: toX, ToY: toY);
+
     public static Command OrderRoad(double fromX, double fromY, double toX, double toY, int grade, bool lamps) =>
-        new(CommandKind.OrderRoad, grade, X: fromX, Y: fromY, Amount: toX, Flag: lamps, C: (int)toY);
+        new(CommandKind.OrderRoad, grade, X: fromX, Y: fromY, ToX: toX, ToY: toY, Flag: lamps);
 
     public static Command SetShifts(int building, int shifts) =>
         new(CommandKind.SetShifts, building, shifts);
@@ -131,6 +140,7 @@ public static class Commands
             CommandKind.RepayLoan => RepayLoan(world, command),
             CommandKind.AcceptContract => AcceptContract(world, command),
             CommandKind.DeclineContract => DeclineContract(world, command),
+            CommandKind.OrderLine => OrderLine(world, command),
             CommandKind.NameRepublic => NameRepublic(world, command),
             _ => Outcome.No("that is not something the republic can do yet"),
         };
@@ -156,6 +166,12 @@ public static class Commands
                 world.Buildings.SetTapped(b, tappable[0]);
             }
         }
+
+        // Plugged into whatever runs close enough to it, once, here. Searching
+        // per tick would be buildings × lines distance tests 1,440 times a
+        // simulated day; this is the event that invalidates the answer, so this
+        // is where it is derived.
+        world.Grid.AttachAll(world.Buildings.IdAt(b), c.X, c.Y);
 
         return Outcome.Ok(world.Buildings.IdAt(b));
     }
@@ -219,6 +235,29 @@ public static class Commands
         return null;
     }
 
+    /// <summary>
+    /// Order a span. It is a site with a bill of materials until the crew and the
+    /// steel reach it, and it carries nothing until then.
+    /// </summary>
+    /// <remarks>
+    /// The commissioning number rather than the day: a line takes its turn in the
+    /// build queue like anything else, rather than jumping it or waiting behind
+    /// every factory in the republic.
+    /// </remarks>
+    private static Outcome OrderLine(World world, Command c)
+    {
+        var refusal = world.LineWorks.Order(
+            c.A, c.X, c.Y, c.ToX, c.ToY, world.Buildings.Commissioned, out var site);
+
+        return refusal switch
+        {
+            LineError.None => Outcome.Ok(site!.Id),
+            LineError.TooShort =>
+                Outcome.No($"a span shorter than {world.Tables.MinLine:0} m is not worth surveying"),
+            _ => Outcome.No("that span cannot be ordered"),
+        };
+    }
+
     private static Outcome Demolish(World world, Command c)
     {
         var i = world.Buildings.IndexOf(c.A);
@@ -243,6 +282,7 @@ public static class Commands
         }
 
         world.Buildings.Demolish(c.A);
+        world.Grid.Detach(c.A);
         world.BuildPolicy.Forget(Destination.Building(c.A));
         return Outcome.Ok();
     }

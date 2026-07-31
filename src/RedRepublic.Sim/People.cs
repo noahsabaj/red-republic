@@ -133,6 +133,31 @@ public sealed class Crews
         return null;
     }
 
+    /// <summary>
+    /// Call the gang off a site. They down tools where they stand and wait for
+    /// their office to send a bus.
+    /// </summary>
+    /// <remarks>
+    /// There is no way to make people appear back at the office — the same rule
+    /// that makes construction physical in the first place. A site that finishes
+    /// under them releases them here too, in the same transaction that removes
+    /// it, because a party still pointed at a site that no longer exists would be
+    /// pointed at nothing.
+    /// </remarks>
+    public bool Release(Destination site, double x, double y)
+    {
+        var party = WorkingAt(site);
+        if (party is null)
+        {
+            return false;
+        }
+
+        party.Working = null;
+        party.X = x;
+        party.Y = y;
+        return true;
+    }
+
     /// <summary>Gangs standing about with nowhere to be — what a bus is sent for.</summary>
     public List<Party> Stranded()
     {
