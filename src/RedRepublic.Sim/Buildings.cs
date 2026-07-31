@@ -162,6 +162,39 @@ public sealed class Buildings
     public void SetTapped(int i, int deposit) => _tapped[i] = deposit;
 
     /// <summary>The index of a building by id, or -1 if it no longer stands.</summary>
+    /// <summary>
+    /// Which building's footprint covers a point, or -1.
+    /// </summary>
+    /// <remarks>
+    /// <b>The pick.</b> A screen asking "what did the player just click on" has
+    /// to ask the same question placement asks, or a building can be visibly
+    /// standing somewhere that cannot be selected — and the rule about what
+    /// ground a building occupies is in here rather than in a renderer. A hit
+    /// test written against drawn geometry would be a second copy of that rule,
+    /// and the copy that drifts.
+    /// <para>
+    /// The last match wins, so the most recently commissioned building takes a
+    /// point two of them somehow share. Footprints do not overlap — placement
+    /// refuses it — so that tie-break is a statement about the impossible case
+    /// rather than a policy anybody will notice.
+    /// </para>
+    /// </remarks>
+    public int At(double x, double y)
+    {
+        for (var i = Count - 1; i >= 0; i--)
+        {
+            var half = _t.BWidth[_kind[i]] / 2.0;
+            var deep = _t.BDepth[_kind[i]] / 2.0;
+            if (x >= _x[i] - half && x <= _x[i] + half
+                && y >= _y[i] - deep && y <= _y[i] + deep)
+            {
+                return _id[i];
+            }
+        }
+
+        return -1;
+    }
+
     public int IndexOf(int id)
     {
         for (var i = 0; i < _id.Count; i++)

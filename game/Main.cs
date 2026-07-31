@@ -43,7 +43,6 @@ public partial class Main : Node3D
     public override void _UnhandledInput(InputEvent @event)
     {
         if (_world is null || _shell is null || _scenery is null
-            || _shell.Placing < 0
             || @event is not InputEventMouseButton click
             || !click.Pressed || click.ButtonIndex != MouseButton.Left)
         {
@@ -53,6 +52,15 @@ public partial class Main : Node3D
         var at = _scenery.GroundUnder(GetViewport(), click.Position, _world.Terrain);
         if (at is null)
         {
+            return;
+        }
+
+        // Nothing on the cursor: the click is asking what is there. The pick
+        // comes from the simulation, because the rule about what ground a
+        // building occupies is the same rule placement answers to.
+        if (_shell.Placing < 0)
+        {
+            _shell.Inspect(_world.Buildings.At(at.Value.X, at.Value.Y));
             return;
         }
 

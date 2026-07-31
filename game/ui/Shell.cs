@@ -48,6 +48,7 @@ public sealed partial class Shell : CanvasLayer
     private Sim.World _world = null!;
     private Screen? _open;
     private MenuScreen _menu = null!;
+    private Inspector _inspector = null!;
     private int _speed = 1;
     private double _carried;
     private double _sinceRefresh;
@@ -75,6 +76,9 @@ public sealed partial class Shell : CanvasLayer
     {
         ArgumentNullException.ThrowIfNull(world);
         _world = world;
+
+        _inspector = new Inspector { Name = "Inspector" };
+        AddChild(_inspector);
 
         _hud = new Hud { Name = "Hud" };
         AddChild(_hud);
@@ -108,6 +112,9 @@ public sealed partial class Shell : CanvasLayer
 
         _hud.Refresh(world, Speeds[_speed].Name);
     }
+
+    /// <summary>Show one building, or nothing. What clicking the ground does.</summary>
+    public void Inspect(int building) => _inspector.Show(_world, building);
 
     /// <summary>Tell the player what the republic said no to.</summary>
     public void Refused(string why) => _hud.Refused(why);
@@ -145,6 +152,7 @@ public sealed partial class Shell : CanvasLayer
         _sinceRefresh = 0.0;
         _hud.Refresh(_world, Speeds[_speed].Name);
         _open?.Refresh();
+        _inspector.Refresh();
         Ticked?.Invoke();
     }
 
