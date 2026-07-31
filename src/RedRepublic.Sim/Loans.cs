@@ -100,6 +100,26 @@ public sealed class Loans(Tables tables)
         return null;
     }
 
+    /// <summary>Put an advance back exactly as it was — what a load does.</summary>
+    public void Restore(
+        Market market, double principal, double owed, double repaid, long taken, long due)
+    {
+        _live.Add(new Loan(market, principal, owed, taken, due) { Repaid = repaid });
+    }
+
+    /// <summary>Restore the record of who has been defaulted on and how often.</summary>
+    public void RestoreHistory(IReadOnlyList<Market> burnt, int defaulted, int cleared)
+    {
+        ArgumentNullException.ThrowIfNull(burnt);
+        _burnt.Clear();
+        _burnt.AddRange(burnt);
+        Defaulted = defaulted;
+        Cleared = cleared;
+    }
+
+    /// <summary>Blocs that will not lend again.</summary>
+    public IReadOnlyList<Market> Burnt => _burnt;
+
     public double Outstanding(Market market) => Of(market)?.Outstanding ?? 0.0;
 
     public bool WillLend(Market market) => !_burnt.Contains(market);

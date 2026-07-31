@@ -108,6 +108,31 @@ public sealed class Contracts(Tables tables)
     public IReadOnlyList<Contract> All => _all;
 
     /// <summary>
+    /// Put a tender back exactly as it was, keeping its id — what a load does.
+    /// </summary>
+    /// <remarks>
+    /// Ids come back as they were because a renumbered tender is one the journal
+    /// no longer names.
+    /// </remarks>
+    public void Restore(
+        int id, Market market, int resource, double tonnes, double pricePerTonne,
+        long offered, long expires, long deadline, ContractState state, double delivered)
+    {
+        var c = new Contract(id, market, resource, tonnes, pricePerTonne, offered, expires, deadline)
+        {
+            State = state,
+        };
+
+        c.Deliver(delivered);
+        c.State = state;
+        _all.Add(c);
+        _nextId = Math.Max(_nextId, id + 1);
+    }
+
+    public void RestoreRelations(Market market, double penalty) =>
+        _relations[(int)market] = penalty;
+
+    /// <summary>
     /// How badly a bloc is thinking of the republic, 0 fine to the cap.
     /// </summary>
     /// <remarks>

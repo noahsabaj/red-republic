@@ -214,6 +214,29 @@ public sealed class Fleet(Tables tables)
         return _id.Count - 1;
     }
 
+    /// <summary>
+    /// Put a vehicle back exactly as it was, keeping its id — what a load does.
+    /// </summary>
+    public int Restore(
+        int id, int kind, int home, VehicleState state, VehicleState wasDoing,
+        long boggedSince, double x, double y, double fuel, Job job, Journey? journey)
+    {
+        _id.Add(id);
+        _kind.Add(kind);
+        _home.Add(home);
+        _state.Add(state);
+        _wasDoing.Add(wasDoing);
+        _boggedSince.Add(boggedSince);
+        _x.Add(x);
+        _y.Add(y);
+        _journey.Add(journey);
+        _fuel.Add(fuel);
+        _job.Add(job);
+        Cargo.Grow();
+        _nextId = Math.Max(_nextId, id + 1);
+        return _id.Count - 1;
+    }
+
     public void RemoveAt(int i)
     {
         _id.RemoveAt(i);

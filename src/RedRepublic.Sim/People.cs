@@ -91,6 +91,32 @@ public sealed class Crews
         return null;
     }
 
+    /// <summary>Put a gang back exactly as it was, keeping its id.</summary>
+    public Party Restore(
+        int id, int office, int heads, double x, double y, Market? from,
+        Destination? working, int? riding)
+    {
+        var party = new Party(id, office, heads, x, y, from)
+        {
+            Working = working,
+            Riding = riding,
+        };
+
+        _parties.Add(party);
+        _nextId = Math.Max(_nextId, id + 1);
+        return party;
+    }
+
+    /// <summary>Restore the standing count of who was hired from where.</summary>
+    public void RestoreHired(int office, Market from, int heads)
+    {
+        _hiredByOffice[office] = heads;
+        _hiredFromBloc[from] = _hiredFromBloc.GetValueOrDefault(from) + heads;
+    }
+
+    /// <summary>Which offices hold hired hands, for the save.</summary>
+    public IReadOnlyDictionary<int, int> HiredByOffice => _hiredByOffice;
+
     public Party Send(int office, int heads, double x, double y, Market? from = null)
     {
         var party = new Party(_nextId++, office, heads, x, y, from);
@@ -274,6 +300,15 @@ public sealed class Migration
         return heads;
     }
 
+    /// <summary>Put a waiting party back exactly as it was, keeping its id.</summary>
+    public Group Restore(int id, double x, double y, int heads, long since, int? riding)
+    {
+        var g = new Group(id, x, y, heads, since) { Riding = riding };
+        _waiting.Add(g);
+        _nextId = Math.Max(_nextId, id + 1);
+        return g;
+    }
+
     public Group Arrive(double x, double y, int heads, long today)
     {
         var group = new Group(_nextId++, x, y, heads, today);
@@ -392,6 +427,22 @@ public sealed class Tourism
         return heads;
     }
 
+    /// <summary>Put a visiting party back exactly as it was, keeping its id.</summary>
+    public Visit Restore(
+        int id, double x, double y, int heads, Market market, long since, long until,
+        int? riding, int? stayingAt)
+    {
+        var v = new Visit(id, x, y, heads, market, since, until)
+        {
+            Riding = riding,
+            StayingAt = stayingAt,
+        };
+
+        _visits.Add(v);
+        _nextId = Math.Max(_nextId, id + 1);
+        return v;
+    }
+
     public Visit Arrive(double x, double y, int heads, Market market, long today, Tables t)
     {
         ArgumentNullException.ThrowIfNull(t);
@@ -480,6 +531,9 @@ public sealed class BuildPolicy
     public void SetGlobal(int? crossing) => Global = crossing;
 
     public void SetSite(Destination site, int? crossing) => _bySite[site] = crossing;
+
+    /// <summary>Every site with an instruction of its own, for the save.</summary>
+    public IReadOnlyDictionary<Destination, int?> Sites => _bySite;
 
     /// <summary>Put a site back under the republic's default.</summary>
     public bool ClearSite(Destination site) => _bySite.Remove(site);

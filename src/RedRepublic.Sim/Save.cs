@@ -188,6 +188,194 @@ public static class Save
             w.Double(p.LoyaltyAt(i));
         }
 
+        // The fleet, mid-journey and all. A vehicle halfway to a site is state
+        // rather than a decision, so the journey goes in as it stands: a
+        // re-planned one would arrive at a different tick and the republic would
+        // quietly diverge from the one that was written.
+        var f = world.Fleet;
+        w.Int(f.Count);
+        for (var i = 0; i < f.Count; i++)
+        {
+            w.Int(f.IdAt(i));
+            w.Int(f.KindAt(i));
+            w.Int(f.HomeAt(i));
+            w.Int((int)f.StateAt(i));
+            w.Int((int)f.DoingAt(i));
+            w.Long(f.BoggedSinceAt(i));
+            w.Double(f.XAt(i));
+            w.Double(f.YAt(i));
+            w.Double(f.FuelAt(i));
+
+            var job = f.JobAt(i);
+            w.Int((int)job.Kind);
+            w.Int(job.From);
+            w.Int((int)job.To.Kind);
+            w.Int(job.To.Id);
+            w.Double(job.To.X);
+            w.Double(job.To.Y);
+            w.Int(job.Resource);
+            w.Double(job.Tonnes);
+            w.Int(job.Subject);
+
+            var journey = f.JourneyAt(i);
+            w.Int(journey?.PathX.Count ?? 0);
+            if (journey is not null)
+            {
+                for (var leg = 0; leg < journey.PathX.Count; leg++)
+                {
+                    w.Double(journey.PathX[leg]);
+                    w.Double(journey.PathY[leg]);
+                }
+
+                foreach (var limit in journey.Limits)
+                {
+                    w.Double(limit);
+                }
+
+                w.Int(journey.Leg);
+                w.Double(journey.LegStart);
+                w.Double(journey.LegEnd);
+            }
+
+            for (var res = 0; res < world.Tables.Resources.Length; res++)
+            {
+                w.Double(f.Cargo.Get(i, res));
+            }
+        }
+
+        // The gangs, where they stand and what they are on.
+        w.Int(world.Crews.All.Count);
+        foreach (var party in world.Crews.All)
+        {
+            w.Int(party.Id);
+            w.Int(party.Office);
+            w.Int(party.Heads);
+            w.Double(party.X);
+            w.Double(party.Y);
+            w.Int(party.HiredFrom is null ? -1 : (int)party.HiredFrom.Value);
+            w.Int(party.Working is null ? -1 : (int)party.Working.Value.Kind);
+            w.Int(party.Working?.Id ?? -1);
+            w.Int(party.Riding ?? -1);
+        }
+
+        w.Int(world.Crews.HiredByOffice.Count);
+        foreach (var (office, heads) in world.Crews.HiredByOffice)
+        {
+            w.Int(office);
+            w.Int(heads);
+
+            // Which bloc they came from, read off a party of theirs. A count with
+            // no bloc would be a wage bill in no currency.
+            var bloc = Market.East;
+            foreach (var party in world.Crews.OfOffice(office))
+            {
+                if (party.HiredFrom is not null)
+                {
+                    bloc = party.HiredFrom.Value;
+                    break;
+                }
+            }
+
+            w.Int((int)bloc);
+        }
+
+        // People still on their way in, and visitors part-way through a stay.
+        w.Int(world.Migration.Waiting.Count);
+        foreach (var g in world.Migration.Waiting)
+        {
+            w.Int(g.Id);
+            w.Double(g.X);
+            w.Double(g.Y);
+            w.Int(g.Heads);
+            w.Long(g.Since);
+            w.Int(g.Riding ?? -1);
+        }
+
+        w.Int(world.Tourism.Visits.Count);
+        foreach (var v in world.Tourism.Visits)
+        {
+            w.Int(v.Id);
+            w.Double(v.X);
+            w.Double(v.Y);
+            w.Int(v.Heads);
+            w.Int((int)v.Market);
+            w.Long(v.Since);
+            w.Long(v.Until);
+            w.Int(v.Riding ?? -1);
+            w.Int(v.StayingAt ?? -1);
+        }
+
+        // What is owed, and to whom the republic can no longer go.
+        w.Int(world.Loans.All.Count);
+        foreach (var l in world.Loans.All)
+        {
+            w.Int((int)l.Market);
+            w.Double(l.Principal);
+            w.Double(l.Owed);
+            w.Double(l.Repaid);
+            w.Long(l.TakenDay);
+            w.Long(l.DueDay);
+        }
+
+        w.Int(world.Loans.Burnt.Count);
+        foreach (var market in world.Loans.Burnt)
+        {
+            w.Int((int)market);
+        }
+
+        w.Int(world.Loans.Defaulted);
+        w.Int(world.Loans.Cleared);
+
+        // The tenders, offered, taken and closed — and how each bloc feels.
+        w.Int(world.Contracts.All.Count);
+        foreach (var c in world.Contracts.All)
+        {
+            w.Int(c.Id);
+            w.Int((int)c.Market);
+            w.Int(c.Resource);
+            w.Double(c.Tonnes);
+            w.Double(c.PricePerTonne);
+            w.Long(c.OfferedDay);
+            w.Long(c.ExpiresDay);
+            w.Long(c.DeadlineDay);
+            w.Int((int)c.State);
+            w.Double(c.Delivered);
+        }
+
+        w.Double(world.Contracts.Relations(Market.East));
+        w.Double(world.Contracts.Relations(Market.West));
+
+        // The standing instructions to the customs houses, in their order,
+        // because the order is the decision.
+        w.Int(world.TradeRules.Count);
+        foreach (var rule in world.TradeRules)
+        {
+            w.Int(rule.Resource);
+            w.Int((int)rule.Market);
+            w.Int((int)rule.Action);
+        }
+
+        // Where sites buy what the republic has not made.
+        w.Int(world.BuildPolicy.Global ?? -1);
+        w.Int(world.BuildPolicy.Sites.Count);
+        foreach (var (site, crossing) in world.BuildPolicy.Sites)
+        {
+            w.Int((int)site.Kind);
+            w.Int(site.Id);
+            w.Double(site.X);
+            w.Double(site.Y);
+            w.Int(crossing ?? -1);
+        }
+
+        // The working day, and every exception to it.
+        w.Double(world.Buildings.Shifts.National);
+        w.Int(world.Buildings.Shifts.KindRules.Count);
+        foreach (var (kind, hours) in world.Buildings.Shifts.KindRules)
+        {
+            w.Int(kind);
+            w.Double(hours);
+        }
+
         // The journal, which is how the republic came to be. A save records its
         // own history, so a replay is possible at all.
         w.Int(world.Journal.Count);
@@ -357,6 +545,162 @@ public static class Save
             {
                 world.Citizens.SetWorkplace(c, workplace, Commute.None);
             }
+        }
+
+        var vehicles = r.Int();
+        for (var i = 0; i < vehicles; i++)
+        {
+            var id = r.Int();
+            var kind = r.Int();
+            var home = r.Int();
+            var state = (VehicleState)r.Int();
+            var doing = (VehicleState)r.Int();
+            var bogged = r.Long();
+            var x = r.Double();
+            var y = r.Double();
+            var fuel = r.Double();
+
+            var job = new Job(
+                (JobKind)r.Int(), r.Int(),
+                new Destination((DestinationKind)r.Int(), r.Int(), r.Double(), r.Double()),
+                r.Int(), r.Double(), r.Int());
+
+            Journey? journey = null;
+            var points = r.Int();
+            if (points > 0)
+            {
+                var px = new double[points];
+                var py = new double[points];
+                for (var p = 0; p < points; p++)
+                {
+                    px[p] = r.Double();
+                    py[p] = r.Double();
+                }
+
+                var limits = new double[points - 1];
+                for (var p = 0; p < limits.Length; p++)
+                {
+                    limits[p] = r.Double();
+                }
+
+                journey = Journey.Restore(px, py, limits, r.Int(), r.Double(), r.Double());
+            }
+
+            var v = world.Fleet.Restore(
+                id, kind, home, state, doing, bogged, x, y, fuel, job, journey);
+
+            for (var res = 0; res < tables.Resources.Length; res++)
+            {
+                world.Fleet.Cargo.Set(v, res, r.Double());
+            }
+        }
+
+        var parties = r.Int();
+        for (var i = 0; i < parties; i++)
+        {
+            var id = r.Int();
+            var office = r.Int();
+            var heads = r.Int();
+            var x = r.Double();
+            var y = r.Double();
+            var from = r.Int();
+            var workingKind = r.Int();
+            var workingId = r.Int();
+            var riding = r.Int();
+
+            world.Crews.Restore(
+                id, office, heads, x, y,
+                from < 0 ? null : (Market)from,
+                workingKind < 0
+                    ? null
+                    : new Destination((DestinationKind)workingKind, workingId, 0.0, 0.0),
+                riding < 0 ? null : riding);
+        }
+
+        var hired = r.Int();
+        for (var i = 0; i < hired; i++)
+        {
+            world.Crews.RestoreHired(r.Int(), heads: r.Int(), from: (Market)r.Int());
+        }
+
+        var waiting = r.Int();
+        for (var i = 0; i < waiting; i++)
+        {
+            var id = r.Int();
+            var group = world.Migration.Restore(id, r.Double(), r.Double(), r.Int(), r.Long(), null);
+            var riding = r.Int();
+            if (riding >= 0)
+            {
+                group.Riding = riding;
+            }
+        }
+
+        var visits = r.Int();
+        for (var i = 0; i < visits; i++)
+        {
+            var id = r.Int();
+            var x = r.Double();
+            var y = r.Double();
+            var heads = r.Int();
+            var market = (Market)r.Int();
+            var since = r.Long();
+            var until = r.Long();
+            var riding = r.Int();
+            var staying = r.Int();
+
+            world.Tourism.Restore(
+                id, x, y, heads, market, since, until,
+                riding < 0 ? null : riding, staying < 0 ? null : staying);
+        }
+
+        var loans = r.Int();
+        for (var i = 0; i < loans; i++)
+        {
+            world.Loans.Restore(
+                (Market)r.Int(), r.Double(), r.Double(), r.Double(), r.Long(), r.Long());
+        }
+
+        var burnt = new List<Market>();
+        var burntCount = r.Int();
+        for (var i = 0; i < burntCount; i++)
+        {
+            burnt.Add((Market)r.Int());
+        }
+
+        world.Loans.RestoreHistory(burnt, r.Int(), r.Int());
+
+        var tenders = r.Int();
+        for (var i = 0; i < tenders; i++)
+        {
+            world.Contracts.Restore(
+                r.Int(), (Market)r.Int(), r.Int(), r.Double(), r.Double(),
+                r.Long(), r.Long(), r.Long(), (ContractState)r.Int(), r.Double());
+        }
+
+        world.Contracts.RestoreRelations(Market.East, r.Double());
+        world.Contracts.RestoreRelations(Market.West, r.Double());
+
+        var rules = r.Int();
+        for (var i = 0; i < rules; i++)
+        {
+            world.TradeRules.Add(new TradeRule(r.Int(), (Market)r.Int(), (TradeAction)r.Int()));
+        }
+
+        var global = r.Int();
+        world.BuildPolicy.SetGlobal(global < 0 ? null : global);
+        var overrides = r.Int();
+        for (var i = 0; i < overrides; i++)
+        {
+            var site = new Destination((DestinationKind)r.Int(), r.Int(), r.Double(), r.Double());
+            var crossing = r.Int();
+            world.BuildPolicy.SetSite(site, crossing < 0 ? null : crossing);
+        }
+
+        world.Buildings.SetNationalHours(r.Double());
+        var kindRules = r.Int();
+        for (var i = 0; i < kindRules; i++)
+        {
+            world.Buildings.SetKindHours(r.Int(), r.Double());
         }
 
         var entries = r.Int();

@@ -593,6 +593,20 @@ public sealed class Tables
 
     public int ResourceIndex(string id) => IndexIn(Resources, id);
 
+    /// <summary>Which row of the grade table a kind of way is, by its authored id.</summary>
+    public int GradeIndex(string id)
+    {
+        for (var i = 0; i < Grades.Length; i++)
+        {
+            if (Grades[i].Id == id)
+            {
+                return i;
+            }
+        }
+
+        throw new KeyNotFoundException($"no grade is authored as \"{id}\"");
+    }
+
     /// <summary>
     /// Which row of the utility table a kind of line is, by its authored id.
     /// </summary>
