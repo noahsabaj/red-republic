@@ -50,5 +50,13 @@
       { "seed": 42, "extent": 1200.0, "cells": 120, "surface_fnv": "5f5994af4746ecce", "height_fnv": "659680225958bac0", "counts": [6211, 7958, 0, 231] },
       { "seed": 42, "extent": 3000.0, "cells": 300, "surface_fnv": "2783ea32d7ff862b", "height_fnv": "3a2402b64c90fc6e", "counts": [9128, 79033, 1426, 413] }
     ]
-  }
+  },
+  "geology": [
+    { "seed": 1961, "extent": 3000.0, "deposits": 18, "layers": 46, "fnv": "f66bc751c69a0791", "total_tonnes_bits": "4166e2c367fbe806" },
+    { "seed": 1961, "extent": 10000.0, "deposits": 18, "layers": 46, "fnv": "9fb1574f8ab9e343", "total_tonnes_bits": "4166e2c367fbe806" },
+    { "seed": 7, "extent": 3000.0, "deposits": 18, "layers": 46, "fnv": "bfcb05d5e943b596", "total_tonnes_bits": "4168d6a4a1abd824" },
+    { "seed": 7, "extent": 10000.0, "deposits": 18, "layers": 46, "fnv": "22205356310535ab", "total_tonnes_bits": "4168d6a4a1abd824" },
+    { "seed": 42, "extent": 3000.0, "deposits": 18, "layers": 46, "fnv": "633351b4debfefc8", "total_tonnes_bits": "416973b146951c35" },
+    { "seed": 42, "extent": 10000.0, "deposits": 18, "layers": 46, "fnv": "3c1e8decabf9c86a", "total_tonnes_bits": "416973b146951c35" }
+  ]
 }

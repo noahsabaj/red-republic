@@ -100,8 +100,60 @@ fn main() {
     println!("  }},");
 
     terrain_vectors();
+    geology_vectors();
 
     println!("}}");
+}
+
+/// The geology fingerprint, per seed.
+///
+/// Hashes every authored field of every body in draw order. It fails if the
+/// draw order changes, if the plan changes, or — the case it really exists for —
+/// if generation ever picks up a float operation allowed to differ in its last
+/// bit between platforms. Any of those means two players with the same seed get
+/// different republics.
+fn geology_vectors() {
+    use red_republic_sim::mapgen::{DEFAULT_PLAN, generate_geology};
+    use red_republic_sim::units::Metres;
+
+    println!("  \"geology\": [");
+    let mut rows: Vec<String> = Vec::new();
+    for &seed in &[1961_u64, 7, 42] {
+        for &extent in &[3000.0_f64, 10_000.0] {
+            let g = generate_geology(seed, Metres(extent), &DEFAULT_PLAN);
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            let mut eat = |v: f64, h: &mut u64| {
+                for byte in v.to_bits().to_le_bytes() {
+                    *h ^= u64::from(byte);
+                    *h = h.wrapping_mul(0x100_0000_01b3);
+                }
+            };
+            let deposits = g.all();
+            let mut layers = 0usize;
+            let mut total = 0.0_f64;
+            for d in deposits {
+                eat(f64::from(d.id.0), &mut h);
+                eat(d.mineral as u8 as f64, &mut h);
+                eat(d.centre.x.0, &mut h);
+                eat(d.centre.y.0, &mut h);
+                eat(d.radius.0, &mut h);
+                eat(d.top.0, &mut h);
+                for l in &d.layers {
+                    eat(l.thickness.0, &mut h);
+                    eat(l.initial.0, &mut h);
+                    layers += 1;
+                    total += l.initial.0;
+                }
+            }
+            rows.push(format!(
+                "    {{ \"seed\": {seed}, \"extent\": {extent:?}, \"deposits\": {}, \"layers\": {layers}, \"fnv\": \"{h:016x}\", \"total_tonnes_bits\": \"{:016x}\" }}",
+                deposits.len(),
+                total.to_bits()
+            ));
+        }
+    }
+    println!("{}", rows.join(",\n"));
+    println!("  ]");
 }
 
 /// FNV-1a over bytes, matching `Bits.fnv` on the far side.
@@ -213,5 +265,6 @@ fn terrain_vectors() {
     }
     println!("    \"maps\": [\n{}\n    ]", rows.join(",\n"));
 
-    println!("  }}");
+    // A trailing comma: `geology_vectors` follows.
+    println!("  }},");
 }
