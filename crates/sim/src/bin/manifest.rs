@@ -23,6 +23,10 @@ use red_republic_sim::ground::{
 use red_republic_sim::journey::Medium;
 use red_republic_sim::mapgen::{DEFAULT_PLAN, GEOLOGY_STREAM};
 use red_republic_sim::resource::{Form, Resource};
+use red_republic_sim::shifts::{
+    DAYLIGHT_HOURS, MAX_HOURS, MAX_SHIFTS, MIN_HOURS, OVERWORK_HEALTH, OVERWORK_LOYALTY,
+    STANDARD_HOURS,
+};
 use red_republic_sim::terrain::{DEFAULT_TERRAIN, Surface};
 
 fn q(s: &str) -> String {
@@ -149,6 +153,16 @@ fn main() {
     }
     // Climate is balance: the coldest month decides how much coal a winter
     // costs, and the rain table decides whether the ground is mud.
+    // The working day. `STANDARD_HOURS` is what every authored rate in the
+    // building table means, so it is balance in the strongest sense: change it
+    // and every output figure in the game means something else.
+    canon.push(STANDARD_HOURS);
+    canon.push(MIN_HOURS);
+    canon.push(MAX_HOURS);
+    canon.push(DAYLIGHT_HOURS);
+    canon.push_int(u32::from(MAX_SHIFTS));
+    canon.push(OVERWORK_HEALTH);
+    canon.push(OVERWORK_LOYALTY);
     // The ground model: the thaw, the mud and the tracks traffic wears in.
     canon.push(FREEZE_C);
     canon.push(FROST_RANGE_C);
@@ -436,6 +450,21 @@ fn main() {
     // Climate is balance, and the two halves are authored together on purpose:
     // the taiga is cold and dry, the maritime posting is mild and wet, and those
     // are different problems rather than one dial.
+    // The working day. STANDARD_HOURS is what every authored rate in the
+    // building table means, so it is balance in the strongest sense: change it
+    // and every output figure in the game means something else.
+    out.push_str(&format!(
+        "  \"shifts\": {{ \"standard_hours\": {}, \"min_hours\": {}, \"max_hours\": {}, \"daylight_hours\": {}, \"max_shifts\": {}, \"overwork_health\": {}, \"overwork_loyalty\": {} }},
+",
+        n(STANDARD_HOURS),
+        n(MIN_HOURS),
+        n(MAX_HOURS),
+        n(DAYLIGHT_HOURS),
+        MAX_SHIFTS,
+        n(OVERWORK_HEALTH),
+        n(OVERWORK_LOYALTY)
+    ));
+
     out.push_str(
         "  \"ground\": {
 ",

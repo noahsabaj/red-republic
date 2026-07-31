@@ -184,8 +184,16 @@ public sealed class UnitsTests
 /// <summary>Stockpiles clamp at zero, and the flat layout addresses the right slot.</summary>
 public sealed class StockTests
 {
-    private static Stock Make(int buildings) =>
-        new(Fixtures.Tables.Resources.Length, buildings);
+    private static GrowableStock Make(int buildings)
+    {
+        var s = new GrowableStock(Fixtures.Tables.Resources.Length);
+        for (var i = 0; i < buildings; i++)
+        {
+            s.Grow();
+        }
+
+        return s;
+    }
 
     [Fact]
     public void A_fresh_stockpile_is_empty()

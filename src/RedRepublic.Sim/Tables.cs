@@ -131,6 +131,29 @@ public sealed class Tables
 
     public MineralPlan[] MineralPlan { get; private set; } = [];
 
+    // ---- the working day ----
+
+    /// <summary>
+    /// One shift. <b>What every authored rate in the building table means</b>,
+    /// so this is balance in the strongest sense: change it and every output
+    /// figure in the game means something else.
+    /// </summary>
+    public double StandardHours { get; private set; }
+
+    public double MinHours { get; private set; }
+    public double MaxHours { get; private set; }
+
+    /// <summary>
+    /// Above this, somebody working here travels in the dark. A threshold rather
+    /// than a daylight model: no working period longer than this fits inside
+    /// daylight in any climate the republic is posted to.
+    /// </summary>
+    public double DaylightHours { get; private set; }
+
+    public int MaxShifts { get; private set; }
+    public double OverworkHealth { get; private set; }
+    public double OverworkLoyalty { get; private set; }
+
     // ---- the ground model ----
 
     public double FreezeC { get; private set; }
@@ -287,6 +310,7 @@ public sealed class Tables
         t.LoadPlans(m);
         t.LoadClimates(m);
         t.LoadGround(m);
+        t.LoadShifts(m);
 
         t.ChecksumExpected = m.GetProperty("checksum").GetString()!;
         t.ChecksumGot = t.Checksum();
@@ -498,6 +522,18 @@ public sealed class Tables
         MineralPlan = [.. plans];
     }
 
+    private void LoadShifts(JsonElement m)
+    {
+        var s = m.GetProperty("shifts");
+        StandardHours = s.GetProperty("standard_hours").GetDouble();
+        MinHours = s.GetProperty("min_hours").GetDouble();
+        MaxHours = s.GetProperty("max_hours").GetDouble();
+        DaylightHours = s.GetProperty("daylight_hours").GetDouble();
+        MaxShifts = s.GetProperty("max_shifts").GetInt32();
+        OverworkHealth = s.GetProperty("overwork_health").GetDouble();
+        OverworkLoyalty = s.GetProperty("overwork_loyalty").GetDouble();
+    }
+
     private void LoadGround(JsonElement m)
     {
         var g = m.GetProperty("ground");
@@ -628,6 +664,13 @@ public sealed class Tables
             h.Push(BStoresToOrder[b]);
         }
 
+        h.Push(StandardHours);
+        h.Push(MinHours);
+        h.Push(MaxHours);
+        h.Push(DaylightHours);
+        h.Push(MaxShifts);
+        h.Push(OverworkHealth);
+        h.Push(OverworkLoyalty);
         h.Push(FreezeC);
         h.Push(FrostRangeC);
         h.Push(FrostLag);
