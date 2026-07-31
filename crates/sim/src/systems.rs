@@ -2890,6 +2890,20 @@ fn importable(
             );
         }
     }
+    // The same omission as the freight pass had, and worth closing in the same
+    // commit: a line site could not have materials bought on its account
+    // either, so even a republic that noticed the shortage could not tell the
+    // Directorate to cover it.
+    for line in world.lineworks.all() {
+        for (resource, bill) in line.materials() {
+            consider(
+                Destination::LineSite(line.id),
+                resource,
+                line.material_outstanding(resource),
+                bill.0,
+            );
+        }
+    }
     for road in world.roadworks.all() {
         for (resource, bill) in road.materials() {
             consider(
@@ -3545,6 +3559,25 @@ pub fn dispatch(world: &World) -> Vec<Mutation> {
         for (resource, _) in road.materials() {
             if road.material_outstanding(resource).is_positive() {
                 sites.push((Destination::RoadSite(road.id), resource));
+            }
+        }
+    }
+    // **And so does a span of wire, which nothing here ever asked about.** A
+    // line site was the one consignee the freight pass did not know existed:
+    // `Destination::LineSite` is a variant, `crews` posts gangs to it, `apply`
+    // unloads into it — and no lorry was ever told to take it anything, so it
+    // waited for materials that could not come. Measured on a ten-year run: a
+    // power line one tonne of steel short of started, at 0% for a decade, with
+    // eighty tonnes of steel standing at the customs house and a hundred
+    // tonnes a month of everything else moving past it.
+    //
+    // That made every power line and every heat main in the game unbuildable,
+    // so a republic could never light anything it did not already have lit —
+    // which on an empty map is nothing at all.
+    for line in world.lineworks.all() {
+        for (resource, _) in line.materials() {
+            if line.material_outstanding(resource).is_positive() {
+                sites.push((Destination::LineSite(line.id), resource));
             }
         }
     }
@@ -11402,6 +11435,86 @@ mod tests {
         assert!(
             w.buildings.get(works).unwrap().powered,
             "the grid is built and the factory is still dark"
+        );
+    }
+
+    /// Somebody drives the steel out to the span, and until this existed nobody
+    /// ever did.
+    ///
+    /// **The bug that made every power line and every heat main in the game
+    /// unbuildable.** `dispatch`'s "sites waiting on materials" pass enumerated
+    /// buildings and roadworks and simply did not know `Destination::LineSite`
+    /// existed — though the variant did, `crews` posted gangs to it, and `apply`
+    /// unloaded into it. So a line was ordered, became a site, and waited for
+    /// materials no lorry was ever told to bring. Measured on a ten-year run: a
+    /// power line one tonne of steel short of *starting*, at 0% for a decade,
+    /// with eighty tonnes of steel standing at the customs house and a hundred
+    /// tonnes a month of everything else driving past it. On an empty map that
+    /// means a republic can never light anything at all.
+    ///
+    /// **`a_line_carries_nothing_until_the_crew_have_strung_it` could not catch
+    /// it, and the reason is worth keeping.** That test puts the steel into the
+    /// site's stock by hand — `lineworks.get_mut(site).stock.add(..)` — so it
+    /// proves a supplied span gets strung and says nothing whatever about
+    /// whether a span can be supplied. The delivery was the missing half, so the
+    /// test that skipped the delivery was blind to exactly the thing that was
+    /// broken. This one refuses to touch the site's stock: the steel starts in a
+    /// depot and has to be driven.
+    ///
+    /// Watched to fail: drop the `lineworks` loop out of `dispatch` and the span
+    /// is still a site, still holding nothing, after sixty days.
+    #[test]
+    fn a_line_site_is_driven_its_steel_like_any_other_site() {
+        use crate::utility::Utility;
+        let mut w = bare();
+        haulage(&mut w, at(1_000.0, 600.0));
+        place(
+            &mut w,
+            BuildingKind::ConstructionOffice,
+            at(1_000.0, 1_000.0),
+        );
+        staff_up(&mut w, at(1_150.0, 1_000.0), 40);
+        // The steel stands in a depot, exactly as imported steel stands in a
+        // customs house. Nothing here reaches into the site.
+        let depot = place(&mut w, BuildingKind::Depot, at(1_300.0, 1_000.0));
+        w.buildings
+            .get_mut(depot)
+            .unwrap()
+            .stock
+            .add(Resource::Steel, Tonnes(200.0));
+
+        let crate::command::Done::Strung(site) = w
+            .issue(crate::command::Command::OrderLine {
+                kind: Utility::Power,
+                from: at(1_000.0, 1_000.0),
+                to: at(1_600.0, 1_000.0),
+            })
+            .expect("a span worth surveying")
+        else {
+            panic!("ordering a line should hand back the site");
+        };
+        assert!(
+            w.lineworks
+                .get(site)
+                .expect("just ordered")
+                .stock
+                .get(Resource::Steel)
+                .0
+                == 0.0,
+            "the span starts with nothing, which is the whole point"
+        );
+
+        for _ in 0..TICKS_PER_DAY * 60 {
+            w.tick();
+        }
+
+        assert!(
+            w.lineworks.get(site).is_none(),
+            "sixty days on, the span is still a site — nobody drove it its steel"
+        );
+        assert!(
+            w.utilities.length_of(Utility::Power).0 > 0.0,
+            "the republic has no wire to show for a finished span"
         );
     }
 

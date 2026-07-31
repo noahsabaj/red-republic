@@ -365,6 +365,47 @@ fn main() {
     // starved of an input. Reading the runner is the point of the runner, and
     // without this the most important question it raises is the one it cannot
     // answer.
+    // Sites that are ordered and not yet finished, and what each is short of.
+    // A line nobody delivers to looks exactly like a line nobody ordered from
+    // every other figure this tool prints.
+    let works: Vec<String> = world
+        .lineworks()
+        .all()
+        .iter()
+        .map(|l| {
+            let short: Vec<String> = l
+                .materials()
+                .into_iter()
+                .filter(|(_, bill)| bill.is_positive())
+                .map(|(r, bill)| {
+                    format!(
+                        "{} {:.0}/{:.0} t",
+                        r.name().to_lowercase(),
+                        bill.0 - l.material_outstanding(r).0,
+                        bill.0
+                    )
+                })
+                .collect();
+            format!(
+                "  {:<22} {:.0}% built · {}",
+                format!("{:?} line", l.kind),
+                l.progress() * 100.0,
+                if short.is_empty() {
+                    "nothing wanted".to_string()
+                } else {
+                    short.join(" · ")
+                }
+            )
+        })
+        .collect();
+    if !works.is_empty() {
+        println!();
+        println!("lines under construction:");
+        for line in works {
+            println!("{line}");
+        }
+    }
+
     println!();
     println!("roster:");
     for b in world.buildings().all() {
@@ -490,6 +531,16 @@ impl Director {
         (Resource::Coal, 200.0),
         (Resource::Fuel, 60.0),
         (Resource::Machinery, 20.0),
+        // Six tonnes a kilometre, and without it the grid is an order that
+        // never becomes a wire: the first span was accepted, sat as a site for
+        // ten years waiting for steel that was never bought, and every building
+        // in the republic read `no power` beside a fully staffed power station.
+        (Resource::Steel, 80.0),
+        // A heat main is eighteen tonnes of steel and twelve of brick to the
+        // kilometre, and a republic whose brickworks has no gravel and no crew
+        // makes none of the second. Without this the mains are ordered and never
+        // laid, which is the same shape as the grid before steel was bought.
+        (Resource::Bricks, 60.0),
     ];
 
     const MATERIALS: &'static [BuildingKind] = &[
@@ -523,6 +574,113 @@ impl Director {
         self.build_next(world);
         self.hire(world);
         self.trade(world);
+        self.grid(world);
+    }
+
+    /// String the power line, and then keep stringing it.
+    ///
+    /// **A plant that is not wired to anything lights nothing, including
+    /// itself**, and this runner never laid a single span — so a republic that
+    /// had bought a power station, a transformer and a coal mine sat dark for
+    /// ten years, and the mine never cut a tonne because a mine draws six
+    /// megawatts. Every building read `no power` while a fully staffed plant
+    /// stood beside them.
+    ///
+    /// One span a month, and the town centre is the hub. That is not the
+    /// cheapest grid a player could draw, but a star from the middle of the town
+    /// is what somebody actually builds, and this is meant to be a plain player
+    /// rather than a good one. A span is a *site* like any other — it wants
+    /// steel and builder-days — so ordering one at a time is also what keeps
+    /// the queue honest.
+    fn grid(&mut self, world: &mut World) {
+        use red_republic_sim::utility::Utility;
+
+        // One span under construction at a time, across both networks: a
+        // republic with one office and one gang cannot work two.
+        if !world.lineworks().is_empty() {
+            return;
+        }
+        // Current before heat. A dark republic produces nothing at all where a
+        // cold one merely suffers, and the boiler house that carries the heat
+        // draws off the grid itself.
+        if self.string(world, Utility::Power) {
+            return;
+        }
+        self.string(world, Utility::Heat);
+    }
+
+    /// Order one span of one network, and say whether anything was ordered.
+    ///
+    /// Source to the hub first, then the hub outward to whichever consumer is
+    /// nearest and not yet joined. Written once for both networks because a
+    /// heat main is the same problem as a power line in every respect that
+    /// matters here — and because the first version of this did power only,
+    /// which left every home in the republic reading `cold` through ten winters
+    /// beside a fully staffed boiler house.
+    fn string(&mut self, world: &mut World, kind: red_republic_sim::utility::Utility) -> bool {
+        use red_republic_sim::Building;
+        use red_republic_sim::utility::Utility;
+
+        let makes: fn(&Building) -> bool = match kind {
+            Utility::Heat => |b| b.def().heat_output > 0.0,
+            _ => |b| b.def().power_output > 0.0,
+        };
+        let wants: fn(&Building) -> bool = match kind {
+            Utility::Heat => |b| b.def().heat > 0.0,
+            _ => |b| b.def().power_draw > 0.0,
+        };
+
+        // Nothing to carry until something makes it.
+        let Some(source) = world
+            .buildings()
+            .all()
+            .iter()
+            .find(|b| b.is_built() && makes(b))
+            .map(|b| (b.id, b.centre))
+        else {
+            return false;
+        };
+        // The source to the hub first: until that span exists there is no
+        // network for anything else to join.
+        if world.utilities().network_of(source.0, kind).is_none() {
+            match world.issue(Command::OrderLine {
+                kind,
+                from: source.1,
+                to: self.centre,
+            }) {
+                Ok(_) => self.say(format!("laying the {} in from the works", kind.def().name)),
+                Err(why) => self.say(format!("no {} from the works: {why}", kind.def().name)),
+            }
+            return true;
+        }
+        // Then outward, nearest first, so it grows out of the town rather than
+        // leaping across the map.
+        let mut waiting: Vec<_> = world
+            .buildings()
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && wants(b))
+            .filter(|b| world.utilities().network_of(b.id, kind).is_none())
+            .map(|b| (b.centre, b.def().name))
+            .collect();
+        waiting.sort_by(|a, b| {
+            self.centre
+                .distance_to(a.0)
+                .0
+                .total_cmp(&self.centre.distance_to(b.0).0)
+        });
+        let Some(&(at, name)) = waiting.first() else {
+            return false;
+        };
+        match world.issue(Command::OrderLine {
+            kind,
+            from: self.centre,
+            to: at,
+        }) {
+            Ok(_) => self.say(format!("running the {} out to the {name}", kind.def().name)),
+            Err(why) => self.say(format!("no {} to the {name}: {why}", kind.def().name)),
+        }
+        true
     }
 
     /// Put the next thing on the plan up, if there is nothing already going.
