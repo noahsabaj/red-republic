@@ -45,6 +45,10 @@ var _rows: VBoxContainer = null
 var _purse: Label = null
 var _built := false
 
+## Whether the republic has anybody to work a site of its own, and what that
+## means for the Build button. Refreshed on every open.
+var _crews: Label = null
+
 
 func _ready() -> void:
 	layer = 12
@@ -57,6 +61,7 @@ func open(republic: Republic) -> void:
 		_build()
 		_built = true
 	_refresh_purse()
+	_refresh_own()
 	visible = true
 
 
@@ -87,10 +92,12 @@ func _build() -> void:
 	column.add_child(Style.heading("BUILD", Style.SIZE_TITLE))
 	_purse = Style.small("", Style.INK_DIM)
 	column.add_child(_purse)
+	_crews = Style.small("", Style.INK_DIM)
+	column.add_child(_crews)
 	column.add_child(Style.small(
-		"Build it yourself with your own crews and materials, which costs no money — "
-		+ "or pay a foreign firm, which needs neither and is the only thing that works "
-		+ "before you have a Construction Office.",
+		"Build it yourself with your own crews and materials, which costs no money "
+		+ "and takes as long as you have hands for — or pay a foreign firm, which "
+		+ "needs neither and starts the same day.",
 		Style.INK_DIM
 	))
 	column.add_child(Style.divider())
@@ -244,6 +251,16 @@ func _row(kind: int) -> Control:
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	bottom.add_child(spacer)
 
+	# **Always offered, and that is deliberate.** `Command::Place` is not refused
+	# when the republic has no crews: it puts down a foundation that waits, and
+	# work starts the day an office has somebody in it. Placing a site early is
+	# therefore a real thing a player might mean to do — queueing the work — and
+	# an earlier version of this hid the button until there were builders, which
+	# took that away to fix a problem it did not have.
+	#
+	# The problem it *does* have is silence: pressing this on an empty map looks
+	# like nothing happened, because visibly nothing does. That is answered by
+	# the crew line under the heading rather than by removing the control.
 	var own := Style.button("Build")
 	own.pressed.connect(func(): _pick(kind, -1))
 	bottom.add_child(own)
@@ -265,6 +282,27 @@ func _row(kind: int) -> Control:
 func _pick(kind: int, market: int) -> void:
 	visible = false
 	chose.emit(kind, market)
+
+
+## Say whether there is anybody to send, because pressing Build with nobody
+## looks exactly like pressing a broken button.
+##
+## The site is real either way — it waits, and work starts the day an office has
+## somebody in it — so this is a sentence rather than a disabled control.
+func _refresh_own() -> void:
+	if _crews == null:
+		return
+	var crews: int = _republic.builders() if _republic != null else 0
+	if crews > 0:
+		_crews.text = "%d builders on the books." % crews
+		_crews.add_theme_color_override("font_color", Style.INK_DIM)
+	else:
+		_crews.text = (
+			"No builders yet. Anything you Build now is a foundation that waits "
+			+ "until a Construction Office has somebody in it — contracting is what "
+			+ "puts a building up today."
+		)
+		_crews.add_theme_color_override("font_color", Style.ALARM)
 
 
 func _refresh_purse() -> void:

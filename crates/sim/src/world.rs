@@ -1486,6 +1486,29 @@ impl World {
         &self.crews
     }
 
+    /// How many people the republic could send to work a site of its own.
+    ///
+    /// **The number behind the difference between building and contracting**,
+    /// and until now the player had no way to see it. [`Command::Place`] is not
+    /// refused when there is nobody to work the site — it succeeds, and puts
+    /// down a foundation that stands there for ever. That is worse than a
+    /// refusal, because a refusal at least says something: the build screen
+    /// offered "Build" from the first minute of a republic that had no office,
+    /// no crews and no materials, and pressing it produced a permanent
+    /// no-op with no message.
+    ///
+    /// Staff of built construction offices, which is exactly who a posting can
+    /// draw on — an office half-manned can still work a site, slowly, so this
+    /// is a count of heads rather than a yes or no.
+    pub fn builders(&self) -> u32 {
+        self.buildings
+            .all()
+            .iter()
+            .filter(|b| b.kind == crate::building::BuildingKind::ConstructionOffice && b.is_built())
+            .map(|b| b.staff)
+            .sum()
+    }
+
     /// Where sites buy what the republic has not made.
     pub fn build_policy(&self) -> &BuildPolicy {
         &self.build_policy

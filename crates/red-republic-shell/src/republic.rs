@@ -1366,6 +1366,15 @@ impl Republic {
         })
     }
 
+    /// How many people the republic could send to work a site of its own.
+    ///
+    /// Zero means "Build" would put down a foundation nothing will ever work,
+    /// which is what the build screen uses to stop offering it.
+    #[func]
+    fn builders(&self) -> i64 {
+        self.world.as_ref().map_or(0, |w| i64::from(w.builders()))
+    }
+
     /// What the standings are called, worst first.
     #[func]
     fn priority_names(&self) -> PackedStringArray {
