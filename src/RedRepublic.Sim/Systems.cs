@@ -75,6 +75,9 @@ public static class Systems
         new("construction", [MutationKind.Build, MutationKind.Consume], Construction),
         new("production", [MutationKind.Extract, MutationKind.Consume, MutationKind.Produce], Production),
         new("households", [MutationKind.Consume], Households),
+        new("commissioning", [MutationKind.Commission], Commissioning),
+        new("fleet", [MutationKind.Arrive, MutationKind.Transfer], FleetPass),
+        new("dispatch", [MutationKind.Dispatch], Dispatch),
     ];
 
     /// <summary>
@@ -155,6 +158,16 @@ public static class Systems
                     // Censuses rather than changes: the pass has already
                     // written what it decided, and the mutation records that
                     // it ran so the journal and a replay can see it.
+                    break;
+
+                case MutationKind.Commission:
+                case MutationKind.Dispatch:
+                case MutationKind.Arrive:
+                case MutationKind.Transfer:
+                    // The fleet moves itself: a journey is state rather than
+                    // a change, and loading is one transaction the pass has
+                    // to carry out where it decides it. The mutation records
+                    // that it happened.
                     break;
 
                 case MutationKind.Weather:
@@ -872,6 +885,514 @@ public static class Systems
 
         return taught > 0 ? [new Mutation(MutationKind.Schooling, taught, 0, -1, 0.0, 0.0)] : [];
     }
+
+
+    /// <summary>
+    /// A garage takes delivery of the vehicles its establishment allows.
+    /// </summary>
+    /// <remarks>
+    /// The establishment is authored on the building rather than as a list of
+    /// kinds inside this pass, for the reason every other property is: a list in
+    /// logic is a thing you must remember to edit, and what you forget lands
+    /// silently in a fallback. A depot with three shifts of drivers still has
+    /// only as many lorries as it owns.
+    /// </remarks>
+    private static List<Mutation> Commissioning(World world)
+    {
+        var t = world.Tables;
+        var delivered = 0;
+
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (!world.Buildings.IsBuilt(b))
+            {
+                continue;
+            }
+
+            var kind = world.Buildings.KindAt(b);
+            var establishment = t.Establishment.KeysOf(kind);
+            var counts = t.Establishment.ValuesOf(kind);
+            if (establishment.Length == 0)
+            {
+                continue;
+            }
+
+            var id = world.Buildings.IdAt(b);
+            for (var v = 0; v < establishment.Length; v++)
+            {
+                var have = 0;
+                foreach (var owned in world.Fleet.OfGarage(id))
+                {
+                    if (world.Fleet.KindAt(owned) == establishment[v])
+                    {
+                        have++;
+                    }
+                }
+
+                for (var more = have; more < counts[v]; more++)
+                {
+                    world.Fleet.Commission(
+                        establishment[v], id, world.Buildings.XAt(b), world.Buildings.YAt(b));
+                    delivered++;
+                }
+            }
+        }
+
+        return delivered > 0
+            ? [new Mutation(MutationKind.Commission, delivered, 0, -1, 0.0, 0.0)]
+            : [];
+    }
+
+    /// <summary>
+    /// What each place is short of, most urgent first.
+    /// </summary>
+    /// <remarks>
+    /// <b>A site under construction, a works with an empty bin and a store with a
+    /// standing order are the same question</b> — somewhere wants tonnage it has
+    /// not got. Ranking them together is what makes freight a plan rather than
+    /// three special cases, and the ranking is what a player is really deciding
+    /// when they set a priority.
+    /// </remarks>
+    private static List<(int Building, int Resource, double Tonnes, double Urgency)> Needs(World world)
+    {
+        var t = world.Tables;
+        var wanted = new List<(int, int, double, double)>();
+
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            var kind = world.Buildings.KindAt(b);
+
+            if (!world.Buildings.IsBuilt(b))
+            {
+                // A contracted site brings its own; nothing should be driven there.
+                if (world.Buildings.ContractorAt(b) >= 0)
+                {
+                    continue;
+                }
+
+                var res = t.Materials.KeysOf(kind);
+                for (var i = 0; i < res.Length; i++)
+                {
+                    var outstanding = world.Buildings.MaterialOutstanding(b, res[i]);
+                    if (outstanding > t.MinLoad)
+                    {
+                        // A site the republic is waiting on outranks a topped-up
+                        // works: the building is not there yet.
+                        wanted.Add((b, res[i], outstanding, 2.0));
+                    }
+                }
+
+                continue;
+            }
+
+            // A works wants its inputs kept a few days ahead, so a lorry is sent
+            // before the bin runs dry rather than after.
+            var inputs = t.Inputs.KeysOf(kind);
+            var rates = t.Inputs.ValuesOf(kind);
+            for (var i = 0; i < inputs.Length; i++)
+            {
+                var target = rates[i] * t.ResupplyAtDays;
+                var held = world.Buildings.Stock.Get(b, inputs[i]);
+                if (held < target)
+                {
+                    var short_ = Math.Min(target - held, world.Buildings.IntakeCapacity(b, inputs[i]));
+                    if (short_ > t.MinLoad)
+                    {
+                        // An empty bin is a stall; a low one is only a warning.
+                        wanted.Add((b, inputs[i], short_, held <= 0.0 ? 3.0 : 1.0));
+                    }
+                }
+            }
+
+            // A shop or a terminal wants what it was told to keep. Nothing else
+            // in the republic would ever deliver to a station: it consumes
+            // nothing and sells nothing, so the standing order is its demand.
+            foreach (var r in t.Sells.KeysOf(kind))
+            {
+                var target = t.BStorage[kind] * 0.5;
+                var held = world.Buildings.Stock.Get(b, r);
+                if (target - held > t.MinLoad)
+                {
+                    wanted.Add((b, r, target - held, 2.5));
+                }
+            }
+
+            if (t.BStoresToOrder[kind])
+            {
+                for (var r = 0; r < t.Resources.Length; r++)
+                {
+                    var ordered = world.Buildings.Orders.Get(b, r);
+                    var held = world.Buildings.Stock.Get(b, r);
+                    if (ordered - held > t.MinLoad)
+                    {
+                        wanted.Add((b, r, ordered - held, 1.5));
+                    }
+                }
+            }
+        }
+
+        // Most urgent first, ties by building id then resource, so two runs of
+        // the same republic send the same lorry to the same place.
+        wanted.Sort((a, b) =>
+        {
+            var byUrgency = b.Item4.CompareTo(a.Item4);
+            if (byUrgency != 0)
+            {
+                return byUrgency;
+            }
+
+            var byBuilding = world.Buildings.IdAt(a.Item1).CompareTo(world.Buildings.IdAt(b.Item1));
+            return byBuilding != 0 ? byBuilding : a.Item2.CompareTo(b.Item2);
+        });
+
+        return wanted;
+    }
+
+    /// <summary>
+    /// Who has spare of a resource — the yard a lorry is sent to.
+    /// </summary>
+    /// <remarks>
+    /// A supplier keeps what it needs for itself: a works is not stripped of the
+    /// ore it is about to smelt to feed one further down the chain.
+    /// </remarks>
+    private static int Supplier(World world, int resource, int notThis, double atLeast)
+    {
+        var t = world.Tables;
+        var best = -1;
+        var bestSpare = atLeast;
+
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (b == notThis || !world.Buildings.IsBuilt(b))
+            {
+                continue;
+            }
+
+            var kind = world.Buildings.KindAt(b);
+            var held = world.Buildings.Stock.Get(b, resource);
+            if (held <= 0.0)
+            {
+                continue;
+            }
+
+            // What it keeps back for itself.
+            var keep = 0.0;
+            var inputs = t.Inputs.KeysOf(kind);
+            var rates = t.Inputs.ValuesOf(kind);
+            for (var i = 0; i < inputs.Length; i++)
+            {
+                if (inputs[i] == resource)
+                {
+                    keep = rates[i] * t.ResupplyAtDays;
+                }
+            }
+
+            foreach (var r in t.Sells.KeysOf(kind))
+            {
+                if (r == resource)
+                {
+                    keep = Math.Max(keep, t.BStorage[kind] * 0.5);
+                }
+            }
+
+            var spare = held - keep;
+            if (spare > bestSpare)
+            {
+                bestSpare = spare;
+                best = b;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>
+    /// Send the idle lorries out.
+    /// </summary>
+    /// <remarks>
+    /// <b>A vehicle takes the work, fuels for it and sets out in one decision.</b>
+    /// A lorry that accepted a job without the fuel to finish it would strand
+    /// itself somewhere with a load nobody can reach, which is the failure the
+    /// dispatch-time check exists to prevent.
+    /// </remarks>
+    private static List<Mutation> Dispatch(World world)
+    {
+        var t = world.Tables;
+        var mutations = new List<Mutation>();
+
+        var idle = new List<int>();
+        for (var v = 0; v < world.Fleet.Count; v++)
+        {
+            if (world.Fleet.StateAt(v) == VehicleState.Idle
+                && t.VRole[world.Fleet.KindAt(v)] == "Freight")
+            {
+                idle.Add(v);
+            }
+        }
+
+        if (idle.Count == 0)
+        {
+            return mutations;
+        }
+
+        var needs = Needs(world);
+        var claimed = new HashSet<(int, int)>();
+
+        foreach (var v in idle)
+        {
+            foreach (var (consignee, resource, tonnes, _) in needs)
+            {
+                if (!claimed.Add((consignee, resource)))
+                {
+                    continue;
+                }
+
+                var from = Supplier(world, resource, consignee, t.MinLoad);
+                if (from < 0)
+                {
+                    continue;
+                }
+
+                var kind = world.Fleet.KindAt(v);
+                var load = Math.Min(tonnes, t.VCapacity[kind]);
+
+                var journey = Plan(
+                    world, v,
+                    world.Fleet.XAt(v), world.Fleet.YAt(v),
+                    world.Buildings.XAt(from), world.Buildings.YAt(from));
+
+                if (journey is null)
+                {
+                    continue;
+                }
+
+                world.Fleet.SetJob(v, Job.Haul(
+                    world.Buildings.IdAt(from),
+                    Destination.Building(world.Buildings.IdAt(consignee)),
+                    resource,
+                    load));
+                world.Fleet.SetJourney(v, journey);
+                world.Fleet.SetState(v, VehicleState.Fetching);
+                mutations.Add(new Mutation(
+                    MutationKind.Dispatch, v, from, resource, load, 0.0));
+                break;
+            }
+        }
+
+        return mutations;
+    }
+
+    /// <summary>
+    /// Move everything that is moving.
+    /// </summary>
+    /// <remarks>
+    /// Arrival is decided by the leg's absolute end tick, so a lorry arrives when
+    /// it was always going to and nothing drifts over a long haul.
+    /// </remarks>
+    private static List<Mutation> FleetPass(World world)
+    {
+        var t = world.Tables;
+        var now = (double)world.Clock.Ticks;
+        var mutations = new List<Mutation>();
+
+        for (var v = 0; v < world.Fleet.Count; v++)
+        {
+            var journey = world.Fleet.JourneyAt(v);
+            if (journey is null || world.Fleet.IsBogged(v))
+            {
+                continue;
+            }
+
+            if (!journey.LegDoneBy(now))
+            {
+                var (x, y) = journey.PositionAt(now);
+                world.Fleet.SetPosition(v, x, y);
+                continue;
+            }
+
+            if (!journey.OnLastLeg)
+            {
+                journey.Advance(world.Fleet.SpeedOfLeg(v, Drag(world)), t);
+                continue;
+            }
+
+            // Arrived. What happens next depends which way it was pointed.
+            world.Fleet.SetPosition(v, journey.DestinationX, journey.DestinationY);
+            world.Fleet.SetJourney(v, null);
+            mutations.Add(new Mutation(MutationKind.Arrive, v, 0, -1, 0.0, 0.0));
+
+            var job = world.Fleet.JobAt(v);
+            switch (world.Fleet.StateAt(v))
+            {
+                case VehicleState.Fetching:
+                {
+                    var from = world.Buildings.IndexOf(job.From);
+                    var to = world.Buildings.IndexOf(job.To.Id);
+                    if (from < 0 || to < 0)
+                    {
+                        GoHome(world, v);
+                        break;
+                    }
+
+                    var loaded = world.Buildings.Stock.Take(from, job.Resource, job.Tonnes);
+                    world.Fleet.Cargo.Add(v, job.Resource, loaded);
+
+                    var onward = Plan(
+                        world, v,
+                        world.Fleet.XAt(v), world.Fleet.YAt(v),
+                        world.Buildings.XAt(to), world.Buildings.YAt(to));
+
+                    if (onward is null)
+                    {
+                        GoHome(world, v);
+                        break;
+                    }
+
+                    world.Fleet.SetJourney(v, onward);
+                    world.Fleet.SetState(v, VehicleState.Delivering);
+                    break;
+                }
+
+                case VehicleState.Delivering:
+                {
+                    var to = world.Buildings.IndexOf(job.To.Id);
+                    if (to >= 0)
+                    {
+                        var carried = world.Fleet.Cargo.Get(v, job.Resource);
+                        var room = world.Buildings.IntakeCapacity(to, job.Resource)
+                            - world.Buildings.Stock.Get(to, job.Resource);
+                        var setDown = Math.Max(0.0, Math.Min(carried, room));
+                        world.Fleet.Cargo.Take(v, job.Resource, setDown);
+                        world.Buildings.Stock.Add(to, job.Resource, setDown);
+                        mutations.Add(Mutation.Transfer(v, to, job.Resource, setDown));
+                    }
+
+                    GoHome(world, v);
+                    break;
+                }
+
+                default:
+                    world.Fleet.SetState(v, VehicleState.Idle);
+                    world.Fleet.SetJob(v, Job.None);
+                    break;
+            }
+        }
+
+        return mutations;
+    }
+
+    /// <summary>Its work is over: it stands where it is with nothing to do.</summary>
+    private static void Park(World world, int v)
+    {
+        world.Fleet.SetState(v, VehicleState.Idle);
+        world.Fleet.SetJob(v, Job.None);
+    }
+
+    /// <summary>Point it back at its garage, or park it where it stands.</summary>
+    private static void GoHome(World world, int v)
+    {
+        var garage = world.Buildings.IndexOf(world.Fleet.HomeAt(v));
+        if (garage < 0)
+        {
+            Park(world, v);
+            return;
+        }
+
+        var home = Plan(
+            world, v,
+            world.Fleet.XAt(v), world.Fleet.YAt(v),
+            world.Buildings.XAt(garage), world.Buildings.YAt(garage));
+
+        if (home is null)
+        {
+            Park(world, v);
+            return;
+        }
+
+        world.Fleet.SetJourney(v, home);
+        world.Fleet.SetState(v, VehicleState.Returning);
+    }
+
+    /// <summary>
+    /// A journey from here to there.
+    /// </summary>
+    /// <remarks>
+    /// <b>Over the road if there is one, across country if there is not.</b> That
+    /// is the whole reason a road is worth building: the same lorry makes its own
+    /// speed on tarmac and crawls over a field. A route that cannot be found at
+    /// all is a straight run across country, because the ground is always there
+    /// even when the road is not.
+    /// </remarks>
+    private static Journey? Plan(World world, int v, double fromX, double fromY, double toX, double toY)
+    {
+        var t = world.Tables;
+        var kind = world.Fleet.KindAt(v);
+        var medium = (Medium)t.VMedium[kind];
+        var network = world.NetworkFor(medium);
+
+        var start = network.NearestNode(fromX, fromY, t.RoadAccessM);
+        var finish = network.NearestNode(toX, toY, t.RoadAccessM);
+
+        var xs = new List<double> { fromX };
+        var ys = new List<double> { fromY };
+        var limits = new List<double>();
+
+        if (start >= 0 && finish >= 0 && start != finish)
+        {
+            var route = network.RouteBetween(start, finish);
+            if (route is not null)
+            {
+                // Onto the road...
+                xs.Add(network.NodeX(route.Nodes[0]));
+                ys.Add(network.NodeY(route.Nodes[0]));
+                limits.Add(-1.0);
+
+                // ...along it...
+                for (var i = 1; i < route.Nodes.Count; i++)
+                {
+                    xs.Add(network.NodeX(route.Nodes[i]));
+                    ys.Add(network.NodeY(route.Nodes[i]));
+                    limits.Add(SpeedBetween(network, route.Nodes[i - 1], route.Nodes[i]));
+                }
+            }
+        }
+
+        // ...and off it again at the far end.
+        xs.Add(toX);
+        ys.Add(toY);
+        limits.Add(-1.0);
+
+        var first = Units.Distance(xs[0], ys[0], xs[1], ys[1]);
+        var speed = limits[0] >= 0.0
+            ? Math.Min(Units.KphToMps(t.VOnRoadKph[kind]), limits[0])
+            : Units.KphToMps(t.VCrossCountryKph[kind]);
+
+        return Journey.Begin(xs, ys, limits, world.Clock.Ticks, Journey.LegTicks(first, speed, t));
+    }
+
+    private static double SpeedBetween(Network network, int a, int b)
+    {
+        foreach (var s in network.Segments)
+        {
+            if ((s.From == a && s.To == b) || (s.From == b && s.To == a))
+            {
+                return s.Speed;
+            }
+        }
+
+        return -1.0;
+    }
+
+    /// <summary>
+    /// How much the going slows a vehicle today.
+    /// </summary>
+    /// <remarks>
+    /// One figure for the whole republic, because it does not rain on half a
+    /// ten-kilometre map. Where it is worse than average is a property of the
+    /// surface, and that is on the lattice.
+    /// </remarks>
+    private static double Drag(World world) =>
+        1.0 + (world.Ground.Softness * (world.Tables.MudDrag - 1.0));
 
     // ---- per tick ----
 
