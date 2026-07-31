@@ -216,6 +216,21 @@ void fragment() {
 		+ r_shore * shore_w
 	) / total;
 
+	// **Ground is matte, and the maps do not know that.** These roughness
+	// textures are photographed for a surface seen from two metres, where a
+	// glossy patch of wet grass is detail; sampled across six kilometres of
+	// terrain lit by a single hard sun, the low end of the same map turns the
+	// whole map into a mirror. Every capture had a blown-out white lobe sitting
+	// where the sun's reflection met the camera -- in March and in September, at
+	// ten in the morning and at two in the afternoon, which is what ruled out
+	// snow and left specular. It reads as an overexposed hole in the ground and
+	// it is the first thing the eye goes to.
+	//
+	// Floored here rather than at `ROUGHNESS` so the waterline below still gets
+	// its wet 0.12: a lake is *supposed* to be the shiny thing in the frame, and
+	// clamping at the end took that away too.
+	rough = max(rough, 0.55);
+
 	// Under the waterline the ground is bed rather than land. Phase 5 gives the
 	// water its own surface; this keeps the bed dark and wet-looking underneath.
 	float submerged = 1.0 - land;
