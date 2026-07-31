@@ -98,6 +98,24 @@ static func small(text: String, tone: Color = INK_DIM) -> Label:
 	return heading(text, SIZE_SMALL, tone)
 
 
+## A sentence or two of explanation, which wraps.
+##
+## **A `Label` does not wrap by default, so its minimum width is the whole
+## sentence on one line.** Put one inside a column and that column can never be
+## narrower than the text, whatever stretch ratio it was given. The build screen
+## ran on that for as long as it has existed: BUILDINGS asked for twice the
+## share and got half, because the one-line blurb under WAYS was setting the
+## width of the panel, and every card in that column carried three hundred
+## pixels of dead air between its name and its button.
+##
+## Any run of prose goes through this. [`small`] stays for short labels, where
+## wrapping would be wrong and the minimum width is not a problem.
+static func paragraph(text: String, tone: Color = INK_DIM) -> Label:
+	var label := heading(text, SIZE_SMALL, tone)
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	return label
+
+
 ## A rule across the container it is added to.
 static func divider() -> Panel:
 	var line := Panel.new()

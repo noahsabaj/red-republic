@@ -154,7 +154,11 @@ func _ways_column() -> Control:
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	box.add_theme_constant_override("separation", 4)
 	box.add_child(Style.heading("WAYS", Style.SIZE_HEAD))
-	box.add_child(Style.small(
+	# Wrapping, not because it reads better but because a `Label` that does not
+	# wrap sets its column's minimum width to the whole sentence — which is what
+	# made this column wider than BUILDINGS despite BUILDINGS asking for twice
+	# the share.
+	box.add_child(Style.paragraph(
 		"Laid between two points, in your own materials and your own builder-days. "
 		+ "Street lighting draws off the grid and is what lets a night shift walk home.",
 		Style.INK_FAINT
