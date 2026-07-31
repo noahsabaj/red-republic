@@ -28,6 +28,7 @@ pub mod climate;
 pub mod command;
 pub mod contract;
 pub mod crews;
+pub mod director;
 pub mod fleet;
 pub mod founding;
 pub mod geology;
