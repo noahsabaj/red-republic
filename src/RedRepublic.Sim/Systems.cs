@@ -2553,10 +2553,12 @@ public static class Systems
         // Groups that ran out of patience.
         var gone = world.Migration.GiveUp(today, t);
 
-        // How the republic looks from outside: the mean of what its homes are
-        // like, and room to put anybody.
+        // How the republic looks from outside: what it offers the people already
+        // living in it, weighted by how many that is — one wretched outpost does
+        // not cancel a working city, and an unweighted mean would say it did.
         var homes = 0;
-        var content = 0.0;
+        var scored = 0.0;
+        var heads = 0;
         var room = 0;
         for (var b = 0; b < world.Buildings.Count; b++)
         {
@@ -2566,16 +2568,41 @@ public static class Systems
             }
 
             homes++;
-            content += world.Buildings.ContentmentAt(b).Overall(t);
             room += t.BResidents[world.Buildings.KindAt(b)];
+
+            var here = world.Citizens.ResidentsOf(world.Buildings.IdAt(b));
+            if (here == 0)
+            {
+                continue;
+            }
+
+            scored += world.Buildings.ContentmentAt(b).Overall(t) * here;
+            heads += here;
         }
 
-        room -= world.Citizens.Count;
+        room -= world.Citizens.Count + world.Migration.HeadsWaiting();
 
         if (homes > 0 && room > 0)
         {
-            var appeal = content / homes;
-            if (appeal >= t.ContentAttracts && world.Rng.NextDouble() < t.ArrivalOdds)
+            // <b>An empty republic is failing nobody, and must not be scored as
+            // if it were failing everybody.</b> Nobody lives here, so the average
+            // of what the republic offers its residents is an average over an
+            // empty set, and calling that zero says "you are failing people you
+            // do not have" — which leaves a blank map permanently uninhabited and
+            // the opening unable to start at all.
+            //
+            // It is the same rule contentment already applies twice: warmth is
+            // full on a warm day and schooling is full in a block with no
+            // children, because a republic is not marked down for a demand that
+            // does not exist. New housing standing empty is exactly that case.
+            var appeal = heads == 0 ? 1.0 : scored / heads;
+
+            // How keen they are: how far past the threshold the republic is, so a
+            // barely-adequate one gets a trickle and a good one a stream.
+            var keenness = Math.Clamp(
+                (appeal - t.ContentAttracts) / (1.0 - t.ContentAttracts), 0.0, 1.0);
+
+            if (appeal >= t.ContentAttracts && world.Rng.NextDouble() < keenness * t.ArrivalOdds)
             {
                 var post = world.Frontier.Crossings.Count > 0
                     ? world.Frontier.Crossings[

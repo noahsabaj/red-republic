@@ -127,6 +127,40 @@ public sealed class ArrivalsTests
             "the coal was conjured rather than carried");
     }
 
+    /// <summary>
+    /// <b>An empty republic is failing nobody, and must not be scored as if it
+    /// were failing everybody.</b>
+    /// </summary>
+    /// <remarks>
+    /// The average of what a republic offers its residents is, on a blank map, an
+    /// average over an empty set — and calling that zero says "you are failing
+    /// people you do not have", which leaves the map permanently uninhabited and
+    /// the opening unable to start at all. It is the same rule contentment
+    /// already applies twice: a republic is not marked down for a demand that
+    /// does not exist.
+    /// </remarks>
+    [Fact]
+    public void A_blank_map_with_housing_on_it_can_attract_its_first_settler()
+    {
+        var world = World.Found(new WorldSpec(1961, 1500.0, 0), T);
+        Built(world, "Apartment");
+
+        Assert.Equal(0, world.Citizens.Count);
+
+        for (var day = 0; day < 400 && world.Citizens.Count == 0
+            && world.Migration.HeadsWaiting() == 0; day++)
+        {
+            for (var i = 0; i < SimClock.TicksPerDay; i++)
+            {
+                world.Tick();
+            }
+        }
+
+        Assert.True(
+            world.Citizens.Count > 0 || world.Migration.HeadsWaiting() > 0,
+            "a blank map with a block standing empty on it drew nobody in a year");
+    }
+
     /// <summary>The first idle passenger vehicle in a garage, or -1.</summary>
     private static int Coach(World world, int garage)
     {
