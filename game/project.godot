@@ -20,6 +20,17 @@ config/icon="res://icon.png"
 ; the game's C# side. It must match the .csproj file name beside this one.
 project/assembly_name="RedRepublic"
 
+[gui]
+
+; **The one look, applied by the engine before any script runs.**
+;
+; Every Control in the project inherits this, so a screen that styles nothing is
+; already correct and a screen cannot half-apply the theme by forgetting to call
+; a helper. `ui/theme.tres` is generated from `ui/Palette.cs` by
+; `ui/ThemeBuilder.cs`; edit the palette, run the game with `--build-theme`, and
+; commit both.
+theme/custom="res://ui/theme.tres"
+
 [display]
 
 window/size/viewport_width=1600

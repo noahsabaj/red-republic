@@ -32,6 +32,20 @@ public partial class Main : Node3D
         var args = OS.GetCmdlineUserArgs();
         var check = System.Array.IndexOf(args, "--check") >= 0;
 
+        // Rewrite the theme from the palette and quit. A checked-in generator
+        // and a committed artifact: the editor previews what the game ships, and
+        // "the hairline is one shade lighter" is one constant rather than
+        // twenty-six literals in a resource nobody can read.
+        if (System.Array.IndexOf(args, "--build-theme") >= 0)
+        {
+            var why = Ui.ThemeBuilder.Build();
+            GD.Print(why == Error.Ok
+                ? $"wrote {Ui.ThemeBuilder.Path}"
+                : $"could not write {Ui.ThemeBuilder.Path}: {why}");
+            GetTree().Quit(why == Error.Ok ? 0 : 1);
+            return;
+        }
+
         _tables = LoadTables();
         GD.Print($"tables ok: {_tables.BuildingCount} buildings, "
             + $"{_tables.Resources.Length} resources, checksum {_tables.ChecksumGot}");
