@@ -122,7 +122,7 @@ fn geology_vectors() {
         for &extent in &[3000.0_f64, 10_000.0] {
             let g = generate_geology(seed, Metres(extent), &DEFAULT_PLAN);
             let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-            let mut eat = |v: f64, h: &mut u64| {
+            let eat = |v: f64, h: &mut u64| {
                 for byte in v.to_bits().to_le_bytes() {
                     *h ^= u64::from(byte);
                     *h = h.wrapping_mul(0x100_0000_01b3);
