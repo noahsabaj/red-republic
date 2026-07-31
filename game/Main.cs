@@ -87,6 +87,19 @@ public partial class Main : Node3D
             return;
         }
 
+        // Bring the balance table's checksum back into agreement with its
+        // contents, after a deliberate edit to it.
+        //
+        // <b>The manifest is the authored source now</b>, so the checksum no
+        // longer proves the table was generated — it proves the file the game
+        // loaded is the file somebody meant to write, byte for byte, which is
+        // what catches a figure that arrived one ulp out.
+        if (System.Array.IndexOf(args, "--stamp-balance") >= 0)
+        {
+            GetTree().Quit(StampBalance() ? 0 : 1);
+            return;
+        }
+
         _tables = LoadTables();
         GD.Print($"tables ok: {_tables.BuildingCount} buildings, "
             + $"{_tables.Resources.Length} resources, checksum {_tables.ChecksumGot}");
@@ -174,6 +187,41 @@ public partial class Main : Node3D
         return at >= 0 && at + 1 < args.Length && float.TryParse(args[at + 1], out var value)
             ? value
             : fallback;
+    }
+
+    /// <summary>
+    /// Rewrite the manifest's checksum from its own contents.
+    /// </summary>
+    /// <remarks>
+    /// Writes through Godot's own file access to the same path the game reads,
+    /// so running it from a source checkout edits the checked-in artifact — which
+    /// is the whole point. There is nothing to run in an exported build, and
+    /// nothing there to edit.
+    /// </remarks>
+    private static bool StampBalance()
+    {
+        const string path = "res://data/manifest.json";
+
+        using var read = FileAccess.Open(path, FileAccess.ModeFlags.Read);
+        if (read is null)
+        {
+            GD.PrintErr($"{path} could not be opened: {FileAccess.GetOpenError()}");
+            return false;
+        }
+
+        var stamped = Tables.Restamp(read.GetAsText());
+        read.Close();
+
+        using var write = FileAccess.Open(path, FileAccess.ModeFlags.Write);
+        if (write is null)
+        {
+            GD.PrintErr($"{path} could not be written: {FileAccess.GetOpenError()}");
+            return false;
+        }
+
+        write.StoreString(stamped);
+        GD.Print($"stamped {path}: {Tables.Load(stamped).ChecksumGot}");
+        return true;
     }
 
     /// <summary>

@@ -21,6 +21,16 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <RootNamespace>RedRepublic</RootNamespace>
+
+    <!--
+      The one copy of the version. The executable's resource, the installer's
+      name and whatever the game says about itself all come from here, so they
+      cannot disagree — which is the failure a second copy always eventually
+      produces, and always in the copy nobody reads.
+    -->
+    <Version>2.0.0</Version>
+    <Company>Noah Sabaj</Company>
+    <Product>Red Republic</Product>
   </PropertyGroup>
 
   <ItemGroup>

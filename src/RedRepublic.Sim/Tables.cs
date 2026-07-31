@@ -536,7 +536,14 @@ public sealed class Tables
     /// rehashed here, by its bits, in the order the dumper fixed.
     /// </remarks>
     /// <exception cref="InvalidDataException">If the table did not survive the crossing.</exception>
-    public static Tables Load(string json)
+    public static Tables Load(string json) => Load(json, verify: true);
+
+    /// <summary>
+    /// The same, with the option of not checking the stated checksum — which
+    /// only <see cref="Restamp"/> takes, because it is the thing that writes
+    /// a new one.
+    /// </summary>
+    private static Tables Load(string json, bool verify)
     {
         var t = new Tables();
         using var doc = JsonDocument.Parse(json);
@@ -579,7 +586,7 @@ public sealed class Tables
 
         t.ChecksumExpected = m.GetProperty("checksum").GetString()!;
         t.ChecksumGot = t.Checksum();
-        if (t.ChecksumGot != t.ChecksumExpected)
+        if (verify && t.ChecksumGot != t.ChecksumExpected)
         {
             throw new InvalidDataException(
                 $"the balance table did not survive the crossing: computed {t.ChecksumGot}, "
@@ -587,6 +594,41 @@ public sealed class Tables
         }
 
         return t;
+    }
+
+    /// <summary>
+    /// The same balance table with its checksum brought back into agreement with
+    /// its contents.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The manifest is the authored source</b>, so a deliberate edit to it has
+    /// to be followed by a deliberate re-stamp. That is the whole point of the
+    /// checksum surviving the retirement of the generator that used to write it:
+    /// it no longer proves the table was generated, it proves the file the game
+    /// loaded is the file somebody meant to write, byte for byte.
+    /// </para>
+    /// <para>
+    /// It hashes every number <b>by its bits</b>, which is what makes it able to
+    /// catch a figure that arrived one ulp out — the corruption a text format can
+    /// introduce without changing a digit anybody would notice.
+    /// </para>
+    /// </remarks>
+    public static string Restamp(string json)
+    {
+        ArgumentNullException.ThrowIfNull(json);
+
+        // Loaded with the check bypassed, because the whole point is that the
+        // stated checksum is out of date. Anything else wrong with the file still
+        // throws here, which is correct: a table that will not load is not one to
+        // stamp a fresh checksum onto.
+        var t = Load(json, verify: false);
+        var stamped = t.Checksum();
+
+        using var document = JsonDocument.Parse(json);
+        var was = document.RootElement.GetProperty("checksum").GetString()!;
+        return json.Replace(
+            $"\"checksum\": \"{was}\"", $"\"checksum\": \"{stamped}\"", StringComparison.Ordinal);
     }
 
     public int BuildingIndex(string id) => IndexIn(BuildingIds, id);

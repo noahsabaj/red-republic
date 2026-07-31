@@ -4,7 +4,7 @@ Run headless:
 
     blender --background --python tools/build_trees.py
 
-Writes `godot/models/trees.glb`, holding one mesh per species. Godot scatters
+Writes `game/models/trees.glb`, holding one mesh per species. Godot scatters
 them with a `MultiMesh` over the cells the simulation says are forest.
 
 # Why these are deliberately simple
@@ -37,7 +37,7 @@ import bpy
 from mathutils import Vector
 
 OUT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "godot", "models"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "game", "models"
 )
 
 # Metres. Every species is modelled at its real height so Godot can place it

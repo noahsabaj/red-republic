@@ -4,7 +4,7 @@ Run:
 
     python tools/build_icon.py
 
-Writes `godot/icon.png` (the Godot application icon) and `godot/icon.ico` (the
+Writes `game/icon.png` (the Godot application icon) and `game/icon.ico` (the
 Windows executable's icon resource, which `tools/package.ps1` points the export
 preset at). Both are committed, because they are art rather than build output —
 this script exists so the design is reproducible and adjustable, not so that
@@ -15,7 +15,7 @@ one-off art artifact is more apparatus than content.
 # The design
 
 A red star on the dark survey plate, in the palette the game already uses —
-`godot/ui/palette.gd`'s CARBON_RAISED, RED and RULE. Chosen from four rendered
+`game/ui/Palette.cs`'s CARBON_RAISED, RED and RULE. Chosen from four rendered
 candidates because it is the only one that survives 16 px, which is the size that
 actually decides an icon: the alternatives (surveyed contours, a works
 silhouette, an RR monogram) all read beautifully at 256 and turn to mush in a
@@ -36,9 +36,9 @@ import os
 from PIL import Image, ImageDraw
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "godot")
+OUT = os.path.join(ROOT, "game")
 
-# Straight off godot/ui/palette.gd. Kept as 0-255 triples rather than the 0-1
+# Straight off game/ui/Palette.cs. Kept as 0-255 triples rather than the 0-1
 # floats the palette uses, because that is what PIL wants; the values are the
 # same colours and the palette is the source.
 CARBON_RAISED = (28, 32, 35)
@@ -101,7 +101,7 @@ def main():
         append_images=[by_size[s] for s in SIZES if s != 256],
     )
 
-    print("wrote godot/icon.png and godot/icon.ico (%s)" % ", ".join(str(s) for s in SIZES))
+    print("wrote game/icon.png and game/icon.ico (%s)" % ", ".join(str(s) for s in SIZES))
 
 
 if __name__ == "__main__":

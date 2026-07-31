@@ -4,7 +4,7 @@ Run headless:
 
     blender --background --python tools/build_vehicles.py
 
-Writes `godot/models/vehicles.glb`, holding one mesh per body. Godot draws each
+Writes `game/models/vehicles.glb`, holding one mesh per body. Godot draws each
 with a `MultiMesh` over the positions the simulation reports.
 
 # What this replaces
@@ -53,7 +53,7 @@ import bmesh
 import bpy
 
 OUT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "godot", "models"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "game", "models"
 )
 
 # Nothing here is lit as metal. A Soviet lorry is painted steel that has been
