@@ -761,7 +761,7 @@ pub const BUILDINGS: &[BuildingDef] = &[
             needs: Schooled, teaches: None,
             transforms: false, waste: 0.03, dirt: 0.15, on: None, orders: true, serves: [],
             holds: [Liquid], beds: 0),
-    def!(GrainSilo, "Grain Silo", 30.0, 30.0, workers: 3, standing: Ordinary, draw: 1.5, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
+    def!(GrainSilo, "Grain Silo", 30.0, 30.0, workers: 3, standing: First, draw: 1.5, out_mw: 0.0, heat: 0.0, heat_out: 0.0, seats: 0, keeps: [],
         in: [], out: [],
         cost: [(Steel, 26.0), (Concrete, 18.0), (Gravel, 10.0)], labour: 130.0, sells: [], taps: None, residents: 0, storage: 600.0,
             // Zero for the same reason a tank's is: spares are crated goods,
