@@ -210,6 +210,17 @@ jobs:
       - name: Test the simulation
         run: dotnet test src/RedRepublic.Sim.Tests/RedRepublic.Sim.Tests.csproj -c Release --nologo
 
+      # **The game's assembly has to exist before Godot can load it.** Godot
+      # does NOT build the C# project itself in headless mode: it looks for a
+      # built assembly and, not finding one, reports `.NET: Assemblies not found`
+      # and carries on far enough to look like a different problem. Same shape as
+      # the cdylib rule the GDExtension build had, and it cost a red CI run here.
+      #
+      # Godot.NET.Sdk puts the output where the engine expects it, so a plain
+      # build of the game project is all that is needed.
+      - name: Build the game
+        run: dotnet build game/RedRepublic.csproj --nologo
+
       # A standalone .NET build from godotengine.org, pinned. The editor on
       # Noah's desktop auto-updates, which can break the build with no commit to
       # blame; CI is where a pinned version actually gets used.
@@ -244,6 +255,16 @@ jobs:
           ./godot-bin --headless --path game -- --check 2>&1 | tee run.log
           if grep -qiE "SCRIPT ERROR|Unhandled exception|Assertion failed" run.log; then
             echo "::error::the republic did not load cleanly — see the log above"
+            exit 1
+          fi
+          # The two ways a missing or stale assembly announces itself. Both were
+          # reproduced: CI says "Assemblies not found", the same fault on Windows
+          # says "Cannot instantiate C# script". Neither matches the line above,
+          # so without this the only symptom is the absent `tables ok` further
+          # down — which reads as "the table is wrong" and sends you to the
+          # wrong file entirely.
+          if grep -qiE "Assemblies not found|Cannot instantiate C# script" run.log; then
+            echo "::error::the game assembly was not built before Godot ran it"
             exit 1
           fi
           # A run that quietly does nothing prints nothing, which is the failure
