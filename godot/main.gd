@@ -53,7 +53,10 @@ const DEFAULT_NAME := "Novo-Uralsk"
 
 ## Which screen is up. The republic keeps running underneath PAUSE only if the
 ## player left it running -- see `_set_screen`.
-enum Screen { MENU, FOUNDING, PLAYING, PAUSED, SETTINGS, SAVES, REFERENCE, RADIO }
+enum Screen {
+	MENU, FOUNDING, PLAYING, PAUSED, SETTINGS, SAVES, REFERENCE, RADIO,
+	TRADE, FINANCE, JOURNAL,
+}
 
 ## **Typed as `Republic`, not as `Node`, and that is a bug fix rather than
 ## tidiness.** gdext registers `Republic` as a real Godot class with typed method
@@ -91,6 +94,12 @@ enum Screen { MENU, FOUNDING, PLAYING, PAUSED, SETTINGS, SAVES, REFERENCE, RADIO
 @onready var pause_menu: CanvasLayer = $Pause
 @onready var build_menu: CanvasLayer = $Build
 @onready var labour_screen: CanvasLayer = $Labour
+## The building inspector. A panel over the map rather than a screen instead of
+## it, so it lives beside the HUD rather than in the `Screen` enum.
+@onready var inspector: CanvasLayer = $Inspector
+@onready var trade_screen: CanvasLayer = $Trade
+@onready var finance_screen: CanvasLayer = $Finance
+@onready var journal_screen: CanvasLayer = $Journal
 
 var _buildings_shown := -1
 var _roads_shown := -1
@@ -308,6 +317,10 @@ func _found_default() -> void:
 		_check_labour()
 		_check_road()
 		_check_reference()
+		_check_inspector()
+		_check_trade()
+		_check_finance()
+		_check_journal()
 		get_tree().quit()
 
 
@@ -349,6 +362,197 @@ func _check_reference() -> void:
 			])
 			return
 	print("reference check ok: %d sections, and the last of every roster is in one" % names.size())
+
+
+## Click a building, read it back, and pull it down.
+##
+## **The only reason this is worth a CI job is that none of it can be seen from
+## Rust.** `cargo test` proves `building_at` answers the footprint rule and proves
+## `Demolish` refuses a site with a crew on it. What only the shell can get wrong
+## is the round trip: whether the point under a cursor reaches the pick, whether
+## the packed state comes back the width the panel slices it at, and whether the
+## demolish button reaches the command. A stride that moved would show a panel of
+## plausible wrong numbers and no test in either language would see it.
+func _check_inspector() -> void:
+	# The build check contracted a house; the labour check contracted a post.
+	# Both are standing, so there is something to click on.
+	var count := republic.building_count()
+	if count < 1:
+		printerr("inspector check FAILED: nothing is standing to inspect")
+		return
+	var state: PackedFloat32Array = republic.building_state(count)
+	var stride := int(inspector.STATE_STRIDE)
+	if state.size() != stride:
+		printerr("inspector check FAILED: the state read is %d wide, the panel slices %d" % [
+			state.size(), stride,
+		])
+		return
+	# The pick, through the same binding the click uses, aimed at the centre the
+	# state read just reported. A building must be selectable where it says it is.
+	var picked := republic.building_at(state[int(inspector.AT_X)], state[int(inspector.AT_Y)])
+	if picked != count:
+		printerr("inspector check FAILED: building %d stands at %.0f, %.0f and the pick found %d" % [
+			count, state[int(inspector.AT_X)], state[int(inspector.AT_Y)], picked,
+		])
+		return
+	# And open ground, which must find nothing: a pick that answered a building
+	# everywhere would pass the line above and be useless.
+	if republic.building_at(-500.0, -500.0) != 0:
+		printerr("inspector check FAILED: the pick found a building off the map")
+		return
+
+	var words: String = inspector.check(republic)
+	if words != "":
+		printerr("inspector check FAILED: %s" % words)
+		return
+
+	# Demolition, which nothing could do at all before this milestone -- and the
+	# settings screen shipped a `Confirm before demolishing` row that nothing
+	# read, which is a control for a verb that did not exist.
+	var why := String(republic.demolish(count))
+	if why != "":
+		printerr("inspector check FAILED to demolish: %s" % why)
+		return
+	if republic.building_count() != count - 1:
+		printerr("inspector check FAILED: it was pulled down and the count did not move")
+		return
+	# And the refusal path, because a verb that accepts everything is a verb that
+	# is not reading the rules. Nothing was ever building 9999.
+	if String(republic.demolish(9999)) == "":
+		printerr("inspector check FAILED: a building that does not exist was demolished")
+		return
+	print("inspector check ok: picked, read %d figures, and pulled it down" % state.size())
+
+
+## Write a trade rule, move it, and answer a tender.
+func _check_trade() -> void:
+	var before: int = republic.trade_rules().size()
+	var why := String(republic.add_trade_rule(0, 0, false, 0.0))
+	if why != "":
+		printerr("trade check FAILED: %s" % why)
+		return
+	if republic.add_trade_rule(1, 1, true, 40.0) != "":
+		printerr("trade check FAILED: a buy rule was refused")
+		return
+	var rules: PackedFloat32Array = republic.trade_rules()
+	if rules.size() != before + 8:
+		printerr("trade check FAILED: two rules added and the plan grew by %d floats" % [
+			rules.size() - before,
+		])
+		return
+	# The order **is** the decision, so the move is what actually needs checking:
+	# a customs house short of throughput serves the first rule first.
+	if String(republic.move_trade_rule(1, 0)) != "":
+		printerr("trade check FAILED: a rule could not be moved")
+		return
+	rules = republic.trade_rules()
+	if rules[int(trade_screen.RULE_ACTION)] < 0.5:
+		printerr("trade check FAILED: the buy rule was moved to the front and is not there")
+		return
+	# And the refusal path.
+	if String(republic.move_trade_rule(0, 99)) == "":
+		printerr("trade check FAILED: a rule was moved to a position that does not exist")
+		return
+	# Both of them, one at a time: after the first withdrawal the second rule is
+	# at position 0, which is also the only way to prove the list actually shrank.
+	for _each in 2:
+		if String(republic.remove_trade_rule(0)) != "":
+			printerr("trade check FAILED: a rule could not be withdrawn")
+			return
+	if republic.trade_rules().size() != before:
+		printerr("trade check FAILED: two rules added and two withdrawn left %d floats" % [
+			republic.trade_rules().size(),
+		])
+		return
+	var words: String = trade_screen.check(republic)
+	if words != "":
+		printerr("trade check FAILED: %s" % words)
+		return
+	# Tenders arrive every other month and a freshly founded republic has none,
+	# so what is reachable here is the refusal — which is the half only the shell
+	# can get wrong.
+	if String(republic.accept_contract(1)) == "":
+		printerr("trade check FAILED: a tender that was never offered was accepted")
+		return
+	print("trade check ok: the export plan is the republic's to write and to rank")
+
+
+## Borrow, read the debt back, and repay it.
+func _check_finance() -> void:
+	var tiers: PackedFloat32Array = republic.loan_tiers()
+	if tiers.size() < int(finance_screen.T_STRIDE):
+		printerr("finance check FAILED: the blocs offer no advances at all")
+		return
+	var before: PackedFloat32Array = republic.purse()
+	var why := String(republic.take_loan(0, 0))
+	if why != "":
+		printerr("finance check FAILED: %s" % why)
+		return
+	var after: PackedFloat32Array = republic.purse()
+	if after[0] <= before[0]:
+		printerr("finance check FAILED: an advance was taken and the treasury did not move")
+		return
+	if republic.owed_to(0) <= 0.0:
+		printerr("finance check FAILED: money was advanced and nothing is owed")
+		return
+	var loans: PackedFloat32Array = republic.loans()
+	var loan_stride := int(finance_screen.L_STRIDE)
+	if loans.size() != loan_stride:
+		printerr("finance check FAILED: one advance reads as %d floats, the screen slices %d" % [
+			loans.size(), loan_stride,
+		])
+		return
+	# One advance per bloc, which is what stops the mechanic being a money
+	# printer with a deadline nobody has to meet.
+	if String(republic.take_loan(0, 0)) == "":
+		printerr("finance check FAILED: one bloc advanced twice")
+		return
+	if String(republic.can_take_loan(0, 0)) == "":
+		printerr("finance check FAILED: the pre-flight says yes where the command says no")
+		return
+	if String(republic.repay_loan(0, republic.owed_to(0))) != "":
+		printerr("finance check FAILED: an advance could not be repaid")
+		return
+	if republic.owed_to(0) > 0.0 or republic.loans_cleared() < 1:
+		printerr("finance check FAILED: it was repaid in full and is still on the books")
+		return
+	print("finance check ok: borrowed %.0f, owed it, and cleared it" % tiers[0])
+
+
+## Read back the record of everything the checks above have just done.
+##
+## The journal is the one screen whose subject is made by the other checks: by the
+## time this runs, this republic has contracted two buildings, laid a road, set
+## the working day, ranked a workplace, written trade rules, borrowed and repaid.
+## So this asserts against a journal with something in it rather than an empty
+## one, which is what makes the phrase table worth checking at all.
+func _check_journal() -> void:
+	var words: String = journal_screen.check(republic)
+	if words != "":
+		printerr("journal check FAILED: %s" % words)
+		return
+	var total: int = republic.journal_len()
+	if total < 5:
+		printerr("journal check FAILED: %d orders recorded after a run that issued many" % total)
+		return
+	var page: PackedFloat32Array = republic.journal_page(0, total)
+	var journal_stride := int(journal_screen.J_STRIDE)
+	@warning_ignore("integer_division")
+	var entries: int = page.size() / journal_stride
+	if entries != total:
+		printerr("journal check FAILED: %d orders and a page of %d" % [total, entries])
+		return
+	# Every verb the run produced must be one the screen has a phrase for. A verb
+	# past the end of the table prints a blank line, which reads as an order that
+	# did nothing rather than as a bug.
+	for i in entries:
+		var verb := int(page[i * journal_stride + int(journal_screen.J_VERB)])
+		if verb < 0 or verb >= journal_screen.PHRASES.size():
+			printerr("journal check FAILED: order %d has verb %d and there are %d phrases" % [
+				i, verb, journal_screen.PHRASES.size(),
+			])
+			return
+	print("journal check ok: %d orders, every one of them a sentence" % total)
 
 
 ## Contract a building and check one goes up.
@@ -604,7 +808,8 @@ func _enter_republic() -> void:
 	hud.set_utility_names(republic.utility_names())
 	hud.set_way_names(republic.way_names())
 	hud.set_hint(
-		"0-5 speed  ·  space pause  ·  B build  ·  L labour  ·  esc menu  ·  "
+		"0-5 speed  ·  space pause  ·  click a building  ·  "
+		+ "B build  L labour  C trade  M finance  J journal  ·  esc menu  ·  "
 		+ "F none  G going  T tracks  R survey  P smoke  N snow  ·  "
 		+ "WASD pan  ·  right-drag orbit  ·  wheel zoom"
 	)
@@ -661,6 +866,12 @@ func _connect_screens() -> void:
 	build_menu.chose_way.connect(_begin_way)
 	build_menu.closed.connect(func(): _set_screen(Screen.PLAYING))
 	labour_screen.closed.connect(func(): _set_screen(Screen.PLAYING))
+	trade_screen.closed.connect(func(): _set_screen(Screen.PLAYING))
+	finance_screen.closed.connect(func(): _set_screen(Screen.PLAYING))
+	journal_screen.closed.connect(func(): _set_screen(Screen.PLAYING))
+	# The inspector closing is not a screen change: the republic was never
+	# stopped for it, because it is a panel over a running map.
+	inspector.closed.connect(func(): hud.set_placing("", ""))
 
 
 func _on_new_posting() -> void:
@@ -753,7 +964,14 @@ func _set_screen(screen: int) -> void:
 	reference.visible = screen == Screen.REFERENCE
 	radio.visible = screen == Screen.RADIO
 	pause_menu.visible = screen == Screen.PAUSED
+	trade_screen.visible = screen == Screen.TRADE
+	finance_screen.visible = screen == Screen.FINANCE
+	journal_screen.visible = screen == Screen.JOURNAL
 	hud.visible = screen == Screen.PLAYING
+	# The inspector rides with the HUD rather than with the screen it is over: it
+	# is a panel about a building on the map, and a full sheet drawn over the map
+	# has covered the building.
+	inspector.visible = screen == Screen.PLAYING and inspector.is_open()
 
 	if screen == Screen.PLAYING:
 		return
@@ -777,6 +995,12 @@ func _set_screen(screen: int) -> void:
 			reference.open(republic)
 		Screen.RADIO:
 			radio.open()
+		Screen.TRADE:
+			trade_screen.open(republic)
+		Screen.FINANCE:
+			finance_screen.open(republic)
+		Screen.JOURNAL:
+			journal_screen.open(republic)
 
 
 func _refresh_continue() -> void:
@@ -845,6 +1069,44 @@ func _open_named_screen(spec: String) -> void:
 			# is the whole thing `--at` exists to stop happening.
 			_apply_view_flags()
 			_set_screen(Screen.PLAYING)
+		"inspector":
+			# A panel about one building needs a building. The fixture town is
+			# the only thing that stands any up without a player, and a capture
+			# of an empty inspector would be a capture of a heading — every
+			# layout bug this project has shipped was in a row.
+			_found_default()
+			republic.found_fixture_town(143)
+			republic.advance_days(2)
+			_enter_republic()
+			_apply_view_flags()
+			_set_screen(Screen.PLAYING)
+			# `page` picks which building, so a capture can be aimed at a house,
+			# a works or a Construction Office — they compose different columns,
+			# and a capture that only ever saw one of them would be checking a
+			# third of the panel.
+			inspector.open(republic, _store, maxi(page, 1))
+		"trade", "finance":
+			# **Both of these render an empty table on a freshly founded
+			# republic**, and a capture of a screen with no rows checks nothing —
+			# every layout bug this project has shipped was in a row. So the same
+			# handful of real orders the journal capture gives is given here: it
+			# writes two trade rules and takes an advance, which is exactly the
+			# state these two screens exist to show.
+			_found_default()
+			_play_a_few_orders()
+			_set_screen(Screen.TRADE if name == "trade" else Screen.FINANCE)
+		"journal":
+			# **The fixture town is no use here and that is worth stating.** It
+			# stands buildings up directly, without issuing a command for any of
+			# them, so a journal over it has one entry — the republic's name. A
+			# capture of a screen with no rows checks nothing.
+			#
+			# So this issues real orders through the same bindings a player
+			# presses, which is the only honest way to make a record of orders:
+			# they *are* orders, given by a script instead of a hand.
+			_found_default()
+			_play_a_few_orders()
+			_set_screen(Screen.JOURNAL)
 		"labour":
 			# Needs a republic with workplaces standing in it: on a blank map the
 			# table under the two policy controls is empty, and a capture of a
@@ -862,6 +1124,30 @@ func _open_named_screen(spec: String) -> void:
 		_:
 			push_error("no screen called '%s'" % name)
 			_set_screen(Screen.MENU)
+
+
+## Give a handful of real orders, so a capture of the journal has rows in it.
+##
+## Reached only from `--screen journal`. Every line here goes through a binding a
+## player presses, so what lands in the record is what a player's would be —
+## there is no way to write an entry the journal would not otherwise hold, and
+## there should not be.
+func _play_a_few_orders() -> void:
+	var centre := republic.map_extent() * 0.5
+	for ring in 8:
+		var at: float = centre + float(ring) * 90.0
+		if String(republic.contract(0, at, at, 0)) == "":
+			break
+	for ring in 8:
+		var at: float = centre - float(ring) * 90.0
+		if String(republic.contract(3, at, at, 0)) == "":
+			break
+	var _road := republic.order_way(0, centre, centre, centre + 700.0, centre, false)
+	var _hours := republic.set_national_shift_hours(10.0)
+	var _sell := republic.add_trade_rule(0, 0, false, 0.0)
+	var _buy := republic.add_trade_rule(1, 1, true, 40.0)
+	var _rank := republic.move_trade_rule(1, 0)
+	var _advance := republic.take_loan(0, 1)
 
 
 func _apply_interface_scale() -> void:
@@ -885,6 +1171,7 @@ func _process(delta: float) -> void:
 		_refresh_newcomers()
 		_refresh_overlay()
 		_refresh_status()
+		_refresh_inspector()
 		_follow_the_day()
 	_maybe_bench(delta)
 	_maybe_capture()
@@ -1027,6 +1314,21 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 
+	# **The pick, and it is last of the three mouse modes on purpose.** Placing a
+	# building and laying a road both take a click that means something else, so
+	# selecting only happens when there is nothing in hand — which is also what
+	# makes right-click unambiguous: it cancels what you are holding, or it
+	# closes the panel.
+	if _screen == Screen.PLAYING and event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			_pick_building()
+			get_viewport().set_input_as_handled()
+			return
+		if event.button_index == MOUSE_BUTTON_RIGHT and inspector.is_open():
+			inspector.close_panel()
+			get_viewport().set_input_as_handled()
+			return
+
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 
@@ -1041,6 +1343,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		if _way_grade >= 0:
 			_cancel_way()
+			return
+		# Then the inspector, for the same reason: escape means "put down what
+		# you are holding" before it means "leave the game".
+		if _screen == Screen.PLAYING and inspector.is_open():
+			inspector.close_panel()
 			return
 		match _screen:
 			Screen.PLAYING:
@@ -1067,6 +1374,14 @@ func _unhandled_input(event: InputEvent) -> void:
 		build_menu.open(republic)
 	elif event.keycode == KEY_L:
 		labour_screen.open(republic)
+	elif event.keycode == KEY_C:
+		# C for customs rather than T, which the tracks overlay has held since
+		# before there was a trade screen to give it to.
+		_set_screen(Screen.TRADE)
+	elif event.keycode == KEY_M:
+		_set_screen(Screen.FINANCE)
+	elif event.keycode == KEY_J:
+		_set_screen(Screen.JOURNAL)
 	elif speeds.has(event.keycode):
 		republic.set_speed(speeds[event.keycode])
 	elif event.keycode == KEY_SPACE:
@@ -2004,6 +2319,18 @@ func _refresh_status() -> void:
 	hud.refresh(republic, _overlay, SPEED_NAMES)
 
 
+## Keep the open building's figures live.
+##
+## Per frame rather than on a day boundary, because half of what this panel shows
+## moves within a tick — a site's builder-days, a yard filling as a lorry arrives,
+## the staff a labour pass just posted. The panel writes labels rather than
+## building them, which is the 165x that makes it affordable, and it does nothing
+## at all when nothing is selected.
+func _refresh_inspector() -> void:
+	if inspector.is_open():
+		inspector.refresh()
+
+
 ## Overlays are rebuilt on the day boundary rather than per frame.
 ##
 ## Going and wear are ground state and the ground changes daily, so a per-frame
@@ -2067,6 +2394,25 @@ func _cursor_ground() -> Vector3:
 	return hit
 
 
+## Open the inspector on whatever is under the cursor, or close it.
+##
+## **Asks the simulation what is there rather than testing the drawn geometry.**
+## `building_at` runs the same footprint rule placement refuses to overlap, so a
+## building that is visibly standing somewhere is always selectable there — a hit
+## test written here against the `MultiMesh` transforms would be a second copy of
+## that rule, and it is the copy that drifts.
+##
+## Clicking open ground closes the panel, which is what a player means by it.
+func _pick_building() -> void:
+	var at := _cursor_ground()
+	var id := republic.building_at(at.x, at.z)
+	if id <= 0:
+		inspector.close_panel()
+		return
+	inspector.open(republic, _store, id)
+	audio.play("click")
+
+
 ## Start placing a building the build menu chose.
 func _begin_placement(kind: int, market: int) -> void:
 	_build_kind = kind
@@ -2111,7 +2457,40 @@ func _update_ghost() -> void:
 	mat.albedo_color = (
 		Color(0.4, 0.9, 0.45, 0.45) if why == "" else Color(0.9, 0.35, 0.3, 0.45)
 	)
-	hud.set_placing(String(republic.building_kind_name(_build_kind)), why)
+	hud.set_placing(
+		String(republic.building_kind_name(_build_kind)), why, _ground_note(at)
+	)
+
+
+## What the ground under the cursor is like, while something is in hand.
+##
+## **Siting is the decision this game is made of and these were all unaskable.**
+## Every figure here is a placement query the simulation already answered for
+## anybody who called it, and nothing did: how hard the going is decides whether a
+## lorry gets through in spring, how far the frontier is decides the haul to a
+## customs house, which bloc is nearest decides which currency this corner earns,
+## and what a visitor would think of the view decides whether a hotel is worth
+## building at all.
+##
+## The appeal figure appears only where there is any, which on a map with nothing
+## worth looking at is nowhere. A figure that is always on screen and matters
+## twice a republic is a figure a player learns to stop reading.
+func _ground_note(at: Vector3) -> String:
+	var going: float = republic.going_at(at.x, at.z)
+	var border: float = republic.distance_to_border(at.x, at.z)
+	var bloc: int = republic.bloc_near(at.x, at.z)
+	var parts := PackedStringArray()
+	# Going is a badness -- 0 firm, 1 impassable -- and it is stated as one, in
+	# the direction the simulation stores it. The overlay ramp was built off a
+	# comment that had this backwards once and painted a dry map entirely red.
+	parts.append("going %d%%" % int(round(going * 100.0)))
+	parts.append("%.0f m from the %s frontier" % [
+		border, "eastern" if bloc == 0 else "western",
+	])
+	var appeal: float = republic.appeal_at(at.x, at.z)
+	if appeal > 0.005:
+		parts.append("appeal %d%%" % int(round(appeal * 100.0)))
+	return "  ·  ".join(parts)
 
 
 ## Commit the placement under the cursor.

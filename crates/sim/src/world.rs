@@ -905,6 +905,68 @@ impl World {
         }
     }
 
+    /// Whether builders could be hired to this building from this bloc, and
+    /// where they would arrive if so.
+    ///
+    /// **A pre-flight, in the family of [`World::can_place`] and
+    /// `Loans::can_take`**, and it exists for the same reason both of those do:
+    /// a panel that decided for itself which buildings may hire would be a
+    /// second copy of the rule, and this project has watched the copy drift. It
+    /// was the first thing the building inspector got wrong — a coal power plant
+    /// offering to hire five builders from the Eastern Bloc, because the panel
+    /// asked "does this place have spare staff" and no such question decides it.
+    ///
+    /// Everything [`crate::command::Command::HireForeign`] checks *before the
+    /// money moves* is in here, so the two cannot answer differently. What is
+    /// not is the fee against the treasury, which depends on how many are being
+    /// hired and is therefore not a property of the office.
+    pub fn can_hire(
+        &self,
+        office: crate::building::BuildingId,
+        market: Market,
+    ) -> Result<crate::units::Point, Refused> {
+        let b = self
+            .buildings
+            .get(office)
+            .ok_or(Refused::NoSuchBuilding(office))?;
+        if b.kind != crate::building::BuildingKind::ConstructionOffice || !b.is_built() {
+            return Err(Refused::NotAConstructionOffice);
+        }
+        // They arrive at their own bloc's post, which is what makes hiring from
+        // the far bloc a haulage decision rather than a dropdown — the same
+        // geography a dollar already has.
+        self.frontier
+            .nearest_crossing(b.centre, Some(market))
+            .map(|post| post.at)
+            .ok_or(Refused::NoPostOfThatBloc(market))
+    }
+
+    /// Which building's footprint covers a point, if any.
+    ///
+    /// **The pick.** A shell asking "what did the player just click on" must ask
+    /// the same question placement asks, or a building can be visibly standing
+    /// somewhere that cannot be selected — and the rule about what ground a
+    /// building occupies is [`crate::building::Building::bounds`], which is in
+    /// here rather than in a renderer. A hit test written in GDScript against
+    /// drawn geometry would be a second copy of that rule, and the copy that
+    /// drifts.
+    ///
+    /// The last match wins, so the most recently commissioned building takes a
+    /// point two of them somehow share. Footprints do not overlap — placement
+    /// refuses it — so that tie-break is a statement about the impossible case
+    /// rather than a policy anybody will notice.
+    pub fn building_at(&self, at: crate::units::Point) -> Option<crate::building::BuildingId> {
+        self.buildings
+            .all()
+            .iter()
+            .rev()
+            .find(|b| {
+                let (x0, y0, x1, y1) = b.bounds();
+                at.x.0 >= x0 && at.x.0 <= x1 && at.y.0 >= y0 && at.y.0 <= y1
+            })
+            .map(|b| b.id)
+    }
+
     /// The same, already finished — the founding grant.
     ///
     /// Scenario setup rather than play, and `pub(crate)` for a stronger reason
@@ -1162,19 +1224,7 @@ impl World {
                 if heads == 0 {
                     return Err(Refused::NobodyToHire);
                 }
-                let Some(b) = self.buildings.get(office) else {
-                    return Err(Refused::NoSuchBuilding(office));
-                };
-                if b.kind != crate::building::BuildingKind::ConstructionOffice || !b.is_built() {
-                    return Err(Refused::NotAConstructionOffice);
-                }
-                // They arrive at their own bloc's post, which is what makes
-                // hiring from the far bloc a haulage decision rather than a
-                // dropdown — the same geography a dollar already has.
-                let Some(post) = self.frontier.nearest_crossing(b.centre, Some(market)) else {
-                    return Err(Refused::NoPostOfThatBloc(market));
-                };
-                let at = post.at;
+                let at = self.can_hire(office, market)?;
                 let fee = f64::from(heads) * crate::crews::HIRING_FEE;
                 let held = self.treasury.of(market);
                 if held + 1e-9 < fee {
@@ -2158,6 +2208,79 @@ mod tests {
             "the sweep never reached a point away from the border, \
              so agreement was proved about nothing"
         );
+    }
+
+    /// The pick answers the same footprint placement refuses to overlap.
+    ///
+    /// A shell that hit-tested drawn geometry would be a second copy of the
+    /// footprint rule, and this asserts the one copy is the one the player
+    /// clicks: sweep the whole footprint and everything a metre outside it, and
+    /// check both directions. Both premises are asserted, because a sweep that
+    /// never reaches inside the building and a sweep that never reaches outside
+    /// it both pass a `building_at` that always answers `None`.
+    #[test]
+    fn the_pick_covers_exactly_the_footprint_placement_reserves() {
+        use crate::building::BuildingKind;
+
+        let mut world = World::new(spec(1961));
+        let extent = world.terrain.extent().0;
+        // Somewhere buildable, found rather than assumed: the map is generated
+        // and the middle of it may be a lake.
+        let mut sited = None;
+        for step in 0..40u32 {
+            let at = Point::new(
+                Metres(extent * 0.5 + f64::from(step) * 20.0),
+                Metres(extent * 0.5),
+            );
+            if let Ok(id) = world.place(BuildingKind::House, at) {
+                sited = Some((id, at));
+                break;
+            }
+        }
+        let (id, centre) = sited.expect("somewhere on a 1 km map takes a house");
+        let def = BuildingKind::House.def();
+        let (half_w, half_d) = (def.width.0 / 2.0, def.depth.0 / 2.0);
+
+        let mut inside = 0;
+        let mut outside = 0;
+        for i in -6..=6i32 {
+            for j in -6..=6i32 {
+                // Steps of a fifth of the half-width, so the sweep straddles the
+                // edge rather than only sampling the middle and the far field.
+                let at = Point::new(
+                    Metres(centre.x.0 + f64::from(i) * half_w / 5.0),
+                    Metres(centre.y.0 + f64::from(j) * half_d / 5.0),
+                );
+                let covered = at.x.0 >= centre.x.0 - half_w
+                    && at.x.0 <= centre.x.0 + half_w
+                    && at.y.0 >= centre.y.0 - half_d
+                    && at.y.0 <= centre.y.0 + half_d;
+                if covered {
+                    inside += 1;
+                    assert_eq!(
+                        world.building_at(at),
+                        Some(id),
+                        "{at:?} is inside the footprint and the pick missed it"
+                    );
+                } else {
+                    outside += 1;
+                    assert_eq!(
+                        world.building_at(at),
+                        None,
+                        "{at:?} is off the footprint and the pick found a building"
+                    );
+                }
+            }
+        }
+        assert!(inside > 0, "the sweep never landed on the building");
+        assert!(outside > 0, "the sweep never left the building");
+
+        // And a demolished building is not pickable, which is what stops a
+        // panel holding an id that no longer names anything.
+        world
+            .issue(Command::Demolish { building: id })
+            .expect("nothing is standing on it");
+        assert_eq!(world.building_at(centre), None);
     }
 
     /// A republic replays from its own journal.

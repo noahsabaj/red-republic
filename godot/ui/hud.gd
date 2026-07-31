@@ -645,17 +645,24 @@ func set_hint(text: String) -> void:
 	_show_hint()
 
 
-## What is in hand while placing, and why the ground under the cursor refuses it.
+## What is in hand while placing, why the ground under the cursor refuses it, and
+## what that ground is like.
 ##
 ## The refusal is a sentence rather than a code, because `Command` was built to
 ## return one. An empty `kind` clears the line back to the keys.
-func set_placing(kind: String, why: String) -> void:
+##
+## `note` is the ground: how the going is here, how far the frontier is, what a
+## hotel sited here would be worth. It is **separate from the refusal** rather
+## than appended to it, because the refusal is the one thing this line ever says
+## in the alarm colour — and painting "firm going, 900 m from the frontier" red
+## would be telling the player something is wrong with ground that is fine.
+func set_placing(kind: String, why: String, note: String = "") -> void:
 	if kind == "":
 		_hint_placing = ""
 	elif why == "":
-		_hint_placing = "PLACING %s  ·  left click to build, right click or esc to stop" % (
-			kind.to_upper()
-		)
+		_hint_placing = "PLACING %s  ·  left click to build, right click or esc to stop%s" % [
+			kind.to_upper(), "     %s" % note if note != "" else "",
+		]
 	else:
 		_hint_placing = "PLACING %s  ·  %s" % [kind.to_upper(), why]
 	_refusing = why != "" and kind != ""

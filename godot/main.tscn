@@ -1,4 +1,4 @@
-[gd_scene load_steps=14 format=3]
+[gd_scene load_steps=18 format=3]
 
 [ext_resource type="Script" path="res://main.gd" id="1_main"]
 [ext_resource type="Script" path="res://camera_rig.gd" id="2_rig"]
@@ -13,6 +13,10 @@
 [ext_resource type="Script" path="res://ui/reference.gd" id="9_reference"]
 [ext_resource type="Script" path="res://ui/radio.gd" id="10_radio"]
 [ext_resource type="Script" path="res://ui/pause.gd" id="11_pause"]
+[ext_resource type="Script" path="res://ui/inspector.gd" id="14_inspector"]
+[ext_resource type="Script" path="res://ui/trade.gd" id="15_trade"]
+[ext_resource type="Script" path="res://ui/finance.gd" id="16_finance"]
+[ext_resource type="Script" path="res://ui/journal.gd" id="17_journal"]
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_main")
@@ -87,3 +91,15 @@ script = ExtResource("13_labour")
 
 [node name="Pause" type="CanvasLayer" parent="."]
 script = ExtResource("11_pause")
+
+[node name="Inspector" type="CanvasLayer" parent="."]
+script = ExtResource("14_inspector")
+
+[node name="Trade" type="CanvasLayer" parent="."]
+script = ExtResource("15_trade")
+
+[node name="Finance" type="CanvasLayer" parent="."]
+script = ExtResource("16_finance")
+
+[node name="Journal" type="CanvasLayer" parent="."]
+script = ExtResource("17_journal")
