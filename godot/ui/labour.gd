@@ -302,19 +302,24 @@ func _rebuild_rows(ids: Array) -> void:
 		var name_label := Style.body("", Style.INK)
 		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		top.add_child(name_label)
-		# **Where this works stands when there are not enough people.** It sits on
-		# the top line beside the manning rather than down with the crew and hour
-		# controls, because it answers the number next to it: a works reading
-		# "9 of 16 posts" is only half an answer, and the standing is the other
-		# half. Without it a player cannot tell a republic that has no more hands
-		# from one that has ranked this place below everything else.
+		# **Name, then manning, then standing**, in that order because that is the
+		# order the question gets asked: what is this, how is it doing, and where
+		# did I put it in the plan. The standing sat between the name and the
+		# manning on the first writing, which left a button floating in the middle
+		# of the row with the number it explains stranded on the far side of it.
+		#
+		# It is on the top line rather than down with the crew and hour controls
+		# because it answers the number beside it: a works reading "9 of 16 posts"
+		# is only half an answer, and without the standing a player cannot tell a
+		# republic that has run out of hands from one that has ranked this place
+		# below everything else.
+		var staff := Style.small("", Style.INK_DIM)
+		staff.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		top.add_child(staff)
 		var standing := Style.button("")
 		standing.custom_minimum_size = Vector2(96, 0)
 		standing.pressed.connect(func(): _cycle_standing(id))
 		top.add_child(standing)
-		var staff := Style.small("", Style.INK_DIM)
-		staff.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		top.add_child(staff)
 		stack.add_child(top)
 
 		var bottom := HBoxContainer.new()
