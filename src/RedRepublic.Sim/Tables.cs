@@ -131,6 +131,80 @@ public sealed class Tables
 
     public MineralPlan[] MineralPlan { get; private set; } = [];
 
+    // ---- the systems' own figures ----
+
+    /// <summary>How many hands one Construction Office sends to a site.</summary>
+    public int BuildersPerSite { get; private set; }
+
+    /// <summary>Machinery worn out per builder-day — the industrialisation tax.</summary>
+    public double MachineryPerBuilderDay { get; private set; }
+
+    /// <summary>Builder-days a contracted firm works in a day. A gang of your own is ten people and works ten; a firm brings enough of its own that it works rather faster, because you are buying capacity you do not have to house, feed or train.</summary>
+    public double ContractorDays { get; private set; }
+
+    /// <summary>What one contracted builder-day costs, in the bloc's own currency. Several times what your own crews cost, which is the entire argument for building a Construction Office and training people.</summary>
+    public double ContractorRate { get; private set; }
+
+    /// <summary>Tonnes a person eats in a day.</summary>
+    public double FoodPerCitizen { get; private set; }
+
+    public double ClothesPerCitizen { get; private set; }
+
+    public double AlcoholPerCitizen { get; private set; }
+
+    public double ElectronicsPerCitizen { get; private set; }
+
+    /// <summary>How far a clinic, a school or a shop reaches.</summary>
+    public double ServiceRadius { get; private set; }
+
+    /// <summary>How far a transformer station feeds.</summary>
+    public double TransformerRange { get; private set; }
+
+    /// <summary>How far a chimney's smoke carries.</summary>
+    public double SmokeRadius { get; private set; }
+
+    /// <summary>What a building runs at with a dry machinery bin. It runs worn rather than stopping — a dry bin never stalls the place.</summary>
+    public double WornEfficiency { get; private set; }
+
+    public double GrowingMinC { get; private set; }
+
+    public double GrowingWarmC { get; private set; }
+
+    public double DroughtBelow { get; private set; }
+
+    public double DroughtFloor { get; private set; }
+
+    public double WateredAt { get; private set; }
+
+    public double WateredYield { get; private set; }
+
+    public double ResupplyAtDays { get; private set; }
+
+    /// <summary>The smallest load worth sending a lorry for.</summary>
+    public double MinLoad { get; private set; }
+
+    public double BogSpan { get; private set; }
+
+    /// <summary>The chance of bogging on the worst going there is.</summary>
+    public double WorstOdds { get; private set; }
+
+    public double DigOut { get; private set; }
+
+    public double RefuelRange { get; private set; }
+
+    /// <summary>The age nobody outlives.</summary>
+    public int Oldest { get; private set; }
+
+    public double BirthsPerPairYear { get; private set; }
+
+    /// <summary>How content a household has to be before it has a child.</summary>
+    public double BirthsNeed { get; private set; }
+
+    public double ArrivalOdds { get; private set; }
+
+    /// <summary>How buried a road has to be before a plough is sent.</summary>
+    public double PloughAt { get; private set; }
+
     // ---- ways and lines ----
 
     /// <summary>How often a long road drops a junction.</summary>
@@ -715,6 +789,37 @@ public sealed class Tables
 
     private void LoadPeople(JsonElement m)
     {
+        var ru = m.GetProperty("rules");
+        BuildersPerSite = ru.GetProperty("builders_per_site").GetInt32();
+        MachineryPerBuilderDay = ru.GetProperty("machinery_per_builder_day").GetDouble();
+        ContractorDays = ru.GetProperty("contractor_days").GetDouble();
+        ContractorRate = ru.GetProperty("contractor_rate").GetDouble();
+        FoodPerCitizen = ru.GetProperty("food_per_citizen").GetDouble();
+        ClothesPerCitizen = ru.GetProperty("clothes_per_citizen").GetDouble();
+        AlcoholPerCitizen = ru.GetProperty("alcohol_per_citizen").GetDouble();
+        ElectronicsPerCitizen = ru.GetProperty("electronics_per_citizen").GetDouble();
+        ServiceRadius = ru.GetProperty("service_radius_m").GetDouble();
+        TransformerRange = ru.GetProperty("transformer_range_m").GetDouble();
+        SmokeRadius = ru.GetProperty("smoke_radius_m").GetDouble();
+        WornEfficiency = ru.GetProperty("worn_efficiency").GetDouble();
+        GrowingMinC = ru.GetProperty("growing_min_c").GetDouble();
+        GrowingWarmC = ru.GetProperty("growing_warm_c").GetDouble();
+        DroughtBelow = ru.GetProperty("drought_below").GetDouble();
+        DroughtFloor = ru.GetProperty("drought_floor").GetDouble();
+        WateredAt = ru.GetProperty("watered_at").GetDouble();
+        WateredYield = ru.GetProperty("watered_yield").GetDouble();
+        ResupplyAtDays = ru.GetProperty("resupply_at_days").GetDouble();
+        MinLoad = ru.GetProperty("min_load_t").GetDouble();
+        BogSpan = ru.GetProperty("bog_span").GetDouble();
+        WorstOdds = ru.GetProperty("worst_odds").GetDouble();
+        DigOut = ru.GetProperty("dig_out").GetDouble();
+        RefuelRange = ru.GetProperty("refuel_range_m").GetDouble();
+        Oldest = ru.GetProperty("oldest").GetInt32();
+        BirthsPerPairYear = ru.GetProperty("births_per_pair_year").GetDouble();
+        BirthsNeed = ru.GetProperty("births_need").GetDouble();
+        ArrivalOdds = ru.GetProperty("arrival_odds").GetDouble();
+        PloughAt = ru.GetProperty("plough_at").GetDouble();
+
         var rw = m.GetProperty("roadworks");
         JunctionSpacing = rw.GetProperty("junction_spacing_m").GetDouble();
         JunctionMerge = rw.GetProperty("junction_merge_m").GetDouble();
@@ -1098,6 +1203,35 @@ public sealed class Tables
         }
 
         // People last, matching the order the dumper pushes them in.
+        h.Push(BuildersPerSite);
+        h.Push(MachineryPerBuilderDay);
+        h.Push(ContractorDays);
+        h.Push(ContractorRate);
+        h.Push(FoodPerCitizen);
+        h.Push(ClothesPerCitizen);
+        h.Push(AlcoholPerCitizen);
+        h.Push(ElectronicsPerCitizen);
+        h.Push(ServiceRadius);
+        h.Push(TransformerRange);
+        h.Push(SmokeRadius);
+        h.Push(WornEfficiency);
+        h.Push(GrowingMinC);
+        h.Push(GrowingWarmC);
+        h.Push(DroughtBelow);
+        h.Push(DroughtFloor);
+        h.Push(WateredAt);
+        h.Push(WateredYield);
+        h.Push(ResupplyAtDays);
+        h.Push(MinLoad);
+        h.Push(BogSpan);
+        h.Push(WorstOdds);
+        h.Push(DigOut);
+        h.Push(RefuelRange);
+        h.Push(Oldest);
+        h.Push(BirthsPerPairYear);
+        h.Push(BirthsNeed);
+        h.Push(ArrivalOdds);
+        h.Push(PloughAt);
         h.Push(JunctionSpacing);
         h.Push(JunctionMerge);
         h.Push(MinRoad);

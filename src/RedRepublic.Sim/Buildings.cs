@@ -59,6 +59,7 @@ public sealed class Buildings
     private readonly List<double> _provisioned = [];
     private readonly List<double> _comforted = [];
     private readonly List<double> _drink = [];
+    private readonly List<Contentment> _content = [];
     private readonly List<double> _workDone = [];
     private readonly List<int> _contractor = [];
     private readonly List<int> _tapped = [];
@@ -131,6 +132,15 @@ public sealed class Buildings
 
     public double DrinkAt(int i) => _drink[i];
 
+    /// <summary>
+    /// How well the republic is serving the people who live here, component by
+    /// component. Set by the contentment system, never authored, and meaningless
+    /// on anything that is not housing.
+    /// </summary>
+    public Contentment ContentmentAt(int i) => _content[i];
+
+    public void SetContentment(int i, Contentment c) => _content[i] = c;
+
     // Consequences a system writes. Never authored, which is why they are set
     // through named methods rather than by handing out the arrays.
     public void SetStaff(int i, int staff) => _staff[i] = staff;
@@ -183,6 +193,7 @@ public sealed class Buildings
         _provisioned.Add(0.0);
         _comforted.Add(0.0);
         _drink.Add(0.0);
+        _content.Add(Contentment.Nothing);
         _workDone.Add(0.0);
         _contractor.Add(-1);
         _tapped.Add(-1);
@@ -216,6 +227,7 @@ public sealed class Buildings
         _provisioned.RemoveAt(i);
         _comforted.RemoveAt(i);
         _drink.RemoveAt(i);
+        _content.RemoveAt(i);
         _workDone.RemoveAt(i);
         _contractor.RemoveAt(i);
         _tapped.RemoveAt(i);

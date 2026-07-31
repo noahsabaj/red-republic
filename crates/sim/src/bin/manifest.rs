@@ -44,6 +44,14 @@ use red_republic_sim::shifts::{
     DAYLIGHT_HOURS, MAX_HOURS, MAX_SHIFTS, MIN_HOURS, OVERWORK_HEALTH, OVERWORK_LOYALTY,
     STANDARD_HOURS,
 };
+use red_republic_sim::systems::{
+    ALCOHOL_PER_CITIZEN, ARRIVAL_ODDS, BIRTHS_NEED, BIRTHS_PER_PAIR_YEAR, BOG_SPAN,
+    BUILDERS_PER_SITE, CLOTHES_PER_CITIZEN, CONTRACTOR_DAYS, CONTRACTOR_RATE, DIG_OUT,
+    DROUGHT_BELOW, DROUGHT_FLOOR, ELECTRONICS_PER_CITIZEN, FOOD_PER_CITIZEN, GROWING_MIN_C,
+    GROWING_WARM_C, MACHINERY_PER_BUILDER_DAY, MIN_LOAD, OLDEST, PLOUGH_AT, REFUEL_RANGE,
+    RESUPPLY_AT_DAYS, SERVICE_RADIUS, SMOKE_RADIUS, TRANSFORMER_RANGE, WATERED_AT, WATERED_YIELD,
+    WORN_EFFICIENCY, WORST_ODDS,
+};
 use red_republic_sim::terrain::{DEFAULT_TERRAIN, Surface};
 use red_republic_sim::tourism::{APPEAL_FLOOR, PARTY as TOUR_PARTY, SPEND_PER_HEAD_PER_DAY, STAY};
 use red_republic_sim::trade::{
@@ -274,6 +282,37 @@ fn main() {
     }
     // People: how far somebody will walk, how long they will travel, and the
     // ages that decide what they are doing with their life.
+    // The systems' own figures: what a builder does in a day, what a person
+    // eats, how far a service reaches, and when a lorry gets stuck.
+    canon.push_int(BUILDERS_PER_SITE);
+    canon.push(MACHINERY_PER_BUILDER_DAY);
+    canon.push(CONTRACTOR_DAYS);
+    canon.push(CONTRACTOR_RATE);
+    canon.push(FOOD_PER_CITIZEN);
+    canon.push(CLOTHES_PER_CITIZEN);
+    canon.push(ALCOHOL_PER_CITIZEN);
+    canon.push(ELECTRONICS_PER_CITIZEN);
+    canon.push(SERVICE_RADIUS.0);
+    canon.push(TRANSFORMER_RANGE.0);
+    canon.push(SMOKE_RADIUS.0);
+    canon.push(WORN_EFFICIENCY);
+    canon.push(GROWING_MIN_C);
+    canon.push(GROWING_WARM_C);
+    canon.push(DROUGHT_BELOW);
+    canon.push(DROUGHT_FLOOR);
+    canon.push(WATERED_AT);
+    canon.push(WATERED_YIELD);
+    canon.push(RESUPPLY_AT_DAYS);
+    canon.push(MIN_LOAD.0);
+    canon.push(BOG_SPAN);
+    canon.push(WORST_ODDS);
+    canon.push(DIG_OUT);
+    canon.push(REFUEL_RANGE.0);
+    canon.push_int(OLDEST);
+    canon.push(BIRTHS_PER_PAIR_YEAR);
+    canon.push(BIRTHS_NEED);
+    canon.push(ARRIVAL_ODDS);
+    canon.push(PLOUGH_AT);
     // Ways and lines: what it costs to connect the republic to itself.
     canon.push(JUNCTION_SPACING.0);
     canon.push(JUNCTION_MERGE.0);
@@ -593,6 +632,40 @@ fn main() {
     // Climate is balance, and the two halves are authored together on purpose:
     // the taiga is cold and dry, the maritime posting is mild and wet, and those
     // are different problems rather than one dial.
+    out.push_str(&format!(
+        "  \"rules\": {{ \"builders_per_site\": {}, \"machinery_per_builder_day\": {}, \"contractor_days\": {}, \"contractor_rate\": {}, \"food_per_citizen\": {}, \"clothes_per_citizen\": {}, \"alcohol_per_citizen\": {}, \"electronics_per_citizen\": {}, \"service_radius_m\": {}, \"transformer_range_m\": {}, \"smoke_radius_m\": {}, \"worn_efficiency\": {}, \"growing_min_c\": {}, \"growing_warm_c\": {}, \"drought_below\": {}, \"drought_floor\": {}, \"watered_at\": {}, \"watered_yield\": {}, \"resupply_at_days\": {}, \"min_load_t\": {}, \"bog_span\": {}, \"worst_odds\": {}, \"dig_out\": {}, \"refuel_range_m\": {}, \"oldest\": {}, \"births_per_pair_year\": {}, \"births_need\": {}, \"arrival_odds\": {}, \"plough_at\": {} }},
+",
+        BUILDERS_PER_SITE,
+        n(MACHINERY_PER_BUILDER_DAY),
+        n(CONTRACTOR_DAYS),
+        n(CONTRACTOR_RATE),
+        n(FOOD_PER_CITIZEN),
+        n(CLOTHES_PER_CITIZEN),
+        n(ALCOHOL_PER_CITIZEN),
+        n(ELECTRONICS_PER_CITIZEN),
+        n(SERVICE_RADIUS.0),
+        n(TRANSFORMER_RANGE.0),
+        n(SMOKE_RADIUS.0),
+        n(WORN_EFFICIENCY),
+        n(GROWING_MIN_C),
+        n(GROWING_WARM_C),
+        n(DROUGHT_BELOW),
+        n(DROUGHT_FLOOR),
+        n(WATERED_AT),
+        n(WATERED_YIELD),
+        n(RESUPPLY_AT_DAYS),
+        n(MIN_LOAD.0),
+        n(BOG_SPAN),
+        n(WORST_ODDS),
+        n(DIG_OUT),
+        n(REFUEL_RANGE.0),
+        OLDEST,
+        n(BIRTHS_PER_PAIR_YEAR),
+        n(BIRTHS_NEED),
+        n(ARRIVAL_ODDS),
+        n(PLOUGH_AT)
+    ));
+
     out.push_str(&format!(
         "  \"roadworks\": {{ \"junction_spacing_m\": {}, \"junction_merge_m\": {}, \"min_road_m\": {}, \"lamp_labour\": {}, \"lamp_mw_per_km\": {}, \"lamp_materials\": {} }},
 ",
