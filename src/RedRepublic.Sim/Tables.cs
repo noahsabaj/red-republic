@@ -131,6 +131,92 @@ public sealed class Tables
 
     public MineralPlan[] MineralPlan { get; private set; } = [];
 
+    // ---- the ground model ----
+
+    public double FreezeC { get; private set; }
+
+    /// <summary>How far below freezing the ground reaches full frost.</summary>
+    public double FrostRangeC { get; private set; }
+
+    /// <summary>
+    /// How fast frost follows the air. Soil has thermal mass, and this lag is
+    /// what makes the thaw an event rather than a switch.
+    /// </summary>
+    public double FrostLag { get; private set; }
+
+    public double SaturationMm { get; private set; }
+    public double MeltPerDegreeMm { get; private set; }
+    public double DryingPerDay { get; private set; }
+    public double DryingFullAtC { get; private set; }
+    public double RootSaturationMm { get; private set; }
+    public double RootDryingPerDay { get; private set; }
+
+    /// <summary>How much longer fully soft ground takes to cross than firm.</summary>
+    public double MudDrag { get; private set; }
+
+    /// <summary>How much of a cell has to be water before nothing can cross it.</summary>
+    public double Drowned { get; private set; }
+
+    /// <summary>
+    /// How much one laden pass packs a cell down. Fifty passes to turn open
+    /// field into a made track, less the fading — deliberately a season's worth
+    /// of traffic rather than a week's, so a track the republic did not plan
+    /// arrives slowly enough to be noticed happening.
+    /// </summary>
+    public double WearPerPass { get; private set; }
+
+    public double WearFadePerDay { get; private set; }
+
+    /// <summary>Where a worn corridor becomes a track on the map.</summary>
+    public double PromoteAt { get; private set; }
+
+    public double SnowBlocksMm { get; private set; }
+
+    /// <summary>
+    /// How much longer a fully buried road takes to drive than a swept one.
+    /// Deliberately gentler than <see cref="MudDrag"/>: a road under snow is
+    /// still a road. What it costs a republic is hours, not journeys.
+    /// </summary>
+    public double SnowDrag { get; private set; }
+
+    /// <summary>How much of the going a made track takes away.</summary>
+    public double WearRelief { get; private set; }
+
+    public double GroundCellSize { get; private set; }
+
+    /// <summary>
+    /// The shortest run of worn cells worth calling a road. Below that it is a
+    /// gateway, not a route.
+    /// </summary>
+    public int MinTrackCells { get; private set; }
+
+    private double[] _going = [];
+
+    /// <summary>
+    /// The static going multiplier of a surface — infinite for water, which is
+    /// impassable rather than merely slow.
+    /// </summary>
+    public double Going(Surface s) => _going[(int)s];
+
+    // ---- climate ----
+
+    /// <summary>Below this, buildings need heating.</summary>
+    public double HeatThresholdC { get; private set; }
+
+    /// <summary>The design-cold day a building's nominal heat demand is quoted at.</summary>
+    public double HeatDesignC { get; private set; }
+
+    /// <summary>How far past nominal deep cold can drive demand.</summary>
+    public double HeatDemandCeiling { get; private set; }
+
+    /// <summary>
+    /// Share of days that carry any rain at all. Rain is bursty because a
+    /// month's water smeared over thirty days never saturates anything.
+    /// </summary>
+    public double WetDayShare { get; private set; }
+
+    public Climate[] Climates { get; private set; } = [];
+
     // ---- vehicles ----
     public int VehicleCount => VehicleIds.Length;
     public string[] VehicleIds { get; private set; } = [];
@@ -199,6 +285,8 @@ public sealed class Tables
         t.LoadVehicles(m.GetProperty("vehicles"));
         t.LoadBuildings(m);
         t.LoadPlans(m);
+        t.LoadClimates(m);
+        t.LoadGround(m);
 
         t.ChecksumExpected = m.GetProperty("checksum").GetString()!;
         t.ChecksumGot = t.Checksum();
@@ -410,6 +498,74 @@ public sealed class Tables
         MineralPlan = [.. plans];
     }
 
+    private void LoadGround(JsonElement m)
+    {
+        var g = m.GetProperty("ground");
+        FreezeC = g.GetProperty("freeze_c").GetDouble();
+        FrostRangeC = g.GetProperty("frost_range_c").GetDouble();
+        FrostLag = g.GetProperty("frost_lag").GetDouble();
+        SaturationMm = g.GetProperty("saturation_mm").GetDouble();
+        MeltPerDegreeMm = g.GetProperty("melt_per_degree_mm").GetDouble();
+        DryingPerDay = g.GetProperty("drying_per_day").GetDouble();
+        DryingFullAtC = g.GetProperty("drying_full_at_c").GetDouble();
+        RootSaturationMm = g.GetProperty("root_saturation_mm").GetDouble();
+        RootDryingPerDay = g.GetProperty("root_drying_per_day").GetDouble();
+        MudDrag = g.GetProperty("mud_drag").GetDouble();
+        Drowned = g.GetProperty("drowned").GetDouble();
+        WearPerPass = g.GetProperty("wear_per_pass").GetDouble();
+        WearFadePerDay = g.GetProperty("wear_fade_per_day").GetDouble();
+        PromoteAt = g.GetProperty("promote_at").GetDouble();
+        SnowBlocksMm = g.GetProperty("snow_blocks_mm").GetDouble();
+        SnowDrag = g.GetProperty("snow_drag").GetDouble();
+        WearRelief = g.GetProperty("wear_relief").GetDouble();
+        GroundCellSize = g.GetProperty("cell_size").GetDouble();
+        MinTrackCells = g.GetProperty("min_track_cells").GetInt32();
+
+        // `null` in the table means impassable. JSON has no infinity, and
+        // writing a large finite number instead would make water something a
+        // desperate router could still cross.
+        var going = new List<double>();
+        foreach (var v in g.GetProperty("going").EnumerateArray())
+        {
+            going.Add(v.ValueKind == JsonValueKind.Null ? double.PositiveInfinity : v.GetDouble());
+        }
+
+        _going = [.. going];
+    }
+
+    private void LoadClimates(JsonElement m)
+    {
+        var heat = m.GetProperty("heat");
+        HeatThresholdC = heat.GetProperty("threshold_c").GetDouble();
+        HeatDesignC = heat.GetProperty("design_c").GetDouble();
+        HeatDemandCeiling = heat.GetProperty("demand_ceiling").GetDouble();
+        WetDayShare = heat.GetProperty("wet_day_share").GetDouble();
+
+        var list = new List<Climate>();
+        foreach (var c in m.GetProperty("climates").EnumerateArray())
+        {
+            list.Add(new Climate(
+                c.GetProperty("id").GetString()!,
+                c.GetProperty("name").GetString()!,
+                Doubles(c, "monthly_mean_c"),
+                c.GetProperty("daily_swing_c").GetDouble(),
+                Doubles(c, "monthly_rain_mm")));
+        }
+
+        Climates = [.. list];
+    }
+
+    private static double[] Doubles(JsonElement e, string name)
+    {
+        var list = new List<double>();
+        foreach (var v in e.GetProperty(name).EnumerateArray())
+        {
+            list.Add(v.GetDouble());
+        }
+
+        return [.. list];
+    }
+
     /// <summary>
     /// FNV-1a over the bits of every number in the table, in the order the
     /// dumper fixed. Any drift — a value parsed one ulp out, a row reordered, a
@@ -470,6 +626,48 @@ public sealed class Tables
             }
 
             h.Push(BStoresToOrder[b]);
+        }
+
+        h.Push(FreezeC);
+        h.Push(FrostRangeC);
+        h.Push(FrostLag);
+        h.Push(SaturationMm);
+        h.Push(MeltPerDegreeMm);
+        h.Push(DryingPerDay);
+        h.Push(DryingFullAtC);
+        h.Push(RootSaturationMm);
+        h.Push(RootDryingPerDay);
+        h.Push(MudDrag);
+        h.Push(Drowned);
+        h.Push(WearPerPass);
+        h.Push(WearFadePerDay);
+        h.Push(PromoteAt);
+        h.Push(SnowBlocksMm);
+        h.Push(SnowDrag);
+        h.Push(WearRelief);
+        h.Push(GroundCellSize);
+        h.Push(MinTrackCells);
+        foreach (var v in _going)
+        {
+            h.Push(v);
+        }
+
+        h.Push(HeatThresholdC);
+        h.Push(HeatDesignC);
+        h.Push(HeatDemandCeiling);
+        h.Push(WetDayShare);
+        foreach (var c in Climates)
+        {
+            foreach (var v in c.MonthlyMeanC)
+            {
+                h.Push(v);
+            }
+
+            h.Push(c.DailySwingC);
+            foreach (var v in c.MonthlyRainMm)
+            {
+                h.Push(v);
+            }
         }
 
         h.Push(TerrainCellSize);

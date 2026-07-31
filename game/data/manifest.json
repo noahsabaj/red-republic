@@ -1,5 +1,5 @@
 {
-  "checksum": "5c27ee43f2e6e4f2",
+  "checksum": "4949fbbd8ec5e5bb",
   "resources": ["Coal", "IronOre", "Steel", "Oil", "Fuel", "Bitumen", "Chemicals", "Wood", "Planks", "Gravel", "Bricks", "Cement", "Concrete", "PrefabPanel", "Asphalt", "Crops", "Food", "Clothes", "Alcohol", "Machinery", "Electronics", "Waste"],
   "forms": ["Aggregate", "Liquid", "Bulk", "Open", "Covered"],
   "needs": ["Health", "Culture", "Schooling", "Safety"],
@@ -2155,6 +2155,35 @@
     "river_catchment": 0.1,
     "broad_catchment": 0.25
   },
+  "ground": {
+    "freeze_c": 0.0,
+    "frost_range_c": 8.0,
+    "frost_lag": 0.12,
+    "saturation_mm": 40.0,
+    "melt_per_degree_mm": 2.5,
+    "drying_per_day": 0.1,
+    "drying_full_at_c": 15.0,
+    "root_saturation_mm": 160.0,
+    "root_drying_per_day": 0.012,
+    "mud_drag": 2.0,
+    "drowned": 0.25,
+    "wear_per_pass": 0.02,
+    "wear_fade_per_day": 0.01,
+    "promote_at": 0.85,
+    "snow_blocks_mm": 60.0,
+    "snow_drag": 3.0,
+    "wear_relief": 0.8,
+    "cell_size": 100.0,
+    "min_track_cells": 3,
+    "going": [1.0, 1.3, 0.35, null]
+  },
+  "heat": { "threshold_c": 8.0, "design_c": -15.0, "demand_ceiling": 1.25, "wet_day_share": 0.3 },
+  "climates": [
+    { "id": "Plains", "name": "Central Plains", "monthly_mean_c": [-12.0, -9.4, -2.7, 6.3, 15.3, 21.7, 24.0, 21.4, 14.7, 5.7, -3.3, -9.4], "daily_swing_c": 6.0, "monthly_rain_mm": [1.0, 0.9, 1.0, 1.3, 1.6, 2.2, 2.4, 2.0, 1.6, 1.4, 1.3, 1.1] },
+    { "id": "Taiga", "name": "Northern Taiga", "monthly_mean_c": [-24.0, -20.9, -12.7, -1.6, 9.3, 17.2, 20.0, 16.9, 8.7, -2.4, -13.3, -20.9], "daily_swing_c": 7.0, "monthly_rain_mm": [0.8, 0.7, 0.7, 0.9, 1.3, 2.0, 2.4, 2.1, 1.7, 1.4, 1.1, 0.9] },
+    { "id": "Steppe", "name": "Southern Steppe", "monthly_mean_c": [-6.0, -3.7, 2.2, 10.3, 18.2, 24.0, 26.0, 23.7, 17.8, 9.7, 1.8, -3.7], "daily_swing_c": 6.0, "monthly_rain_mm": [0.7, 0.7, 0.9, 1.2, 1.5, 1.4, 1.2, 1.0, 1.0, 1.0, 0.9, 0.8] },
+    { "id": "Maritime", "name": "Western Maritime", "monthly_mean_c": [2.0, 3.1, 6.1, 10.1, 14.1, 17.0, 18.0, 16.9, 13.9, 9.9, 5.9, 3.1], "daily_swing_c": 4.0, "monthly_rain_mm": [2.6, 2.2, 2.0, 1.8, 1.7, 1.7, 1.8, 2.0, 2.3, 2.7, 2.9, 2.8] }
+  ],
   "geology_stream": 1,
   "mineral_plan": [
     { "mineral": "Gravel", "bodies": 6, "radius": [150.0, 400.0], "top": [0.0, 8.0], "layers": 2, "layer_thickness": [3.0, 8.0], "tonnes_per_layer": [40000.0, 120000.0] },

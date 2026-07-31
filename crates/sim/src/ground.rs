@@ -216,7 +216,9 @@ pub const GROUND_CELL: Metres = Metres(100.0);
 pub const MUD_DRAG: f64 = 2.0;
 
 /// How much of a cell has to be water before nothing can cross it.
-const DROWNED: f64 = 0.25;
+/// Exposed so the manifest dumper can carry it across; it is balance like the
+/// rest, not an implementation detail.
+pub const DROWNED: f64 = 0.25;
 
 /// How much one laden pass packs a cell down.
 ///

@@ -10,11 +10,20 @@
 
 use red_republic_sim::building::{BUILDINGS, Need, Priority, Teaching};
 use red_republic_sim::citizen::Education;
+use red_republic_sim::climate::{
+    CLIMATES, HEAT_DEMAND_CEILING, HEAT_DESIGN_C, HEAT_THRESHOLD_C, WET_DAY_SHARE,
+};
 use red_republic_sim::fleet::VehicleKind;
+use red_republic_sim::ground::{
+    DROWNED, DRYING_FULL_AT_C, DRYING_PER_DAY, FREEZE_C, FROST_LAG, FROST_RANGE_C, GROUND_CELL,
+    MELT_PER_DEGREE_MM, MIN_TRACK_CELLS, MUD_DRAG, PROMOTE_AT, ROOT_DRYING_PER_DAY,
+    ROOT_SATURATION_MM, SATURATION_MM, SNOW_BLOCKS_MM, SNOW_DRAG, WEAR_FADE_PER_DAY, WEAR_PER_PASS,
+    WEAR_RELIEF, going,
+};
 use red_republic_sim::journey::Medium;
 use red_republic_sim::mapgen::{DEFAULT_PLAN, GEOLOGY_STREAM};
 use red_republic_sim::resource::{Form, Resource};
-use red_republic_sim::terrain::DEFAULT_TERRAIN;
+use red_republic_sim::terrain::{DEFAULT_TERRAIN, Surface};
 
 fn q(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
@@ -29,6 +38,16 @@ fn n(v: f64) -> String {
     } else {
         format!("{:?}", v)
     }
+}
+
+/// A number, or `null` where it is not finite.
+///
+/// JSON has no infinity, and `going(Surface::Water)` is exactly that: water is
+/// impassable rather than merely slow. Writing `inf` produces a file that does
+/// not parse — which is how this was found — and writing a large finite number
+/// instead would make water something a desperate router could still cross.
+fn n_or_null(v: f64) -> String {
+    if v.is_finite() { n(v) } else { "null".into() }
 }
 
 fn list<T>(items: &[T], f: impl Fn(&T) -> String) -> String {
@@ -127,6 +146,49 @@ fn main() {
             canon.push(v);
         }
         canon.push_bool(d.stores_to_order);
+    }
+    // Climate is balance: the coldest month decides how much coal a winter
+    // costs, and the rain table decides whether the ground is mud.
+    // The ground model: the thaw, the mud and the tracks traffic wears in.
+    canon.push(FREEZE_C);
+    canon.push(FROST_RANGE_C);
+    canon.push(FROST_LAG);
+    canon.push(SATURATION_MM);
+    canon.push(MELT_PER_DEGREE_MM);
+    canon.push(DRYING_PER_DAY);
+    canon.push(DRYING_FULL_AT_C);
+    canon.push(ROOT_SATURATION_MM);
+    canon.push(ROOT_DRYING_PER_DAY);
+    canon.push(MUD_DRAG);
+    canon.push(DROWNED);
+    canon.push(WEAR_PER_PASS);
+    canon.push(WEAR_FADE_PER_DAY);
+    canon.push(PROMOTE_AT);
+    canon.push(SNOW_BLOCKS_MM);
+    canon.push(SNOW_DRAG);
+    canon.push(WEAR_RELIEF);
+    canon.push(GROUND_CELL.0);
+    canon.push_int(MIN_TRACK_CELLS as u32);
+    for s in [
+        Surface::Grass,
+        Surface::Forest,
+        Surface::Rock,
+        Surface::Water,
+    ] {
+        canon.push(going(s));
+    }
+    canon.push(HEAT_THRESHOLD_C);
+    canon.push(HEAT_DESIGN_C);
+    canon.push(HEAT_DEMAND_CEILING);
+    canon.push(WET_DAY_SHARE);
+    for c in CLIMATES {
+        for v in c.monthly_mean_c {
+            canon.push(v);
+        }
+        canon.push(c.daily_swing_c);
+        for v in c.monthly_rain_mm {
+            canon.push(v);
+        }
     }
     canon.push(DEFAULT_TERRAIN.cell_size.0);
     canon.push(DEFAULT_TERRAIN.feature_size.0);
@@ -370,6 +432,150 @@ fn main() {
         n(t.broad_catchment)
     ));
     out.push_str("  },\n");
+
+    // Climate is balance, and the two halves are authored together on purpose:
+    // the taiga is cold and dry, the maritime posting is mild and wet, and those
+    // are different problems rather than one dial.
+    out.push_str(
+        "  \"ground\": {
+",
+    );
+    out.push_str(&format!(
+        "    \"freeze_c\": {},
+",
+        n(FREEZE_C)
+    ));
+    out.push_str(&format!(
+        "    \"frost_range_c\": {},
+",
+        n(FROST_RANGE_C)
+    ));
+    out.push_str(&format!(
+        "    \"frost_lag\": {},
+",
+        n(FROST_LAG)
+    ));
+    out.push_str(&format!(
+        "    \"saturation_mm\": {},
+",
+        n(SATURATION_MM)
+    ));
+    out.push_str(&format!(
+        "    \"melt_per_degree_mm\": {},
+",
+        n(MELT_PER_DEGREE_MM)
+    ));
+    out.push_str(&format!(
+        "    \"drying_per_day\": {},
+",
+        n(DRYING_PER_DAY)
+    ));
+    out.push_str(&format!(
+        "    \"drying_full_at_c\": {},
+",
+        n(DRYING_FULL_AT_C)
+    ));
+    out.push_str(&format!(
+        "    \"root_saturation_mm\": {},
+",
+        n(ROOT_SATURATION_MM)
+    ));
+    out.push_str(&format!(
+        "    \"root_drying_per_day\": {},
+",
+        n(ROOT_DRYING_PER_DAY)
+    ));
+    out.push_str(&format!(
+        "    \"mud_drag\": {},
+",
+        n(MUD_DRAG)
+    ));
+    out.push_str(&format!(
+        "    \"drowned\": {},
+",
+        n(DROWNED)
+    ));
+    out.push_str(&format!(
+        "    \"wear_per_pass\": {},
+",
+        n(WEAR_PER_PASS)
+    ));
+    out.push_str(&format!(
+        "    \"wear_fade_per_day\": {},
+",
+        n(WEAR_FADE_PER_DAY)
+    ));
+    out.push_str(&format!(
+        "    \"promote_at\": {},
+",
+        n(PROMOTE_AT)
+    ));
+    out.push_str(&format!(
+        "    \"snow_blocks_mm\": {},
+",
+        n(SNOW_BLOCKS_MM)
+    ));
+    out.push_str(&format!(
+        "    \"snow_drag\": {},
+",
+        n(SNOW_DRAG)
+    ));
+    out.push_str(&format!(
+        "    \"wear_relief\": {},
+",
+        n(WEAR_RELIEF)
+    ));
+    out.push_str(&format!(
+        "    \"cell_size\": {},
+",
+        n(GROUND_CELL.0)
+    ));
+    out.push_str(&format!(
+        "    \"min_track_cells\": {},
+",
+        MIN_TRACK_CELLS
+    ));
+    out.push_str(&format!(
+        "    \"going\": {}
+",
+        list(
+            &[
+                Surface::Grass,
+                Surface::Forest,
+                Surface::Rock,
+                Surface::Water
+            ],
+            |s| n_or_null(going(*s))
+        )
+    ));
+    out.push_str(
+        "  },
+",
+    );
+
+    out.push_str(&format!(
+        "  \"heat\": {{ \"threshold_c\": {}, \"design_c\": {}, \"demand_ceiling\": {}, \"wet_day_share\": {} }},\n",
+        n(HEAT_THRESHOLD_C),
+        n(HEAT_DESIGN_C),
+        n(HEAT_DEMAND_CEILING),
+        n(WET_DAY_SHARE)
+    ));
+    out.push_str("  \"climates\": [\n");
+    let rows: Vec<String> = CLIMATES
+        .iter()
+        .map(|c| {
+            format!(
+                "    {{ \"id\": {}, \"name\": {}, \"monthly_mean_c\": {}, \"daily_swing_c\": {}, \"monthly_rain_mm\": {} }}",
+                q(&format!("{:?}", c.id)),
+                q(c.name),
+                list(&c.monthly_mean_c, |v| n(*v)),
+                n(c.daily_swing_c),
+                list(&c.monthly_rain_mm, |v| n(*v))
+            )
+        })
+        .collect();
+    out.push_str(&rows.join(",\n"));
+    out.push_str("\n  ],\n");
 
     out.push_str(&format!("  \"geology_stream\": {},\n", GEOLOGY_STREAM));
     out.push_str("  \"mineral_plan\": [\n");

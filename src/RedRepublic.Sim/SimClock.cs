@@ -132,4 +132,12 @@ public sealed class SimClock
 
     /// <summary>True on the tick that starts a new day — where daily bookkeeping hangs.</summary>
     public bool IsDayBoundary => Ticks % TicksPerDay == 0;
+
+    /// <summary>
+    /// The month a day of the year falls in, 1 to 12. For readings that are
+    /// indexed from 1 January rather than from founding — the climate curve and
+    /// anything measured over a calendar year.
+    /// </summary>
+    public static int MonthOfDayOfYear(int dayOfYear) =>
+        ((dayOfYear % DaysPerYear) / DaysPerMonth) + 1;
 }
