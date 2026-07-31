@@ -1,4 +1,4 @@
-[gd_scene load_steps=18 format=3]
+[gd_scene load_steps=20 format=3]
 
 [ext_resource type="Script" path="res://main.gd" id="1_main"]
 [ext_resource type="Script" path="res://camera_rig.gd" id="2_rig"]
@@ -17,6 +17,8 @@
 [ext_resource type="Script" path="res://ui/trade.gd" id="15_trade"]
 [ext_resource type="Script" path="res://ui/finance.gd" id="16_finance"]
 [ext_resource type="Script" path="res://ui/journal.gd" id="17_journal"]
+[ext_resource type="Script" path="res://ui/year.gd" id="18_year"]
+[ext_resource type="Script" path="res://ui/vehicle.gd" id="19_vehicle"]
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_main")
@@ -54,6 +56,8 @@ fov = 60.0
 [node name="Newcomers" type="MultiMeshInstance3D" parent="."]
 
 [node name="Roads" type="MeshInstance3D" parent="."]
+
+[node name="RoadSites" type="MeshInstance3D" parent="."]
 
 [node name="Lines" type="MeshInstance3D" parent="."]
 
@@ -95,6 +99,9 @@ script = ExtResource("11_pause")
 [node name="Inspector" type="CanvasLayer" parent="."]
 script = ExtResource("14_inspector")
 
+[node name="VehiclePanel" type="CanvasLayer" parent="."]
+script = ExtResource("19_vehicle")
+
 [node name="Trade" type="CanvasLayer" parent="."]
 script = ExtResource("15_trade")
 
@@ -103,3 +110,6 @@ script = ExtResource("16_finance")
 
 [node name="Journal" type="CanvasLayer" parent="."]
 script = ExtResource("17_journal")
+
+[node name="Year" type="CanvasLayer" parent="."]
+script = ExtResource("18_year")

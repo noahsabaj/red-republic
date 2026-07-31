@@ -58,6 +58,7 @@ use red_republic_sim::fleet::VEHICLES;
 use red_republic_sim::journey::Medium;
 use red_republic_sim::resource::{Form, Resource};
 use red_republic_sim::roadworks::{GRADES, LAMP_MATERIALS};
+use red_republic_sim::utility::UTILITIES;
 
 /// Floats per building in [`building_table`].
 pub const BUILDING_STRIDE: usize = 15;
@@ -232,6 +233,52 @@ pub fn grade_materials(index: usize) -> Vec<f32> {
     out
 }
 
+/// Floats per kind of line in [`utility_table`].
+pub const UTILITY_STRIDE: usize = 5;
+
+/// Every kind of line the republic can string, one row each.
+///
+/// `[builder_days_per_km, reach_m, loss_per_km, throughput_t_per_day,
+/// carries_goods]`, in [`UTILITIES`] order — the same order `utility_names`
+/// indexes by.
+///
+/// **A power line and a heat main differ in exactly these numbers and in
+/// nothing else**, which is why they are one table rather than two: reach is
+/// what decides whether a plant can sit outside the town, and loss is what
+/// decides whether a sprawling grid is worth having. Both were figures the
+/// simulation used every tick and no screen could ask for, so ordering a line
+/// meant guessing how near a building had to stand to it.
+///
+/// `carries_goods` is `1.0` on a belt and a pipeline and `0.0` on the rest,
+/// read off the authored `carries` list rather than decided here — what a belt
+/// will take is a design decision about the economy, and a panel that made its
+/// own rule about it would be a second copy of one.
+pub fn utility_table() -> Vec<f32> {
+    let mut out = Vec::with_capacity(UTILITIES.len() * UTILITY_STRIDE);
+    for def in UTILITIES {
+        out.push(def.labour as f32);
+        out.push(def.reach.0 as f32);
+        out.push(def.loss_per_km as f32);
+        out.push(def.throughput as f32);
+        out.push(if def.carries.is_empty() { 0.0 } else { 1.0 });
+    }
+    out
+}
+
+/// What a kilometre of one kind of line is made of: `[resource, tonnes]` per
+/// line.
+pub fn utility_materials(index: usize) -> Vec<f32> {
+    let mut out = Vec::new();
+    let Some(def) = UTILITIES.get(index) else {
+        return out;
+    };
+    for (resource, tonnes) in def.materials {
+        out.push(resource_index(*resource) as f32);
+        out.push(*tonnes as f32);
+    }
+    out
+}
+
 /// What a kilometre of street lighting costs on top of the road under it:
 /// `[resource, tonnes]` per line.
 ///
@@ -351,6 +398,20 @@ mod tests {
         for (index, def) in GRADES.iter().enumerate() {
             assert_eq!(
                 grade_materials(index).len() % 2,
+                0,
+                "{}'s bill is not pairs",
+                def.name
+            );
+        }
+        assert_eq!(
+            utility_table().len(),
+            UTILITIES.len() * UTILITY_STRIDE,
+            "the utility table does not divide into {} rows of {UTILITY_STRIDE}",
+            UTILITIES.len()
+        );
+        for (index, def) in UTILITIES.iter().enumerate() {
+            assert_eq!(
+                utility_materials(index).len() % 2,
                 0,
                 "{}'s bill is not pairs",
                 def.name

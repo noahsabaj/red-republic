@@ -1363,11 +1363,285 @@ pub fn kind_shift_rules(world: &World) -> PackedFloat32Array {
     out
 }
 
+/// Floats in [`vehicle_state`].
+pub const VEHICLE_STATE_STRIDE: usize = 19;
+
+/// How many kinds of work the fleet can be given, so a panel naming them cannot
+/// name fewer than there are.
+///
+/// The same guard `STALL_COUNT` gives the inspector, and it is the half of the
+/// enforcement Rust cannot do on its own: the `match` in [`vehicle_state`] fails
+/// the build when a job is added, and this is what fails the *check* when the
+/// word for it is not written.
+pub const VEHICLE_JOB_COUNT: usize = 7;
+
+/// One vehicle, in the order a panel reads it.
+///
+/// `[kind, state, x, y, capacity_t, carried_t, cargo_resource, fuel_t, tank_t,
+/// job, job_resource, job_tonnes, destination_kind, destination_building, leg,
+/// legs, on_road, remaining_m, bogged_days]`.
+///
+/// `state` is `0` idle, `1` fetching, `2` delivering, `3` returning, `4` bogged;
+/// `job` is `-1` none, `0` haul, `1` recover, `2` ferry, `3` collect;
+/// `destination_kind` is `-1` none, `0` a building, `1` a road site, `2` a line
+/// site. `cargo_resource` and `job_resource` are `-1` where there is none, and
+/// `destination_building` is `0` for anything that is not a building — the same
+/// convention [`site_index`] already uses for the journal.
+///
+/// **The lorry was the one thing on the map with no way to ask it anything.** A
+/// building has an inspector, a crew has a marker, a road has a colour; a
+/// vehicle had a silhouette and a heading and nothing else, while the simulation
+/// knew what it was carrying, where to, how far it had got, whether its tank
+/// would see it home and how likely it was to stick doing it. Every deadlocked
+/// republic is a freight question, and freight was the half of the game with no
+/// panel.
+///
+/// Deliberately **not** carrying the bogging odds or the destination's fullness:
+/// both are already their own bindings, both are asked per vehicle rather than
+/// in bulk, and duplicating them here would be two answers to one question.
+pub fn vehicle_state(world: &World, index: usize) -> PackedFloat32Array {
+    use red_republic_sim::fleet::{Job, VehicleState};
+    let mut out = PackedFloat32Array::new();
+    let Some(v) = world.fleet().all().get(index) else {
+        return out;
+    };
+    let def = v.def();
+
+    out.push(
+        red_republic_sim::fleet::VEHICLES
+            .iter()
+            .position(|d| d.kind == def.kind)
+            .unwrap_or_default() as f32,
+    );
+    out.push(match v.state {
+        VehicleState::Idle => 0.0,
+        VehicleState::Fetching => 1.0,
+        VehicleState::Delivering => 2.0,
+        VehicleState::Returning => 3.0,
+        VehicleState::Bogged { .. } => 4.0,
+    });
+    out.push(v.at.x.0 as f32);
+    out.push(v.at.y.0 as f32);
+    out.push(def.capacity.0 as f32);
+    out.push(v.cargo.total().0 as f32);
+    // The heaviest line in the bed. A load is a `Stock` and could in principle
+    // be mixed, but a haul is issued for one resource, so this is the load in
+    // every case a player will ever click on — and reporting the largest rather
+    // than the first means a mixed bed still names what is mostly in it.
+    out.push(
+        v.cargo
+            .iter()
+            .filter(|(_, t)| t.is_positive())
+            .max_by(|a, b| a.1.0.total_cmp(&b.1.0))
+            .and_then(|(r, _)| Resource::ALL.iter().position(|&x| x == r))
+            .map_or(-1.0, |i| i as f32),
+    );
+    out.push(v.fuel.0 as f32);
+    out.push(def.tank.0 as f32);
+
+    use red_republic_sim::Destination;
+    let (job, job_resource, job_tonnes, destination) = match v.job {
+        None => (-1.0, -1.0, 0.0, None),
+        Some(work) => {
+            let (resource, tonnes) = match work {
+                Job::Haul {
+                    resource, tonnes, ..
+                } => (
+                    Resource::ALL
+                        .iter()
+                        .position(|&r| r == resource)
+                        .map_or(-1.0, |i| i as f32),
+                    tonnes.0 as f32,
+                ),
+                Job::Ferry { heads, .. } => (-1.0, heads as f32),
+                _ => (-1.0, 0.0),
+            };
+            (
+                job_index(work) as f32,
+                resource,
+                tonnes,
+                job_destination(work),
+            )
+        }
+    };
+    out.push(job);
+    out.push(job_resource);
+    out.push(job_tonnes);
+
+    out.push(match destination {
+        None => -1.0,
+        Some(Destination::Building(_)) => 0.0,
+        Some(Destination::RoadSite(_)) => 1.0,
+        Some(Destination::LineSite(_)) => 2.0,
+    });
+    out.push(destination.map_or(0.0, |to| site_index(to) as f32));
+
+    match v.journey.as_ref() {
+        Some(journey) => {
+            out.push(journey.leg as f32);
+            out.push(journey.legs() as f32);
+            out.push(if journey.leg_on_road() { 1.0 } else { 0.0 });
+            // Everything from here to the last waypoint, which is what decides
+            // whether the tank will see it there. The leg under way counts
+            // whole: the panel is answering "can it finish", not "how far to
+            // the next corner".
+            let mut remaining = 0.0;
+            for leg in journey.leg..journey.legs() {
+                let (from, to) = journey.leg_ends(leg);
+                remaining += from.distance_to(to).0;
+            }
+            out.push(remaining as f32);
+        }
+        None => {
+            out.push(0.0);
+            out.push(0.0);
+            out.push(0.0);
+            out.push(0.0);
+        }
+    }
+
+    out.push(match v.state {
+        VehicleState::Bogged { since_day, .. } => {
+            world.clock().day_index().saturating_sub(since_day) as f32
+        }
+        _ => 0.0,
+    });
+    out
+}
+
+/// Which kind of work a job is, as an index a panel can name.
+///
+/// **Matched exhaustively with no arm for "anything else".** A job the fleet can
+/// be given and this cannot name would otherwise land silently on a fallback and
+/// the panel would report a plough as parked; written this way an eighth kind of
+/// work fails the build here, and
+/// [`every_job_the_fleet_can_be_given_has_an_index`] fails if it is given an
+/// index the shell does not count.
+fn job_index(job: red_republic_sim::fleet::Job) -> usize {
+    use red_republic_sim::fleet::Job;
+    match job {
+        Job::Haul { .. } => 0,
+        Job::Recover { .. } => 1,
+        Job::Ferry { .. } => 2,
+        Job::Collect { .. } => 3,
+        Job::Settle { .. } => 4,
+        Job::Tour { .. } => 5,
+        Job::Plough { .. } => 6,
+    }
+}
+
+/// Where a job is bound, where that is somewhere a load can be set down.
+///
+/// A recovery is bound for a vehicle, a collection for a party standing beside a
+/// road that may no longer exist, and a plough for a stretch of buried ground.
+/// None of the three is a consignee, and reporting one as a destination would be
+/// telling the player a lorry was delivering to a snowdrift.
+fn job_destination(job: red_republic_sim::fleet::Job) -> Option<red_republic_sim::Destination> {
+    use red_republic_sim::Destination;
+    use red_republic_sim::fleet::Job;
+    match job {
+        Job::Haul { to, .. } | Job::Ferry { to, .. } => Some(to),
+        Job::Settle { to, .. } | Job::Tour { to, .. } => Some(Destination::Building(to)),
+        Job::Recover { .. } | Job::Collect { .. } | Job::Plough { .. } => None,
+    }
+}
+
+/// The vehicle standing nearest a point, or `-1` if none is within `radius`.
+///
+/// A pick by proximity rather than by footprint, which is the honest shape for
+/// this one: a building has a footprint the simulation already refuses to
+/// overlap, and a vehicle has a position and a drawn body whose size is the
+/// renderer's business. Answering from the simulation's own positions is still
+/// what keeps the pick and the picture agreeing — the alternative was a hit test
+/// against `MultiMesh` transforms, which is the copy that drifts.
+///
+/// Nearest rather than first, so a queue of lorries at a yard hands back the one
+/// under the cursor instead of whichever was built first.
+pub fn vehicle_at(world: &World, at: Point, radius: Metres, now: f64) -> i64 {
+    let mut best = -1_i64;
+    let mut nearest = radius.0;
+    for (index, v) in world.fleet().all().iter().enumerate() {
+        let where_it_is = match v.journey.as_ref() {
+            Some(journey) => journey.position_at(now),
+            None => v.at,
+        };
+        let distance = where_it_is.distance_to(at).0;
+        if distance <= nearest {
+            nearest = distance;
+            best = index as i64;
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use red_republic_sim::Command as C;
     use red_republic_sim::{BuildingId, ContractId, Market, Point, Tonnes};
+
+    /// Every job the fleet can be given has an index, and
+    /// [`VEHICLE_JOB_COUNT`] says how many there are.
+    ///
+    /// The same shape and the same reasoning as the verb roster below: Rust has
+    /// no way to enumerate an enum's variants, so a hand-written count beside
+    /// one is exactly the copy that stops matching. What this catches is the
+    /// half [`job_index`]'s exhaustive `match` cannot — an eighth job given an
+    /// index of `7` and a count still saying seven, which would leave the
+    /// vehicle panel printing "work this panel has no word for" for ever.
+    #[test]
+    fn every_job_the_fleet_can_be_given_has_an_index() {
+        use red_republic_sim::Destination;
+        use red_republic_sim::fleet::{Job, VehicleId};
+
+        let every = [
+            Job::Haul {
+                from: BuildingId(1),
+                to: Destination::Building(BuildingId(2)),
+                resource: Resource::Coal,
+                tonnes: Tonnes(1.0),
+            },
+            Job::Recover {
+                casualty: VehicleId(1),
+            },
+            Job::Ferry {
+                to: Destination::Building(BuildingId(2)),
+                heads: 3,
+            },
+            Job::Collect {
+                party: red_republic_sim::crews::PartyId(1),
+            },
+            Job::Settle {
+                group: red_republic_sim::migration::GroupId(1),
+                to: BuildingId(2),
+            },
+            Job::Tour {
+                visit: red_republic_sim::tourism::VisitId(1),
+                to: BuildingId(2),
+            },
+            Job::Plough {
+                to: Point::new(Metres(0.0), Metres(0.0)),
+            },
+        ];
+
+        assert_eq!(
+            every.len(),
+            VEHICLE_JOB_COUNT,
+            "VEHICLE_JOB_COUNT says {VEHICLE_JOB_COUNT} and the roster here has \
+             {}. One of them has moved, and the vehicle panel names whichever \
+             is shorter.",
+            every.len()
+        );
+
+        let mut seen: Vec<usize> = every.iter().copied().map(job_index).collect();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            (0..VEHICLE_JOB_COUNT).collect::<Vec<_>>(),
+            "two jobs share an index, or one is missing: the panel would put \
+             one kind of work's word over another's"
+        );
+    }
 
     /// Every verb has an index, and [`VERBS`] says how many there are.
     ///

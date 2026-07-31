@@ -100,30 +100,42 @@ static func listing(republic: Republic) -> Array:
 
 ## A file name for a fresh save of this republic.
 ##
-## `<name>-<date>.rrs`, sanitised, with a counter only if that collides. The date
-## is the in-game one, because two saves of the same republic are told apart by
-## where they are in its history and not by when the player was at their desk.
-static func name_for(republic_name: String, date: String) -> String:
-	var stem := sanitise(republic_name)
-	if stem == "":
-		stem = "republic"
-	var candidate := "%s-%s.rrs" % [stem, date]
-	if not FileAccess.file_exists(path_for(candidate)):
-		return candidate
+## `<name>-<date>-v<format>.rrs`, sanitised, with a counter only if that
+## collides. The date is the in-game one, because two saves of the same republic
+## are told apart by where they are in its history and not by when the player was
+## at their desk.
+##
+## **The format version is in the name because it is the one thing the refusal
+## sentence cannot always say.** A save from a newer build reports its version
+## when it is turned away; a save that is merely damaged reports
+## `SaveError::Corrupt` and no version at all, and then the only surviving
+## evidence of which build wrote it is the name on the file. It also makes the
+## folder legible from outside the game, which is where a player goes when the
+## game will not open the thing.
+static func name_for(republic_name: String, date: String, format: int) -> String:
+	var stem := "%s-%s-v%d" % [sanitise(republic_name), date, format]
+	if stem.begins_with("-"):
+		stem = "republic" + stem
+	if not FileAccess.file_exists(path_for(stem + ".rrs")):
+		return stem + ".rrs"
 	var n := 2
-	while FileAccess.file_exists(path_for("%s-%s-%d.rrs" % [stem, date, n])):
+	while FileAccess.file_exists(path_for("%s-%d.rrs" % [stem, n])):
 		n += 1
-	return "%s-%s-%d.rrs" % [stem, date, n]
+	return "%s-%d.rrs" % [stem, n]
 
 
-## The autosave file name. One per republic, overwritten.
+## The autosave file name. One per republic per format, overwritten.
 ##
 ## Deliberately a single rolling file rather than a numbered series. A series
 ## fills a folder with near-identical republics and makes the list useless for
 ## finding the save the player made on purpose; the manual saves are the history.
-static func autosave_name(republic_name: String) -> String:
+##
+## Per format as well as per republic, because a build that cannot read the last
+## autosave should not overwrite it either -- the player may want to go back to
+## the build that wrote it.
+static func autosave_name(republic_name: String, format: int) -> String:
 	var stem := sanitise(republic_name)
-	return "%s-auto.rrs" % (stem if stem != "" else "republic")
+	return "%s-auto-v%d.rrs" % [stem if stem != "" else "republic", format]
 
 
 ## Reduce a republic's name to something every filesystem will take.

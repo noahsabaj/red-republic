@@ -41,7 +41,7 @@ signal closed
 
 ## The sections, in the order a stranger needs them: how it works, then what the
 ## goods are, then what makes them, then what moves them, then what they move on.
-const SECTIONS := ["How it works", "Goods", "Buildings", "Vehicles", "Ways"]
+const SECTIONS := ["How it works", "Goods", "Buildings", "Vehicles", "Ways & lines"]
 
 ## Which section of a building's goods each line of `building_flows` belongs to.
 ## Matches `tables::building_flows` in the shell.
@@ -459,6 +459,45 @@ func _ways() -> String:
 				"With street lamps",
 				"%s more per kilometre, drawn off the grid" % _pairs(_republic.lamp_materials()),
 			])
+		out += _facts(rows)
+
+	# **The other half of "laid between two points", and it was missing.** The
+	# lines are ordered like a grade, built by the same crew out of the same
+	# queue, and carry nothing until they are finished — the same shape as
+	# everything above — and the whole roster of them was absent from a document
+	# whose claim is that if it is in the game it is here.
+	out += _paragraph(
+		"A line is ordered exactly as a way is, and until the crew finish it, it "
+		+ "carries nothing. What makes them different from each other is reach — "
+		+ "how far a building may stand from one and still be plugged into it — and "
+		+ "loss, which is charged against the length of the whole network rather "
+		+ "than the span. That is why a sprawling grid is worse than a compact one, "
+		+ "and why a remote camp wants its own boiler rather than a pipe from town."
+	)
+	var lines := _republic.utility_names()
+	var table: PackedFloat32Array = _republic.utility_table()
+	var line_stride: int = _republic.utility_stride()
+	for i in lines.size():
+		var o := i * line_stride
+		if o + line_stride > table.size():
+			break
+		out += _entry(String(lines[i]))
+		var rows := [
+			["Reach", "%.0f m from the line" % table[o + 1]],
+			[
+				"Per kilometre",
+				"%s, %.0f builder-days" % [
+					_pairs(_republic.utility_materials(i)), table[o],
+				],
+			],
+		]
+		# A belt carries goods and a wire carries something that is not tonnage,
+		# so the two are described by different figures rather than by the same
+		# figure with a zero in it.
+		if table[o + 4] > 0.5:
+			rows.append(["Carries", "%.0f t a day, however long it is" % table[o + 3]])
+		else:
+			rows.append(["Lost", "%.1f%% over each kilometre of network" % (table[o + 2] * 100.0)])
 		out += _facts(rows)
 	return out
 

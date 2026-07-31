@@ -64,74 +64,33 @@ const NOT_FOR_GODOT: &[(&str, &str)] = &[];
 /// # Why this list exists rather than an empty guard
 ///
 /// The first run of this test found fifty-seven orphans. Forty-five of them were
-/// the five gaps this milestone closed; these are the rest, and they are a
-/// backlog rather than a decision — every one is something the simulation
-/// finished and the player still cannot reach.
+/// the five gaps that milestone closed; ten were a backlog written down here,
+/// and **the backlog is now empty** — every one of them has the screen its
+/// entry named:
 ///
-/// Writing them down here is the point. A backlog in a comment rots silently; a
-/// backlog the build reads cannot. [`no_exemption_outlives_what_it_excuses`]
-/// checks it in both directions, so wiring one of these up **fails the build**
-/// until its line is deleted — the entry cannot outlive the gap it describes.
-/// And anything new is not on this list, so it lands in the main assertion where
-/// it belongs.
+/// - `order_line` has the Lines table in the build menu and the same two-click
+///   tool the ways use, so a power station can be strung to something;
+/// - `road_sites` are drawn on the map, filling in from the near end;
+/// - `bog_chance` and `vehicle_destination_fullness` are the two figures the
+///   vehicle panel exists for;
+/// - `lamp_cost` is priced under the ways table;
+/// - `lit_road_km` is the street-lighting line in the HUD, laid against alight;
+/// - `temperature_on_day` composes the year screen;
+/// - `lattice_cell_size` says how coarse an overlay is, on the overlay;
+/// - `shelf_size` is what the founding screen sizes its card list from;
+/// - `save_version` stamps the archive and every file name in it.
+///
+/// **Empty is the intended state, and it is worth keeping.** Writing a gap down
+/// here is the point of the list: a backlog in a comment rots silently and a
+/// backlog the build reads cannot.
+/// [`no_exemption_outlives_what_it_excuses`] checks it in both directions, so
+/// wiring one up **fails the build** until its line is deleted — an entry cannot
+/// outlive the gap it describes. Anything new is not on the list, so it lands in
+/// the main assertion where it belongs.
 ///
 /// Each reason names the screen, not the binding. "There is no vehicle
 /// inspector" is a thing somebody can go and build; "unused" is not.
-const NOT_YET_REACHED: &[(&str, &str)] = &[
-    (
-        "order_line",
-        "there is no line-laying tool — power and heat are orderable from the \
-         simulation and from nowhere else, which is the same shape `place` and \
-         `order_way` were in before the build menu",
-    ),
-    (
-        "road_sites",
-        "half-built ways are not drawn; `road_site_count` reaches the HUD as a \
-         number, so a player can see there are three and not where",
-    ),
-    (
-        "bog_chance",
-        "there is no vehicle inspector — the one deliberately random mechanic in \
-         the game, and its odds are showable and unshown",
-    ),
-    (
-        "vehicle_destination_fullness",
-        "as bog_chance: a lorry hauling to a yard with no room is a wasted \
-         journey nobody can see coming",
-    ),
-    (
-        "lamp_cost",
-        "the build menu offers WITH LAMPS and does not price it; `grade_facts` \
-         carries what greys the option and not what it costs",
-    ),
-    (
-        "lit_road_km",
-        "no screen reports lit street. The gap between built and burning is a \
-         grid that has run short, which is a thing to fix rather than to build",
-    ),
-    (
-        "temperature_on_day",
-        "the HUD forecasts five days through `forecast`; a longer view — a year \
-         at a glance, which is what decides when to lay in fuel — has no screen",
-    ),
-    (
-        "lattice_cell_size",
-        "the overlays read `lattice_cells` and scale by the map extent, so the \
-         cell size in metres is never asked for. A scale bar would want it",
-    ),
-    (
-        "shelf_size",
-        "the founding screen walks `shelf_cards` by its own stride instead. \
-         Either this is the roster the card list should be sized from, or it is \
-         a second way to ask and should go",
-    ),
-    (
-        "save_version",
-        "the save list shows a file that will not open as a problem sentence \
-         from `save_preview`, never as a version. \"Written by a newer build\" \
-         is the one thing that sentence cannot say",
-    ),
-];
+const NOT_YET_REACHED: &[(&str, &str)] = &[];
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

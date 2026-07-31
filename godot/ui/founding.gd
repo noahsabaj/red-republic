@@ -35,9 +35,9 @@ const Sheet := preload("res://ui/sheet.gd")
 
 ## Floats per card, matching `shelf::CARD_STRIDE` in the shell.
 ##
-## Read from the shell rather than trusted: `_read_cards` checks the array divides
-## by this, so a stride change in Rust fails visibly here instead of silently
-## shifting every column by one.
+## Checked rather than trusted: `_read_cards` asks the shelf how many candidates
+## it dealt and requires exactly that many rows of this width, so a stride change
+## in Rust fails visibly here instead of silently shifting every column by one.
 const CARD_STRIDE := 13
 
 ## How big a candidate's minimap is drawn.
@@ -269,17 +269,22 @@ func _set_interactive(on: bool) -> void:
 func _read_cards() -> void:
 	var flat: PackedFloat32Array = _republic.shelf_cards()
 	_cards.clear()
-	if flat.size() % CARD_STRIDE != 0:
-		# A stride mismatch means Rust and this file disagree about the layout,
-		# which would otherwise show as every number on every card being the wrong
-		# one. Loud, because a card quietly reporting iron as coal is worse than an
-		# empty screen.
+	# **The shelf says how many candidates it dealt; the card array must agree.**
+	# Sized from the roster rather than from the array's own length, because a
+	# divisibility check alone passes on a compensating error -- thirteen floats
+	# lost and one candidate lost divide just as evenly as nothing wrong at all,
+	# and the screen would silently deal five postings where six were derived.
+	var dealt: int = _republic.shelf_size()
+	if flat.size() != dealt * CARD_STRIDE:
+		# Rust and this file disagree about the layout, which would otherwise show
+		# as every number on every card being the wrong one. Loud, because a card
+		# quietly reporting iron as coal is worse than an empty screen.
 		push_error(
-			"shelf card stride mismatch: %d floats is not a multiple of %d"
-			% [flat.size(), CARD_STRIDE]
+			"shelf card mismatch: %d floats is not %d candidates of %d"
+			% [flat.size(), dealt, CARD_STRIDE]
 		)
 		return
-	for i in flat.size() / CARD_STRIDE:
+	for i in dealt:
 		var o := i * CARD_STRIDE
 		_cards.append({
 			"index": int(flat[o]),
