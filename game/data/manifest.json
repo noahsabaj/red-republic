@@ -1,5 +1,5 @@
 {
-  "checksum": "8e3fa846426ae6b2",
+  "checksum": "608a7cd25d6ebd01",
   "resources": ["Coal", "IronOre", "Steel", "Oil", "Fuel", "Bitumen", "Chemicals", "Wood", "Planks", "Gravel", "Bricks", "Cement", "Concrete", "PrefabPanel", "Asphalt", "Crops", "Food", "Clothes", "Alcohol", "Machinery", "Electronics", "Waste"],
   "forms": ["Aggregate", "Liquid", "Bulk", "Open", "Covered"],
   "needs": ["Health", "Culture", "Schooling", "Safety"],
@@ -2155,6 +2155,8 @@
     "river_catchment": 0.1,
     "broad_catchment": 0.25
   },
+  "people": { "max_walk_m": 2000.0, "road_access_m": 300.0, "walk_kph": 5.0, "working_age": [16, 60], "school_age": [6, 16], "university_age": [16, 19], "school_days": 1800, "university_days": 1080, "max_commute_s": 2700.0, "stop_walk_m": 600.0, "night_walk_m": 400.0, "fuel_per_seat_day": 0.002 },
+  "journey": { "terminal_reach_m": 120.0, "min_leg_ticks": 1.0, "shunting_kph": 15.000000000000002, "media": ["Road", "Rail", "Tram", "Metro", "Water", "Air"], "commercial_kph": [20.0, 55.0, 17.0, 38.0, 12.0, 300.0] },
   "shifts": { "standard_hours": 8.0, "min_hours": 4.0, "max_hours": 16.0, "daylight_hours": 12.0, "max_shifts": 3, "overwork_health": 0.03, "overwork_loyalty": 0.045 },
   "ground": {
     "freeze_c": 0.0,
@@ -2209,4 +2211,3 @@
     "MetroTrain": { "name": "Metro Train", "role": "Passenger", "medium": "Metro", "capacity_t": 0.0, "seats": 600, "on_road_kph": 80.0, "cross_country_kph": 0.0, "fuel_per_km": 1e-5, "tank_t": 0.02, "ground": 0.0, "load_penalty": 0.0 }
   }
 }
-

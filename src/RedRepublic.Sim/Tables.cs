@@ -131,6 +131,52 @@ public sealed class Tables
 
     public MineralPlan[] MineralPlan { get; private set; } = [];
 
+    // ---- people, and the journeys they make ----
+
+    /// <summary>How far somebody will walk to work before they need carrying.</summary>
+    public double MaxWalkM { get; private set; }
+
+    /// <summary>How far from a road a building can be and still be reached.</summary>
+    public double RoadAccessM { get; private set; }
+
+    /// <summary>An unhurried adult pace.</summary>
+    public double WalkKph { get; private set; }
+
+    public int WorkingAgeFrom { get; private set; }
+    public int WorkingAgeTo { get; private set; }
+    public int SchoolAgeFrom { get; private set; }
+    public int SchoolAgeTo { get; private set; }
+    public int UniversityAgeFrom { get; private set; }
+    public int UniversityAgeTo { get; private set; }
+
+    /// <summary>Days of attendance that make somebody schooled.</summary>
+    public int SchoolDays { get; private set; }
+
+    /// <summary>Days at university, on top of school, that make somebody a graduate.</summary>
+    public int UniversityDays { get; private set; }
+
+    /// <summary>The longest journey somebody will make to a job.</summary>
+    public double MaxCommuteS { get; private set; }
+
+    /// <summary>How far somebody will walk to reach a stop.</summary>
+    public double StopWalkM { get; private set; }
+
+    /// <summary>How far somebody will walk in the dark, which is less.</summary>
+    public double NightWalkM { get; private set; }
+
+    public double FuelPerSeatDay { get; private set; }
+
+    /// <summary>How close a terminal must be to the network it serves.</summary>
+    public double TerminalReachM { get; private set; }
+
+    public double MinLegTicks { get; private set; }
+    public double ShuntingKph { get; private set; }
+
+    private double[] _commercialKph = [];
+
+    /// <summary>How fast something moves on a medium, in km/h.</summary>
+    public double CommercialKph(int medium) => _commercialKph[medium];
+
     // ---- the working day ----
 
     /// <summary>
@@ -311,6 +357,7 @@ public sealed class Tables
         t.LoadClimates(m);
         t.LoadGround(m);
         t.LoadShifts(m);
+        t.LoadPeople(m);
 
         t.ChecksumExpected = m.GetProperty("checksum").GetString()!;
         t.ChecksumGot = t.Checksum();
@@ -520,6 +567,32 @@ public sealed class Tables
         }
 
         MineralPlan = [.. plans];
+    }
+
+    private void LoadPeople(JsonElement m)
+    {
+        var p = m.GetProperty("people");
+        MaxWalkM = p.GetProperty("max_walk_m").GetDouble();
+        RoadAccessM = p.GetProperty("road_access_m").GetDouble();
+        WalkKph = p.GetProperty("walk_kph").GetDouble();
+        WorkingAgeFrom = p.GetProperty("working_age")[0].GetInt32();
+        WorkingAgeTo = p.GetProperty("working_age")[1].GetInt32();
+        SchoolAgeFrom = p.GetProperty("school_age")[0].GetInt32();
+        SchoolAgeTo = p.GetProperty("school_age")[1].GetInt32();
+        UniversityAgeFrom = p.GetProperty("university_age")[0].GetInt32();
+        UniversityAgeTo = p.GetProperty("university_age")[1].GetInt32();
+        SchoolDays = p.GetProperty("school_days").GetInt32();
+        UniversityDays = p.GetProperty("university_days").GetInt32();
+        MaxCommuteS = p.GetProperty("max_commute_s").GetDouble();
+        StopWalkM = p.GetProperty("stop_walk_m").GetDouble();
+        NightWalkM = p.GetProperty("night_walk_m").GetDouble();
+        FuelPerSeatDay = p.GetProperty("fuel_per_seat_day").GetDouble();
+
+        var j = m.GetProperty("journey");
+        TerminalReachM = j.GetProperty("terminal_reach_m").GetDouble();
+        MinLegTicks = j.GetProperty("min_leg_ticks").GetDouble();
+        ShuntingKph = j.GetProperty("shunting_kph").GetDouble();
+        _commercialKph = Doubles(j, "commercial_kph");
     }
 
     private void LoadShifts(JsonElement m)
@@ -746,6 +819,30 @@ public sealed class Tables
             h.Push(VTank[v]);
             h.Push(VGround[v]);
             h.Push(VLoadPenalty[v]);
+        }
+
+        // People last, matching the order the dumper pushes them in.
+        h.Push(MaxWalkM);
+        h.Push(RoadAccessM);
+        h.Push(WalkKph);
+        h.Push(WorkingAgeFrom);
+        h.Push(WorkingAgeTo);
+        h.Push(SchoolAgeFrom);
+        h.Push(SchoolAgeTo);
+        h.Push(UniversityAgeFrom);
+        h.Push(UniversityAgeTo);
+        h.Push(SchoolDays);
+        h.Push(UniversityDays);
+        h.Push(MaxCommuteS);
+        h.Push(StopWalkM);
+        h.Push(NightWalkM);
+        h.Push(FuelPerSeatDay);
+        h.Push(TerminalReachM);
+        h.Push(MinLegTicks);
+        h.Push(ShuntingKph);
+        foreach (var v in _commercialKph)
+        {
+            h.Push(v);
         }
 
         return h.Hex;

@@ -9,7 +9,10 @@
 //! runs.
 
 use red_republic_sim::building::{BUILDINGS, Need, Priority, Teaching};
-use red_republic_sim::citizen::Education;
+use red_republic_sim::citizen::{
+    Education, MAX_WALK, ROAD_ACCESS, SCHOOL_AGE, SCHOOL_DAYS, UNIVERSITY_AGE, UNIVERSITY_DAYS,
+    WORKING_AGE, walking_speed,
+};
 use red_republic_sim::climate::{
     CLIMATES, HEAT_DEMAND_CEILING, HEAT_DESIGN_C, HEAT_THRESHOLD_C, WET_DAY_SHARE,
 };
@@ -20,7 +23,7 @@ use red_republic_sim::ground::{
     ROOT_SATURATION_MM, SATURATION_MM, SNOW_BLOCKS_MM, SNOW_DRAG, WEAR_FADE_PER_DAY, WEAR_PER_PASS,
     WEAR_RELIEF, going,
 };
-use red_republic_sim::journey::Medium;
+use red_republic_sim::journey::{MIN_LEG_TICKS, Medium, SHUNTING, TERMINAL_REACH};
 use red_republic_sim::mapgen::{DEFAULT_PLAN, GEOLOGY_STREAM};
 use red_republic_sim::resource::{Form, Resource};
 use red_republic_sim::shifts::{
@@ -28,6 +31,7 @@ use red_republic_sim::shifts::{
     STANDARD_HOURS,
 };
 use red_republic_sim::terrain::{DEFAULT_TERRAIN, Surface};
+use red_republic_sim::transport::{FUEL_PER_SEAT_DAY, MAX_COMMUTE, NIGHT_WALK, STOP_WALK};
 
 fn q(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
@@ -103,8 +107,17 @@ impl Canon {
 }
 
 fn main() {
+    // The body is built first and the checksum is written around it at the very
+    // end.
+    //
+    // Not a style choice. The checksum used to be formatted here, ahead of the
+    // body, so a block of `canon.push` calls added further down ran *after* the
+    // number had already been written — hashing nothing, silently, and with both
+    // sides still agreeing because the reader mirrors the same order. It
+    // happened once, to the constants describing how far somebody will walk.
+    // Building the body first makes that ordering mistake unrepresentable:
+    // there is nowhere left to put a push that is not before the hash is read.
     let mut out = String::new();
-    out.push_str("{\n");
 
     let mut canon = Canon::new();
     // Prices are balance, and the dearest end of the table is the whole
@@ -236,7 +249,29 @@ fn main() {
         canon.push(d.ground);
         canon.push(d.load_penalty);
     }
-    out.push_str(&format!("  \"checksum\": \"{:016x}\",\n", canon.0));
+    // People: how far somebody will walk, how long they will travel, and the
+    // ages that decide what they are doing with their life.
+    canon.push(MAX_WALK.0);
+    canon.push(ROAD_ACCESS.0);
+    canon.push(walking_speed().as_kph());
+    canon.push_int(WORKING_AGE.start);
+    canon.push_int(WORKING_AGE.end);
+    canon.push_int(SCHOOL_AGE.start);
+    canon.push_int(SCHOOL_AGE.end);
+    canon.push_int(UNIVERSITY_AGE.start);
+    canon.push_int(UNIVERSITY_AGE.end);
+    canon.push_int(SCHOOL_DAYS);
+    canon.push_int(UNIVERSITY_DAYS);
+    canon.push(MAX_COMMUTE.0);
+    canon.push(STOP_WALK.0);
+    canon.push(NIGHT_WALK.0);
+    canon.push(FUEL_PER_SEAT_DAY);
+    canon.push(TERMINAL_REACH.0);
+    canon.push(MIN_LEG_TICKS);
+    canon.push(SHUNTING.as_kph());
+    for m in Medium::ALL {
+        canon.push(m.commercial_speed().as_kph());
+    }
 
     // ---- the enum rosters, in declaration order, because the port indexes them ----
     out.push_str(&format!(
@@ -450,6 +485,36 @@ fn main() {
     // Climate is balance, and the two halves are authored together on purpose:
     // the taiga is cold and dry, the maritime posting is mild and wet, and those
     // are different problems rather than one dial.
+    // People, and the journeys they make.
+    out.push_str(&format!(
+        "  \"people\": {{ \"max_walk_m\": {}, \"road_access_m\": {}, \"walk_kph\": {}, \"working_age\": [{}, {}], \"school_age\": [{}, {}], \"university_age\": [{}, {}], \"school_days\": {}, \"university_days\": {}, \"max_commute_s\": {}, \"stop_walk_m\": {}, \"night_walk_m\": {}, \"fuel_per_seat_day\": {} }},
+",
+        n(MAX_WALK.0),
+        n(ROAD_ACCESS.0),
+        n(walking_speed().as_kph()),
+        WORKING_AGE.start,
+        WORKING_AGE.end,
+        SCHOOL_AGE.start,
+        SCHOOL_AGE.end,
+        UNIVERSITY_AGE.start,
+        UNIVERSITY_AGE.end,
+        SCHOOL_DAYS,
+        UNIVERSITY_DAYS,
+        n(MAX_COMMUTE.0),
+        n(STOP_WALK.0),
+        n(NIGHT_WALK.0),
+        n(FUEL_PER_SEAT_DAY)
+    ));
+    out.push_str(&format!(
+        "  \"journey\": {{ \"terminal_reach_m\": {}, \"min_leg_ticks\": {}, \"shunting_kph\": {}, \"media\": {}, \"commercial_kph\": {} }},
+",
+        n(TERMINAL_REACH.0),
+        n(MIN_LEG_TICKS),
+        n(SHUNTING.as_kph()),
+        list(&Medium::ALL, |m| q(&format!("{m:?}"))),
+        list(&Medium::ALL, |m| n(m.commercial_speed().as_kph()))
+    ));
+
     // The working day. STANDARD_HOURS is what every authored rate in the
     // building table means, so it is balance in the strongest sense: change it
     // and every output figure in the game means something else.
@@ -655,6 +720,7 @@ fn main() {
     out.push_str(&rows.join(",\n"));
     out.push_str("\n  }\n");
 
-    out.push_str("}\n");
-    println!("{out}");
+    // Written here, after every `canon.push` in this file has certainly run.
+    // See the note at the top of `main`.
+    print!("{{\n  \"checksum\": \"{:016x}\",\n{out}}}\n", canon.0);
 }
