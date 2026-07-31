@@ -542,15 +542,85 @@ impl Republic {
         i64::from(red_republic_sim::world::SAVE_VERSION)
     }
 
-    /// The reference, as marked lines. See [`crate::reference`] for the markers.
+    /// Every authored building, packed. See [`crate::tables::building_table`].
     ///
-    /// Generated from the authored tables every time it is asked for, rather than
-    /// cached: it is a few hundred lines built once when a screen opens, and a
-    /// cache would be a copy that can be stale — which is the one thing this
-    /// document exists not to be.
+    /// The whole roster in one read, in `BUILDINGS` order — the order
+    /// [`Republic::building_kind_name`] indexes by, so the reference screen
+    /// walks the roster itself and a building added to the simulation appears in
+    /// the reference with nobody doing anything.
     #[func]
-    fn reference(&self) -> PackedStringArray {
-        crate::reference::document_for_godot()
+    fn building_table(&self) -> PackedFloat32Array {
+        crate::tables::floats(crate::tables::building_table())
+    }
+
+    /// Floats per building in [`Republic::building_table`].
+    #[func]
+    fn building_stride(&self) -> i64 {
+        crate::tables::BUILDING_STRIDE as i64
+    }
+
+    /// What one building eats, makes, is made of, and sells:
+    /// `[section, resource, tonnes]` per line. See
+    /// [`crate::tables::building_flows`] for what a section is.
+    #[func]
+    fn building_flows(&self, index: i64) -> PackedFloat32Array {
+        crate::tables::floats(crate::tables::building_flows(index.max(0) as usize))
+    }
+
+    /// Which shapes of goods one building will take, as indices into
+    /// [`Republic::form_names`].
+    #[func]
+    fn building_admits(&self, index: i64) -> PackedInt32Array {
+        crate::tables::ints(crate::tables::building_admits(index.max(0) as usize))
+    }
+
+    /// A garage's establishment: `[vehicle_kind, count]` per line.
+    #[func]
+    fn building_fleet(&self, index: i64) -> PackedFloat32Array {
+        crate::tables::floats(crate::tables::building_fleet(index.max(0) as usize))
+    }
+
+    /// Every authored vehicle, packed. See [`crate::tables::vehicle_table`].
+    #[func]
+    fn vehicle_table(&self) -> PackedFloat32Array {
+        crate::tables::floats(crate::tables::vehicle_table())
+    }
+
+    /// Floats per vehicle in [`Republic::vehicle_table`].
+    #[func]
+    fn vehicle_stride(&self) -> i64 {
+        crate::tables::VEHICLE_STRIDE as i64
+    }
+
+    /// What a kilometre of one grade is made of: `[resource, tonnes]` per line.
+    #[func]
+    fn grade_materials(&self, index: i64) -> PackedFloat32Array {
+        crate::tables::floats(crate::tables::grade_materials(index.max(0) as usize))
+    }
+
+    /// What a kilometre of street lighting costs on top of the road under it:
+    /// `[resource, tonnes]` per line.
+    #[func]
+    fn lamp_materials(&self) -> PackedFloat32Array {
+        crate::tables::floats(crate::tables::lamp_materials())
+    }
+
+    /// What the player calls each mineral.
+    #[func]
+    fn mineral_names(&self) -> PackedStringArray {
+        crate::tables::strings(crate::tables::mineral_names())
+    }
+
+    /// What the player calls each level of schooling.
+    #[func]
+    fn schooling_names(&self) -> PackedStringArray {
+        crate::tables::strings(crate::tables::schooling_names())
+    }
+
+    /// The shapes goods come in.
+    #[func]
+    fn form_names(&self) -> PackedStringArray {
+        crate::tables::strings(crate::tables::form_names())
     }
 
     #[func]
@@ -781,13 +851,20 @@ impl Republic {
     /// cement, a bay takes heaps — and a player who learns that taxonomy only by
     /// being refused an order is a player being ambushed. The stockpile table
     /// carries it as a column.
+    ///
+    /// **Read off the roster, not off a world.** What shape a good comes in is a
+    /// property of the good, and this used to be fetched through
+    /// `World::resource_forms` behind an `if let Some(world)` — so it came back
+    /// empty on any screen opened before a republic exists. That was invisible
+    /// while the only reader was the HUD, which by definition has a world; the
+    /// reference is reachable from the main menu, and every good on it read
+    /// "Form —". The line above reads `Resource::name()` directly, and the two
+    /// disagreeing is what left the hole.
     #[func]
     fn resource_forms(&self) -> PackedStringArray {
         let mut out = PackedStringArray::new();
-        if let Some(w) = self.world.as_ref() {
-            for form in w.resource_forms() {
-                out.push(&GString::from(form));
-            }
+        for resource in red_republic_sim::Resource::ALL {
+            out.push(&GString::from(resource.form().name()));
         }
         out
     }

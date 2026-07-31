@@ -15,7 +15,7 @@ one-off art artifact is more apparatus than content.
 # The design
 
 A red star on the dark survey plate, in the palette the game already uses —
-`godot/ui/theme.gd`'s PAPER_RAISED, ACCENT and RULE. Chosen from four rendered
+`godot/ui/palette.gd`'s CARBON_RAISED, RED and RULE. Chosen from four rendered
 candidates because it is the only one that survives 16 px, which is the size that
 actually decides an icon: the alternatives (surveyed contours, a works
 silhouette, an RR monogram) all read beautifully at 256 and turn to mush in a
@@ -38,12 +38,12 @@ from PIL import Image, ImageDraw
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "godot")
 
-# Straight off godot/ui/theme.gd. Kept as 0-255 triples rather than the 0-1
-# floats the theme uses, because that is what PIL wants; the values are the same
-# colours and the theme is the source.
-PAPER_RAISED = (33, 41, 48)
-ACCENT = (184, 61, 51)
-RULE = (61, 71, 82)
+# Straight off godot/ui/palette.gd. Kept as 0-255 triples rather than the 0-1
+# floats the palette uses, because that is what PIL wants; the values are the
+# same colours and the palette is the source.
+CARBON_RAISED = (28, 32, 35)
+RED = (179, 55, 43)
+RULE = (46, 52, 56)
 
 # Every size Windows asks for, plus the 256 the Godot app icon uses.
 SIZES = (16, 24, 32, 48, 64, 128, 256)
@@ -68,7 +68,7 @@ def render(size):
     d = ImageDraw.Draw(img)
 
     radius = n * 0.133
-    d.rounded_rectangle([0, 0, n - 1, n - 1], radius=radius, fill=PAPER_RAISED + (255,))
+    d.rounded_rectangle([0, 0, n - 1, n - 1], radius=radius, fill=CARBON_RAISED + (255,))
 
     # Below 32 px a border is a grey halo rather than an edge, so the star takes
     # over the job of holding the shape.
@@ -79,7 +79,7 @@ def render(size):
         )
 
     outer = n * (0.33 if outlined else 0.36)
-    d.polygon(star_points(n / 2, n / 2 + n * 0.015, outer, outer * 0.404), fill=ACCENT + (255,))
+    d.polygon(star_points(n / 2, n / 2 + n * 0.015, outer, outer * 0.404), fill=RED + (255,))
 
     return img.resize((size, size), Image.LANCZOS)
 

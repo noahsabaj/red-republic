@@ -115,8 +115,19 @@ jobs:
       # resolves — the tell is `Cannot get class` with no `Initialize godot-rust`
       # line. So the import pass comes first, and its own output is checked:
       # `--import` exits 0 on a project full of parse errors.
+      #
+      # **Twice, and only the second is checked.** A pass imports assets; a
+      # resource that *references* an asset can only resolve on a pass after the
+      # one that imported it. `ui/theme.tres` names six font files, so on a
+      # virgin checkout the first pass reports
+      # `Parse Error: [ext_resource] referenced non-existent resource` for a
+      # theme that is perfectly correct — and the project settings point the
+      # default GUI theme at it, so this is not a corner anybody can avoid.
+      # Reproduced by deleting `godot/.godot/` locally: two errors on the first
+      # pass, none on the second.
       - name: Import
         run: |
+          ./godot-bin --headless --import --path godot 2>&1 | tee first-import.log
           ./godot-bin --headless --import --path godot 2>&1 | tee import.log
           if grep -qiE "Parse Error|Failed to load script|Cannot get class" import.log; then
             echo "::error::the Godot project does not load — see the log above"

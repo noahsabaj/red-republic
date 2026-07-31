@@ -29,16 +29,24 @@ extends CanvasLayer
 ## balance decision, and land quality genuinely varies -- a bad hand is a
 ## legitimate hand and papering over one would make the shelf dishonest.
 
-const Style := preload("res://ui/theme.gd")
+const P := preload("res://ui/palette.gd")
+const Parts := preload("res://ui/parts.gd")
+const Sheet := preload("res://ui/sheet.gd")
 
 ## Floats per card, matching `shelf::CARD_STRIDE` in the shell.
 ##
-## Read from the shell rather than trusted: `_read_cards` checks the array
-## divides by this, so a stride change in Rust fails visibly here instead of
-## silently shifting every column by one.
+## Read from the shell rather than trusted: `_read_cards` checks the array divides
+## by this, so a stride change in Rust fails visibly here instead of silently
+## shifting every column by one.
 const CARD_STRIDE := 13
 
-const MINIMAP_PX := 168
+## How big a candidate's minimap is drawn.
+##
+## Sized against the screen rather than chosen: six of these plus the briefing
+## under them has to fit in 900 px, and at 168 the cards pushed the whole footer
+## -- including the button the screen exists for -- off the bottom of a rendered
+## frame, with nothing but the frame to say so.
+const MINIMAP_PX := 118
 
 signal posting_taken
 signal cancelled
@@ -50,136 +58,131 @@ var _master_seed := 0
 var _size_index := 1
 var _climate_index := 0
 
-var _card_column: HBoxContainer = null
+var _card_row: HBoxContainer = null
 var _card_panels: Array[PanelContainer] = []
 var _briefing: RichTextLabel = null
 var _name_box: LineEdit = null
-var _refusal: Label = null
+var _notice: Label = null
 var _take_button: Button = null
 var _busy: Label = null
 var _size_choice: OptionButton = null
 var _climate_choice: OptionButton = null
 var _seed_line: Label = null
+var _terms: Label = null
 
 
 func _ready() -> void:
 	layer = 10
-	add_child(Style.backdrop())
+	var sheet: Dictionary = Sheet.build(
+		self,
+		"The Posting",
+		"Council of Ministers",
+		"Six sites have been surveyed. Choose one, and name it."
+	)
+	_notice = sheet["notice"]
+	var body: VBoxContainer = sheet["body"]
+	# Tighter than the sheet's rhythm, and this is the one screen that earns the
+	# exception: six cards, a briefing and a name field is the most content any
+	# screen in the game has to fit in one window, and the ordinary spacing put the
+	# button the screen exists for half off the bottom of a rendered frame.
+	body.add_theme_constant_override("separation", P.GAP)
 
-	var margin := MarginContainer.new()
-	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 40)
-	margin.add_theme_constant_override("margin_right", 40)
-	margin.add_theme_constant_override("margin_top", 28)
-	margin.add_theme_constant_override("margin_bottom", 24)
-	add_child(margin)
+	_build_filters(body)
+	body.add_child(Parts.rule())
 
-	var rows := VBoxContainer.new()
-	rows.add_theme_constant_override("separation", 14)
-	margin.add_child(rows)
+	_busy = Parts.say("", "Stamp")
+	body.add_child(_busy)
 
-	rows.add_child(Style.heading("THE POSTING", Style.SIZE_TITLE))
-	rows.add_child(Style.body(
-		"The Politburo has surveyed six sites. Choose one, and name it.",
-		Style.INK_DIM
-	))
-	rows.add_child(_build_filters())
-	rows.add_child(Style.divider())
+	_card_row = HBoxContainer.new()
+	_card_row.add_theme_constant_override("separation", P.GAP)
+	_card_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_child(_card_row)
 
-	_busy = Style.heading("Surveying...", Style.SIZE_HEAD, Style.ACCENT_HOT)
-	rows.add_child(_busy)
+	_build_posting(body)
 
-	_card_column = HBoxContainer.new()
-	_card_column.add_theme_constant_override("separation", 10)
-	rows.add_child(_card_column)
-
-	rows.add_child(Style.divider())
-	rows.add_child(_build_posting())
+	Sheet.close_button(sheet["footer"], "BACK", func(): cancelled.emit())
+	_take_button = Parts.button("TAKE THIS POSTING", "Primary")
+	_take_button.pressed.connect(_take)
+	sheet["footer"].add_child(_take_button)
 
 
-func _build_filters() -> Control:
+func _build_filters(into: VBoxContainer) -> void:
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 18)
+	row.add_theme_constant_override("separation", P.GAP_WIDE)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	into.add_child(row)
 
-	row.add_child(Style.small("SIZE"))
+	row.add_child(Parts.field("size"))
 	_size_choice = OptionButton.new()
-	_size_choice.add_theme_font_size_override("font_size", Style.SIZE_SMALL)
 	_size_choice.item_selected.connect(_on_size_chosen)
 	row.add_child(_size_choice)
 
-	row.add_child(Style.small("CLIMATE"))
+	row.add_child(Parts.gap(P.GAP))
+	row.add_child(Parts.field("climate"))
 	_climate_choice = OptionButton.new()
-	_climate_choice.add_theme_font_size_override("font_size", Style.SIZE_SMALL)
 	_climate_choice.item_selected.connect(_on_climate_chosen)
 	row.add_child(_climate_choice)
 
-	var another := Style.button("Survey elsewhere")
+	row.add_child(Parts.fill())
 	# A fresh master seed: six new sites under the same filters. The filters
-	# transform a shelf, and this is the one control that deliberately deals a
-	# new hand -- so it is worded as going somewhere else rather than as a
-	# reroll.
+	# transform a shelf, and this is the one control that deliberately deals a new
+	# hand -- so it is worded as going somewhere else rather than as a reroll.
+	var another := Parts.button("SURVEY ELSEWHERE")
 	another.pressed.connect(func(): _regenerate(true))
 	row.add_child(another)
 
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(spacer)
 
-	var back := Style.button("Back")
-	back.pressed.connect(func(): cancelled.emit())
-	row.add_child(back)
-	return row
-
-
-func _build_posting() -> Control:
+func _build_posting(into: VBoxContainer) -> void:
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 24)
+	row.add_theme_constant_override("separation", P.GAP_SECTION * 2)
+	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	into.add_child(row)
 
 	var left := VBoxContainer.new()
-	left.custom_minimum_size = Vector2(560, 0)
-	left.add_theme_constant_override("separation", 6)
-	left.add_child(Style.small("THE BRIEFING"))
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left.size_flags_stretch_ratio = 1.8
+	left.add_theme_constant_override("separation", P.GAP_TIGHT)
+	left.add_child(Parts.field("the briefing"))
+	left.add_child(Parts.rule())
 	_briefing = RichTextLabel.new()
 	_briefing.bbcode_enabled = true
-	_briefing.fit_content = true
-	_briefing.custom_minimum_size = Vector2(560, 132)
-	_briefing.add_theme_font_size_override("normal_font_size", Style.SIZE_SMALL)
-	_briefing.add_theme_font_size_override("bold_font_size", Style.SIZE_SMALL)
-	_briefing.add_theme_color_override("default_color", Style.INK_DIM)
+	# **It scrolls rather than fitting its content**, because a briefing that grew
+	# to fit pushed the row of cards, the rule and the whole footer down until
+	# "Take this posting" was off the bottom of the window. A panel that can push
+	# the screen's own button out of reach is worse than one that scrolls.
+	_briefing.fit_content = false
+	_briefing.scroll_active = true
+	_briefing.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	left.add_child(_briefing)
 	row.add_child(left)
 
 	var right := VBoxContainer.new()
-	right.add_theme_constant_override("separation", 6)
 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	right.add_child(Style.small("NAME OF THE REPUBLIC"))
+	right.add_theme_constant_override("separation", P.GAP_TIGHT)
+	right.add_child(Parts.field("name of the republic"))
+	right.add_child(Parts.rule())
 
 	_name_box = LineEdit.new()
 	_name_box.placeholder_text = "Krasnogorsk"
-	_name_box.add_theme_font_size_override("font_size", Style.SIZE_BODY)
-	_name_box.custom_minimum_size = Vector2(300, 36)
-	# The limit comes from the simulation, so the box cannot allow a name the
-	# command will refuse. Reading it here rather than typing 48 is the same rule
-	# that made the shell stop holding its own settler count.
-	_name_box.text_changed.connect(func(_t): _clear_refusal())
+	_name_box.custom_minimum_size = Vector2(300, 40)
+	_name_box.text_changed.connect(func(_t): _notice.text = "")
 	_name_box.text_submitted.connect(func(_t): _take())
 	right.add_child(_name_box)
 
-	_refusal = Style.small("", Style.ALARM)
-	right.add_child(_refusal)
-
-	_seed_line = Style.small("", Style.INK_FAINT)
+	_seed_line = Parts.say("", "Faint")
 	right.add_child(_seed_line)
 
-	var spacer := Control.new()
-	spacer.custom_minimum_size = Vector2(0, 6)
-	right.add_child(spacer)
-
-	_take_button = Style.button("Take this posting", true)
-	_take_button.pressed.connect(_take)
-	right.add_child(_take_button)
+	# **The terms sit beside the button that accepts them**, not at the end of the
+	# briefing. They were its last paragraph, which put the single most
+	# consequential sentence on the screen -- that a posting comes with money and
+	# nothing else -- below the fold, while the column next to "Take this posting"
+	# was empty from the seed line down.
+	right.add_child(Parts.gap(P.GAP_WIDE))
+	right.add_child(Parts.field("what Moscow sends"))
+	right.add_child(Parts.rule())
+	_terms = Parts.prose("", "Note")
+	right.add_child(_terms)
 	row.add_child(right)
-	return row
 
 
 ## Open the screen. `master_seed` seeds the whole shelf.
@@ -196,9 +199,9 @@ func open(republic: Republic, master_seed: int) -> void:
 
 
 func _fill_choices() -> void:
-	# Both rosters are read from the simulation. A list of climate names typed
-	# here is a second copy of `ClimateId::ALL` and would silently stop matching
-	# the day a fifth climate is authored.
+	# Both rosters are read from the simulation. A list of climate names typed here
+	# is a second copy of `ClimateId::ALL` and would silently stop matching the day
+	# a fifth climate is authored.
 	_size_choice.clear()
 	for name in _republic.size_names():
 		_size_choice.add_item(name)
@@ -223,20 +226,22 @@ func _on_climate_chosen(index: int) -> void:
 ## Re-derive the shelf, showing the loading state while it blocks.
 ##
 ## The `await` is what makes the loading label appear at all: `derive_shelf`
-## blocks the main thread for up to 1.6 seconds, so without yielding a frame
-## first the label is set and the frame that would have drawn it never happens.
-## The player sees a frozen window and then the cards, which reads as a hang.
+## blocks the main thread for up to 1.6 seconds, so without yielding a frame first
+## the label is set and the frame that would have drawn it never happens. The
+## player sees a frozen window and then the cards, which reads as a hang.
 func _regenerate(new_master: bool) -> void:
 	if _republic == null:
 		return
 	if new_master:
-		# A different master seed, derived from the current one rather than from
-		# the clock, so the sequence a player walks through is reproducible from
-		# the one number they started with.
+		# A different master seed, derived from the current one rather than from the
+		# clock, so the sequence a player walks through is reproducible from the one
+		# number they started with.
 		_master_seed = (_master_seed * 6364136223846793005 + 1442695040888963407) & 0x7FFFFFFF
 
 	_busy.visible = true
-	_busy.text = "Surveying %s ground..." % String(_republic.size_names()[_size_index]).to_lower()
+	_busy.text = "SURVEYING %s GROUND…" % String(
+		_republic.size_names()[_size_index]
+	).to_upper()
 	_set_interactive(false)
 	await get_tree().process_frame
 
@@ -249,9 +254,9 @@ func _regenerate(new_master: bool) -> void:
 
 	_busy.visible = false
 	_set_interactive(true)
-	# Keep the selection across a filter change: candidate n is still candidate
-	# n, and dropping the selection would undo the one thing the filter rule
-	# exists to provide.
+	# Keep the selection across a filter change: candidate n is still candidate n,
+	# and dropping the selection would undo the one thing the filter rule exists to
+	# provide.
 	_select(_selected if _selected >= 0 else 0)
 
 
@@ -266,9 +271,9 @@ func _read_cards() -> void:
 	_cards.clear()
 	if flat.size() % CARD_STRIDE != 0:
 		# A stride mismatch means Rust and this file disagree about the layout,
-		# which would otherwise show as every number on every card being the
-		# wrong one. Loud, because a card quietly reporting iron as coal is worse
-		# than an empty screen.
+		# which would otherwise show as every number on every card being the wrong
+		# one. Loud, because a card quietly reporting iron as coal is worse than an
+		# empty screen.
 		push_error(
 			"shelf card stride mismatch: %d floats is not a multiple of %d"
 			% [flat.size(), CARD_STRIDE]
@@ -299,17 +304,20 @@ func _build_cards() -> void:
 	_card_panels.clear()
 
 	for card in _cards:
-		# A `PanelContainer` via `Style.card`, not a `Panel`: a Panel reports no
-		# minimum size from anchored children, so the row of cards came back zero
-		# pixels tall and the posting row below it was drawn straight over the
-		# top. Every node existed and every label had its text -- only the
-		# rendered frame showed it.
-		var panel := Style.card()
-		panel.custom_minimum_size = Vector2(MINIMAP_PX + 28, 0)
+		# A `PanelContainer`, not a `Panel`: a Panel reports no minimum size from
+		# anchored children, so the row of cards once came back zero pixels tall
+		# and the posting row below was drawn straight over the top. Every node
+		# existed and every label had its text -- only the rendered frame showed it.
+		var panel := PanelContainer.new()
+		panel.theme_type_variation = "Card"
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		panel.gui_input.connect(_on_card_input.bind(int(card["index"])))
+		_card_row.add_child(panel)
+		_card_panels.append(panel)
 
 		var column := VBoxContainer.new()
-		column.add_theme_constant_override("separation", 4)
+		column.add_theme_constant_override("separation", P.GAP_TIGHT)
+		panel.add_child(column)
 
 		var picture := TextureRect.new()
 		picture.texture = _minimap_texture(int(card["index"]))
@@ -321,17 +329,30 @@ func _build_cards() -> void:
 		# The score, tinted by itself. For sorting and colour only -- the figures
 		# under it are what the player actually decides on.
 		var promise: float = card["promise"]
-		var score := Style.heading(
-			"%d%%" % int(round(promise * 100.0)), Style.SIZE_HEAD, _promise_tone(promise)
-		)
+		var score := Parts.say("%d%%" % int(round(promise * 100.0)), "FigureBig")
+		score.add_theme_color_override("font_color", _promise_tone(promise))
 		column.add_child(score)
+		column.add_child(Parts.rule())
+
+		# The facts pack tight against each other rather than taking the column's
+		# rhythm. Nine of them at the card's ordinary spacing was eighty pixels of
+		# air, which came straight out of the briefing under it -- and the briefing
+		# is the half of this screen a player actually reads.
+		var facts := VBoxContainer.new()
+		facts.add_theme_constant_override("separation", 1)
+		column.add_child(facts)
 
 		for line in _card_lines(card):
-			column.add_child(Style.small(line[0] + "  " + line[1], line[2]))
-
-		Style.card_body(panel).add_child(column)
-		_card_column.add_child(panel)
-		_card_panels.append(panel)
+			var fact := HBoxContainer.new()
+			fact.add_theme_constant_override("separation", P.GAP_TIGHT)
+			var name_label := Parts.say(String(line[0]), "Faint")
+			name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			fact.add_child(name_label)
+			var value := Parts.figure(String(line[1]), "Figure")
+			value.add_theme_font_size_override("font_size", P.SIZE_TINY + 1)
+			value.add_theme_color_override("font_color", line[2])
+			fact.add_child(value)
+			facts.add_child(fact)
 
 
 ## The facts on a card, each with the tone it should read in.
@@ -341,47 +362,39 @@ func _build_cards() -> void:
 ## republic; coal twelve kilometres away is a haulage problem.
 func _card_lines(card: Dictionary) -> Array:
 	var reach: float = card["coal_reach"]
-	var reach_text := "none found"
-	var reach_tone := Style.ALARM
+	var reach_text := "none"
+	var reach_tone := P.ALARM
 	if reach >= 0.0:
 		reach_text = "%.1f km" % (reach / 1000.0)
-		# Beyond about four kilometres the coal is a road-building project before
-		# it is a mine, which is worth flagging on the card rather than
-		# discovering afterwards.
-		reach_tone = Style.INK if reach < 4000.0 else Style.ALARM
+		# Beyond about four kilometres the coal is a road-building project before it
+		# is a mine, which is worth flagging on the card rather than discovering
+		# afterwards.
+		reach_tone = P.PAPER if reach < 4000.0 else P.ALARM
 
 	var west: int = card["crossings_west"]
 	return [
 		["coal at", reach_text, reach_tone],
-		["buildable", "%d%%" % int(round(float(card["buildable"]) * 100.0)), Style.INK_DIM],
-		["coal", _bulk(card["coal"]), Style.INK_DIM],
-		["iron", _bulk(card["iron"]), Style.INK_DIM],
-		["oil", _bulk(card["oil"]), Style.INK_DIM],
-		["water", "%d%%" % int(round(float(card["water"]) * 100.0)), Style.INK_DIM],
-		["forest", "%d%%" % int(round(float(card["forest"]) * 100.0)), Style.INK_DIM],
-		# East and West are not interchangeable and this is the line that says so:
-		# a customs house clears only for the bloc whose post it stands at, so a
+		["buildable", "%d%%" % int(round(float(card["buildable"]) * 100.0)), P.PAPER_DIM],
+		["coal", Parts.bulk(card["coal"]), P.PAPER_DIM],
+		["iron", Parts.bulk(card["iron"]), P.PAPER_DIM],
+		["oil", Parts.bulk(card["oil"]), P.PAPER_DIM],
+		["water", "%d%%" % int(round(float(card["water"]) * 100.0)), P.PAPER_DIM],
+		["forest", "%d%%" % int(round(float(card["forest"]) * 100.0)), P.PAPER_DIM],
+		# East and West are not interchangeable and this is the line that says so: a
+		# customs house clears only for the bloc whose post it stands at, so a
 		# posting with no Western post earns no dollars until one is reachable.
-		["posts", "%d east · %d west" % [card["crossings_east"], west],
-			Style.INK_DIM if west > 0 else Style.ALARM],
-		["coldest", "%+.0f °C" % card["coldest"], Style.INK_DIM],
+		["posts", "%dE %dW" % [card["crossings_east"], west],
+			P.PAPER_DIM if west > 0 else P.ALARM],
+		["coldest", "%+.0f °C" % card["coldest"], P.PAPER_DIM],
 	]
-
-
-func _bulk(tonnes: float) -> String:
-	if tonnes >= 1_000_000.0:
-		return "%.1f Mt" % (tonnes / 1_000_000.0)
-	if tonnes >= 1_000.0:
-		return "%.0f kt" % (tonnes / 1_000.0)
-	return "%.0f t" % tonnes
 
 
 func _promise_tone(promise: float) -> Color:
 	if promise >= 0.62:
-		return Style.GOOD
+		return P.GOOD
 	if promise >= 0.42:
-		return Style.INK
-	return Style.ALARM
+		return P.PAPER
+	return P.ALARM
 
 
 ## A candidate's land as a texture, rasterised from its terrain.
@@ -407,12 +420,10 @@ func _select(index: int) -> void:
 		return
 	_selected = clampi(index, 0, _cards.size() - 1)
 	for i in _card_panels.size():
-		var chosen := i == _selected
-		_card_panels[i].add_theme_stylebox_override(
-			"panel",
-			Style.panel(Style.PAPER_RAISED if chosen else Style.PAPER_SUNK,
-				Style.ACCENT if chosen else Style.RULE)
-		)
+		# The chosen card is the one with the red rule round it. A theme variation
+		# rather than a stylebox built here: what "chosen" looks like is the theme's
+		# to say, and this file's job is only to say which one it is.
+		_card_panels[i].theme_type_variation = "CardChosen" if i == _selected else "Card"
 	_write_briefing()
 	_seed_line.text = "site %d  ·  seed %d" % [
 		_selected + 1, _republic.candidate_seed(_selected)
@@ -446,9 +457,9 @@ func _write_briefing() -> void:
 			if year[m] < coldest:
 				coldest = year[m]
 				coldest_month = m
-			# The farm gates on frost and ramps with temperature; nothing in it
-			# reads the month. Five degrees is a fair proxy for a month that
-			# grows anything, which is all a briefing needs to say.
+			# The farm gates on frost and ramps with temperature; nothing in it reads
+			# the month. Five degrees is a fair proxy for a month that grows
+			# anything, which is all a briefing needs to say.
 			if year[m] >= 5.0:
 				growing += 1
 		var rain := 0.0
@@ -471,32 +482,17 @@ func _write_briefing() -> void:
 			% [west, card["crossings_east"]]
 		)
 
-	# This used to promise settlers and a town. It does not any more, because a
-	# posting no longer comes with one: the map is empty and the grant is the
-	# whole of what Moscow sends. Product text is a claim, and that one stopped
-	# being true the day the founding stopped placing buildings.
-	lines.append(
-		"[i]Moscow sends %s roubles and nothing else. No buildings, no people. "
-		% _thousands(_republic.founding_grant())
-		+ "Hire a Bloc firm to raise the first of it, and hard currency is "
-		+ "something you will have to earn.[/i]"
-	)
 	_briefing.text = "\n\n".join(lines)
 
-
-## Group a whole number with thin spaces, so 2500000 reads as 2 500 000.
-##
-## Spaces rather than commas: this is a Soviet republic counting roubles, and
-## the space is the convention across most of the world that is not the one this
-## game is deliberately not set in.
-func _thousands(value: float) -> String:
-	var digits := str(int(round(value)))
-	var out := ""
-	for i in digits.length():
-		if i > 0 and (digits.length() - i) % 3 == 0:
-			out += " "
-		out += digits[i]
-	return out
+	# This used to promise settlers and a town. It does not any more, because a
+	# posting no longer comes with one: the map is empty and the grant is the whole
+	# of what Moscow sends. Product text is a claim, and that one stopped being true
+	# the day the founding stopped placing buildings.
+	_terms.text = (
+		"%s roubles, and nothing else. No buildings, no people. Hire a Bloc firm to "
+		% Parts.thousands(_republic.founding_grant())
+		+ "raise the first of it, and hard currency is something you will have to earn."
+	)
 
 
 func _land_sentence(card: Dictionary) -> String:
@@ -518,20 +514,16 @@ const MONTHS := [
 ]
 
 
-func _clear_refusal() -> void:
-	_refusal.text = ""
-
-
 ## Take the posting. The refusal is the simulation's own sentence.
 func _take() -> void:
 	if _republic == null or _selected < 0:
 		return
 	var why: String = _republic.take_posting(_selected, _name_box.text)
 	if why != "":
-		_refusal.text = why
+		_notice.text = why
 		_name_box.grab_focus()
 		return
-	_clear_refusal()
+	_notice.text = ""
 	posting_taken.emit()
 
 

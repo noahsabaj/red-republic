@@ -24,6 +24,18 @@ config/icon="res://icon.png"
 ; executable's version resource. A copy here could disagree with the binary a
 ; player is actually running.
 
+[gui]
+
+; **The one look, applied by the engine before any script runs.**
+;
+; Every `Control` in the project inherits this, so a screen that styles nothing
+; is already correct and a screen cannot half-apply the theme by forgetting to
+; call a helper -- which is exactly what the runtime style helper it replaced
+; allowed. `godot/ui/theme.tres` is generated from `godot/ui/palette.gd` by
+; `godot/tools/build_theme.gd`; edit the palette, re-run the generator, commit
+; both.
+theme/custom="res://ui/theme.tres"
+
 [display]
 
 window/size/viewport_width=1600
