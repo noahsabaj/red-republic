@@ -119,9 +119,19 @@ public partial class Main : Node3D
         // balance, and whatever the player does next.
         Scenario.Found(_world);
 
+        // `--town` stands the test fixture up instead. <b>Not a way to play</b> —
+        // a real founding places nothing — but the only way a capture can show
+        // what a working republic looks like without somebody playing one first.
+        if (System.Array.IndexOf(args, "--town") >= 0)
+        {
+            Scenario.Town(_world, Scenario.Settlers);
+        }
+
         _shell = new Ui.Shell { Name = "Shell" };
         AddChild(_shell);
         _shell.Raise(_world);
+        _shell.Ticked += () => scenery.Refresh(_world);
+        scenery.Refresh(_world);
 
         // `--shot` captures one frame and quits. It aims the camera itself,
         // because the sky is only visible below about twenty-five degrees and a

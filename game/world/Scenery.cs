@@ -23,6 +23,7 @@ public sealed partial class Scenery : Node3D
 {
     private readonly Look _look;
     private ShaderMaterial _ground = null!;
+    private Buildings _buildings = null!;
     private DirectionalLight3D _sun = null!;
     private CameraRig _rig = null!;
 
@@ -34,6 +35,11 @@ public sealed partial class Scenery : Node3D
         ArgumentNullException.ThrowIfNull(world);
 
         Ground(world.Terrain);
+
+        _buildings = new Buildings { Name = "Buildings" };
+        AddChild(_buildings);
+        _buildings.Raise(world.Tables, world.Terrain);
+
         Sky();
         Sun();
         Camera((float)world.Terrain.Extent, (float)atX, (float)atZ);
@@ -81,6 +87,9 @@ public sealed partial class Scenery : Node3D
 
         return null;
     }
+
+    /// <summary>Put the buildings where the republic says they are.</summary>
+    public void Refresh(Sim.World world) => _buildings.Refresh(world);
 
     /// <summary>Aim the camera. Capture runs use this.</summary>
     public void Aim(float pitchDegrees, float distance)

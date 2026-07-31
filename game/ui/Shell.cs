@@ -54,6 +54,16 @@ public sealed partial class Shell : CanvasLayer
     /// <summary>What the player has chosen to place, or -1.</summary>
     public int Placing { get; private set; } = -1;
 
+    /// <summary>
+    /// Raised when the republic has moved on, so the world can redraw.
+    /// </summary>
+    /// <remarks>
+    /// On the instrument's clock rather than the frame's: nothing the renderer
+    /// shows changes faster than a quarter second, and a transform buffer
+    /// rewritten every frame costs more than the simulation does.
+    /// </remarks>
+    public event Action? Ticked;
+
     public void Raise(Sim.World world)
     {
         ArgumentNullException.ThrowIfNull(world);
@@ -117,6 +127,7 @@ public sealed partial class Shell : CanvasLayer
         _sinceRefresh = 0.0;
         _hud.Refresh(_world, Speeds[_speed].Name);
         _open?.Refresh();
+        Ticked?.Invoke();
     }
 
     public override void _UnhandledInput(InputEvent @event)
