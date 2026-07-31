@@ -82,6 +82,15 @@ fn main() {
     out.push_str("{\n");
 
     let mut canon = Canon::new();
+    // Prices are balance, and the dearest end of the table is the whole
+    // industrialisation incentive — a tonne of electronics against two hundred
+    // of coal. A price that arrives wrong is an economy that is wrong, so they
+    // are hashed like everything else.
+    for r in Resource::ALL {
+        canon.push(r.price_east());
+        canon.push(r.price_west());
+        canon.push_bool(r.is_comfort());
+    }
     for d in BUILDINGS {
         canon.push(d.width.0);
         canon.push(d.depth.0);
@@ -180,10 +189,16 @@ fn main() {
         .iter()
         .map(|&r| {
             format!(
-                "    {}: {{ \"name\": {}, \"form\": {} }}",
+                "    {}: {{ \"name\": {}, \"form\": {}, \"price_east\": {}, \"price_west\": {}, \"is_comfort\": {}, \"from_mineral\": {} }}",
                 q(&format!("{r:?}")),
                 q(r.name()),
-                q(&format!("{:?}", r.form()))
+                q(&format!("{:?}", r.form())),
+                n(r.price_east()),
+                n(r.price_west()),
+                r.is_comfort(),
+                r.from_mineral()
+                    .map(|m| q(&format!("{m:?}")))
+                    .unwrap_or_else(|| "null".into())
             )
         })
         .collect();

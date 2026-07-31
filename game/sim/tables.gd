@@ -34,6 +34,12 @@ static var checksum_got: String = ""
 static var resources: PackedStringArray = PackedStringArray()
 static var resource_names: PackedStringArray = PackedStringArray()
 static var resource_form: PackedInt32Array = PackedInt32Array()
+static var resource_price_east: PackedFloat64Array = PackedFloat64Array()
+static var resource_price_west: PackedFloat64Array = PackedFloat64Array()
+static var resource_is_comfort: PackedByteArray = PackedByteArray()
+## -1 where the resource is not dug out of anything, else an index into
+## [constant MINERALS].
+static var resource_from_mineral: PackedInt32Array = PackedInt32Array()
 static var forms: PackedStringArray = PackedStringArray()
 static var needs: PackedStringArray = PackedStringArray()
 static var education: PackedStringArray = PackedStringArray()
@@ -137,10 +143,20 @@ static func load_tables() -> String:
 	var facts: Dictionary = m["resource_facts"]
 	resource_names = PackedStringArray()
 	resource_form = PackedInt32Array()
+	resource_price_east = PackedFloat64Array()
+	resource_price_west = PackedFloat64Array()
+	resource_is_comfort = PackedByteArray()
+	resource_from_mineral = PackedInt32Array()
 	for id in resources:
 		var f: Dictionary = facts[id]
 		resource_names.append(f["name"])
 		resource_form.append(forms.find(f["form"]))
+		resource_price_east.append(f["price_east"])
+		resource_price_west.append(f["price_west"])
+		resource_is_comfort.append(1 if f["is_comfort"] else 0)
+		resource_from_mineral.append(
+			-1 if f["from_mineral"] == null else MINERALS.find(f["from_mineral"])
+		)
 
 	# Vehicles first: a building's establishment names vehicle kinds, and the
 	# roster has to exist before those names can become indices.
@@ -355,6 +371,10 @@ static func _append_vehicle(d: Dictionary) -> void:
 ## out, a row reordered, a field dropped — changes this.
 static func _checksum() -> String:
 	var stream := PackedFloat64Array()
+	for r in resources.size():
+		stream.append(resource_price_east[r])
+		stream.append(resource_price_west[r])
+		stream.append(float(resource_is_comfort[r]))
 	for b in building_count:
 		stream.append(b_width[b])
 		stream.append(b_depth[b])
