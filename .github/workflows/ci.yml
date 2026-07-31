@@ -224,12 +224,20 @@ jobs:
       # A standalone .NET build from godotengine.org, pinned. The editor on
       # Noah's desktop auto-updates, which can break the build with no commit to
       # blame; CI is where a pinned version actually gets used.
+      # **The .NET build is a directory, not a binary.** The executable sits
+      # beside a `GodotSharp/` folder holding the engine's own managed
+      # assemblies, and it finds them by looking next to itself — so moving the
+      # executable out, which is what the non-.NET build allows and what this
+      # step did at first, gives `.NET: Assemblies not found` and points at a
+      # path that was never going to exist. The whole extracted directory stays
+      # together and `godot-bin` is a symlink into it.
       - name: Fetch Godot
         run: |
           curl -sSLo godot.zip             https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_mono_linux_x86_64.zip
           unzip -q godot.zip
-          mv Godot_v4.7.1-stable_mono_linux_x86_64/Godot_v4.7.1-stable_mono_linux.x86_64 godot-bin
-          chmod +x godot-bin
+          chmod +x Godot_v4.7.1-stable_mono_linux_x86_64/Godot_v4.7.1-stable_mono_linux.x86_64
+          ln -s Godot_v4.7.1-stable_mono_linux_x86_64/Godot_v4.7.1-stable_mono_linux.x86_64 godot-bin
+          ls Godot_v4.7.1-stable_mono_linux_x86_64
 
       # Twice, and only the second believed — a resource that references an
       # asset can only resolve on a pass after the one that imported it. A
@@ -263,8 +271,13 @@ jobs:
           # so without this the only symptom is the absent `tables ok` further
           # down — which reads as "the table is wrong" and sends you to the
           # wrong file entirely.
+          # Two different faults share this symptom, which is why the message
+          # names both. Either the game assembly was not built — Godot does not
+          # build it itself in headless mode — or the editor was separated from
+          # its own `GodotSharp/` directory when it was unpacked. Both were hit
+          # in the same afternoon, and the second was misdiagnosed as the first.
           if grep -qiE "Assemblies not found|Cannot instantiate C# script" run.log; then
-            echo "::error::the game assembly was not built before Godot ran it"
+            echo "::error::assemblies missing — either the game was not built, or Godot was moved away from its GodotSharp/ directory"
             exit 1
           fi
           # A run that quietly does nothing prints nothing, which is the failure
