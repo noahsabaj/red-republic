@@ -226,7 +226,16 @@ New-Item -ItemType Directory -Force -Path $staging | Out-Null
 # A virgin checkout has no godot/.godot/ and without one no GDExtension class
 # resolves, so the export would produce a game whose every scene is a placeholder
 # node. The import pass is not optional even though it usually looks redundant.
+#
+# **Twice, and only the second is inspected.** A pass imports assets; a resource
+# that *references* an asset can only resolve on a pass after the one that
+# imported it. `ui/theme.tres` names six font files and the project settings
+# point the default GUI theme at it, so on a virgin checkout the first pass
+# reports `Parse Error: [ext_resource] referenced non-existent resource` for a
+# theme that is perfectly correct. Reproduced by deleting `godot/.godot/`: two
+# errors on the first pass, none on the second.
 Step 'importing the Godot project'
+& $Godot --headless --import --path $GodotDir 2>&1 | Out-Null
 & $Godot --headless --import --path $GodotDir 2>&1 | Out-String -OutVariable importLog | Out-Null
 if ($importLog -match 'Parse Error|Failed to load script|Cannot get class') {
     Write-Host $importLog
