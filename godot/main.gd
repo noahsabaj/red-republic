@@ -158,6 +158,26 @@ func _ready() -> void:
 
 	_connect_screens()
 
+	# **A capture is pinned to the project's own resolution.**
+	#
+	# `--shot` grabs `get_viewport()`, which follows the window, and the window
+	# is whatever the desktop gives it — so captures came back 1600x900 on one
+	# run and 1028x749 on the next with nothing in the project changed. That
+	# makes the tool useless for the one thing it exists for: two frames of the
+	# same screen are not comparable if they are not the same size, and a layout
+	# read off a 1028-wide frame says nothing about the shipped one.
+	#
+	# It cost real work to find out. A column looked badly unbalanced in a narrow
+	# capture, I traced the width to a long unwrapped label, shortened the copy on
+	# that theory, and the next capture came back narrow again — with the change
+	# reverted. The window had never been the label's doing.
+	if _shot_path != "":
+		var wanted := Vector2i(
+			ProjectSettings.get_setting("display/window/size/viewport_width", 1600),
+			ProjectSettings.get_setting("display/window/size/viewport_height", 900)
+		)
+		DisplayServer.window_set_size(wanted)
+
 	# A capture or a benchmark run skips the menu: these flags are permanent
 	# checks and existed before there was a menu to get in their way.
 	var wants_republic := (_shot_path != "" or _bench_frames > 0
