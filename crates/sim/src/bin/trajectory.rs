@@ -536,6 +536,11 @@ impl Director {
         // ten years waiting for steel that was never bought, and every building
         // in the republic read `no power` beside a fully staffed power station.
         (Resource::Steel, 80.0),
+        // A heat main is eighteen tonnes of steel and twelve of brick to the
+        // kilometre, and a republic whose brickworks has no gravel and no crew
+        // makes none of the second. Without this the mains are ordered and never
+        // laid, which is the same shape as the grid before steel was bought.
+        (Resource::Bricks, 60.0),
     ];
 
     const MATERIALS: &'static [BuildingKind] = &[
@@ -590,45 +595,72 @@ impl Director {
     fn grid(&mut self, world: &mut World) {
         use red_republic_sim::utility::Utility;
 
-        // Nothing to carry until something makes current.
-        let Some(plant) = world
-            .buildings()
-            .all()
-            .iter()
-            .find(|b| b.def().power_output > 0.0 && b.is_built())
-            .map(|b| (b.id, b.centre))
-        else {
-            return;
-        };
-        // One span under construction at a time.
+        // One span under construction at a time, across both networks: a
+        // republic with one office and one gang cannot work two.
         if !world.lineworks().is_empty() {
             return;
         }
-        // The plant to the hub first: until that exists there is no network for
-        // anything else to join.
-        if world
-            .utilities()
-            .network_of(plant.0, Utility::Power)
-            .is_none()
-        {
-            match world.issue(Command::OrderLine {
-                kind: Utility::Power,
-                from: plant.1,
-                to: self.centre,
-            }) {
-                Ok(_) => self.say("stringing the grid from the power station".into()),
-                Err(why) => self.say(format!("no line from the power station: {why}")),
-            }
+        // Current before heat. A dark republic produces nothing at all where a
+        // cold one merely suffers, and the boiler house that carries the heat
+        // draws off the grid itself.
+        if self.string(world, Utility::Power) {
             return;
         }
-        // Then out to whatever draws and is not yet plugged in, nearest first,
-        // so the grid grows outward rather than leaping across the map.
+        self.string(world, Utility::Heat);
+    }
+
+    /// Order one span of one network, and say whether anything was ordered.
+    ///
+    /// Source to the hub first, then the hub outward to whichever consumer is
+    /// nearest and not yet joined. Written once for both networks because a
+    /// heat main is the same problem as a power line in every respect that
+    /// matters here — and because the first version of this did power only,
+    /// which left every home in the republic reading `cold` through ten winters
+    /// beside a fully staffed boiler house.
+    fn string(&mut self, world: &mut World, kind: red_republic_sim::utility::Utility) -> bool {
+        use red_republic_sim::Building;
+        use red_republic_sim::utility::Utility;
+
+        let makes: fn(&Building) -> bool = match kind {
+            Utility::Heat => |b| b.def().heat_output > 0.0,
+            _ => |b| b.def().power_output > 0.0,
+        };
+        let wants: fn(&Building) -> bool = match kind {
+            Utility::Heat => |b| b.def().heat > 0.0,
+            _ => |b| b.def().power_draw > 0.0,
+        };
+
+        // Nothing to carry until something makes it.
+        let Some(source) = world
+            .buildings()
+            .all()
+            .iter()
+            .find(|b| b.is_built() && makes(b))
+            .map(|b| (b.id, b.centre))
+        else {
+            return false;
+        };
+        // The source to the hub first: until that span exists there is no
+        // network for anything else to join.
+        if world.utilities().network_of(source.0, kind).is_none() {
+            match world.issue(Command::OrderLine {
+                kind,
+                from: source.1,
+                to: self.centre,
+            }) {
+                Ok(_) => self.say(format!("laying the {} in from the works", kind.def().name)),
+                Err(why) => self.say(format!("no {} from the works: {why}", kind.def().name)),
+            }
+            return true;
+        }
+        // Then outward, nearest first, so it grows out of the town rather than
+        // leaping across the map.
         let mut waiting: Vec<_> = world
             .buildings()
             .all()
             .iter()
-            .filter(|b| b.is_built() && b.def().power_draw > 0.0)
-            .filter(|b| world.utilities().network_of(b.id, Utility::Power).is_none())
+            .filter(|b| b.is_built() && wants(b))
+            .filter(|b| world.utilities().network_of(b.id, kind).is_none())
             .map(|b| (b.centre, b.def().name))
             .collect();
         waiting.sort_by(|a, b| {
@@ -638,16 +670,17 @@ impl Director {
                 .total_cmp(&self.centre.distance_to(b.0).0)
         });
         let Some(&(at, name)) = waiting.first() else {
-            return;
+            return false;
         };
         match world.issue(Command::OrderLine {
-            kind: Utility::Power,
+            kind,
             from: self.centre,
             to: at,
         }) {
-            Ok(_) => self.say(format!("stringing the grid out to the {name}")),
-            Err(why) => self.say(format!("no line to the {name}: {why}")),
+            Ok(_) => self.say(format!("running the {} out to the {name}", kind.def().name)),
+            Err(why) => self.say(format!("no {} to the {name}: {why}", kind.def().name)),
         }
+        true
     }
 
     /// Put the next thing on the plan up, if there is nothing already going.
