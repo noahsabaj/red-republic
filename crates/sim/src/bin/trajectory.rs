@@ -121,6 +121,18 @@ fn main() {
 
     let months = years * 12;
     let mut taken = 0usize;
+    // **Counted as they close, not counted at the end.** A closed contract is
+    // pruned from the ledger sixty days later so the history stays readable, so
+    // asking `contracts().all()` in the last month reports whatever happened to
+    // be lying about rather than what the republic did. This line used to say
+    // "56 accepted · 0 delivered, 1 failed", which reads as a republic that
+    // honoured nothing and was punished once, and is really two months of a
+    // decade seen through a keyhole.
+    let mut delivered = 0usize;
+    let mut broken = 0usize;
+    // And what breaking them cost, because the runner accepts every tender
+    // offered and a decade of fines is a hole in every other figure here.
+    let mut fines = 0.0f64;
     for _ in 0..months {
         // Tonnage the fleet actually put down this month. The freight column
         // the scalar could never have: it is what the lorries delivered, not
@@ -141,6 +153,13 @@ fn main() {
                 match m {
                     red_republic_sim::systems::Mutation::Unload { tonnes, .. } => moved += tonnes,
                     red_republic_sim::systems::Mutation::Bog { .. } => stuck += 1,
+                    red_republic_sim::systems::Mutation::Fine { amount, .. } => fines += amount,
+                    red_republic_sim::systems::Mutation::CloseContract { state, .. } => match state
+                    {
+                        red_republic_sim::contract::ContractState::Done => delivered += 1,
+                        red_republic_sim::contract::ContractState::Failed => broken += 1,
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
@@ -288,21 +307,9 @@ fn main() {
     }
 
     let live = world.contracts().active().count();
-    let done = world
-        .contracts()
-        .all()
-        .iter()
-        .filter(|c| c.state == red_republic_sim::contract::ContractState::Done)
-        .count();
-    let failed = world
-        .contracts()
-        .all()
-        .iter()
-        .filter(|c| c.state == red_republic_sim::contract::ContractState::Failed)
-        .count();
     println!();
     println!(
-        "tenders: {taken} accepted · {live} running, {done} delivered, {failed} failed · relations east {:.2} west {:.2}",
+        "tenders: {taken} accepted · {live} running, {delivered} delivered, {broken} broken · fines {fines:.0} · relations east {:.2} west {:.2}",
         world
             .contracts()
             .penalty(red_republic_sim::trade::Market::East),
