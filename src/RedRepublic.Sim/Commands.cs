@@ -103,6 +103,68 @@ public sealed record Command(
 
     public static Command NameRepublic(string name) =>
         new(CommandKind.NameRepublic, Text: name);
+
+    /// <summary>Call a building crew off a site.</summary>
+    public static Command RecallCrew(Destination site) =>
+        new(CommandKind.RecallCrew, (int)site.Kind, site.Id);
+
+    /// <summary>
+    /// Say where a site buys materials the republic has not made, or where every
+    /// site does.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="site"/> is <c>null</c> for the republic's default, and
+    /// <paramref name="crossing"/> is <c>null</c> to import nothing. The two mean
+    /// different things, which is why neither is a bare id: a site set to nothing
+    /// while the default is set has been opted <i>out</i>, and a site with no
+    /// instruction at all follows the default.
+    /// </remarks>
+    public static Command SetImportPolicy(Destination? site, int? crossing) =>
+        new(CommandKind.SetImportPolicy,
+            site is null ? -1 : (int)site.Value.Kind,
+            site?.Id ?? -1,
+            crossing ?? -1,
+            Flag: site is not null);
+
+    /// <summary>Put a site back under the republic's default policy.</summary>
+    public static Command ClearImportPolicy(Destination site) =>
+        new(CommandKind.ClearImportPolicy, (int)site.Kind, site.Id);
+
+    /// <summary>
+    /// Tell a terminal or a distribution office what to keep on hand. Zero
+    /// cancels the order.
+    /// </summary>
+    public static Command SetStandingOrder(int building, int resource, double tonnes) =>
+        new(CommandKind.SetStandingOrder, building, resource, Amount: tonnes);
+
+    /// <summary>Hire builders from a bloc, for one Construction Office.</summary>
+    public static Command HireForeign(Market market, int office, int heads) =>
+        new(CommandKind.HireForeign, (int)market, office, heads);
+
+    public static Command AddTradeRule(int resource, Market market, TradeAction action) =>
+        new(CommandKind.AddTradeRule, resource, (int)market, (int)action);
+
+    public static Command RemoveTradeRule(int index) =>
+        new(CommandKind.RemoveTradeRule, index);
+
+    public static Command MoveTradeRule(int from, int to) =>
+        new(CommandKind.MoveTradeRule, from, to);
+
+    /// <summary>
+    /// Set — or with a null <paramref name="hours"/> clear — an exception to the
+    /// national working day, for every building of a kind.
+    /// </summary>
+    /// <remarks>
+    /// A rule about a kind covers every such building including ones not yet
+    /// built; a rule about one building beats it. Clearing falls back to the rule
+    /// above rather than freezing whatever number was in force.
+    /// </remarks>
+    public static Command SetKindHours(int kind, double? hours) =>
+        new(CommandKind.SetShiftHours, kind, Amount: hours ?? 0.0, Flag: hours is not null);
+
+    public static Command SetBuildingHours(int building, double? hours) =>
+        new(CommandKind.SetShiftHours, -1, building,
+            Amount: hours ?? 0.0, Flag: hours is not null);
 }
 
 /// <summary>
@@ -142,9 +204,300 @@ public static class Commands
             CommandKind.DeclineContract => DeclineContract(world, command),
             CommandKind.OrderRoad => OrderRoad(world, command),
             CommandKind.OrderLine => OrderLine(world, command),
+            CommandKind.RecallCrew => RecallCrew(world, command),
+            CommandKind.SetImportPolicy => SetImportPolicy(world, command),
+            CommandKind.ClearImportPolicy => ClearImportPolicy(world, command),
+            CommandKind.SetStandingOrder => SetStandingOrder(world, command),
+            CommandKind.HireForeign => HireForeign(world, command),
+            CommandKind.AddTradeRule or CommandKind.RemoveTradeRule
+                or CommandKind.MoveTradeRule => EditRules(world, command),
+            CommandKind.SetShiftHours => SetShiftHours(world, command),
             CommandKind.NameRepublic => NameRepublic(world, command),
             _ => Outcome.No("that is not something the republic can do yet"),
         };
+    }
+
+    /// <summary>
+    /// Call the gang off a site. They down tools where they stand and wait for
+    /// the office to send a bus.
+    /// </summary>
+    /// <remarks>
+    /// There is no way to make people appear back at the office — the same rule
+    /// that makes construction physical in the first place. It exists because a
+    /// site whose materials never arrive would otherwise hold its gang for ever,
+    /// and because the alternative — letting the simulation decide when a crew
+    /// has waited long enough — is a judgement about the player's plan that the
+    /// player should be making.
+    /// </remarks>
+    private static Outcome RecallCrew(World world, Command c)
+    {
+        var site = new Destination((DestinationKind)c.A, c.B, 0.0, 0.0);
+        var at = Systems.Where(world, site);
+        if (at is null)
+        {
+            return Outcome.No("there is no such site");
+        }
+
+        return world.Crews.Release(site, at.Value.X, at.Value.Y)
+            ? Outcome.Ok()
+            : Outcome.No("nobody is working that site");
+    }
+
+    /// <summary>
+    /// Say where sites buy materials the republic has not made.
+    /// </summary>
+    /// <remarks>
+    /// The crossing is checked here rather than when it is read, so a policy in
+    /// the world always names a post that exists. A typo would otherwise sit in a
+    /// save quietly importing nothing, which looks exactly like a republic that
+    /// cannot afford anything.
+    /// <b>This shortens no build.</b> It answers where a tonne of brick comes
+    /// from in a republic with no brickworks; the goods land at the post and your
+    /// lorries still have to fetch them.
+    /// </remarks>
+    private static Outcome SetImportPolicy(World world, Command c)
+    {
+        if (c.C >= 0 && world.Frontier.Get(c.C) is null)
+        {
+            return Outcome.No($"there is no frontier post {c.C}");
+        }
+
+        var crossing = c.C < 0 ? (int?)null : c.C;
+        if (c.Flag)
+        {
+            world.BuildPolicy.SetSite(new Destination((DestinationKind)c.A, c.B, 0.0, 0.0), crossing);
+        }
+        else
+        {
+            world.BuildPolicy.SetGlobal(crossing);
+        }
+
+        return Outcome.Ok();
+    }
+
+    private static Outcome ClearImportPolicy(World world, Command c) =>
+        world.BuildPolicy.ClearSite(new Destination((DestinationKind)c.A, c.B, 0.0, 0.0))
+            ? Outcome.Ok()
+            : Outcome.No("this site already follows the republic's import policy");
+
+    /// <summary>
+    /// Tell a terminal or a distribution office what to keep on hand.
+    /// </summary>
+    /// <remarks>
+    /// <b>The command that makes a station worth building.</b> Nothing in the
+    /// republic wants to deliver to one otherwise: a station consumes nothing and
+    /// sells nothing, so the freight ranking has no reason to look at it. A
+    /// standing order gives it a demand of its own and the ordinary ranking does
+    /// the rest.
+    /// </remarks>
+    private static Outcome SetStandingOrder(World world, Command c)
+    {
+        var t = world.Tables;
+        if (c.B < 0 || c.B >= t.Resources.Length)
+        {
+            return Outcome.No("the republic does not trade in that");
+        }
+
+        var i = world.Buildings.IndexOf(c.A);
+        if (i < 0)
+        {
+            return Outcome.No("there is no such building");
+        }
+
+        var kind = world.Buildings.KindAt(i);
+        if (!t.BStoresToOrder[kind])
+        {
+            return Outcome.No(
+                "only a terminal, a store or a distribution office keeps goods to order");
+        }
+
+        // A tank is not a coal bunker, and this is where the player is told so.
+        // Letting the order stand and quietly never fill is the whole difference
+        // between a rule and a mystery: the intake capacity would be zero for
+        // ever and the panel would show an order nothing was ever sent for.
+        if (!world.Buildings.Takes(i, c.B))
+        {
+            return Outcome.No($"{t.ResourceNames[c.B]} will not go in a {t.BName[kind]}");
+        }
+
+        var holds = world.Buildings.StorageCap(i);
+        if (c.Amount > holds)
+        {
+            return Outcome.No($"asked for {c.Amount:0} t where only {holds:0} t will fit");
+        }
+
+        world.Buildings.Orders.Set(i, c.B, c.Amount);
+        return Outcome.Ok();
+    }
+
+    /// <summary>
+    /// Hire builders from a bloc, for one Construction Office.
+    /// </summary>
+    /// <remarks>
+    /// One transaction at a genuine boundary: the fee leaves and the workers set
+    /// out, and neither happens without the other. <b>They arrive at a frontier
+    /// post, not in the yard</b> — a bus has to go and fetch them, over the roads
+    /// the republic has built, exactly as a crew coming off a finished site does.
+    /// </remarks>
+    private static Outcome HireForeign(World world, Command c)
+    {
+        var t = world.Tables;
+        if (!Enum.IsDefined((Market)c.A))
+        {
+            return Outcome.No("there is no such bloc to hire from");
+        }
+
+        var market = (Market)c.A;
+        if (c.C <= 0)
+        {
+            return Outcome.No("no workers were asked for");
+        }
+
+        var i = world.Buildings.IndexOf(c.B);
+        if (i < 0)
+        {
+            return Outcome.No("there is no such building");
+        }
+
+        if (t.BuildingIds[world.Buildings.KindAt(i)] != "ConstructionOffice"
+            || !world.Buildings.IsBuilt(i))
+        {
+            return Outcome.No("builders are hired to a Construction Office");
+        }
+
+        // They arrive at their own bloc's post, which is what makes hiring from
+        // the far bloc a haulage decision rather than a dropdown — the same
+        // geography a dollar already has.
+        var post = world.Frontier.NearestCrossing(
+            world.Buildings.XAt(i), world.Buildings.YAt(i), market);
+        if (post is null)
+        {
+            return Outcome.No(
+                $"the {market} holds no frontier post here, so its workers have nowhere to arrive");
+        }
+
+        var fee = c.C * t.HiringFee;
+        var held = world.Treasury.Of(market);
+        if (held + 1e-9 < fee)
+        {
+            return Outcome.No(
+                $"placing them costs {fee:0} and the treasury holds {held:0}");
+        }
+
+        world.Treasury.Take(market, fee);
+        world.Crews.Hire(c.B, market, c.C);
+        world.Migration.Arrive(post.Value.X, post.Value.Y, c.C, world.Clock.DayIndex);
+        return Outcome.Ok();
+    }
+
+    /// <summary>
+    /// Edit the standing instructions to the customs houses.
+    /// </summary>
+    /// <remarks>
+    /// Moving a rule is its own command rather than a re-send of the whole
+    /// policy, because <b>the order is the decision</b>: when throughput or money
+    /// runs short the first rule is served first, and that ranking is the
+    /// player's to make.
+    /// </remarks>
+    private static Outcome EditRules(World world, Command c)
+    {
+        var rules = world.TradeRules;
+
+        if (c.Kind == CommandKind.AddTradeRule)
+        {
+            if (c.A < 0 || c.A >= world.Tables.Resources.Length)
+            {
+                return Outcome.No("the republic does not trade in that");
+            }
+
+            if (!Enum.IsDefined((Market)c.B) || !Enum.IsDefined((TradeAction)c.C))
+            {
+                return Outcome.No("that is not an instruction a customs house takes");
+            }
+
+            rules.Add(new TradeRule(c.A, (Market)c.B, (TradeAction)c.C));
+            return Outcome.Ok();
+        }
+
+        if (c.A < 0 || c.A >= rules.Count)
+        {
+            return Outcome.No(NoSuchRule(c.A, rules.Count));
+        }
+
+        if (c.Kind == CommandKind.RemoveTradeRule)
+        {
+            rules.RemoveAt(c.A);
+            return Outcome.Ok();
+        }
+
+        if (c.B < 0 || c.B >= rules.Count)
+        {
+            return Outcome.No(NoSuchRule(c.B, rules.Count));
+        }
+
+        var rule = rules[c.A];
+        rules.RemoveAt(c.A);
+        rules.Insert(c.B, rule);
+        return Outcome.Ok();
+
+        static string NoSuchRule(int index, int count) => count switch
+        {
+            0 => "there are no trade rules to change",
+            1 => $"there is only one trade rule, and it is not {index}",
+            _ => $"there is no trade rule {index}; there are {count}",
+        };
+    }
+
+    /// <summary>
+    /// Set or clear an exception to the national working day.
+    /// </summary>
+    /// <remarks>
+    /// <i>"Doctors work twelve, but at this hospital fourteen."</i> A rule about
+    /// a kind covers every such building including ones not yet built; a rule
+    /// about one building beats it. Clearing falls back to the rule above rather
+    /// than freezing whatever number was in force.
+    /// </remarks>
+    private static Outcome SetShiftHours(World world, Command c)
+    {
+        var t = world.Tables;
+        double? hours = c.Flag ? c.Amount : null;
+
+        if (hours is not null
+            && (double.IsNaN(hours.Value) || hours < t.MinHours || hours > t.MaxHours))
+        {
+            return Outcome.No(
+                $"a shift of {hours:0} hours is not one the republic will roster; "
+                + $"between {t.MinHours:0} and {t.MaxHours:0}");
+        }
+
+        if (c.A >= 0)
+        {
+            if (c.A >= t.BuildingIds.Length)
+            {
+                return Outcome.No("the republic does not build that");
+            }
+
+            if (hours is null && world.Buildings.Shifts.OfKind(c.A) is null)
+            {
+                return Outcome.No("those buildings keep the standard working day already");
+            }
+
+            world.Buildings.SetKindHours(c.A, hours);
+            return Outcome.Ok();
+        }
+
+        if (world.Buildings.IndexOf(c.B) < 0)
+        {
+            return Outcome.No("there is no such building");
+        }
+
+        if (hours is null && world.Buildings.Shifts.OfBuilding(c.B) is null)
+        {
+            return Outcome.No("that building keeps the standard working day already");
+        }
+
+        world.Buildings.SetBuildingHours(c.B, hours);
+        return Outcome.Ok();
     }
 
     private static Outcome Place(World world, Command c)
@@ -202,6 +555,14 @@ public static class Commands
         ArgumentNullException.ThrowIfNull(world);
         var t = world.Tables;
 
+        // An id nothing answers to is refused rather than indexed. A command
+        // arrives from outside the simulation, so a nonsense one is an input to
+        // decline and never a reason to bring the republic down.
+        if (kind < 0 || kind >= t.BuildingIds.Length)
+        {
+            return "the republic does not build that";
+        }
+
         if (!world.Terrain.Contains(x, y))
         {
             return "that is outside the republic";
@@ -243,6 +604,11 @@ public static class Commands
     private static Outcome OrderRoad(World world, Command c)
     {
         var t = world.Tables;
+        if (c.A < 0 || c.A >= t.Grades.Length)
+        {
+            return Outcome.No("the republic does not lay that kind of way");
+        }
+
         var refusal = world.RoadWorks.Order(
             c.X, c.Y, c.ToX, c.ToY, c.A, c.Flag,
             world.Buildings.Commissioned, world.Terrain, out var site);
@@ -271,6 +637,11 @@ public static class Commands
     /// </remarks>
     private static Outcome OrderLine(World world, Command c)
     {
+        if (c.A < 0 || c.A >= world.Tables.Utilities.Length)
+        {
+            return Outcome.No("the republic does not string that kind of line");
+        }
+
         var refusal = world.LineWorks.Order(
             c.A, c.X, c.Y, c.ToX, c.ToY, world.Buildings.Commissioned, out var site);
 
@@ -360,6 +731,11 @@ public static class Commands
 
     private static Outcome TakeLoan(World world, Command c)
     {
+        if (!Enum.IsDefined((Market)c.A))
+        {
+            return Outcome.No("there is no such bloc");
+        }
+
         var market = (Market)c.A;
         var refusal = world.Loans.Take(market, c.B, world.Clock.DayIndex, out var loan);
 
@@ -380,6 +756,11 @@ public static class Commands
 
     private static Outcome RepayLoan(World world, Command c)
     {
+        if (!Enum.IsDefined((Market)c.A))
+        {
+            return Outcome.No("there is no such bloc");
+        }
+
         var market = (Market)c.A;
         var refusal = world.Loans.Repay(market, c.Amount, world.Treasury, out _);
 

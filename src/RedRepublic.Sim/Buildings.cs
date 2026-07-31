@@ -456,6 +456,9 @@ public sealed class Buildings
         return Math.Max(StorageCap(i), needed);
     }
 
+    /// <summary>Whether a building of this kind will take goods of this shape.</summary>
+    public bool Takes(int i, int resource) => Admits(_kind[i], _t.ResourceForm[resource]);
+
     private bool Admits(int kind, int form)
     {
         foreach (var f in _t.Admits.KeysOf(kind))

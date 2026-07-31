@@ -1288,7 +1288,7 @@ public static class Systems
     /// which is why every caller has to be able to be told there is nowhere to go
     /// rather than being handed a plausible pair of coordinates.
     /// </remarks>
-    private static (double X, double Y)? Where(World world, Destination to)
+    internal static (double X, double Y)? Where(World world, Destination to)
     {
         switch (to.Kind)
         {
