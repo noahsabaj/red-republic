@@ -98,6 +98,12 @@ var _lines_shown := -1
 var _ways_shown := -1
 ## Whether a capture run should stand the fixture town up first, so there is
 ## something in the frame to look at.
+const VehicleArt := preload("res://vehicle_art.gd")
+
+## Which body index each vehicle kind is drawn with, and the node per body.
+var _vehicle_body_of: Array[int] = []
+var _vehicle_nodes: Array[MultiMeshInstance3D] = []
+
 var _fixture_town := false
 var _shot_path := ""
 var _shot_after := 90
@@ -205,15 +211,15 @@ func _ready() -> void:
 ## otherwise take the whole fleet off the map, and a republic whose lorries have
 ## vanished looks exactly like a republic whose lorries are not being
 ## dispatched -- which is a bug this repository has actually had.
-func _vehicle_mesh() -> Mesh:
+func _vehicle_mesh(body: String) -> Mesh:
 	var packed: PackedScene = load("res://models/vehicles.glb")
 	if packed != null:
 		var root := packed.instantiate()
-		var found := _first_mesh_named(root, "lorry")
+		var found := _first_mesh_named(root, body)
 		root.queue_free()
 		if found != null:
 			return found
-	push_warning("no lorry body in models/vehicles.glb — drawing boxes")
+	push_warning("no %s body in models/vehicles.glb — drawing boxes" % body)
 	var box := BoxMesh.new()
 	box.size = Vector3(6.0, 3.0, 2.5)
 	var mat := StandardMaterial3D.new()
@@ -1452,16 +1458,33 @@ func _build_instance_meshes() -> void:
 	# watched from, the thing that says what a vehicle is is its outline, and
 	# there was none to read.
 	#
-	# `tools/build_vehicles.py` makes the bodies; this takes the lorry, which is
-	# what nearly everything on a road is. The other three bodies in the file are
-	# there for when `marshal::vehicle_positions` carries a kind as well as a
-	# position -- it sends flat xyz triples today, so the shell cannot yet tell a
-	# coach from a tipper and drawing them all as coaches would be a worse lie
-	# than drawing them all as lorries.
-	var vm := MultiMesh.new()
-	vm.transform_format = MultiMesh.TRANSFORM_3D
-	vm.mesh = _vehicle_mesh()
-	vehicles_node.multimesh = vm
+	# `tools/build_vehicles.py` makes the bodies and `vehicle_art.gd` says which
+	# kind wears which. `marshal::vehicle_positions` carries the kind and the
+	# heading alongside the position, so a coach is a coach and a lorry points
+	# the way it is going -- it sent bare xyz triples until this commit, which is
+	# why every vehicle was one box facing north.
+	# One `MultiMesh` per body, the same shape the buildings use. `vehicles_node`
+	# keeps its own (unused) multimesh empty and carries the bodies as children,
+	# so nothing that reaches for the node by name breaks.
+	VehicleArt.check(republic.vehicle_kind_names())
+	var bodies := VehicleArt.bodies()
+	_vehicle_body_of.clear()
+	_vehicle_nodes.clear()
+	var order: Array[String] = []
+	for name in republic.vehicle_kind_names():
+		var body: String = bodies.get(String(name), VehicleArt.LORRY)
+		if not order.has(body):
+			order.append(body)
+		_vehicle_body_of.append(order.find(body))
+	for body in order:
+		var node := MultiMeshInstance3D.new()
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = _vehicle_mesh(body)
+		node.multimesh = mm
+		node.name = "Body_%s" % body
+		vehicles_node.add_child(node)
+		_vehicle_nodes.append(node)
 
 	# Settlers standing at a frontier post. A marker rather than figures: what
 	# matters is that they are somewhere on the map that a coach has to reach,
@@ -1507,14 +1530,34 @@ func _refresh_buildings() -> void:
 
 
 func _refresh_vehicles() -> void:
+	# `[x, y, z, kind, heading]` per vehicle. Sorted into one buffer per body,
+	# because a `MultiMesh` draws one mesh and a fleet is thirteen kinds.
 	var flat: PackedFloat32Array = republic.vehicle_positions()
-	var count := flat.size() / 3
-	var mm := vehicles_node.multimesh
-	if mm.instance_count != count:
-		mm.instance_count = count
+	var stride := 5
+	var count := flat.size() / stride
+	var per_body: Array[Array] = []
+	for _i in _vehicle_nodes.size():
+		per_body.append([])
 	for i in count:
-		var at := Vector3(flat[i * 3], flat[i * 3 + 1] + 1.5, flat[i * 3 + 2])
-		mm.set_instance_transform(i, Transform3D(Basis.IDENTITY, at))
+		var o := i * stride
+		var kind := int(flat[o + 3])
+		var slot: int = _vehicle_body_of[kind] if kind < _vehicle_body_of.size() else 0
+		if slot < per_body.size():
+			per_body[slot].append(o)
+
+	for slot in _vehicle_nodes.size():
+		var mm: MultiMesh = _vehicle_nodes[slot].multimesh
+		var rows: Array = per_body[slot]
+		if mm.instance_count != rows.size():
+			mm.instance_count = rows.size()
+		for n in rows.size():
+			var o: int = rows[n]
+			# The bodies are modelled nose along +X and standing on z=0, so the
+			# wheels meet the road without the 1.5 m lift the old box needed to
+			# stop it being buried to its middle.
+			var at := Vector3(flat[o], flat[o + 1], flat[o + 2])
+			var basis := Basis(Vector3.UP, flat[o + 4])
+			mm.set_instance_transform(n, Transform3D(basis, at))
 
 
 ## Settlers standing at the frontier, waiting for a coach.

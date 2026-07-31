@@ -140,13 +140,28 @@ fn transforms_of(world: &World, only: Option<BuildingKind>) -> PackedFloat32Arra
     out
 }
 
-/// Every vehicle's position at a fractional tick, as `[x, y, z]` triples.
+/// Floats per vehicle in [`vehicle_positions`].
+pub const VEHICLE_STRIDE: usize = 5;
+
+/// Every vehicle at a fractional tick, as `[x, y, z, kind, heading]`.
 ///
 /// `now` is an absolute tick with a fraction — `world.clock().ticks()` plus how
 /// far into the current tick real time has carried. [`Journey::position_at`] is
 /// a pure function of `(plan, time)`, so this interpolates smoothly at 60 fps
 /// while the simulation advances only in whole ticks, and every game speed
 /// draws the same world.
+///
+/// **`kind` and `heading` are why this is not three floats any more.** It sent
+/// bare positions, so the shell could not tell a coach from a tipper and drew
+/// every vehicle in the republic as the same box pointing the same way. A fleet
+/// of thirteen kinds rendered as one silhouette is a fact the simulation knows
+/// and the player cannot see, and a lorry sliding sideways down a road is worse
+/// than a box, because a box has no front to be wrong about.
+///
+/// `kind` indexes [`red_republic_sim::fleet::VEHICLES`]. `heading` is radians
+/// about Y, taken from where the vehicle is going rather than where it is —
+/// sampled a moment ahead on its own journey, so it is the direction of travel
+/// and not a stored field the simulation would have to keep true.
 ///
 /// [`Journey::position_at`]: red_republic_sim::Journey::position_at
 pub fn vehicle_positions(world: &World, now: f64) -> PackedFloat32Array {
@@ -161,6 +176,30 @@ pub fn vehicle_positions(world: &World, now: f64) -> PackedFloat32Array {
         out.push(p.x);
         out.push(p.y);
         out.push(p.z);
+        out.push(
+            red_republic_sim::fleet::VEHICLES
+                .iter()
+                .position(|d| d.kind == v.def().kind)
+                .unwrap_or_default() as f32,
+        );
+        // A quarter-second ahead. Far enough that the two samples differ on a
+        // straight run, near enough that a corner does not swing the body round
+        // before it reaches it. A parked vehicle gets 0.0 and keeps it, which is
+        // right: it is pointing wherever it stopped.
+        let heading = v
+            .journey
+            .as_ref()
+            .map(|journey| {
+                let ahead = journey.position_at(now + 0.25);
+                let (dx, dz) = (ahead.x.0 - at.x.0, ahead.y.0 - at.y.0);
+                if dx.abs() + dz.abs() < 1e-6 {
+                    0.0
+                } else {
+                    (dx).atan2(dz)
+                }
+            })
+            .unwrap_or(0.0);
+        out.push(heading as f32);
     }
     out
 }

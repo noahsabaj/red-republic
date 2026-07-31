@@ -1144,6 +1144,21 @@ impl Republic {
         }
     }
 
+    /// Every vehicle kind the republic can own, in `VEHICLES` order.
+    ///
+    /// The index a `vehicle_positions` row carries is a position in this list,
+    /// and `vehicle_art.gd` keys off the names rather than the indices: an index
+    /// is a position in a Rust table, so a reordering there would silently
+    /// repaint the fleet, where a rename fails the art check and says so.
+    #[func]
+    fn vehicle_kind_names(&self) -> PackedStringArray {
+        let mut out = PackedStringArray::new();
+        for def in red_republic_sim::fleet::VEHICLES {
+            out.push(def.name);
+        }
+        out
+    }
+
     /// Every grade the republic can lay, in table order:
     /// `name`, then `speed_kph|labour_per_km|medium_index` for each.
     #[func]
