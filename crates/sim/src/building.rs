@@ -1096,8 +1096,42 @@ pub struct Building {
     /// this reaches its def's `labour`, and a site produces nothing, employs
     /// nobody, and houses nobody.
     pub work_done: f64,
+    /// The bloc whose firm is building this, if it was contracted out.
+    ///
+    /// **This is how a republic gets its first building.** A blank map has no
+    /// Construction Office, no crews and no materials, so nothing the republic
+    /// owns can raise anything — a contracted site needs none of them. It
+    /// advances on its own and bills the treasury daily in that bloc's own
+    /// currency, which with a rouble-only grant means the Eastern Bloc builds
+    /// your republic until you have earned otherwise.
+    ///
+    /// `None` on everything the republic builds itself, which after the opening
+    /// should be nearly everything: contractors are several times the price of
+    /// your own crews, and that difference is what makes a Construction Office
+    /// worth having.
+    pub contractor: Option<crate::trade::Market>,
     /// The body this building works, once sited.
     pub tapped: Option<crate::geology::DepositId>,
+    /// How many crews the player wants this place to run, `0..=MAX_SHIFTS`.
+    ///
+    /// **The only field on a building besides `orders` that is an instruction
+    /// rather than a consequence**, and the reason night means anything. One
+    /// shift is the default and is what every authored rate in the table
+    /// describes; three is the whole day, three times the output and three times
+    /// the people. Zero mothballs the place — a real thing to want when a
+    /// factory is starving its neighbours of labour it cannot use.
+    ///
+    /// Meaningless on anything with no jobs: a house has no roster.
+    pub shifts: u8,
+    /// How long one of those shifts is, in hours — set from
+    /// [`crate::shifts::ShiftPolicy`], never authored and never edited directly.
+    ///
+    /// Cached here because twenty-odd places ask how much work a building does
+    /// today and threading a policy through all of them would buy nothing. It
+    /// cannot drift from the policy: both live in [`Buildings`], placement
+    /// resolves this in the same call that creates the building, and a policy
+    /// change walks the list in the same call that changes it.
+    pub hours: f64,
     /// What the player has told this place to keep on hand, per resource.
     ///
     /// **Authored by the player, never by a system** — the one field on a
@@ -1175,18 +1209,77 @@ impl Building {
         }
     }
 
-    /// How much of its work it can do, `0.0..=1.0`, from staffing alone.
+    /// How many people this place wants across all its shifts.
     ///
-    /// Other factors (power, inputs, machinery) multiply this — each is a
-    /// separate limiter and they are deliberately not folded together, so a
-    /// stalled building can always say *which* thing stalled it.
+    /// The authored `workers` is **one crew**, so a building running three
+    /// shifts wants three crews. This is what the labour pass fills and what
+    /// [`Building::staffing`] measures against.
+    pub fn jobs(&self) -> u32 {
+        self.def().workers * u32::from(self.shifts)
+    }
+
+    /// Hours a day this place is manned, at the roster it has been given.
+    ///
+    /// Capped at a day, because three twelve-hour shifts is still one day. That
+    /// cap is the reason a long shift and an extra crew are different decisions
+    /// rather than two names for the same multiplier.
+    pub fn hours_covered(&self) -> f64 {
+        (f64::from(self.shifts) * self.hours).min(24.0)
+    }
+
+    /// How much of a standard working day this place covers.
+    ///
+    /// `1.0` is one eight-hour shift, which is what every authored rate in the
+    /// building table means — so a republic that never touches a roster
+    /// produces exactly what it produced before shifts existed.
+    pub fn day_share(&self) -> f64 {
+        self.hours_covered() / crate::shifts::STANDARD_HOURS
+    }
+
+    /// How full the roster is, `0.0..=1.0`.
+    ///
+    /// **A fill fraction, not an amount of work** — see [`Building::activity`]
+    /// for that. This is the right question for anything that asks *whether*
+    /// somewhere is manned, or that is capped by a physical establishment: a
+    /// garage with three shifts of drivers still has only as many lorries as it
+    /// owns.
     pub fn staffing(&self) -> f64 {
-        let jobs = self.def().workers;
+        let jobs = self.jobs();
         if jobs == 0 {
-            1.0
-        } else {
-            (f64::from(self.staff) / f64::from(jobs)).clamp(0.0, 1.0)
+            // No jobs at all — a house, a store, a pylon. It has no roster and
+            // is never short-staffed. A workplace the player has closed is a
+            // different thing and answers zero.
+            return if self.def().workers == 0 { 1.0 } else { 0.0 };
         }
+        (f64::from(self.staff) / f64::from(jobs)).clamp(0.0, 1.0)
+    }
+
+    /// Whether somebody working here travels in the dark.
+    ///
+    /// **A threshold rather than a daylight model, and that is deliberate.** A
+    /// working period longer than this cannot fit inside daylight in any climate
+    /// the republic is posted to — two shifts is sixteen hours and a single long
+    /// one is twelve or more — so no calendar, latitude or sunrise table is
+    /// needed to answer the only question the labour pass actually asks. A place
+    /// running one ordinary day shift never travels in the dark, which is what
+    /// keeps street lighting a thing a republic grows into rather than a tax on
+    /// the opening.
+    pub fn works_after_dark(&self) -> bool {
+        self.hours_covered() > crate::shifts::DAYLIGHT_HOURS
+    }
+
+    /// How much work this place does today, where `1.0` is one fully-staffed
+    /// standard shift — what every authored rate describes.
+    ///
+    /// Can exceed `1.0`, and that is the whole point: a works running three
+    /// crews round the clock makes three times as much as one running a single
+    /// day shift, and it needed three times the people to do it.
+    ///
+    /// Other factors (power, inputs, machinery, weather) multiply this — each is
+    /// a separate limiter and they are deliberately not folded together, so a
+    /// stalled building can always say *which* thing stalled it.
+    pub fn activity(&self) -> f64 {
+        self.staffing() * self.day_share()
     }
 
     /// The rectangle it occupies: `(min_x, min_y, max_x, max_y)` in metres.
@@ -1233,6 +1326,22 @@ impl Building {
     /// whose construction needs more brick than it will ever store could never
     /// be built at all.
     pub fn intake_capacity(&self, resource: Resource) -> Tonnes {
+        // A contracted site wants nothing delivered. The firm building it
+        // brings its own materials — that is a large part of what the money
+        // buys — so a republic hauling bricks to one would be paying twice and
+        // sending lorries it needs elsewhere.
+        //
+        // Here rather than in the dispatcher for the reason everything else
+        // about intake is here: every part of freight reads this one answer, so
+        // what is ranked, what a lorry is told to load, and what a lorry already
+        // on its way counts against can never disagree.
+        //
+        // Found through the write-set guard, and the symptom was three systems
+        // away from the cause: contracted sites pulled the fleet off the town's
+        // resupply, contentment fell, and `demography` stopped emitting `Birth`.
+        if self.contractor.is_some() && !self.is_built() {
+            return Tonnes::ZERO;
+        }
         if self.is_built() {
             // A tank will not take coal, and it says so here rather than in the
             // dispatcher: every part of freight reads this one answer, so what
@@ -1326,6 +1435,16 @@ impl std::error::Error for PlacementError {}
 pub struct Buildings {
     list: Vec<Building>,
     next_id: u32,
+    /// Working hours, nationally and by exception.
+    ///
+    /// **Here rather than beside the other player policies on `World`, and that
+    /// is deliberate.** Every building carries the resolved answer in
+    /// [`Building::hours`]; keeping the rule in the same structure as the
+    /// buildings means placement and re-rostering are the same call as the thing
+    /// that invalidates them, so the two can never be seen apart. Somewhere else
+    /// it would be a cache needing a guard.
+    #[serde(default)]
+    shifts: crate::shifts::ShiftPolicy,
 }
 
 impl Buildings {
@@ -1333,6 +1452,49 @@ impl Buildings {
         Self {
             list: Vec::new(),
             next_id: 1,
+            shifts: crate::shifts::ShiftPolicy::new(),
+        }
+    }
+
+    /// What the republic has decided about working hours.
+    pub fn shift_policy(&self) -> &crate::shifts::ShiftPolicy {
+        &self.shifts
+    }
+
+    /// Set the national standard, and re-roster everything it reaches.
+    pub fn set_national_hours(&mut self, hours: f64) {
+        self.shifts.set_national(hours);
+        self.reroster();
+    }
+
+    /// Set — or with `None` clear — the rule for a category of workplace.
+    pub fn set_kind_hours(&mut self, kind: BuildingKind, hours: Option<f64>) {
+        self.shifts.set_kind(kind, hours);
+        self.reroster();
+    }
+
+    /// Set — or clear — the exception for one building.
+    pub fn set_building_hours(&mut self, id: BuildingId, hours: Option<f64>) {
+        self.shifts.set_building(id, hours);
+        self.reroster();
+    }
+
+    /// How many crews a building runs. Clamped rather than refused; the command
+    /// carrying it says why when a player asks for more than exists.
+    pub fn set_shifts(&mut self, id: BuildingId, shifts: u8) {
+        if let Some(b) = self.get_mut(id) {
+            b.shifts = shifts.min(crate::shifts::MAX_SHIFTS);
+        }
+    }
+
+    /// Push the policy back out onto every building.
+    ///
+    /// Cheap and total rather than clever and partial: a republic has hundreds
+    /// of buildings and this runs only when a player edits a rule, so working
+    /// out which subset a change touched would buy nothing and could be wrong.
+    fn reroster(&mut self) {
+        for b in &mut self.list {
+            b.hours = self.shifts.hours_for(b.kind, b.id);
         }
     }
 
@@ -1407,7 +1569,10 @@ impl Buildings {
             drink: 0.0,
             content: crate::wellbeing::Contentment::NOTHING,
             work_done: 0.0,
+            contractor: None,
             tapped: None,
+            shifts: 1,
+            hours: crate::shifts::STANDARD_HOURS,
             orders: Stock::EMPTY,
         };
         if self.list.iter().any(|b| b.overlaps(&candidate)) {
@@ -1449,7 +1614,14 @@ impl Buildings {
             drink: 0.0,
             content: crate::wellbeing::Contentment::NOTHING,
             work_done: 0.0,
+            contractor: None,
             tapped,
+            // One crew is the default everywhere, and the policy decides how
+            // long that crew's day is — resolved here, in the same call that
+            // creates the building, so there is no moment at which a standing
+            // building disagrees with the rule that covers it.
+            shifts: 1,
+            hours: self.shifts.hours_for(kind, id),
             orders: Stock::EMPTY,
         });
         Ok(id)
@@ -1474,6 +1646,9 @@ impl Buildings {
     pub fn demolish(&mut self, id: BuildingId) -> bool {
         let before = self.list.len();
         self.list.retain(|b| b.id != id);
+        // A rule about a building that no longer stands is a row in a panel
+        // pointing at nothing.
+        self.shifts.forget(id);
         self.list.len() != before
     }
 }
@@ -1621,7 +1796,10 @@ mod tests {
             drink: 0.0,
             content: crate::wellbeing::Contentment::NOTHING,
             work_done: BuildingKind::StorageTank.def().labour,
+            contractor: None,
             tapped: None,
+            shifts: 1,
+            hours: crate::shifts::STANDARD_HOURS,
             orders: {
                 // A standing order for both, so the refusal that follows is
                 // about form and not about an empty order book.
@@ -1641,6 +1819,7 @@ mod tests {
         // liquid.
         let site = Building {
             work_done: 0.0,
+            contractor: None,
             ..tank
         };
         assert!(

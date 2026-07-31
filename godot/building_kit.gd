@@ -50,19 +50,6 @@ static func assemble(
 	var body := Transform3D(Basis.from_scale(Vector3(width, height, depth)), Vector3.ZERO)
 	_append(st, parts.get("panel_wall"), body)
 
-	# A window band per storey, inset so it reads as a reveal rather than a
-	# stripe. Real height, never stretched -- a five-metre window is the fastest
-	# way to make a factory look like a toy.
-	var band: Mesh = parts.get("window_band")
-	if band != null and art.storeys > 0:
-		for i in int(art.storeys):
-			var y: float = (float(i) + 0.45) * art.storey_m
-			var t := Transform3D(
-				Basis.from_scale(Vector3(width * 1.004, 1.0, depth * 1.004)),
-				Vector3(0.0, y, 0.0)
-			)
-			_append(st, band, t)
-
 	var roof_name: String = ["roof_flat", "roof_pitch", "roof_sawtooth"][art.roof]
 	var roof_scale := Vector3(width, 1.0, depth)
 	if art.roof == Art.Roof.PITCH:
@@ -109,6 +96,32 @@ static func assemble(
 	mat.roughness = 0.88
 	mat.metallic = 0.35 if art.tone == Art.Tone.METAL else 0.0
 	mesh.surface_set_material(0, mat)
+
+	# **The windows are their own surface, and that is what makes them light up.**
+	# Masking emission inside the wall material would need a per-vertex channel
+	# that `_append` does not carry, and a MultiMesh's own per-instance colour
+	# already occupies the one that would have. A second surface costs one more
+	# draw call per kind and needs nothing carried at all.
+	#
+	# A window band per storey, inset so it reads as a reveal rather than a
+	# stripe. Real height, never stretched -- a five-metre window is the fastest
+	# way to make a factory look like a toy.
+	var band: Mesh = parts.get("window_band")
+	if band != null and art.storeys > 0:
+		var glass := SurfaceTool.new()
+		glass.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for i in int(art.storeys):
+			var y: float = (float(i) + 0.45) * art.storey_m
+			var t := Transform3D(
+				Basis.from_scale(Vector3(width * 1.004, 1.0, depth * 1.004)),
+				Vector3(0.0, y, 0.0)
+			)
+			_append(glass, band, t)
+		glass.generate_normals()
+		glass.commit(mesh)
+		var lit := ShaderMaterial.new()
+		lit.shader = load("res://windows.gdshader")
+		mesh.surface_set_material(mesh.get_surface_count() - 1, lit)
 	return mesh
 
 

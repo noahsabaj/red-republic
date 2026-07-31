@@ -59,6 +59,17 @@ class Look:
 	var tones: Dictionary
 	var tonemap_exposure: float
 	var contour_strength: float
+	## Colour grading, applied after the tonemapper. Small numbers: this is the
+	## last 5% of a look, and reaching for it to fix flat lighting is how you get
+	## a crushed, over-saturated image that still has no form in it.
+	var grade_brightness: float
+	var grade_contrast: float
+	var grade_saturation: float
+	## Share of the sky under cloud. Presentation only — this is emphatically not
+	## the weather the simulation models, which is a temperature and a
+	## precipitation figure per day and is read by heating demand and the ground,
+	## never by anything in here.
+	var cloud_cover: float
 
 
 ## C. Survey — the map Moscow drew, stood up in three dimensions.
@@ -85,17 +96,37 @@ static func current() -> Look:
 	}
 	l.road_dirt = Color(0.40, 0.35, 0.29)
 	l.road_paved = Color(0.34, 0.35, 0.37)
-	l.sun_colour = Color(0.92, 0.95, 1.0)
-	l.sun_energy = 1.15
-	l.sun_elevation = 62.0
-	l.sun_azimuth = 152.0
+	# A warm mid-morning sun rather than the near-overhead 62 degrees this used
+	# to sit at. That number was chosen against a renderer that drew no shadows,
+	# so nothing was lost by putting the sun where shadows would be shortest --
+	# and everything about how ground and buildings read depends on it now.
+	# Around 30 degrees is where a 15 m building lays down a shadow about 26 m
+	# long, which is what tells you it is a building and not a painted rectangle.
+	l.sun_colour = Color(1.0, 0.96, 0.90)
+	l.sun_energy = 1.6
+	l.sun_elevation = 30.0
+	l.sun_azimuth = 138.0
+	# Ambient now comes off the sky, so this is only the multiplier on it. The
+	# colour below is kept because the compatibility renderer has no sky ambient
+	# and falls back to it.
 	l.ambient_colour = Color(0.60, 0.66, 0.72)
-	l.ambient_energy = 0.75
-	l.sky_top = Color(0.30, 0.42, 0.55)
-	l.sky_horizon = Color(0.72, 0.79, 0.84)
+	l.ambient_energy = 0.35
+	# A real zenith is much deeper than this used to be. The old pair was two
+	# steps of the same pale blue, which is what a two-colour gradient sky needs
+	# to avoid banding and what a scattering sky does not.
+	l.sky_top = Color(0.11, 0.28, 0.58)
+	l.sky_horizon = Color(0.66, 0.76, 0.84)
 	l.ground_horizon = Color(0.40, 0.44, 0.45)
-	l.fog_colour = Color(0.72, 0.79, 0.84)
-	l.fog_density = 0.000011
+	l.fog_colour = Color(0.74, 0.80, 0.86)
+	# Per metre, and the old 0.000011 gave 3.2% at three kilometres while the
+	# comment above claimed 5-15%. That is not depth, it is nothing, and it is
+	# why the far side of the map read as hard as the near side.
+	#
+	# 0.00009 was the first correction and overshot: 24% at 3 km is a genuinely
+	# hazy day, which was invisible on flat-colour ground and drowned the far
+	# half of the map once the ground had detail worth seeing. 0.00005 is about
+	# 14% at 3 km — depth, with the distance still legible.
+	l.fog_density = 0.00005
 	l.grass = Color(0.42, 0.48, 0.35)
 	l.forest = Color(0.24, 0.34, 0.26)
 	l.rock = Color(0.55, 0.55, 0.53)
@@ -104,4 +135,10 @@ static func current() -> Look:
 	l.vehicle = Color(0.48, 0.17, 0.15)
 	l.tonemap_exposure = 1.0
 	l.contour_strength = 1.0
+	l.grade_brightness = 1.0
+	l.grade_contrast = 1.06
+	l.grade_saturation = 1.05
+	# Enough to break the sky up and cast some variety of light, not enough to
+	# make every screenshot overcast.
+	l.cloud_cover = 0.45
 	return l

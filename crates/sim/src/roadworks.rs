@@ -104,6 +104,14 @@ pub struct GradeDef {
     pub materials: &'static [(Resource, f64)],
     /// Builder-days per kilometre.
     pub labour: f64,
+    /// Whether this grade may be built with street lighting.
+    ///
+    /// **Paved only, and authored rather than matched on** — the same rule
+    /// every other property in this crate follows. Lamps want a kerb, a duct
+    /// and a cable, none of which go into a gravel track that traffic is going
+    /// to re-cut every spring. It is also what makes lighting a mid-game thing
+    /// without a rule saying so: paved needs asphalt needs a refinery.
+    pub lamps: bool,
 }
 
 /// The road table. First-pass balance, meant to be felt out against the
@@ -113,6 +121,28 @@ pub struct GradeDef {
 /// fortnight of one quarry's whole output — which is the point. Roads are the
 /// largest thing a small republic can decide to build, and the decision should
 /// hurt.
+/// What a kilometre of street lighting costs on top of the road under it.
+///
+/// **Deliberately shares no resource with any grade's own bill.** The site's
+/// bill is a flat list looked up with `find`, so a resource appearing twice
+/// would be a quantity silently halved — `lamps_do_not_double_up_a_grades_bill`
+/// is the guard, because the trap is invisible until somebody adds steel to a
+/// paved road.
+pub const LAMP_MATERIALS: &[(Resource, f64)] =
+    &[(Resource::Steel, 6.0), (Resource::Electronics, 1.5)];
+
+/// Builder-days per kilometre of lighting, on top of the road's own.
+pub const LAMP_LABOUR: f64 = 35.0;
+
+/// What a kilometre of lit street draws off the grid, in megawatts.
+///
+/// Small against a factory and not nothing across a town: twenty kilometres of
+/// lit road is 0.4 MW, which is a real share of a first power station. That is
+/// the intended shape — lighting the republic is affordable and it is not free,
+/// and a grid already at its limit puts the streets out first because the power
+/// system serves in commissioning order and the roads come last.
+pub const LAMP_MW_PER_KM: f64 = 0.02;
+
 pub const GRADES: &[GradeDef] = &[
     GradeDef {
         grade: Grade::Dirt,
@@ -121,6 +151,7 @@ pub const GRADES: &[GradeDef] = &[
         speed: Speed::from_kph(25.0),
         materials: &[],
         labour: 25.0,
+        lamps: false,
     },
     GradeDef {
         grade: Grade::Gravel,
@@ -129,6 +160,7 @@ pub const GRADES: &[GradeDef] = &[
         speed: Speed::from_kph(45.0),
         materials: &[(Resource::Gravel, 60.0)],
         labour: 70.0,
+        lamps: false,
     },
     // **Asphalt, and that is a gate rather than a price rise.** A paved road
     // used to be gravel and brick, which a republic has on day one — so the
@@ -144,6 +176,7 @@ pub const GRADES: &[GradeDef] = &[
         speed: Speed::from_kph(60.0),
         materials: &[(Resource::Gravel, 40.0), (Resource::Asphalt, 25.0)],
         labour: 140.0,
+        lamps: true,
     },
     // The most expensive thing a republic can order per kilometre, by a long
     // way, and slower than the tarmac it joins. That is deliberate on both
@@ -160,6 +193,7 @@ pub const GRADES: &[GradeDef] = &[
             (Resource::Gravel, 60.0),
         ],
         labour: 520.0,
+        lamps: false,
     },
     // A railway is roughly three gravel roads in materials and four in labour,
     // and it carries a hundred and twenty tonnes behind one driver. That is the
@@ -171,6 +205,7 @@ pub const GRADES: &[GradeDef] = &[
         speed: Speed::from_kph(80.0),
         materials: &[(Resource::Steel, 90.0), (Resource::Gravel, 140.0)],
         labour: 260.0,
+        lamps: false,
     },
     // The most expensive kilometre a republic can order, and deliberately: a
     // railway bridge is the decision that a river is not going to stop the
@@ -186,6 +221,7 @@ pub const GRADES: &[GradeDef] = &[
             (Resource::Gravel, 90.0),
         ],
         labour: 780.0,
+        lamps: false,
     },
     // Street track. Half a railway's steel and no earthworks, because it is
     // laid in a road somebody already built -- which is also why it is slow.
@@ -196,6 +232,7 @@ pub const GRADES: &[GradeDef] = &[
         speed: Speed::from_kph(30.0),
         materials: &[(Resource::Steel, 45.0), (Resource::Gravel, 40.0)],
         labour: 120.0,
+        lamps: false,
     },
     // The most expensive kilometre in the republic, and the only way that
     // crosses water without a bridge -- because it goes under the river rather
@@ -212,6 +249,7 @@ pub const GRADES: &[GradeDef] = &[
             (Resource::Machinery, 12.0),
         ],
         labour: 1_400.0,
+        lamps: false,
     },
 ];
 
@@ -252,6 +290,12 @@ pub enum RoadError {
     TooShort,
     /// One end is off the map, or on ground that will not take a road.
     Unbuildable,
+    /// Street lighting was asked for on a grade that cannot carry it.
+    ///
+    /// Refused rather than dropped, because a road silently built without the
+    /// lamps the player ordered is a night shift that cannot be staffed for a
+    /// reason nothing on the screen explains.
+    NoLampsOnThisGrade(Grade),
     /// The line crosses open water and this grade cannot.
     ///
     /// The refusal that makes a river a real division of a republic. Before it
@@ -268,6 +312,11 @@ pub enum RoadError {
 impl std::fmt::Display for RoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            RoadError::NoLampsOnThisGrade(grade) => write!(
+                f,
+                "street lighting wants a kerb and a duct, which {} has not got",
+                grade.def().name
+            ),
             RoadError::TooShort => write!(
                 f,
                 "a road shorter than {} m is not worth surveying",
@@ -302,6 +351,13 @@ pub struct RoadSite {
     /// Where this sits in the republic's commissioning order — see
     /// [`RoadWorks::order`].
     pub ordered: u64,
+    /// Whether this road is being built with street lighting.
+    ///
+    /// Refused on any grade whose [`GradeDef::lamps`] is false, so this is only
+    /// ever true on paved. It adds to the bill and to the builder-days, and the
+    /// finished segments carry it into the network.
+    #[serde(default)]
+    pub lamps: bool,
 }
 
 impl RoadSite {
@@ -313,30 +369,43 @@ impl RoadSite {
         self.grade.def()
     }
 
-    /// The whole bill of materials, in tonnes.
-    pub fn materials(&self) -> Vec<(Resource, Tonnes)> {
-        let km = self.length().as_km();
+    /// What one kilometre of this exact site costs, lamps included.
+    ///
+    /// The one place the lighting surcharge is applied, so the bill, the
+    /// shortfall, the delivery cap and the has-materials check can never
+    /// disagree about what a lit road is made of. An iterator rather than a
+    /// `Vec` because [`RoadSite::has_materials`] asks this of every site on
+    /// every tick and an allocation there was worth avoiding.
+    pub fn per_km(&self) -> impl Iterator<Item = (Resource, f64)> + '_ {
+        let lamps = self.lamps;
         self.def()
             .materials
             .iter()
-            .map(|&(resource, per_km)| (resource, Tonnes(per_km * km)))
+            .copied()
+            .chain(LAMP_MATERIALS.iter().copied().filter(move |_| lamps))
+    }
+
+    /// The whole bill of materials, in tonnes.
+    pub fn materials(&self) -> Vec<(Resource, Tonnes)> {
+        let km = self.length().as_km();
+        self.per_km()
+            .map(|(resource, per_km)| (resource, Tonnes(per_km * km)))
             .collect()
     }
 
     /// How much of one material it needs in total.
     pub fn material(&self, resource: Resource) -> Tonnes {
         let km = self.length().as_km();
-        self.def()
-            .materials
-            .iter()
+        self.per_km()
             .find(|(r, _)| *r == resource)
-            .map(|&(_, per_km)| Tonnes(per_km * km))
+            .map(|(_, per_km)| Tonnes(per_km * km))
             .unwrap_or(Tonnes::ZERO)
     }
 
     /// Builder-days the whole road needs.
     pub fn labour(&self) -> f64 {
-        self.def().labour * self.length().as_km()
+        let extra = if self.lamps { LAMP_LABOUR } else { 0.0 };
+        (self.def().labour + extra) * self.length().as_km()
     }
 
     /// Whether the materials for the work still to do are on hand.
@@ -348,10 +417,8 @@ impl RoadSite {
         // Deliberately not via `materials()`, which allocates: this is asked of
         // every site on every tick of the construction pass.
         let per_km = self.length().as_km() * (1.0 - self.progress());
-        self.def()
-            .materials
-            .iter()
-            .all(|&(r, q)| self.stock.get(r).0 + 1e-9 >= q * per_km)
+        self.per_km()
+            .all(|(r, q)| self.stock.get(r).0 + 1e-9 >= q * per_km)
     }
 
     /// How much of a material the site still has to be brought.
@@ -439,8 +506,12 @@ impl RoadWorks {
         from: Point,
         to: Point,
         grade: Grade,
+        lamps: bool,
         ordered: u64,
     ) -> Result<RoadSiteId, RoadError> {
+        if lamps && !grade.def().lamps {
+            return Err(RoadError::NoLampsOnThisGrade(grade));
+        }
         // **A bridge is worth surveying at any length, and a road is not.**
         // The minimum exists because a ten-metre road is a formality with no
         // segment in it; a ten-metre bridge is a real structure and the only
@@ -466,6 +537,7 @@ impl RoadWorks {
             stock: Stock::EMPTY,
             work_done: 0.0,
             ordered,
+            lamps,
         });
         Ok(id)
     }
@@ -477,6 +549,7 @@ impl RoadWorks {
 /// it, and merged into whatever junctions already stand at its ends so two
 /// roads ordered end to end become one network rather than two islands.
 pub fn open(roads: &mut Network, site: &RoadSite) {
+    let lamps = site.lamps;
     let speed = site.def().speed;
     let length = site.length();
     let steps = (length.0 / JUNCTION_SPACING.0).ceil().max(1.0) as u32;
@@ -491,7 +564,7 @@ pub fn open(roads: &mut Network, site: &RoadSite) {
         let next = roads.junction_at(along, JUNCTION_MERGE);
         // A junction that merged onto the one behind it adds no road.
         if next != previous && !roads.are_connected(previous, next) {
-            roads.connect(previous, next, speed);
+            roads.connect_lit(previous, next, speed, lamps);
         }
         previous = next;
     }
@@ -508,7 +581,7 @@ mod tests {
     fn site(grade: Grade, length: f64) -> RoadSite {
         let mut works = RoadWorks::new();
         let id = works
-            .order(at(0.0, 0.0), at(length, 0.0), grade, 0)
+            .order(at(0.0, 0.0), at(length, 0.0), grade, false, 0)
             .expect("long enough");
         works.remove(id).expect("just ordered")
     }
@@ -584,7 +657,7 @@ mod tests {
     fn a_road_too_short_to_be_a_road_is_refused() {
         let mut works = RoadWorks::new();
         assert_eq!(
-            works.order(at(0.0, 0.0), at(10.0, 0.0), Grade::Gravel, 0),
+            works.order(at(0.0, 0.0), at(10.0, 0.0), Grade::Gravel, false, 0),
             Err(RoadError::TooShort)
         );
         assert!(works.is_empty());
@@ -619,10 +692,10 @@ mod tests {
         let mut roads = Network::new();
         let mut works = RoadWorks::new();
         let first = works
-            .order(at(0.0, 0.0), at(600.0, 0.0), Grade::Gravel, 0)
+            .order(at(0.0, 0.0), at(600.0, 0.0), Grade::Gravel, false, 0)
             .unwrap();
         let second = works
-            .order(at(600.0, 0.0), at(600.0, 600.0), Grade::Gravel, 1)
+            .order(at(600.0, 0.0), at(600.0, 600.0), Grade::Gravel, false, 1)
             .unwrap();
         open(&mut roads, works.get(first).unwrap());
         let joined = roads.node_count();

@@ -56,7 +56,7 @@ static func path_for(file_name: String) -> String:
 ## Sorted by the file's modification time and not by in-game date, because "the
 ## one I was just playing" is what a player is looking for and two republics can
 ## sit on the same day.
-static func listing(republic: Node) -> Array:
+static func listing(republic: Republic) -> Array:
 	ensure_dir()
 	var out: Array = []
 	var dir := DirAccess.open(DIR)

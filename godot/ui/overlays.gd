@@ -65,7 +65,7 @@ const RAMPS := {
 ## field actually means, which is checked against the simulation's own source
 ## rather than inferred from the name. Getting that backwards is the kind of
 ## error that looks like a balance problem, and it happened once here already.
-static func field_texture(republic: Node, mode: int) -> ImageTexture:
+static func field_texture(republic: Republic, mode: int) -> ImageTexture:
 	if mode == Mode.NONE or mode == Mode.SURVEY:
 		return null
 	var cells: int = republic.lattice_cells()
@@ -98,7 +98,7 @@ static func field_texture(republic: Node, mode: int) -> ImageTexture:
 
 
 ## Apply a mode to the terrain material.
-static func apply(material: ShaderMaterial, republic: Node, mode: int, extent: float) -> void:
+static func apply(material: ShaderMaterial, republic: Republic, mode: int, extent: float) -> void:
 	material.set_shader_parameter("map_extent", extent)
 	if mode == Mode.NONE or mode == Mode.SURVEY:
 		material.set_shader_parameter("overlay_strength", 0.0)
@@ -123,7 +123,7 @@ static func apply(material: ShaderMaterial, republic: Node, mode: int, extent: f
 ## and drawing it as a smear would misrepresent the one thing the survey is for.
 ## Brightness carries how much is left against what was there, so a worked-out
 ## seam visibly fades rather than vanishing the day it empties.
-static func survey_mesh(republic: Node, terrain_height: Callable) -> ArrayMesh:
+static func survey_mesh(republic: Republic, terrain_height: Callable) -> ArrayMesh:
 	var flat: PackedFloat32Array = republic.deposits()
 	var stride := 8
 	var count := flat.size() / stride

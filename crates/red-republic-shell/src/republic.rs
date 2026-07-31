@@ -47,6 +47,15 @@ fn climate_at(index: i64) -> ClimateId {
         .unwrap_or(&ClimateId::Plains)
 }
 
+/// A bloc index from GDScript, clamped rather than trusted: 0 East, 1 West.
+fn market_at(index: i64) -> red_republic_sim::trade::Market {
+    if index <= 0 {
+        red_republic_sim::trade::Market::East
+    } else {
+        red_republic_sim::trade::Market::West
+    }
+}
+
 /// A shelf filter from the two indices the founding screen holds.
 fn filter(size: i64, climate: i64) -> ShelfFilter {
     let sizes = red_republic_sim::founding::SIZES;
@@ -142,7 +151,7 @@ impl Republic {
     /// `climate` indexes `ClimateId::ALL`: 0 plains, 1 taiga, 2 steppe,
     /// 3 maritime.
     #[func]
-    fn found(&mut self, seed: i64, extent_m: f64, climate: i64, settlers: i64) {
+    fn found(&mut self, seed: i64, extent_m: f64, climate: i64) {
         let climate = *ClimateId::ALL
             .get(climate.clamp(0, ClimateId::ALL.len() as i64 - 1) as usize)
             .unwrap_or(&ClimateId::Plains);
@@ -151,10 +160,39 @@ impl Republic {
             extent: Metres(extent_m),
             climate,
         });
-        let base = red_republic_sim::scenario::found(&mut world, settlers.max(0) as usize);
-        self.centre = base.centre;
+        // The map is empty. `found` picks the site and opens the rouble grant;
+        // every building after that is the player's to contract or to build.
+        self.centre = red_republic_sim::scenario::found(&mut world);
         self.world = Some(world);
         self.fraction = 0.0;
+    }
+
+    /// Stand the fixture town up on top of a founded republic — **for capture
+    /// runs only**.
+    ///
+    /// A blank map is what a player is given and it is also a republic with
+    /// nothing in it, so `--screen labour` on one renders a heading and an empty
+    /// table. That capture would pass while checking nothing: the layout bugs
+    /// this repository has actually shipped were all in rows, and a screen with
+    /// no rows has none to get wrong.
+    ///
+    /// `scenario::town` is the nineteen-building hand the founding used to
+    /// deal, kept as the fixture forty-odd simulation tests measure against.
+    /// Using it here is the same use — something to look at — and it is reached
+    /// only from `--screen`, never from a menu.
+    #[func]
+    fn found_fixture_town(&mut self, citizens: i64) {
+        if let Some(world) = self.world.as_mut() {
+            let base = red_republic_sim::scenario::town(world, citizens.max(0) as usize);
+            // A lit street through the middle of it, opened rather than ordered.
+            // **Here so that every capture of the fixture renders lamp
+            // geometry**, which is the only way a winding or culling mistake in
+            // it gets caught — this project has shipped two of those and both
+            // were invisible to every number. Paved lit road is four buildings
+            // deep in a chain the fixture has not built, so waiting for the crew
+            // would mean no capture ever saw one.
+            world.lay_demo_street(base.centre);
+        }
     }
 
     /// Run the republic forward whole days, as fast as the machine will.
@@ -173,14 +211,41 @@ impl Republic {
         }
     }
 
-    /// The settlers Moscow sends with a posting.
+    /// Run forward to a given hour of the day, going round midnight if need be.
     ///
-    /// Read from the simulation rather than copied into GDScript. The shell held
-    /// its own number once and the two drifted apart, which is how a founding
-    /// ended up with more jobs than people and a customs house nobody worked.
+    /// **A capture flag needs to be able to reach the state it captures.** The
+    /// day/night work landed with no way to render anything but the hour a run
+    /// happened to found at, which is the same shape as the sky work shipping
+    /// with the pitch pinned at fifty degrees: five screenshots taken at five
+    /// hours came back identical and would have been read as five hours looking
+    /// the same.
+    ///
+    /// Time is spent rather than skipped, exactly as [`Republic::advance_days`]
+    /// spends it. There is no way in this game to make time pass without it
+    /// passing.
     #[func]
-    fn founding_settlers(&self) -> i64 {
-        red_republic_sim::scenario::SETTLERS as i64
+    fn advance_to_hour(&mut self, hour: f64) {
+        let per_day = red_republic_sim::time::TICKS_PER_DAY;
+        let Some(world) = self.world.as_mut() else {
+            return;
+        };
+        let wanted = ((hour.clamp(0.0, 24.0) / 24.0) * per_day as f64) as u64 % per_day;
+        let now = world.clock().ticks() % per_day;
+        let ticks = (wanted + per_day - now) % per_day;
+        for _ in 0..ticks {
+            world.tick();
+        }
+    }
+
+    /// The grant a posting opens with, in roubles.
+    ///
+    /// Read from the simulation rather than copied into GDScript, for the reason
+    /// the settler count used to be: the shell held its own number once and the
+    /// two drifted apart. This replaces `founding_settlers`, which described a
+    /// hand of buildings and people that a republic is no longer given.
+    #[func]
+    fn founding_grant(&self) -> f64 {
+        red_republic_sim::scenario::GRANT_ROUBLES
     }
 
     /// Whether a republic has been founded yet.
@@ -297,9 +362,7 @@ impl Republic {
             // founding screen exactly as it was rather than half-founded.
             return GString::from(why.to_string().as_str());
         }
-        let base =
-            red_republic_sim::scenario::found(&mut world, red_republic_sim::scenario::SETTLERS);
-        self.centre = base.centre;
+        self.centre = red_republic_sim::scenario::found(&mut world);
         self.world = Some(world);
         self.fraction = 0.0;
         self.speed = 0;
@@ -513,6 +576,20 @@ impl Republic {
         }
     }
 
+    /// How far through the day it is, `0.0` midnight to `1.0` midnight.
+    ///
+    /// **Fractional, not whole ticks**, for the same reason [`Republic::now`]
+    /// is: at real-time speed the simulation advances once a minute, and a sun
+    /// that jumped once a minute would read as a strobe rather than as a day.
+    /// The renderer interpolates; the simulation does not care what o'clock it
+    /// is, because everything it decides about the dark it decides from a
+    /// roster.
+    #[func]
+    fn time_of_day(&self) -> f64 {
+        let ticks = red_republic_sim::time::TICKS_PER_DAY as f64;
+        (self.now() % ticks) / ticks
+    }
+
     // ---- Bulk reads. Packed arrays only; see `marshal`. --------------------
 
     #[func]
@@ -580,6 +657,39 @@ impl Republic {
         match &self.world {
             Some(w) => crate::terrain_mesh::surface(w.terrain()),
             None => VarArray::new(),
+        }
+    }
+
+    /// Where one species of tree stands, as a `MultiMesh` instance buffer.
+    ///
+    /// Sixteen floats an instance — a 3x4 transform then an RGBA colour — which
+    /// is exactly the layout `MultiMesh.buffer` takes, so the Godot side is one
+    /// assignment with no per-tree work. `species` and `species_count` partition
+    /// the same set of sites between the meshes, so three calls plant one wood
+    /// rather than three overlapping ones.
+    ///
+    /// Forest was a colour on the ground until this existed. The first attempt
+    /// scattered in GDScript by walking the finished mesh's 361,201 vertices and
+    /// hung a render for eight minutes.
+    #[func]
+    fn forest_buffer(
+        &self,
+        species: i64,
+        species_count: i64,
+        spacing_m: f64,
+        chunk: i64,
+        chunks_per_side: i64,
+    ) -> PackedFloat32Array {
+        match &self.world {
+            Some(w) => crate::terrain_mesh::forest_buffer(
+                w.terrain(),
+                species.max(0) as u32,
+                species_count.max(0) as u32,
+                Metres(spacing_m),
+                chunk.max(0) as u32,
+                chunks_per_side.max(1) as u32,
+            ),
+            None => PackedFloat32Array::new(),
         }
     }
 
@@ -1005,7 +1115,15 @@ impl Republic {
     /// Order a way of any grade — a road, a bridge or a railway. Empty string
     /// on success, or the reason it was refused.
     #[func]
-    fn order_way(&mut self, grade: i64, ax: f64, ay: f64, bx: f64, by: f64) -> GString {
+    fn order_way(
+        &mut self,
+        grade: i64,
+        ax: f64,
+        ay: f64,
+        bx: f64,
+        by: f64,
+        lamps: bool,
+    ) -> GString {
         let Some(world) = self.world.as_mut() else {
             return GString::from("no republic has been founded");
         };
@@ -1019,6 +1137,7 @@ impl Republic {
             from: Point::new(Metres(ax), Metres(ay)),
             to: Point::new(Metres(bx), Metres(by)),
             grade,
+            lamps,
         }) {
             Ok(_) => GString::from(""),
             Err(why) => GString::from(why.to_string().as_str()),
@@ -1032,6 +1151,87 @@ impl Republic {
         let mut out = PackedStringArray::new();
         for def in red_republic_sim::roadworks::GRADES {
             out.push(def.name);
+        }
+        out
+    }
+
+    /// What each grade costs and what it can do, in `GRADES` order:
+    /// `[speed_kph, builder_days_per_km, medium_index, takes_lamps]` per grade.
+    ///
+    /// `takes_lamps` is what greys out the lighting option, and it is read off
+    /// the authored table rather than decided in GDScript — a panel that made
+    /// its own rule about which roads take lamps would be a second copy of a
+    /// rule the simulation already refuses on.
+    #[func]
+    fn grade_facts(&self) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        for def in red_republic_sim::roadworks::GRADES {
+            out.push((def.speed.as_mps() * 3.6) as f32);
+            out.push(def.labour as f32);
+            out.push(
+                red_republic_sim::journey::Medium::ALL
+                    .iter()
+                    .position(|&m| m == def.carries)
+                    .unwrap_or_default() as f32,
+            );
+            out.push(if def.lamps { 1.0 } else { 0.0 });
+        }
+        out
+    }
+
+    /// How much road the republic has laid, in kilometres.
+    #[func]
+    fn road_length_km(&self) -> f64 {
+        self.world.as_ref().map_or(0.0, |w| {
+            w.network(red_republic_sim::journey::Medium::Road)
+                .total_length()
+                .as_km()
+        })
+    }
+
+    /// How many ways are ordered and not yet drivable.
+    #[func]
+    fn road_site_count(&self) -> i64 {
+        self.world
+            .as_ref()
+            .map_or(0, |w| w.roadworks().len() as i64)
+    }
+
+    /// Lit street: `[built_km, burning_km]`.
+    ///
+    /// Two numbers rather than one, because they mean different things to a
+    /// player: the first is what was paid for and the second is what is on. A
+    /// gap between them is a grid that has run short, which is a thing to fix
+    /// rather than a thing to build.
+    #[func]
+    fn lit_road_km(&self) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        if let Some(w) = &self.world {
+            let (built, alight) = w
+                .network(red_republic_sim::journey::Medium::Road)
+                .lit_length();
+            out.push(built.as_km() as f32);
+            out.push(alight.as_km() as f32);
+        }
+        out
+    }
+
+    /// What a kilometre of street lighting costs on top of the road under it:
+    /// `[builder_days, megawatts, tonnes...]` interleaved as
+    /// `[resource_index, tonnes]` after the first two.
+    #[func]
+    fn lamp_cost(&self) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        out.push(red_republic_sim::roadworks::LAMP_LABOUR as f32);
+        out.push(red_republic_sim::roadworks::LAMP_MW_PER_KM as f32);
+        for &(resource, tonnes) in red_republic_sim::roadworks::LAMP_MATERIALS {
+            out.push(
+                red_republic_sim::Resource::ALL
+                    .iter()
+                    .position(|&r| r == resource)
+                    .unwrap_or_default() as f32,
+            );
+            out.push(tonnes as f32);
         }
         out
     }
@@ -1064,6 +1264,110 @@ impl Republic {
             resource,
             tonnes: red_republic_sim::Tonnes(tonnes.max(0.0)),
         }) {
+            Ok(_) => GString::from(""),
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
+    // ---- Shifts -----------------------------------------------------------
+    //
+    // The roster is the one place a player decides how much of the day the
+    // republic is awake for, so all three levels of it are readable and
+    // writable from here. Hours are refused rather than clamped on the way in;
+    // every setter hands back the refusal so the panel can print it.
+
+    /// The national working day, in hours per shift.
+    #[func]
+    fn national_shift_hours(&self) -> f64 {
+        self.world
+            .as_ref()
+            .map_or(red_republic_sim::shifts::STANDARD_HOURS, |w| {
+                w.shift_policy().national()
+            })
+    }
+
+    /// The shortest and longest shift the republic will roster, and the most
+    /// crews one building may run: `[min_hours, max_hours, max_shifts]`.
+    ///
+    /// Read rather than repeated in GDScript, so a slider cannot offer a value
+    /// the command will refuse.
+    #[func]
+    fn shift_limits(&self) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        out.push(red_republic_sim::shifts::MIN_HOURS as f32);
+        out.push(red_republic_sim::shifts::MAX_HOURS as f32);
+        out.push(f32::from(red_republic_sim::shifts::MAX_SHIFTS));
+        out
+    }
+
+    #[func]
+    fn set_national_shift_hours(&mut self, hours: f64) -> GString {
+        self.command(Command::SetNationalShiftHours { hours })
+    }
+
+    /// The rule for each kind that has one: `[kind_index, hours]` per line.
+    #[func]
+    fn kind_shift_rules(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::kind_shift_rules)
+    }
+
+    /// Set a rule for a whole category of workplace; a negative `hours` clears
+    /// it so the national standard applies again.
+    #[func]
+    fn set_kind_shift_hours(&mut self, kind: i64, hours: f64) -> GString {
+        let Some(&kind) = red_republic_sim::building::BUILDINGS
+            .get(kind.max(0) as usize)
+            .map(|d| &d.kind)
+        else {
+            return GString::from("no such building");
+        };
+        self.command(Command::SetShiftHours {
+            scope: red_republic_sim::command::ShiftScope::Kind(kind),
+            hours: (hours >= 0.0).then_some(hours),
+        })
+    }
+
+    /// Every standing workplace and its roster:
+    /// `[id, kind_index, staff, jobs, shifts, hours, rule]` per line.
+    #[func]
+    fn workplaces(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::workplaces)
+    }
+
+    /// How many crews one workplace runs. Zero mothballs it.
+    #[func]
+    fn set_shifts(&mut self, building: i64, shifts: i64) -> GString {
+        self.command(Command::SetShifts {
+            building: red_republic_sim::BuildingId(building.max(0) as u32),
+            shifts: shifts.clamp(0, 255) as u8,
+        })
+    }
+
+    /// An exception for one building; a negative `hours` clears it.
+    #[func]
+    fn set_building_shift_hours(&mut self, building: i64, hours: f64) -> GString {
+        self.command(Command::SetShiftHours {
+            scope: red_republic_sim::command::ShiftScope::Building(red_republic_sim::BuildingId(
+                building.max(0) as u32,
+            )),
+            hours: (hours >= 0.0).then_some(hours),
+        })
+    }
+
+    /// Issue a command and hand back the refusal, or an empty string.
+    ///
+    /// The shape every setter above wants, written once: a player-facing
+    /// refusal is a sentence, and a panel that invents its own wording is a
+    /// second place the rules are described.
+    fn command(&mut self, command: Command) -> GString {
+        let Some(world) = self.world.as_mut() else {
+            return GString::from("no republic has been founded");
+        };
+        match world.issue(command) {
             Ok(_) => GString::from(""),
             Err(why) => GString::from(why.to_string().as_str()),
         }
@@ -1515,6 +1819,67 @@ impl Republic {
             Ok(_) => GString::from(""),
             Err(why) => GString::from(why.to_string().as_str()),
         }
+    }
+
+    /// Pay a foreign firm to build it instead. `market` is 0 East, 1 West.
+    ///
+    /// The only way to raise anything on a blank map, which is what every map
+    /// now starts as: there is no Construction Office to work a site and nobody
+    /// to staff one. Returns the refusal sentence, or empty on success.
+    #[func]
+    fn contract(&mut self, kind: i64, x: f64, y: f64, market: i64) -> GString {
+        let Some(world) = self.world.as_mut() else {
+            return GString::from("no republic has been founded");
+        };
+        let Some(&kind) = red_republic_sim::building::BUILDINGS
+            .get(kind.max(0) as usize)
+            .map(|d| &d.kind)
+        else {
+            return GString::from("no such building");
+        };
+        match world.issue(Command::ContractBuild {
+            kind,
+            at: Point::new(Metres(x), Metres(y)),
+            market: market_at(market),
+        }) {
+            Ok(_) => GString::from(""),
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
+    /// What a build menu needs to show about one kind, in one packed read.
+    ///
+    /// `[workers, builder_days, contract_cost, width_m, depth_m]`. A packed
+    /// array rather than a dictionary per kind, for the reason every bulk read
+    /// across this boundary is: measured at 316x apart. This one is small, but
+    /// the menu asks it for every kind on the roster every time it opens.
+    ///
+    /// `contract_cost` is what a foreign firm charges to raise it, which is the
+    /// number that actually decides the opening — a player with a rouble grant
+    /// and no crews is choosing what they can afford, not what they want.
+    #[func]
+    fn building_kind_facts(&self, index: i64) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        let Some(def) = red_republic_sim::building::BUILDINGS.get(index.max(0) as usize) else {
+            return out;
+        };
+        out.push(def.workers as f32);
+        out.push(def.labour as f32);
+        out.push((def.labour * red_republic_sim::systems::CONTRACTOR_RATE) as f32);
+        out.push(def.width.0 as f32);
+        out.push(def.depth.0 as f32);
+        out
+    }
+
+    /// What the treasury holds: `[roubles, dollars]`.
+    #[func]
+    fn purse(&self) -> PackedFloat32Array {
+        let mut out = PackedFloat32Array::new();
+        if let Some(w) = &self.world {
+            out.push(w.treasury().of(red_republic_sim::trade::Market::East) as f32);
+            out.push(w.treasury().of(red_republic_sim::trade::Market::West) as f32);
+        }
+        out
     }
 
     /// Whether a building of this kind could go here — the placement preview.

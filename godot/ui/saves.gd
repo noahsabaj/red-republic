@@ -25,7 +25,7 @@ signal loaded
 
 enum Mode { LOAD, SAVE }
 
-var _republic: Node = null
+var _republic: Republic = null
 var _mode: int = Mode.LOAD
 var _title: Label = null
 var _list: VBoxContainer = null
@@ -82,7 +82,7 @@ func _ready() -> void:
 	rows.add_child(footer)
 
 
-func open(republic: Node, mode: int) -> void:
+func open(republic: Republic, mode: int) -> void:
 	_republic = republic
 	_mode = mode
 	_armed = ""

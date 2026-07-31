@@ -156,6 +156,24 @@ impl Crews {
         self.hired.get(&(office, market)).copied().unwrap_or(0)
     }
 
+    /// Everybody this office is paying who is not a citizen — on its books or
+    /// still standing at the post it hired them to.
+    ///
+    /// **The second half is the one that matters.** A gang joins `hired` only
+    /// when a bus brings it home, which is right for posting them to a site and
+    /// wrong for deciding whether the office can move that bus: an office with
+    /// no citizens and twenty paid builders at the border could not send one,
+    /// so the whole opening was a circle. See [`crate::fleet::crewed`].
+    pub fn on_payroll(&self, office: BuildingId) -> u32 {
+        self.hired_total(office)
+            + self
+                .list
+                .iter()
+                .filter(|p| p.office == office && p.hired_from.is_some())
+                .map(|p| p.heads)
+                .sum::<u32>()
+    }
+
     /// Every foreign builder this office employs, whichever bloc sent them.
     pub fn hired_total(&self, office: BuildingId) -> u32 {
         Market::ALL.iter().map(|&m| self.hired(office, m)).sum()

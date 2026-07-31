@@ -190,7 +190,7 @@ fn labour_scaling() {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        let base = scenario::found(&mut world, citizens);
+        let base = scenario::town(&mut world, citizens);
         let jobs = world.buildings().jobs();
 
         let start = Instant::now();
@@ -231,7 +231,7 @@ fn simulated_day_cost() {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        scenario::found(&mut world, citizens);
+        scenario::town(&mut world, citizens);
 
         let start = Instant::now();
         for _ in 0..TICKS_PER_DAY {
@@ -316,7 +316,7 @@ fn building_scaling() {
             extent: Metres(10_000.0),
             climate: ClimateId::Plains,
         });
-        scenario::found(&mut world, 400);
+        scenario::town(&mut world, 400);
         let mut placed = 0;
         for i in 0..extra {
             let p = at(
@@ -364,7 +364,7 @@ fn fleet_scaling() {
             extent: Metres(10_000.0),
             climate: ClimateId::Plains,
         });
-        scenario::found(&mut world, 1_500);
+        scenario::town(&mut world, 1_500);
         let centre = world.buildings().all()[0].centre;
         for i in 0..garages.saturating_sub(1) {
             let p = at(

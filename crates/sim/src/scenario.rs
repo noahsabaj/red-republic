@@ -12,6 +12,7 @@ use crate::building::{BuildingId, BuildingKind};
 use crate::citizen::MAX_WALK;
 use crate::geology::Mineral;
 use crate::resource::Resource;
+use crate::trade::Market;
 use crate::units::{Metres, Point, Tonnes};
 use crate::utility::Utility;
 use crate::world::World;
@@ -111,26 +112,78 @@ fn found_crossing(world: &mut World, near: Point) -> Option<BuildingId> {
     world.place_built(BuildingKind::Customs, at).ok()
 }
 
-/// The settlers Moscow sends with the posting.
+/// The grant a posting opens with, in roubles.
 ///
-/// **Enough to staff what it also sent, and not one more.** Moscow does not
-/// hand a republic a customs house and then withhold the eight people to run
-/// it — a founding that cannot open its own border is not a hard start, it is a
-/// republic with a whole half of the game switched off, and it looked exactly
-/// like a balance decision from the outside.
+/// **Roubles only, and that is the opening move.** A republic starts inside the
+/// Eastern Bloc's economy: it can hire Bloc contractors and buy Bloc goods from
+/// day one, and everything Western — machinery, contractors, the better prices
+/// — is out of reach until it has exported something for hard currency. Which
+/// bloc's posts the land actually reaches is therefore the first thing that
+/// matters about a posting, rather than a detail that surfaces hours in.
+pub const GRANT_ROUBLES: f64 = 2_500_000.0;
+
+/// The population a *test* town is stood up with.
 ///
-/// It is deliberately *exactly* enough. There is no slack: the first thing the
-/// player commissions stands unstaffed until the republic grows, which is a
-/// real pressure and the reason this is not a softening. `crate::building::
-/// Buildings::housing` is larger, so there is somewhere for those people to
-/// live when they arrive.
-///
-/// Guarded by `the_founding_hand_can_staff_itself`, because this number drifts
-/// every time a building's worker count changes and the failure is silent: the
-/// tail of the founding order simply stops being manned.
+/// **This is a fixture number, not a game fact.** Nothing is given to a real
+/// republic — see [`found`], which places nothing at all. It stays because
+/// forty-odd tests and the trajectory runner need a working town to measure
+/// against, and it is still exactly enough to staff what [`town`] builds, which
+/// keeps that fixture coherent as building worker counts drift.
 pub const SETTLERS: usize = 143;
 
-/// Found a town: housing, a mine on the nearest coal, a plant to feed it, and
+/// Take a posting: pick the site, open the grant, and hand over an empty map.
+///
+/// **Nothing is built and nobody lives here.** A republic is a blank slate — the
+/// land, a rouble balance, and whatever the player does next. That is how the
+/// game this one is measured against works, and it is what makes the opening a
+/// plan rather than an inheritance.
+///
+/// This used to place nineteen buildings and a hundred and forty-three settlers,
+/// and a great deal of recorded design rested on it: the commissioning order as
+/// a staffing priority, a customs house that could be left unmanned, the
+/// deliberate absence of a bus depot, a landfill and a hotel. Every one of those
+/// was a consequence of the hand rather than of the land, and they are gone with
+/// it. What survives is the thing they were all really about — that a republic
+/// is short of everything and has to choose.
+///
+/// The site is still chosen from the geology, because a posting is assigned
+/// where there is something worth mining, and the camera has to open somewhere.
+///
+/// The bootstrap uses only machinery that already exists: contract a Bloc firm
+/// to build a Construction Office ([`crate::Command::ContractBuild`]), hire
+/// foreign workers into it ([`crate::Command::HireForeign`]), and from there the
+/// republic builds itself.
+pub fn found(world: &mut World) -> Point {
+    let centre = site(world);
+    world.treasury.credit(Market::East, GRANT_ROUBLES);
+    centre
+}
+
+/// Where a posting is centred: the shallowest coal body, or the middle of the
+/// map if the survey found none.
+fn site(world: &World) -> Point {
+    let mut coal: Vec<_> = world
+        .geology
+        .all()
+        .iter()
+        .filter(|d| d.mineral == Mineral::Coal && !d.is_exhausted())
+        .map(|d| (d.top.0, d.centre, d.id))
+        .collect();
+    coal.sort_by(|(ta, _, ia), (tb, _, ib)| ta.total_cmp(tb).then_with(|| ia.cmp(ib)));
+    coal.first()
+        .map(|&(_, c, _)| c)
+        .unwrap_or_else(|| Point::new(world.terrain.extent() / 2.0, world.terrain.extent() / 2.0))
+}
+
+/// Stand up a working town, for tests and for the trajectory runner.
+///
+/// **This is a fixture, not the game's founding.** [`found`] places nothing; a
+/// real republic builds every one of these itself. It exists because forty-odd
+/// tests need a republic that already works in order to measure one system, and
+/// standing that up through the player's own verbs in each of them would be
+/// slower to run and no more honest.
+///
+/// Housing, a mine on the nearest coal, a plant to feed it, and
 /// the beginnings of a timber chain.
 ///
 /// Everything is sited within walking distance of the housing, because a job
@@ -144,22 +197,9 @@ pub const SETTLERS: usize = 143;
 /// start and a republic that can never earn a rouble.
 ///
 /// See [`SETTLERS`] and `the_founding_hand_can_staff_itself`.
-pub fn found(world: &mut World, citizens: usize) -> StartingBase {
-    // Site the town on the shallowest coal body, since that is what a republic
-    // would actually do.
-    let mut coal: Vec<_> = world
-        .geology
-        .all()
-        .iter()
-        .filter(|d| d.mineral == Mineral::Coal && !d.is_exhausted())
-        .map(|d| (d.top.0, d.centre, d.id))
-        .collect();
-    coal.sort_by(|(ta, _, ia), (tb, _, ib)| ta.total_cmp(tb).then_with(|| ia.cmp(ib)));
-
-    let centre = coal
-        .first()
-        .map(|&(_, c, _)| c)
-        .unwrap_or_else(|| Point::new(world.terrain.extent() / 2.0, world.terrain.extent() / 2.0));
+pub fn town(world: &mut World, citizens: usize) -> StartingBase {
+    // Same site a real posting would be centred on.
+    let centre = site(world);
 
     let mut base = StartingBase {
         housing: Vec::new(),
@@ -418,7 +458,7 @@ mod tests {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        let base = found(&mut w, 60);
+        let base = town(&mut w, 60);
         (w, base)
     }
 
@@ -444,7 +484,7 @@ mod tests {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        found(&mut w, SETTLERS);
+        town(&mut w, SETTLERS);
         assert!(
             w.buildings().jobs() as usize <= SETTLERS,
             "the founding offers {} jobs and Moscow sent {SETTLERS} settlers, so \
@@ -550,7 +590,7 @@ mod tests {
         });
         // Enough settlers to man the town it is given. A short-staffed founding
         // is a legitimate hand, but it is not what this test is about.
-        let base = found(&mut w, 120);
+        let base = town(&mut w, 120);
         assert!(base.boiler.is_some(), "no boiler house was founded");
 
         // Straight to deep winter, then a fortnight of it.

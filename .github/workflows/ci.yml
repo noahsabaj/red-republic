@@ -80,6 +80,13 @@ jobs:
   # cover.
   loads:
     runs-on: ubuntu-latest
+    # A GDScript parse error does not fail this job, it HANGS it: main.gd never
+    # loads, so `--check` never reaches the quit() that ends the run, and the
+    # process sits there for ever printing nothing. That cost two eight-minute
+    # stalls on 2026-07-30 before anyone killed it. The import step above catches
+    # most parse errors, but a timeout is what turns "hung" into "failed" for the
+    # ones it does not.
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v5
@@ -156,6 +163,13 @@ jobs:
             echo "::error::this build cannot round-trip its own settings"
             exit 1
           fi
+          # The map starts empty, so contracting is the only path from a founded
+          # republic to a built anything. If it breaks, the symptom is a map that
+          # stays empty — which looks exactly like a player who has not started.
+          if ! grep -q "^build check ok" run.log; then
+            echo "::error::this build cannot put up a building"
+            exit 1
+          fi
 
   # Does it install on a machine that has never heard of Rust or Godot?
   #
@@ -171,6 +185,8 @@ jobs:
   # CLAUDE.md a tested one rather than a sentence.
   package:
     runs-on: windows-latest
+    # Same reason as `loads`, plus this job runs the game twice more.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v5

@@ -35,6 +35,7 @@ const Kit := preload("res://building_kit.gd")
 const Art := preload("res://building_art.gd")
 const Overlays := preload("res://ui/overlays.gd")
 const Store := preload("res://settings_store.gd")
+const Forest := preload("res://forest.gd")
 const SaveFiles := preload("res://saves.gd")
 
 ## The default posting, for a run that skips the founding screen.
@@ -54,10 +55,23 @@ const DEFAULT_NAME := "Novo-Uralsk"
 ## player left it running -- see `_set_screen`.
 enum Screen { MENU, FOUNDING, PLAYING, PAUSED, SETTINGS, SAVES, REFERENCE, RADIO }
 
-@onready var republic: Node = $Republic
+## **Typed as `Republic`, not as `Node`, and that is a bug fix rather than
+## tidiness.** gdext registers `Republic` as a real Godot class with typed method
+## signatures, but a variable declared `Node` makes every call on it a dynamic
+## one returning `Variant` — so `var x := republic.anything()` is a *parse error*,
+## and a GDScript parse error makes `--check` hang for ever instead of failing.
+## That cost three separate stalls in one day, twice at eight minutes, before
+## anybody asked why the annotations were needed at all. Naming the class is what
+## makes the whole failure unrepresentable: the compiler now knows what every
+## binding returns.
+@onready var republic: Republic = $Republic
 @onready var sounds: Node = $Sounds
 @onready var rig: Node3D = $CameraRig
 @onready var terrain_node: MeshInstance3D = $Terrain
+## Holds one MultiMeshInstance3D per tree species. A plain Node3D rather than a
+## MultiMeshInstance3D itself, because there are three species and a MultiMesh
+## carries exactly one mesh.
+@onready var forest_node: Node3D = $Forest
 @onready var buildings_node: MultiMeshInstance3D = $Buildings
 @onready var vehicles_node: MultiMeshInstance3D = $Vehicles
 @onready var newcomers_node: MultiMeshInstance3D = $Newcomers
@@ -75,6 +89,8 @@ enum Screen { MENU, FOUNDING, PLAYING, PAUSED, SETTINGS, SAVES, REFERENCE, RADIO
 @onready var reference: CanvasLayer = $Reference
 @onready var radio: CanvasLayer = $Radio
 @onready var pause_menu: CanvasLayer = $Pause
+@onready var build_menu: CanvasLayer = $Build
+@onready var labour_screen: CanvasLayer = $Labour
 
 var _buildings_shown := -1
 var _roads_shown := -1
@@ -87,6 +103,8 @@ var _start_speed := 0
 var _bench_frames := 0
 var _look: Looks.Look = null
 var _view_distance := 0.0
+## Degrees above horizontal for a capture run. Zero means leave the default 50.
+var _view_pitch := 0.0
 var _kind_nodes: Array[MultiMeshInstance3D] = []
 var _overlay := Overlays.Mode.NONE
 var _start_overlay := ""
@@ -112,6 +130,20 @@ var _last_autosave_day := -1
 var _extent := EXTENT_M
 ## Set once a republic exists, so the meshes are only built for a real world.
 var _built := false
+## What the build menu picked, or -1 for nothing. `_build_market` is -1 to build
+## it with the republic's own crews, or a bloc index to contract it out.
+var _build_kind := -1
+var _build_market := -1
+## The translucent box that follows the cursor while placing.
+var _ghost: MeshInstance3D = null
+## Laying a way: the grade in hand, whether it takes lamps, and where the first
+## click landed. A road is two points rather than one, so it is its own mode
+## beside the building ghost rather than a shape the ghost can take.
+var _way_grade := -1
+var _way_lamps := false
+var _way_from := Vector3.ZERO
+var _way_started := false
+var _way_ghost: MeshInstance3D = null
 
 
 func _ready() -> void:
@@ -138,9 +170,20 @@ func _ready() -> void:
 		_set_screen(Screen.MENU)
 
 
+## Point the camera where a capture run asked for, after everything that frames
+## it has finished framing it.
+func _apply_view_flags() -> void:
+	if _view_at.x >= 0.0:
+		rig.frame_map(_extent, _view_at.x, _view_at.y)
+	if _view_distance > 0.0:
+		rig.set_distance(_view_distance)
+	if _view_pitch > 0.0:
+		rig.set_pitch(_view_pitch)
+
+
 ## Found the constants above, for a run with no founding screen.
 func _found_default() -> void:
-	republic.found(SEED, EXTENT_M, CLIMATE, republic.founding_settlers())
+	republic.found(SEED, EXTENT_M, CLIMATE)
 	# Named, because an unnamed republic is a state nothing should be able to
 	# observe and a capture run would otherwise be the one place it is. It also
 	# means a screenshot of the HUD shows the name line doing its job rather than
@@ -150,8 +193,9 @@ func _found_default() -> void:
 	_enter_republic()
 	if _advance_days > 0:
 		republic.advance_days(_advance_days)
-	if _view_distance > 0.0:
-		rig.set_distance(_view_distance)
+	if _start_hour >= 0.0:
+		republic.advance_to_hour(_start_hour)
+	_apply_view_flags()
 	match _start_overlay:
 		"going": _overlay = Overlays.Mode.GOING
 		"tracks": _overlay = Overlays.Mode.WEAR
@@ -192,7 +236,103 @@ func _found_default() -> void:
 		])
 		_check_saves()
 		_check_settings()
+		_check_building()
+		_check_labour()
+		_check_road()
 		get_tree().quit()
+
+
+## Contract a building and check one goes up.
+##
+## **This is the only way to play now**, so it is worth a line in the check that
+## CI runs. A blank map has no crews and no materials, so if contracting is
+## broken there is no path from a founded republic to a built anything — and the
+## symptom would be an empty map that stays empty, which looks exactly like a
+## republic nobody has got round to building yet.
+##
+## Goes through the same `contract` binding the build menu calls, rather than
+## through the simulation directly, because the binding is the part only the
+## shell can get wrong.
+func _check_building() -> void:
+	var centre := republic.map_extent() * 0.5
+	var before := republic.building_count()
+	# Walk outward for ground that will take it: the site the founding picked is
+	# chosen for coal, not for being flat.
+	var why := "nowhere tried"
+	for ring in 12:
+		var at: float = centre + float(ring) * 90.0
+		why = String(republic.contract(0, at, at, 0))
+		if why == "":
+			break
+	if why != "":
+		printerr("build check FAILED: %s" % why)
+		return
+	if republic.building_count() != before + 1:
+		printerr("build check FAILED: the contract was accepted and no site appeared")
+		return
+	print("build check ok: contracted %s" % republic.building_kind_name(0))
+
+
+## Set the working day and read it back off a building.
+##
+## The roster is three levels deep and every level is resolved on the Rust side,
+## so the thing only the shell can get wrong is whether a number the player types
+## reaches the simulation and comes back changed. A refusal is a sentence, so a
+## silently-ignored setter looks identical to a working one from GDScript — which
+## is exactly the failure this line catches.
+func _check_labour() -> void:
+	var was: float = republic.national_shift_hours()
+	var why := String(republic.set_national_shift_hours(12.0))
+	if why != "":
+		printerr("labour check FAILED: %s" % why)
+		return
+	if not is_equal_approx(republic.national_shift_hours(), 12.0):
+		printerr("labour check FAILED: the standard was accepted and did not change")
+		return
+	# And the refusal path, because a setter that accepts everything is a setter
+	# that is not reading the rules.
+	if String(republic.set_national_shift_hours(40.0)) == "":
+		printerr("labour check FAILED: a forty-hour shift was accepted")
+		return
+	var _restore := republic.set_national_shift_hours(was)
+	print("labour check ok: the working day is the republic's to set")
+
+
+## Lay a road, and check the lamp rule refuses what it should.
+##
+## A road was orderable from the simulation and from nowhere else for six
+## milestones — the binding existed and no `.gd` file called it. On a map that
+## starts empty that is the difference between a republic and a set of buildings
+## nothing can reach, so it gets a line in the check that CI runs.
+func _check_road() -> void:
+	var centre := republic.map_extent() * 0.5
+	var before := republic.road_length_km()
+	# Dirt, because a founded republic has no gravel and no asphalt, and this is
+	# a check that the order goes through rather than that the crew finish it.
+	var why := "nowhere tried"
+	for ring in 8:
+		var a: float = centre + float(ring) * 120.0
+		why = String(republic.order_way(0, a, a, a + 600.0, a, false))
+		if why == "":
+			break
+	if why != "":
+		printerr("road check FAILED: %s" % why)
+		return
+	if republic.road_site_count() < 1:
+		printerr("road check FAILED: the order was accepted and no site appeared")
+		return
+	# And the refusal that makes lamps a paved-only thing. A dirt track with
+	# street lighting has to come back with a sentence, not a road.
+	if String(republic.order_way(0, centre, centre, centre + 600.0, centre, true)) == "":
+		printerr("road check FAILED: a dirt track was given street lamps")
+		return
+	# The *site* count, not the network length: nothing routes over a road until
+	# the crew have finished it, so a freshly ordered road adds zero kilometres
+	# of drivable way and saying otherwise would be reporting a road that is not
+	# there yet.
+	print("road check ok: %d way(s) ordered from %.1f km of road, and lamps stay on the tarmac" % [
+		republic.road_site_count(), before
+	])
 
 
 ## Write settings, read them back through a fresh store, and check they survived.
@@ -314,8 +454,9 @@ func _enter_republic() -> void:
 	hud.set_utility_names(republic.utility_names())
 	hud.set_way_names(republic.way_names())
 	hud.set_hint(
-		"0-5 speed  ·  space pause  ·  esc menu  ·  F none  G going  T tracks  "
-		+ "R survey  P smoke  N snow  ·  WASD pan  ·  right-drag orbit  ·  wheel zoom"
+		"0-5 speed  ·  space pause  ·  B build  ·  L labour  ·  esc menu  ·  "
+		+ "F none  G going  T tracks  R survey  P smoke  N snow  ·  "
+		+ "WASD pan  ·  right-drag orbit  ·  wheel zoom"
 	)
 	_refresh_buildings()
 	_refresh_roads()
@@ -366,6 +507,10 @@ func _connect_screens() -> void:
 	pause_menu.reference_pressed.connect(func(): _open_stacked(Screen.REFERENCE, Screen.PAUSED))
 	pause_menu.radio_pressed.connect(func(): _open_stacked(Screen.RADIO, Screen.PAUSED))
 	pause_menu.abandon_pressed.connect(_on_abandon)
+	build_menu.chose.connect(_begin_placement)
+	build_menu.chose_way.connect(_begin_way)
+	build_menu.closed.connect(func(): _set_screen(Screen.PLAYING))
+	labour_screen.closed.connect(func(): _set_screen(Screen.PLAYING))
 
 
 func _on_new_posting() -> void:
@@ -520,6 +665,42 @@ func _open_named_screen(name: String) -> void:
 			# ever seen.
 			_found_default()
 			_set_screen(Screen.PAUSED)
+		"build":
+			# Over a real republic too, because the menu reads the treasury and a
+			# purse line with no world behind it is the one part of this screen a
+			# capture would not be checking.
+			_found_default()
+			build_menu.open(republic)
+		"town":
+			# Not a screen: the map, with the fixture town standing on it. The
+			# only way a capture ever sees buildings, a lit street or lamp
+			# geometry, because a founded republic is an empty field.
+			_found_default()
+			republic.found_fixture_town(143)
+			republic.advance_days(2)
+			if _start_hour >= 0.0:
+				republic.advance_to_hour(_start_hour)
+			_enter_republic()
+			# **After `_enter_republic`, not before.** Entering frames the camera
+			# on the republic, so the first version of `--at` was applied and
+			# then silently undone — a capture flag that reaches nothing, which
+			# is the whole thing `--at` exists to stop happening.
+			_apply_view_flags()
+			_set_screen(Screen.PLAYING)
+		"labour":
+			# Needs a republic with workplaces standing in it: on a blank map the
+			# table under the two policy controls is empty, and a capture of a
+			# screen with no rows checks nothing — every layout bug this project
+			# has shipped was in a row. `found_fixture_town` is the nineteen-
+			# building hand the founding used to deal, kept as a fixture, and it
+			# is reachable from here and from nowhere a player goes.
+			_found_default()
+			republic.found_fixture_town(143)
+			# A day, so the labour pass has run and the manning column reports
+			# people rather than a republic of empty posts.
+			republic.advance_days(2)
+			_enter_republic()
+			labour_screen.open(republic)
 		_:
 			push_error("no screen called '%s'" % name)
 			_set_screen(Screen.MENU)
@@ -535,6 +716,9 @@ func _apply_interface_scale() -> void:
 
 func _process(delta: float) -> void:
 	if _screen == Screen.PLAYING:
+		_run_the_sun()
+		_update_ghost()
+		_update_way()
 		_refresh_buildings()
 		_refresh_roads()
 		_refresh_lines()
@@ -595,10 +779,19 @@ func _day_number() -> int:
 
 ## Time frames with the simulation genuinely running, then report and quit.
 ##
-## Vsync is off in project.godot, and that is load-bearing: with it on every
-## p50 comes back as exactly 16.67 ms whatever the load, so a scene that is
-## drowning reports a healthy number. Measured on this machine -- it silently
-## invalidated a whole probe run before anyone noticed.
+## **This turns vsync off itself, and it has to.** With vsync on, every p50 comes
+## back as exactly 16.67 ms whatever the load, so a scene that is drowning
+## reports a healthy number -- it silently invalidated a whole probe run once.
+## The old defence was `window/vsync/vsync_mode=0` in project.godot, and a
+## comment here saying so was load-bearing. It stopped being true the moment M12
+## gave the game a settings screen: `settings_store.gd` defaults `display/vsync`
+## to true and `main.gd` applies it at startup, a few lines before any of this
+## runs. Measured on 2026-07-30 -- the first bench of the art work came back
+## 16.67/16.67, which is the tell.
+##
+## So the benchmark takes responsibility for its own preconditions rather than
+## trusting a setting three files away that somebody else owns. A measurement
+## tool that can be silently disarmed by an unrelated feature is worse than none.
 ##
 ## Real-time is the thesis, so "does it hold frame rate while the republic is
 ## actually being simulated" is not a nice-to-have measurement. It is the
@@ -606,6 +799,8 @@ func _day_number() -> int:
 func _maybe_bench(delta: float) -> void:
 	if _bench_frames <= 0:
 		return
+	if _bench_times.is_empty():
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	_bench_times.append(delta * 1000.0)
 	if _bench_times.size() < _bench_frames:
 		return
@@ -651,6 +846,29 @@ func _maybe_capture() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Placing is a mouse mode, so it gets first refusal on clicks. Left commits,
+	# right cancels — the convention every builder uses, and the reason right
+	# drag still orbits is that the camera only sees motion events.
+	if _build_kind >= 0 and event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			_commit_placement()
+			get_viewport().set_input_as_handled()
+			return
+		if event.button_index == MOUSE_BUTTON_RIGHT:
+			_cancel_placement()
+			get_viewport().set_input_as_handled()
+			return
+
+	if _way_grade >= 0 and event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			_click_way()
+			get_viewport().set_input_as_handled()
+			return
+		if event.button_index == MOUSE_BUTTON_RIGHT:
+			_cancel_way()
+			get_viewport().set_input_as_handled()
+			return
+
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 
@@ -658,6 +876,14 @@ func _unhandled_input(event: InputEvent) -> void:
 	# means depends on where you are: out of the game into the pause overlay, and
 	# out of a stacked screen back to whatever opened it.
 	if event.keycode == KEY_ESCAPE:
+		# Placing takes priority: escape out of the ghost first, and only out of
+		# the game once there is nothing in hand.
+		if _build_kind >= 0:
+			_cancel_placement()
+			return
+		if _way_grade >= 0:
+			_cancel_way()
+			return
 		match _screen:
 			Screen.PLAYING:
 				_set_screen(Screen.PAUSED)
@@ -679,7 +905,11 @@ func _unhandled_input(event: InputEvent) -> void:
 	var speeds := {
 		KEY_0: 0, KEY_1: 1, KEY_2: 2, KEY_3: 3, KEY_4: 4, KEY_5: 5,
 	}
-	if speeds.has(event.keycode):
+	if event.keycode == KEY_B:
+		build_menu.open(republic)
+	elif event.keycode == KEY_L:
+		labour_screen.open(republic)
+	elif speeds.has(event.keycode):
 		republic.set_speed(speeds[event.keycode])
 	elif event.keycode == KEY_SPACE:
 		republic.set_speed(0 if republic.speed() > 0 else 1)
@@ -704,6 +934,17 @@ func _unhandled_input(event: InputEvent) -> void:
 ## unattended winter.
 func _notification(what: int) -> void:
 	if what != NOTIFICATION_APPLICATION_FOCUS_OUT:
+		return
+	# Not during a capture or a benchmark. Both are launched from a terminal that
+	# keeps focus, so the game reliably never has it, and the pause overlay would
+	# slide over the frame being captured -- which is exactly what happened on the
+	# first render of the art work: a shot meant to show the world came back
+	# showing the pause menu, and only because the run before it happened to win
+	# the focus race did the two look different at all.
+	#
+	# A measurement tool that photographs its own UI is not measuring anything,
+	# and the failure is intermittent, which is worse.
+	if _shot_path != "" or _bench_frames > 0:
 		return
 	if _screen != Screen.PLAYING or _store == null:
 		return
@@ -732,6 +973,25 @@ func _read_arguments() -> void:
 			"--dist":
 				if i + 1 < args.size():
 					_view_distance = float(args[i + 1])
+			"--pitch":
+				if i + 1 < args.size():
+					_view_pitch = float(args[i + 1])
+			"--hour":
+				if i + 1 < args.size():
+					_start_hour = float(args[i + 1])
+			"--at":
+				# Where to point the camera, in map metres: `--at 900,2400`.
+				#
+				# **A capture you cannot aim is a check that answers without
+				# looking.** The water work landed with the camera framed on the
+				# republic and the river running along the far edge of the map,
+				# so the only frames available of a brand-new water shader had it
+				# forty pixels wide and edge-on. Same lesson as `--hour` and as
+				# `--pitch` before it, for the third time.
+				if i + 1 < args.size():
+					var parts := args[i + 1].split(",")
+					if parts.size() == 2:
+						_view_at = Vector2(float(parts[0]), float(parts[1]))
 			"--advance":
 				if i + 1 < args.size():
 					_advance_days = int(args[i + 1])
@@ -750,46 +1010,251 @@ func _read_arguments() -> void:
 				_check_only = true
 
 
+## Keep the shadow range around the camera.
+##
+## **This is the fix for the reason this game had no shadows at all.**
+## `shadow_enabled` has been true since M3, and `directional_shadow_max_distance`
+## was never set -- so it sat at Godot's default of **100 metres** while the
+## camera opens at about 1,080 m on a 6 km map and can boom out to 9,600 m.
+## Every shadow was being culled before it was drawn. Nothing errored, the light
+## reported itself as casting, and three art directions were chosen from renders
+## that could not contain a shadow.
+##
+## The range has to follow the boom because it is measured from the camera and a
+## fixed value cannot serve both ends of a 240x zoom: a range wide enough for the
+## whole map spreads four cascades so thin that a lorry casts a smear, and one
+## tight enough for a lorry leaves the map bare. `distance_changed` is what makes
+## this cheap -- it fires on camera moves rather than every frame.
+func _fit_shadows(metres: float) -> void:
+	var sun: DirectionalLight3D = $Sun
+	# Far enough past the pivot to cover the ground behind it, capped so the
+	# cascades keep usable resolution when the whole posting is in frame.
+	sun.directional_shadow_max_distance = clampf(metres * 2.5, 400.0, 8000.0)
+	# Bias scales with the range: what stops acne at 400 m detaches a shadow from
+	# its building at 8 km, and the artefact you get for guessing is the one that
+	# looks like the mesh is floating.
+	sun.shadow_normal_bias = clampf(metres / 900.0, 1.0, 6.0)
+
+
 ## Sun, sky and air. Presentation only -- the weather the simulation models is a
 ## different thing entirely, and this does not read it.
+## How high the sun sits at noon, and how far it swings across the day.
+##
+## Not an ephemeris. The republic has a latitude in the fiction and none in the
+## simulation, and a real solar position would buy a shadow angle nobody can
+## check against anything. What the arc has to do is be legible: the light moves
+## while you watch it, the shadows swing, and dusk arrives.
+const SUN_PEAK_DEGREES := 58.0
+
+## The speed above which the sun stands still.
+##
+## **Noah's call, and the reason is physiological rather than aesthetic.** At
+## speed 1 a day takes twenty-four real minutes and the movement reads as
+## movement. At speed 5 a second buys eight hours, so the sun would cross the
+## sky every three seconds — unpleasant to look at and a genuine
+## photosensitivity risk. Above this the light is pinned at the hour it was
+## frozen at, which is also the only honest thing to do: nothing in the
+## simulation cares what o'clock it is.
+const SUN_FOLLOWS_UP_TO := 2
+
+## How dark it gets, `0.0` broad daylight to `1.0` the middle of the night.
+##
+## Written to the `night` global shader parameter, so every window in the
+## republic reads it without the scene walking a hundred and thirty materials.
+var _night := 0.0
+## The live environment, so the day/night pass can reach into it.
+var _environment: Environment = null
+## Whether the sun has been placed at least once since the look was applied.
+## Without it the early-out below would leave the light wherever `_apply_look`
+## put it on the first frame of a run that starts at midnight.
+var _sun_set_once := false
+## The hour a capture run should stand at, or negative for whatever the founding
+## gave it. See `Republic::advance_to_hour` for why this exists at all.
+var _start_hour := -1.0
+## Where a capture run should point the camera, or negative for the republic.
+var _view_at := Vector2(-1.0, -1.0)
+
+
+## Swing the sun, and take the light down with it.
+##
+## Real-time is this game's thesis and a sun that never moved was the largest
+## thing on the screen quietly saying otherwise.
+func _run_the_sun() -> void:
+	if republic.speed() > SUN_FOLLOWS_UP_TO:
+		return
+	var f: float = republic.time_of_day()
+	# Midnight at 0, sunrise at a quarter, noon at a half. `sin` of the whole
+	# turn gives exactly that with no branch and no table.
+	var height := sin(TAU * (f - 0.25))
+	var day := clampf(height, 0.0, 1.0)
+	var night := clampf(-height * 1.6, 0.0, 1.0)
+	if absf(night - _night) < 0.002 and _sun_set_once:
+		return
+	_sun_set_once = true
+	_night = night
+	RenderingServer.global_shader_parameter_set("night", night)
+
+	var sun: DirectionalLight3D = $Sun
+	var env: Environment = _environment
+	if env == null:
+		return
+
+	if height > 0.0:
+		# Daylight. The sun rises in the east and sets in the west, and it goes
+		# warm and low at both ends of that — which is where the long shadows
+		# and the whole reason to watch a day pass come from.
+		var elevation := SUN_PEAK_DEGREES * height
+		sun.rotation_degrees = Vector3(-elevation, 90.0 + 360.0 * (f - 0.25), 0.0)
+		var low := 1.0 - clampf(height * 2.2, 0.0, 1.0)
+		sun.light_color = _look.sun_colour.lerp(Color(1.0, 0.62, 0.36), low)
+		sun.light_energy = _look.sun_energy * clampf(0.15 + day * 1.05, 0.0, 1.6)
+	else:
+		# **A moon, not a sun below the horizon.** A DirectionalLight aimed up
+		# from underneath lights the underside of everything and nothing else,
+		# so the frame goes black with the sky still glowing. Mirroring the
+		# elevation and going cold and faint is what every game does and what
+		# a moon actually is.
+		sun.rotation_degrees = Vector3(-SUN_PEAK_DEGREES * -height * 0.7, 270.0 + 360.0 * (f - 0.25), 0.0)
+		sun.light_color = Color(0.62, 0.70, 0.92)
+		sun.light_energy = _look.sun_energy * 0.09
+
+	# Ambient follows, or a night with a bright sky-lit ground is just a day
+	# with a blue filter on it.
+	env.ambient_light_energy = _look.ambient_energy * lerpf(1.0, 0.14, night)
+	# And a little more exposure at night, because a player still has to be able
+	# to see the republic they are running. This is the one number here that is
+	# a legibility decision rather than a physical one, and it is small.
+	env.tonemap_exposure = _look.tonemap_exposure * lerpf(1.0, 1.18, night)
+
+
 func _apply_look() -> void:
 	var sun: DirectionalLight3D = $Sun
 	sun.light_color = _look.sun_colour
 	sun.light_energy = _look.sun_energy
 	sun.rotation_degrees = Vector3(-_look.sun_elevation, _look.sun_azimuth, 0.0)
 	sun.shadow_enabled = true
+	# Four cascades blended, so the seam between them is not a visible line
+	# across the ground on a map this size.
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+	sun.directional_shadow_blend_splits = true
+	sun.directional_shadow_split_1 = 0.06
+	sun.directional_shadow_split_2 = 0.16
+	sun.directional_shadow_split_3 = 0.42
+	sun.directional_shadow_fade_start = 0.9
+	# A sun is half a degree across, and softening the penumbra with distance is
+	# most of what makes a shadow look like light rather than a stencil.
+	sun.light_angular_distance = 0.6
+	if not rig.distance_changed.is_connected(_fit_shadows):
+		rig.distance_changed.connect(_fit_shadows)
+	_fit_shadows(rig.get_distance())
 
-	var sky_mat := ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = _look.sky_top
-	sky_mat.sky_horizon_color = _look.sky_horizon
-	sky_mat.ground_bottom_color = _look.ground_horizon
-	sky_mat.ground_horizon_color = _look.ground_horizon
-	sky_mat.sun_angle_max = 12.0
+	# A custom sky shader rather than ProceduralSkyMaterial, which is a two-colour
+	# gradient with a blob for the sun and was most of why the horizon read as two
+	# flat bands meeting. `sky.gdshader` does Rayleigh and Mie scattering off the
+	# sun's actual direction and puts cloud cover on top, so the sky changes with
+	# the light instead of being painted behind it.
+	var sky_mat := ShaderMaterial.new()
+	sky_mat.shader = load("res://sky.gdshader")
+	sky_mat.set_shader_parameter("zenith_colour", _look.sky_top)
+	sky_mat.set_shader_parameter("horizon_colour", _look.sky_horizon)
+	sky_mat.set_shader_parameter("ground_colour", _look.ground_horizon)
+	sky_mat.set_shader_parameter("cloud_cover", _look.cloud_cover)
 
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
+	# The sky feeds ambient light through a cubemap, and regenerating it every
+	# frame for clouds that drift at four thousandths of a unit a second is waste.
+	# Incremental spreads the update over several frames.
+	sky.process_mode = Sky.PROCESS_MODE_INCREMENTAL
+	sky.radiance_size = Sky.RADIANCE_SIZE_128
 
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = _look.ambient_colour
+	# Ambient off the sky rather than a flat colour, which is both the physical
+	# answer and the one that keeps shading coherent when the sky changes: a
+	# north-facing wall picks up the blue overhead and a south-facing one does
+	# not. The old flat 0.75 was doing something else entirely -- filling every
+	# shadow evenly, which is exactly how you erase form.
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+	env.ambient_light_sky_contribution = 1.0
 	env.ambient_light_energy = _look.ambient_energy
-	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.tonemap_mode = Environment.TONE_MAPPER_ACES
 	env.tonemap_exposure = _look.tonemap_exposure
+	env.tonemap_white = 6.0
 	# Distance fog rather than volumetric: the job is to give a 6 km map depth,
 	# not to render weather, and it costs nothing.
 	env.fog_enabled = true
+	env.fog_mode = Environment.FOG_MODE_EXPONENTIAL
 	env.fog_light_color = _look.fog_colour
 	env.fog_density = _look.fog_density
-	# The sky is already the right colour; letting fog repaint it flattens the
-	# horizon into a single wash and takes the depth cue with it.
-	env.fog_sky_affect = 0.0
-	env.fog_aerial_perspective = 0.35
+	# Some sky affect, not none. Zero leaves a hard line where the ground meets
+	# the sky, which is what the horizon looked like: two flat bands meeting.
+	# Aerial perspective is what makes the far side of a 6 km map read as far
+	# away rather than as the same ground painted smaller.
+	env.fog_sky_affect = 0.18
+	# 0.7 was too much once the ground had real texture on it: aerial perspective
+	# blends the distance towards the sky, and against a bright sky it washed the
+	# far half of the map to near-white. The flat-colour ground it was tuned
+	# against had nothing to lose.
+	env.fog_aerial_perspective = 0.45
+	# No height fog. A first pass set `fog_height_density` to 0.6, which reads as
+	# a modest number and is not one -- Godot's default is 0.0, and 0.6 made the
+	# air below the reference height opaque. The frame came back as a flat pale
+	# wash with the HUD floating on it and no world at all. Distance fog alone is
+	# what this map wants.
+	# Radius in metres. The default is 1 m, which from a kilometre up contributes
+	# nothing at all -- it was enabled and invisible. At building scale it is
+	# what settles a structure onto the ground.
 	env.ssao_enabled = true
-	env.ssao_intensity = 1.2
+	env.ssao_radius = 12.0
+	env.ssao_intensity = 2.0
+	env.ssao_power = 1.5
+	env.ssao_detail = 0.5
+	# One bounce of indirect colour. Cheap next to SDFGI and it is what stops a
+	# shadowed wall going flat grey.
+	env.ssil_enabled = true
+	env.ssil_radius = 24.0
+	env.ssil_intensity = 1.0
+	# Volumetric fog on top of the distance fog, for the air near the town to
+	# have body and for the sun to rake through it. Godot caps the volume at
+	# 1,024 m, so this is a local effect around the camera rather than the
+	# map-wide depth cue -- that is what the exponential fog above is for, and
+	# the two do different jobs.
+	#
+	# Density is per metre and multiplies against the *length*, which is the trap
+	# this walked into twice. Godot's default 0.01 is tuned for the default 64 m
+	# volume; at 1,024 m the same figure is sixteen optical depths and the frame
+	# comes back as a white sheet with the HUD on it. The useful figure here is
+	# two orders of magnitude smaller.
+	env.volumetric_fog_enabled = true
+	env.volumetric_fog_density = 0.00015
+	env.volumetric_fog_length = 1024.0
+	env.volumetric_fog_gi_inject = 0.6
+	env.volumetric_fog_albedo = _look.fog_colour
+	# Sun glint off water and metal. Subtle on purpose: this is a planning game
+	# in daylight, not a bloom demo.
+	env.glow_enabled = true
+	env.glow_intensity = 0.5
+	env.glow_bloom = 0.05
+	env.glow_hdr_threshold = 1.1
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SOFTLIGHT
+	env.adjustment_enabled = true
+	env.adjustment_brightness = _look.grade_brightness
+	env.adjustment_contrast = _look.grade_contrast
+	env.adjustment_saturation = _look.grade_saturation
 
 	$Sky.environment = env
+	# Held so the day/night pass can move exposure and ambient without rebuilding
+	# the whole environment sixty times a second.
+	_environment = env
+	_sun_set_once = false
+
+	# Physical exposure, which is what makes the tonemapper's numbers mean
+	# something rather than being a multiplier somebody tuned by eye.
+	var attrs := CameraAttributesPractical.new()
+	attrs.auto_exposure_enabled = false
+	$Sky.camera_attributes = attrs
 
 
 func _build_terrain() -> void:
@@ -797,19 +1262,44 @@ func _build_terrain() -> void:
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, republic.terrain_surface())
 	terrain_node.mesh = mesh
 
+	# The woods, from the same arrays. Forest was a colour on the ground and
+	# nothing else until now, which is the largest single thing between this and
+	# a game that looks real -- and the reason bare forest floor read as desert
+	# the moment the flat green was replaced with a photograph of leaf litter.
+	var planted := Forest.plant(forest_node, republic, Forest.species_meshes())
+	if OS.is_debug_build():
+		print("planted %d trees" % planted)
+
 	# Vertex colour carries the surface kind as a one-hot channel -- red grass,
 	# green forest, blue rock, black water -- and terrain.gdshader decides what
-	# each looks like. Keeping the tones there rather than in Rust is what lets
-	# the art direction change without recompiling the simulation's renderer.
+	# each looks like. Keeping that decision there rather than in Rust is what
+	# lets the art direction change without recompiling the simulation's
+	# renderer, and it is why swapping flat colours for photographed materials
+	# needed no change on the Rust side at all.
 	var mat := ShaderMaterial.new()
 	mat.shader = load("res://terrain.gdshader")
-	mat.set_shader_parameter("grass_colour", _look.grass)
-	mat.set_shader_parameter("forest_colour", _look.forest)
-	mat.set_shader_parameter("rock_colour", _look.rock)
+	for surface in ["grass", "forest", "rock", "dirt", "shore"]:
+		mat.set_shader_parameter("%s_colour" % surface, _surface_texture(surface, "colour"))
+		mat.set_shader_parameter("%s_normal" % surface, _surface_texture(surface, "normal"))
+		mat.set_shader_parameter("%s_rough" % surface, _surface_texture(surface, "roughness"))
+	mat.set_shader_parameter("snow_colour", _surface_texture("snow", "colour"))
+	mat.set_shader_parameter("snow_normal", _surface_texture("snow", "normal"))
 	mat.set_shader_parameter("water_colour", _look.water)
 	mat.set_shader_parameter("contour_strength", _look.contour_strength)
+	mat.set_shader_parameter("map_extent", _extent)
 	_terrain_material = mat
 	terrain_node.material_override = mat
+
+
+## One CC0 surface map, imported by Godot from `godot/art/textures/`.
+##
+## The colour maps are sRGB and the normal and roughness maps are not, and
+## getting that wrong is quiet: an sRGB-decoded normal map still looks like a
+## normal map, it just lights everything at the wrong angle. Godot's importer
+## decides from the `.import` file beside each texture, which is why those are
+## committed alongside the images.
+func _surface_texture(surface: String, map: String) -> Texture2D:
+	return load("res://art/textures/%s_%s.jpg" % [surface, map])
 
 
 ## One mesh per building kind, assembled from the kit, each with its own
@@ -1017,12 +1507,24 @@ func _refresh_roads() -> void:
 	# and colour here because they differ in what a lorry can do on them, and
 	# that has to be visible without opening a panel.
 	var flat: PackedFloat32Array = republic.road_segments()
-	var stride := 7
+	var stride := 8
 	var count := flat.size() / stride
-	if count == _roads_shown:
+	# **The count is not enough on its own any more.** Lamps go out when the
+	# grid runs short, which changes nothing about how many segments there are —
+	# so a signature over the lamp column rides along, and a town going dark
+	# redraws.
+	var signature := 0
+	var k := stride - 1
+	while k < flat.size():
+		signature = signature * 3 + int(flat[k])
+		k += stride
+	var stamp := count * 7919 + signature
+	if stamp == _roads_shown:
 		return
-	_roads_shown = count
+	_roads_shown = stamp
 	var mesh := ImmediateMesh.new()
+	var lamps: Array[Vector3] = []
+	var burning: Array[bool] = []
 	if count > 0:
 		var mat := StandardMaterial3D.new()
 		mat.vertex_color_use_as_albedo = true
@@ -1033,6 +1535,7 @@ func _refresh_roads() -> void:
 			var a := Vector3(flat[o], flat[o + 1], flat[o + 2])
 			var b := Vector3(flat[o + 3], flat[o + 4], flat[o + 5])
 			var kph := flat[o + 6]
+			var lit := int(flat[o + 7])
 			var along := b - a
 			along.y = 0.0
 			if along.length() < 0.01:
@@ -1043,6 +1546,19 @@ func _refresh_roads() -> void:
 			var half := lerpf(2.6, 4.4, t)
 			var tone := _look.road_dirt.lerp(_look.road_paved, t)
 			var side := along.normalized().cross(Vector3.UP).normalized() * half
+			if lit > 0:
+				# Kerbed street, a shade paler than the tarmac beside it, and
+				# lamp posts down one side. Placed by the renderer rather than
+				# by the player: a lit road is a variant of the road, not four
+				# hundred things to site.
+				tone = tone.lerp(Color(0.46, 0.46, 0.45), 0.35)
+				var run := along.length()
+				var spacing := 34.0
+				var posts := maxi(1, int(run / spacing))
+				for post in posts:
+					var f := (float(post) + 0.5) / float(posts)
+					lamps.append(a.lerp(b, f) + side.normalized() * (half + 1.4))
+					burning.append(lit > 1)
 			# Lifted clear of the ground so it does not z-fight the terrain.
 			var lift := Vector3(0.0, 0.35, 0.0)
 			var p0 := a - side + lift
@@ -1058,7 +1574,57 @@ func _refresh_roads() -> void:
 				mesh.surface_set_color(tone)
 				mesh.surface_add_vertex(v)
 		mesh.surface_end()
+	_draw_lamps(mesh, lamps, burning)
 	roads_node.mesh = mesh
+
+
+## Lamp posts, as a second surface on the road mesh.
+##
+## **Emissive geometry rather than `OmniLight3D` nodes**, and that is a measured
+## decision rather than a shortcut: a town has hundreds of these, and hundreds of
+## shadow-casting point lights is the one thing in the night work that could
+## break the frame target outright. A glowing head over a lit street reads
+## correctly at the distance this camera actually sits at, and it costs two
+## triangles.
+func _draw_lamps(mesh: ImmediateMesh, at: Array[Vector3], burning: Array[bool]) -> void:
+	if at.is_empty():
+		return
+	var post_mat := StandardMaterial3D.new()
+	post_mat.vertex_color_use_as_albedo = true
+	post_mat.roughness = 0.7
+	post_mat.emission_enabled = true
+	post_mat.emission = Color(1.0, 0.86, 0.62)
+	# Scaled by vertex colour: a dark lamp writes black here and glows not at
+	# all, which is what lets one material serve both states.
+	post_mat.emission_operator = BaseMaterial3D.EMISSION_OP_MULTIPLY
+	mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, post_mat)
+	for i in at.size():
+		var base := at[i]
+		var head := base + Vector3(0.0, 7.0, 0.0)
+		var tone := Color(0.34, 0.34, 0.33)
+		var glow := Color(1.0, 0.88, 0.66) if burning[i] else Color(0.20, 0.20, 0.21)
+		# The column, as a thin cross of two quads so it reads from any bearing.
+		# Typed, because an untyped Array literal yields Variant and every
+		# expression built from one stops being inferrable — the same parse
+		# error the Republic node was causing, from a different direction.
+		for axis: Vector3 in [Vector3(0.42, 0.0, 0.0), Vector3(0.0, 0.0, 0.42)]:
+			var p0 := base - axis
+			var p1 := base + axis
+			var p2 := head + axis
+			var p3 := head - axis
+			for v in [p0, p1, p2, p0, p2, p3]:
+				mesh.surface_set_color(tone)
+				mesh.surface_add_vertex(v)
+		# The lantern: a small horizontal quad that carries the glow.
+		var r := 0.9
+		var q0 := head + Vector3(-r, 0.0, -r)
+		var q1 := head + Vector3(r, 0.0, -r)
+		var q2 := head + Vector3(r, 0.0, r)
+		var q3 := head + Vector3(-r, 0.0, r)
+		for v in [q0, q3, q2, q0, q2, q1]:
+			mesh.surface_set_color(glow)
+			mesh.surface_add_vertex(v)
+	mesh.surface_end()
 
 
 ## Power lines and heat mains, drawn as thin ribbons above the ground.
@@ -1241,11 +1807,216 @@ func _refresh_overlay() -> void:
 		return
 	_overlay_dirty = false
 	_overlay_day = day
+
+	# Winter on the ground rather than only in a number. `Ground::snow` has
+	# accumulated and melted since the ground model landed, and until now the
+	# only things that read it were the snow overlay and the ploughs -- so a
+	# republic under half a metre of snow was rendered in high summer green.
+	# Same rule as the boilers: the state decides, never the calendar.
+	#
+	# Daily, on the same event as the overlay, because snow does not change
+	# between frames and a shader parameter set sixty times a second to the same
+	# value is the per-tick cost this whole boundary is designed to avoid.
+	var winter: PackedFloat32Array = republic.snow()
+	if winter.size() > 0:
+		_terrain_material.set_shader_parameter("snow_amount", winter[0])
+
 	Overlays.apply(_terrain_material, republic, _overlay, _extent)
 	if _overlay == Overlays.Mode.SURVEY:
 		survey_node.mesh = Overlays.survey_mesh(republic, _ground_height)
 	else:
 		survey_node.mesh = null
+
+
+## Where the cursor is pointing on the ground, in world metres.
+##
+## The terrain has no collision body — it is one `ArrayMesh` and giving a
+## million triangles a collider to answer a mouse position would be absurd. So
+## this intersects the camera ray with a flat plane, samples the real ground
+## height there, and repeats: three passes converge to well under a metre on
+## terrain this gentle, which is finer than the 10 m cells anything is placed on.
+func _cursor_ground() -> Vector3:
+	var camera: Camera3D = rig.camera
+	var mouse := get_viewport().get_mouse_position()
+	var from := camera.project_ray_origin(mouse)
+	var dir := camera.project_ray_normal(mouse)
+	var height := 0.0
+	var hit := Vector3.ZERO
+	for _pass in 3:
+		# Looking up, or along the horizon: nothing to hit.
+		if absf(dir.y) < 0.0001:
+			return hit
+		var t := (height - from.y) / dir.y
+		if t < 0.0:
+			return hit
+		hit = from + dir * t
+		height = _ground_height(hit.x, hit.z)
+	hit.y = height
+	return hit
+
+
+## Start placing a building the build menu chose.
+func _begin_placement(kind: int, market: int) -> void:
+	_build_kind = kind
+	_build_market = market
+	_set_screen(Screen.PLAYING)
+	if _ghost == null:
+		_ghost = MeshInstance3D.new()
+		var mat := StandardMaterial3D.new()
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.albedo_color = Color(0.4, 0.9, 0.45, 0.45)
+		# Unshaded, so the ghost reads as an overlay rather than as a building
+		# that is already there and lit like its neighbours.
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_ghost.material_override = mat
+		add_child(_ghost)
+	var size: Vector2 = republic.building_kind_size(kind)
+	var box := BoxMesh.new()
+	box.size = Vector3(size.x, 8.0, size.y)
+	_ghost.mesh = box
+	_ghost.visible = true
+
+
+func _cancel_placement() -> void:
+	_build_kind = -1
+	_build_market = -1
+	if _ghost != null:
+		_ghost.visible = false
+
+
+## Move the ghost and colour it by whether the placement would be accepted.
+##
+## The preview asks `can_place`, which is the same rule the commit uses — a
+## preview that asked a different question would render green over ground the
+## placement then refuses, which is worse than no preview.
+func _update_ghost() -> void:
+	if _build_kind < 0 or _ghost == null:
+		return
+	var at := _cursor_ground()
+	_ghost.position = Vector3(at.x, at.y + 4.0, at.z)
+	var why := String(republic.can_place(_build_kind, at.x, at.z))
+	var mat: StandardMaterial3D = _ghost.material_override
+	mat.albedo_color = (
+		Color(0.4, 0.9, 0.45, 0.45) if why == "" else Color(0.9, 0.35, 0.3, 0.45)
+	)
+	hud.set_placing(String(republic.building_kind_name(_build_kind)), why)
+
+
+## Commit the placement under the cursor.
+func _commit_placement() -> void:
+	var at := _cursor_ground()
+	var why := ""
+	if _build_market < 0:
+		why = String(republic.place(_build_kind, at.x, at.z))
+	else:
+		why = String(republic.contract(_build_kind, at.x, at.z, _build_market))
+	if why != "":
+		hud.set_placing(String(republic.building_kind_name(_build_kind)), why)
+		return
+	# Stay in placement mode: putting up a row of houses should not mean six
+	# trips back to the menu.
+	_buildings_shown = -1
+	hud.set_placing(String(republic.building_kind_name(_build_kind)), "")
+
+
+## Start laying a way: click once for each end.
+##
+## **A road was as unbuildable as a building was before the build menu existed.**
+## `order_way` has been on the shell since M6 and no `.gd` file ever called it,
+## which on a map that now starts empty means a republic could put up a factory
+## and never connect it to anything.
+func _begin_way(grade: int, lamps: bool) -> void:
+	_cancel_placement()
+	_way_grade = grade
+	_way_lamps = lamps
+	_way_started = false
+	_set_screen(Screen.PLAYING)
+	if _way_ghost == null:
+		_way_ghost = MeshInstance3D.new()
+		var mat := StandardMaterial3D.new()
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.vertex_color_use_as_albedo = true
+		_way_ghost.material_override = mat
+		add_child(_way_ghost)
+	_way_ghost.visible = true
+
+
+func _cancel_way() -> void:
+	_way_grade = -1
+	_way_started = false
+	if _way_ghost != null:
+		_way_ghost.visible = false
+	hud.set_placing("", "")
+
+
+## First click sets the near end, second orders the way and starts the next one
+## from where this ended -- so a chain of road is a chain of clicks.
+func _click_way() -> void:
+	var at := _cursor_ground()
+	if not _way_started:
+		_way_from = at
+		_way_started = true
+		return
+	var why := String(
+		republic.order_way(_way_grade, _way_from.x, _way_from.z, at.x, at.z, _way_lamps)
+	)
+	hud.set_placing(_way_label(), why)
+	if why == "":
+		_roads_shown = -1
+		_way_from = at
+
+
+func _way_label() -> String:
+	var names := republic.grade_names()
+	var name := String(names[_way_grade]) if _way_grade < names.size() else "way"
+	return "%s%s" % [name, " with lamps" if _way_lamps else ""]
+
+
+## The rubber band between the first click and the cursor.
+##
+## Drawn rather than described, because the whole question a player is asking
+## while laying a road is "does this line go where I think it does" -- and on
+## ground with relief in it, an unlit line at a fixed height would answer wrongly.
+func _update_way() -> void:
+	if _way_grade < 0 or _way_ghost == null:
+		return
+	var at := _cursor_ground()
+	if not _way_started:
+		hud.set_placing(_way_label(), "click the near end")
+		_way_ghost.mesh = null
+		return
+	var mesh := ImmediateMesh.new()
+	var along := at - _way_from
+	along.y = 0.0
+	if along.length() > 0.5:
+		var side := along.normalized().cross(Vector3.UP).normalized() * 3.5
+		var lift := Vector3(0.0, 0.6, 0.0)
+		var tone := Color(0.45, 0.85, 0.5, 0.5)
+		mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, null)
+		# Stepped along the ground rather than a single quad, so the band follows
+		# the relief it is being drawn over.
+		var steps := clampi(int(along.length() / 40.0), 1, 64)
+		for i in steps:
+			var t0 := float(i) / float(steps)
+			var t1 := float(i + 1) / float(steps)
+			var a := _way_from.lerp(at, t0)
+			var b := _way_from.lerp(at, t1)
+			a.y = _ground_height(a.x, a.z)
+			b.y = _ground_height(b.x, b.z)
+			var p0 := a - side + lift
+			var p1 := a + side + lift
+			var p2 := b + side + lift
+			var p3 := b - side + lift
+			for v in [p0, p3, p2, p0, p2, p1]:
+				mesh.surface_set_color(tone)
+				mesh.surface_add_vertex(v)
+		mesh.surface_end()
+	_way_ghost.mesh = mesh
+	hud.set_placing(
+		_way_label(),
+		"%.0f m  ·  click the far end, right click or esc to stop" % _way_from.distance_to(at)
+	)
 
 
 func _ground_height(x: float, z: float) -> float:

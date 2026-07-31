@@ -113,12 +113,42 @@ fn playing(push: &mut impl FnMut(String)) {
             .into(),
     );
 
+    push(">A building runs the hours you staff it for".into());
+    push(
+        ".Every workplace runs a number of crews, and each crew works a shift. One \
+         crew on a standard day is what a building's figures describe; more crews \
+         is proportionally more work out of it, and proportionally more people. An \
+         hour nobody is rostered for is an hour that produces nothing, so running \
+         the night is a thing you pay for in workers rather than a switch."
+            .into(),
+    );
+
+    push(">A longer shift is paid for by the people working it".into());
+    push(
+        ".Shift length is national policy, with exceptions by trade and by \
+         building. Lengthening a shift buys more of the day out of the crew you \
+         already have — and costs them health and loyalty in proportion, every \
+         day. Loyalty is what decides whether people stay."
+            .into(),
+    );
+
     push(">Freight is vehicles".into());
     push(
         ".Garages own vehicles, and a depot's establishment is fixed: wanting more \
          lorries means another depot and the people to crew it. A vehicle never \
          accepts a job it cannot finish, so running dry is a refusal in the yard \
          rather than a lorry stranded in a field."
+            .into(),
+    );
+
+    push(">The dark is an obstacle you build against".into());
+    push(
+        ".A shift that starts or ends in the dark needs a lit way to work or a \
+         seat on something. Street lighting is a variant of paved road rather \
+         than something you place: it takes materials and builder-days by the \
+         kilometre and it draws off the grid, so a lit street wants a \
+         transformer in reach and a republic short of power puts its lamps out \
+         first. A bus is the other answer, and it costs fuel instead."
             .into(),
     );
 

@@ -28,6 +28,16 @@ const ORBIT_SPEED := 0.006
 
 @onready var camera: Camera3D = $Camera
 
+## Emitted whenever the boom length changes.
+##
+## The sun listens, because Godot's `directional_shadow_max_distance` is measured
+## from the camera and is not a property the light can work out for itself. It
+## defaults to 100 m; this camera opens at about 1,080 m on a 6 km map, so for
+## the whole of this project's life nothing in frame was ever inside the shadow
+## range and not one shadow was ever drawn. Nothing errored, and every number was
+## healthy -- see `main.gd::_fit_shadows`.
+signal distance_changed(metres: float)
+
 var _distance := 800.0
 var _pitch := deg_to_rad(50.0)
 var _yaw := 0.0
@@ -47,6 +57,24 @@ func frame_map(extent_m: float, at_x: float, at_z: float) -> void:
 	position = Vector3(at_x, 0.0, at_z)
 	# Close enough that the buildings read as buildings rather than as marks.
 	_distance = maxf(300.0, extent_m * 0.18)
+	_apply()
+
+
+## How long the boom is. The sun needs it to size its shadow range.
+func get_distance() -> float:
+	return _distance
+
+
+## Tilt the camera, in degrees above horizontal. Capture runs use this.
+##
+## The sky is only visible below about 25 degrees, and until this existed the
+## pitch was fixed at 50 and could only be changed by dragging a mouse -- so
+## `--shot` could not photograph the sky at all, and a whole sky shader was
+## written, rendered and pronounced broken on the evidence of frames that
+## contained none of it. Every pixel sampled was the below-horizon half of the
+## dome, which is correctly a flat colour.
+func set_pitch(degrees: float) -> void:
+	_pitch = clampf(deg_to_rad(degrees), MIN_PITCH, MAX_PITCH)
 	_apply()
 
 
@@ -111,3 +139,7 @@ func _apply() -> void:
 	# its own -Z, so rotating -pitch about X points it at the pivot.
 	camera.position = Vector3(0.0, sin(_pitch), cos(_pitch)) * _distance
 	camera.rotation = Vector3(-_pitch, 0.0, 0.0)
+	# Every path that moves the boom comes through here, which is why the signal
+	# is emitted from `_apply` rather than from the four callers that change
+	# `_distance`. One of them would eventually be added without it.
+	distance_changed.emit(_distance)

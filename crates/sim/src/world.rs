@@ -82,7 +82,17 @@ use serde::{Deserialize, Serialize};
 /// [`Command::NameRepublic`], is recorded in the journal like every other
 /// input, and a replay reproduces it. A save written before it existed
 /// describes a republic with no name, and there is nowhere to invent one from.
-pub const SAVE_VERSION: u32 = 13;
+///
+/// 14: **the empty map, and the roster.** Two changes, one version, because
+/// either alone would have made older saves unreplayable and there is no point
+/// spending two numbers on one break. `scenario::found` stopped placing
+/// nineteen buildings and a hundred and forty-three settlers — so a journal
+/// written against the old founding replays into a republic that never had them,
+/// which is a different world wearing the same commands. And every building
+/// gained a shift count and a working day, which nothing before this version
+/// wrote. A save from before it is refused with the reason rather than loaded
+/// into a republic it does not describe.
+pub const SAVE_VERSION: u32 = 14;
 
 /// The longest a republic's name may be, in characters.
 ///
@@ -92,6 +102,23 @@ pub const SAVE_VERSION: u32 = 13;
 /// byte limit would let "Новосибирск" fail where a Latin name of the same
 /// length passed.
 pub const NAME_LIMIT: usize = 48;
+
+/// A working day the republic will roster, or a refusal that says the range.
+///
+/// Refused rather than clamped, for the same reason a long name is: a player who
+/// asked for twenty hours and was quietly given sixteen has been overruled
+/// without being told, and the panel would then show a number nobody chose.
+fn check_hours(hours: f64) -> Result<(), Refused> {
+    if hours.is_finite() && (crate::shifts::MIN_HOURS..=crate::shifts::MAX_HOURS).contains(&hours) {
+        Ok(())
+    } else {
+        Err(Refused::ShiftOutOfRange {
+            asked: hours,
+            min: crate::shifts::MIN_HOURS,
+            max: crate::shifts::MAX_HOURS,
+        })
+    }
+}
 
 /// The first version the format ever carried.
 ///
@@ -733,6 +760,7 @@ impl World {
         from: Point,
         to: Point,
         grade: Grade,
+        lamps: bool,
     ) -> Result<RoadSiteId, RoadError> {
         for end in [from, to] {
             if !self
@@ -757,7 +785,7 @@ impl World {
         // now", and the construction system breaks the tie in the buildings'
         // favour because the building with that number was ordered first.
         let ordered = self.buildings.commissioned();
-        self.roadworks.order(from, to, grade, ordered)
+        self.roadworks.order(from, to, grade, lamps, ordered)
     }
 
     /// Order a power line or a heat main between two points.
@@ -937,6 +965,21 @@ impl World {
                 .map(Done::Commissioned)
                 .map_err(Refused::Placement),
 
+            // The site goes down exactly as an ordinary one does — same border
+            // rule, same ground checks, same commissioning order — and is then
+            // marked as somebody else's job. Everything that makes it different
+            // happens in the `contracting` system, which is the only thing that
+            // reads `contractor`.
+            Command::ContractBuild { kind, at, market } => self
+                .place(kind, at)
+                .inspect(|&id| {
+                    if let Some(b) = self.buildings.get_mut(id) {
+                        b.contractor = Some(market);
+                    }
+                })
+                .map(Done::Commissioned)
+                .map_err(Refused::Placement),
+
             // Two refusals here, and both exist to make an orphaned crew
             // unrepresentable rather than to detect one afterwards. Pulling down
             // a site with a gang standing on it, or an office whose gangs are
@@ -983,8 +1026,13 @@ impl World {
                 None => Err(Refused::NoCrewThere),
             },
 
-            Command::OrderRoad { from, to, grade } => self
-                .order_road(from, to, grade)
+            Command::OrderRoad {
+                from,
+                to,
+                grade,
+                lamps,
+            } => self
+                .order_road(from, to, grade, lamps)
                 .map(Done::Ordered)
                 .map_err(Refused::Road),
 
@@ -1129,6 +1177,58 @@ impl World {
                 Ok(Done::Nothing)
             }
 
+            Command::SetNationalShiftHours { hours } => {
+                check_hours(hours)?;
+                self.buildings.set_national_hours(hours);
+                Ok(Done::Nothing)
+            }
+
+            Command::SetShiftHours { scope, hours } => {
+                if let Some(h) = hours {
+                    check_hours(h)?;
+                }
+                match scope {
+                    crate::command::ShiftScope::Kind(kind) => {
+                        if hours.is_none() && self.buildings.shift_policy().of_kind(kind).is_none()
+                        {
+                            return Err(Refused::NoSuchShiftRule);
+                        }
+                        self.buildings.set_kind_hours(kind, hours);
+                    }
+                    crate::command::ShiftScope::Building(id) => {
+                        if self.buildings.get(id).is_none() {
+                            return Err(Refused::NoSuchBuilding(id));
+                        }
+                        if hours.is_none()
+                            && self.buildings.shift_policy().of_building(id).is_none()
+                        {
+                            return Err(Refused::NoSuchShiftRule);
+                        }
+                        self.buildings.set_building_hours(id, hours);
+                    }
+                }
+                Ok(Done::Nothing)
+            }
+
+            Command::SetShifts { building, shifts } => {
+                let Some(b) = self.buildings.get(building) else {
+                    return Err(Refused::NoSuchBuilding(building));
+                };
+                // A roster on a house is a control that does nothing, and a
+                // control that does nothing is worse than an absent one.
+                if b.def().workers == 0 {
+                    return Err(Refused::NotAWorkplace);
+                }
+                if shifts > crate::shifts::MAX_SHIFTS {
+                    return Err(Refused::TooManyShifts {
+                        asked: shifts,
+                        limit: crate::shifts::MAX_SHIFTS,
+                    });
+                }
+                self.buildings.set_shifts(building, shifts);
+                Ok(Done::Nothing)
+            }
+
             Command::AddTradeRule { .. }
             | Command::RemoveTradeRule { .. }
             | Command::MoveTradeRule { .. } => {
@@ -1155,9 +1255,37 @@ impl World {
         }
     }
 
+    // ---- Command helpers ----------------------------------------------------
+
+    /// Lay a short lit street through a town, finished, for a capture run.
+    ///
+    /// **Not a player action, and it is here rather than behind the `fixtures`
+    /// feature for one reason: what it exists to serve is a picture.** Street
+    /// lighting needs paved road, paved needs asphalt, and asphalt is four
+    /// buildings deep in a chain no fixture has built — so a screenshot run
+    /// would never render a lamp, and the two geometry bugs this project has
+    /// actually shipped (a map wound inside out, a camera aimed at a corner)
+    /// were both invisible to every number and visible in one frame.
+    ///
+    /// It is paired with [`crate::scenario::town`], which is itself a fixture,
+    /// and nothing that founds a real republic calls either.
+    pub fn lay_demo_street(&mut self, centre: Point) {
+        let to = Point::new(centre.x + Metres(500.0), centre.y);
+        if let Ok(id) = self.order_road(centre, to, Grade::Paved, true)
+            && let Some(site) = self.roadworks.remove(id)
+        {
+            crate::roadworks::open(&mut self.roads, &site);
+        }
+    }
+
     /// Everything the player has done, in order.
     pub fn journal(&self) -> &Journal {
         &self.journal
+    }
+
+    /// What the republic has decided about working hours.
+    pub fn shift_policy(&self) -> &crate::shifts::ShiftPolicy {
+        self.buildings.shift_policy()
     }
 
     // ---- Views -------------------------------------------------------------
@@ -2064,6 +2192,7 @@ mod tests {
                     from: at(300.0, 300.0),
                     to: at(700.0, 300.0),
                     grade: Grade::Dirt,
+                    lamps: false,
                 },
             ),
             (40, Command::RemoveTradeRule { index: 0 }),
@@ -2183,7 +2312,7 @@ mod tests {
                 name: "Zheleznogorsk".to_string(),
             })
             .expect("a plain name is accepted");
-        crate::scenario::found(&mut world, crate::scenario::SETTLERS);
+        crate::scenario::town(&mut world, crate::scenario::SETTLERS);
         for _ in 0..TICKS_PER_DAY * 40 {
             world.tick();
         }
@@ -2329,7 +2458,7 @@ mod tests {
         use crate::fleet::Destination;
 
         let mut world = World::new(spec(1961));
-        let base = crate::scenario::found(&mut world, 120);
+        let base = crate::scenario::town(&mut world, 120);
         let office = base.construction_office.expect("the founding places one");
 
         // A site far enough out that the crew is genuinely away from the yard.
@@ -2430,7 +2559,7 @@ mod tests {
             extent: Metres(6_000.0),
             climate: ClimateId::Plains,
         });
-        crate::scenario::found(&mut world, 120);
+        crate::scenario::town(&mut world, 120);
         simulate_days(&mut world, 20);
 
         // Premise: somebody is actually driving to the thing being demolished.

@@ -811,25 +811,35 @@ pub fn assign_labour(
     let mut workplaces: Vec<_> = buildings
         .all()
         .iter()
-        .filter(|b| b.is_built() && b.def().workers > 0)
+        .filter(|b| b.is_built() && b.jobs() > 0)
         .collect();
     workplaces.sort_by_key(|b| b.id);
 
     for workplace in workplaces {
-        let jobs = workplace.def().workers as usize;
+        // **Every shift, not every post.** The authored `workers` is one crew,
+        // so a works the player has put on three shifts is asking the republic
+        // for three crews — and it goes short exactly as it would if it were
+        // three separate factories. That is the whole cost of running the night,
+        // and it is charged here rather than anywhere else.
+        let jobs = workplace.jobs() as usize;
         // What the job needs to have been taught. A republic with no school is
         // a republic whose next generation cannot run its own mines, which is
         // the entire point of the attribute — and it is checked here rather
         // than in the schooling pass because reachability and qualification are
         // the same question: whether this person can hold this job.
         let needs = workplace.def().schooling;
+        // **Whether getting here means being out in the dark.** A place running
+        // more than a day shift needs a lit way in or a seat on something, and
+        // that is the join between the roster and the street lamps: without it
+        // lighting a road would be a decoration nothing ever read.
+        let dark = workplace.works_after_dark();
 
         // Rank: walkers first, then by journey time, then by id.
         let mut candidates: Vec<(u8, f64, CitizenId, Commute)> = available
             .iter()
             .filter(|&&(_, _, taught)| taught >= needs)
             .filter_map(|&(id, home, _)| {
-                let commute = transport::reach_by(home, workplace.centre, ways, &services)?;
+                let commute = transport::reach_at(home, workplace.centre, ways, &services, dark)?;
                 let rank = match commute.mode {
                     Mode::Foot => 0,
                     Mode::Ride(_) => 1,
