@@ -10,7 +10,7 @@ The 1.x TypeScript build is frozen at `D:\archive`. It is a **balance reference 
 
 **Finished when a stranger could install it, play it, and nothing in it embarrasses you.** Three conditions, all binding:
 
-1. **Nothing the simulation knows is invisible.** Every new simulation fact ships with its UI in the same commit, and is controllable wherever it is a decision rather than a consequence. The exposure guard enforces this; keep it able to.
+1. **Nothing the simulation knows is invisible.** Every new simulation fact ships with its UI in the same commit, and is controllable wherever it is a decision rather than a consequence. Two guards enforce it, one per boundary — `tests/exposure.rs` from simulation to shell, `tests/reachable.rs` from shell to `godot/`, because a view can reach the shell and stop there. Keep both able to. `reachable.rs` carries a `NOT_YET_REACHED` list of bindings still waiting for a screen; it is a work list, and wiring one up fails the build until its line goes.
 2. **Feature parity with Workers & Resources.** Built *and visible*. The known gap is depth, not breadth.
 3. **A republic survives a decade without an artificial wall** — every wall it hits a design consequence rather than a bug, a missing system or a balance hole.
 
