@@ -1,5 +1,5 @@
 {
-  "checksum": "3d77026dafbf5c7d",
+  "checksum": "5c27ee43f2e6e4f2",
   "resources": ["Coal", "IronOre", "Steel", "Oil", "Fuel", "Bitumen", "Chemicals", "Wood", "Planks", "Gravel", "Bricks", "Cement", "Concrete", "PrefabPanel", "Asphalt", "Crops", "Food", "Clothes", "Alcohol", "Machinery", "Electronics", "Waste"],
   "forms": ["Aggregate", "Liquid", "Bulk", "Open", "Covered"],
   "needs": ["Health", "Culture", "Schooling", "Safety"],
@@ -2144,6 +2144,25 @@
       "stores_to_order": false
     }
   },
+  "terrain_plan": {
+    "cell_size": 10.0,
+    "feature_size": 2000.0,
+    "octaves": 4,
+    "relief": 120.0,
+    "water_below": 0.32,
+    "forest_above": 0.52,
+    "rock_above": 0.78,
+    "river_catchment": 0.1,
+    "broad_catchment": 0.25
+  },
+  "geology_stream": 1,
+  "mineral_plan": [
+    { "mineral": "Gravel", "bodies": 6, "radius": [150.0, 400.0], "top": [0.0, 8.0], "layers": 2, "layer_thickness": [3.0, 8.0], "tonnes_per_layer": [40000.0, 120000.0] },
+    { "mineral": "Coal", "bodies": 4, "radius": [200.0, 600.0], "top": [20.0, 120.0], "layers": 4, "layer_thickness": [8.0, 25.0], "tonnes_per_layer": [150000.0, 600000.0] },
+    { "mineral": "IronOre", "bodies": 3, "radius": [150.0, 450.0], "top": [30.0, 160.0], "layers": 3, "layer_thickness": [10.0, 30.0], "tonnes_per_layer": [100000.0, 400000.0] },
+    { "mineral": "Oil", "bodies": 2, "radius": [250.0, 700.0], "top": [400.0, 1200.0], "layers": 3, "layer_thickness": [20.0, 60.0], "tonnes_per_layer": [80000.0, 300000.0] },
+    { "mineral": "Groundwater", "bodies": 3, "radius": [800.0, 2000.0], "top": [4.0, 40.0], "layers": 1, "layer_thickness": [10.0, 40.0], "tonnes_per_layer": [500000.0, 2000000.0] }
+  ],
   "vehicles": {
     "Lorry": { "name": "Lorry", "role": "Freight", "medium": "Road", "capacity_t": 8.0, "seats": 0, "on_road_kph": 50.0, "cross_country_kph": 15.000000000000002, "fuel_per_km": 0.0003, "tank_t": 0.15, "ground": 0.75, "load_penalty": 0.35 },
     "HeavyLorry": { "name": "Heavy Lorry", "role": "Freight", "medium": "Road", "capacity_t": 20.0, "seats": 0, "on_road_kph": 45.0, "cross_country_kph": 8.0, "fuel_per_km": 0.0006, "tank_t": 0.3, "ground": 0.55, "load_penalty": 0.4 },

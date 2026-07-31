@@ -233,6 +233,19 @@ jobs:
             echo "::error::the port's test suite did not report success"
             exit 1
           fi
+          # And a second layer, because the first one lied once.
+          #
+          # A GDScript runtime error aborts the function it happens in and hands
+          # control back as though the call returned; there are no exceptions.
+          # The suite printed `ok` while four tests crashed on a misspelled
+          # method, and every check they would have made simply never ran.
+          # `tests/case.gd` now makes each test mark its own last line and the
+          # runner turns a missing mark into a failure — but that is the same
+          # process reporting on itself, and this is not.
+          if grep -qE "SCRIPT ERROR|Parse Error" test.log; then
+            echo "::error::a script error was raised during the run — see the log above"
+            exit 1
+          fi
 
   # Does it install on a machine that has never heard of Rust or Godot?
   #

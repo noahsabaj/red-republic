@@ -25,5 +25,30 @@
     "seed": 7,
     "draws_before": 500,
     "after": ["8768f2d14b1e9ac5", "9834aa948b38d888", "eb584391730ff304", "1fd3429d8f6261d4", "639213fce0ca17e3", "82404071d74c789c", "010fac33a2030d83", "ebae2c4762865e7b"]
+  },
+  "terrain": {
+    "hash_cell": [
+      ["0000000000000000", "0000000000000000", "74b665ad256289fe"],
+      ["0000000000000001", "0000000000000000", "74b6ef00ebc62d83"],
+      ["0000000000000000", "0000000000000001", "cf2534c9f2893edd"],
+      ["ffffffffffffffff", "ffffffffffffffff", "537385595e0177fc"],
+      ["0000000000003039", "fffffffffffef6ce", "90a33a4cff361ce2"],
+      ["ffffffffffffffff", "0020000000000001", "843f84a6da84a0f8"]
+    ],
+    "fractal_noise": [
+      [0.0, 0.0, "3fd9d0a885b84791"],
+      [5.0, 5.0, "3fd9cffe243fb11f"],
+      [1234.5, 6789.25, "3fe1a68139846539"],
+      [2000.0, 2000.0, "3fd18f4e9e864ad3"],
+      [5995.0, 5995.0, "3fe6d0283f20d415"]
+    ],
+    "maps": [
+      { "seed": 1961, "extent": 1200.0, "cells": 120, "surface_fnv": "44f6c4cd53962f4f", "height_fnv": "c52fbdf95cb3a6e6", "counts": [13066, 1091, 0, 243] },
+      { "seed": 1961, "extent": 3000.0, "cells": 300, "surface_fnv": "32cfbd69998bac93", "height_fnv": "eae755dd7aa93be2", "counts": [59620, 25609, 0, 4771] },
+      { "seed": 7, "extent": 1200.0, "cells": 120, "surface_fnv": "8ee20eba99fd7ac4", "height_fnv": "3ffbf2cee27f2a46", "counts": [0, 10905, 3325, 170] },
+      { "seed": 7, "extent": 3000.0, "cells": 300, "surface_fnv": "acf6db96d35bfe42", "height_fnv": "aa6f66abf6499974", "counts": [876, 83900, 4905, 319] },
+      { "seed": 42, "extent": 1200.0, "cells": 120, "surface_fnv": "5f5994af4746ecce", "height_fnv": "659680225958bac0", "counts": [6211, 7958, 0, 231] },
+      { "seed": 42, "extent": 3000.0, "cells": 300, "surface_fnv": "2783ea32d7ff862b", "height_fnv": "3a2402b64c90fc6e", "counts": [9128, 79033, 1426, 413] }
+    ]
   }
 }

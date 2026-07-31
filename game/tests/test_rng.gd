@@ -20,17 +20,6 @@ func _vectors() -> Dictionary:
 		return {}
 	return parsed
 
-## Sixteen hex digits to an `int`, by nibble.
-##
-## Not `String.hex_to_int()`: every value here with the top bit set is above
-## `int64` max as an unsigned number, and a parser that clamps rather than wraps
-## would quietly turn half the vectors into the same number.
-static func _hex(s: String) -> int:
-	var v := 0
-	for i in s.length():
-		v = (v << 4) | ("0123456789abcdef".find(s[i].to_lower()))
-	return v
-
 ## The bit pattern of a double, read back as the double.
 ##
 ## The vectors carry floats as bits rather than as decimals because this
@@ -38,13 +27,6 @@ static func _hex(s: String) -> int:
 ## serde_json returned a different value for 91,767 of 200,000 sampled f64s.
 ## Going through the bits means this test checks the generator and not the
 ## reader's arithmetic.
-static func _hex64(v: int) -> String:
-	const DIGITS := "0123456789abcdef"
-	var out := ""
-	for i in 16:
-		out += DIGITS[(v >> ((15 - i) * 4)) & 0xf]
-	return out
-
 static func _bits_to_float(bits: int) -> float:
 	var b := PackedByteArray()
 	b.resize(8)
@@ -56,37 +38,42 @@ static func _bits_to_float(bits: int) -> float:
 func test_next_u64_matches_the_rust_stream() -> void:
 	var v := _vectors()
 	if v.is_empty():
+		done()
 		return
 	var table: Dictionary = v["next_u64"]
 	expect(table.size() >= 5, "the vectors cover several seeds")
 	for seed_text: String in table:
-		var rng := Rng.from_seed(_hex(seed_text))
+		var rng := Rng.from_seed(Bits.from_hex64(seed_text))
 		var want: Array = table[seed_text]
 		expect(want.size() >= 16, "seed %s has draws to compare" % seed_text)
 		for i in want.size():
-			expect_eq(_hex64(rng.next_u64()), want[i], "seed %s draw %d" % [seed_text, i])
+			expect_eq(Bits.hex64(rng.next_u64()), want[i], "seed %s draw %d" % [seed_text, i])
+	done()
 
 func test_next_f64_matches_the_rust_stream() -> void:
 	var v := _vectors()
 	if v.is_empty():
+		done()
 		return
 	var table: Dictionary = v["next_f64_bits"]
 	for seed_text: String in table:
-		var rng := Rng.from_seed(_hex(seed_text))
+		var rng := Rng.from_seed(Bits.from_hex64(seed_text))
 		var want: Array = table[seed_text]
 		expect(want.size() >= 16, "seed %s has float draws to compare" % seed_text)
 		for i in want.size():
 			expect_exact(
 				rng.next_f64(),
-				_bits_to_float(_hex(want[i])),
+				_bits_to_float(Bits.from_hex64(want[i])),
 				"seed %s float draw %d" % [seed_text, i]
 			)
+	done()
 
 ## The half of `next_bounded` a naive `% n` gets wrong, and the half a signed
 ## `%` gets wrong: a negative `x` would return a negative index.
 func test_next_bounded_matches_the_rust_stream() -> void:
 	var v := _vectors()
 	if v.is_empty():
+		done()
 		return
 	var table: Dictionary = v["next_bounded"]
 	for bound_text: String in table:
@@ -98,12 +85,14 @@ func test_next_bounded_matches_the_rust_stream() -> void:
 			var got := rng.next_bounded(n)
 			expect_eq(got, want[i], "bound %d draw %d" % [n, i])
 			expect(got >= 0 and got < n, "bound %d draw %d is in range" % [n, i])
+	done()
 
 ## The save contract. A generator that restores the seed but not the position
 ## passes every test above and fails this one.
 func test_a_saved_position_resumes_the_same_future() -> void:
 	var v := _vectors()
 	if v.is_empty():
+		done()
 		return
 	var r: Dictionary = v["resume"]
 	var live := Rng.from_seed(int(r["seed"]))
@@ -116,13 +105,14 @@ func test_a_saved_position_resumes_the_same_future() -> void:
 
 	# The live generator goes on to produce the pinned values...
 	for i in want.size():
-		expect_eq(_hex64(live.next_u64()), want[i], "live draw %d after the save" % i)
+		expect_eq(Bits.hex64(live.next_u64()), want[i], "live draw %d after the save" % i)
 
 	# ...and one wound to the carried position produces exactly the same.
 	var restored := Rng.from_seed(0)
 	restored.set_state(saved)
 	for i in want.size():
-		expect_eq(_hex64(restored.next_u64()), want[i], "restored draw %d" % i)
+		expect_eq(Bits.hex64(restored.next_u64()), want[i], "restored draw %d" % i)
+	done()
 
 func test_floats_stay_in_the_half_open_unit_interval() -> void:
 	var rng := Rng.from_seed(99)
@@ -130,7 +120,9 @@ func test_floats_stay_in_the_half_open_unit_interval() -> void:
 		var x := rng.next_f64()
 		if x < 0.0 or x >= 1.0:
 			fail("%s is outside [0, 1)" % String.num(x, 17))
+			done()
 			return
+	done()
 
 ## Not a quality test — a smoke test that the distribution is not visibly
 ## broken. A generator that returned a constant, or only even numbers, would
@@ -149,3 +141,4 @@ func test_draws_are_roughly_uniform_across_buckets() -> void:
 			absi(buckets[i] - expected) < expected / 10,
 			"bucket %d held %d, expected about %d" % [i, buckets[i], expected]
 		)
+	done()

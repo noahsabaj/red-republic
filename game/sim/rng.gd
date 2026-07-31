@@ -23,10 +23,6 @@
 class_name Rng
 extends RefCounted
 
-## The sign bit on its own. Writing `-9223372036854775808` as a literal is a
-## parse error — the positive half is out of range before the minus is applied.
-const MIN: int = 1 << 63
-
 const SPLIT_GAMMA: int = -7046029254386353131  # 0x9E3779B97F4A7C15
 const SPLIT_A: int = -4658895280553007687      # 0xBF58476D1CE4E5B9
 const SPLIT_B: int = -7723592293110705685      # 0x94D049BB133111EB
@@ -46,9 +42,9 @@ static func from_seed(seed: int) -> Rng:
 	for _i in 4:
 		z += SPLIT_GAMMA
 		var x := z
-		x = (x ^ ushr(x, 30)) * SPLIT_A
-		x = (x ^ ushr(x, 27)) * SPLIT_B
-		out.append(x ^ ushr(x, 31))
+		x = (x ^ Bits.ushr(x, 30)) * SPLIT_A
+		x = (x ^ Bits.ushr(x, 27)) * SPLIT_B
+		out.append(x ^ Bits.ushr(x, 31))
 	r._s0 = out[0]
 	r._s1 = out[1]
 	r._s2 = out[2]
@@ -57,14 +53,14 @@ static func from_seed(seed: int) -> Rng:
 
 ## The next 64 random bits — the primitive every other method is built on.
 func next_u64() -> int:
-	var result := rotl(_s0 + _s3, 23) + _s0
+	var result := Bits.rotl(_s0 + _s3, 23) + _s0
 	var t := _s1 << 17
 	_s2 ^= _s0
 	_s3 ^= _s1
 	_s1 ^= _s2
 	_s0 ^= _s3
 	_s2 ^= t
-	_s3 = rotl(_s3, 45)
+	_s3 = Bits.rotl(_s3, 45)
 	return result
 
 ## A float in `[0, 1)`.
@@ -75,7 +71,7 @@ func next_u64() -> int:
 ## result outside the interval entirely.
 func next_f64() -> float:
 	const SCALE: float = 1.0 / float(1 << 53)
-	return float(ushr(next_u64(), 11)) * SCALE
+	return float(Bits.ushr(next_u64(), 11)) * SCALE
 
 ## A uniform integer in `[0, n)`, with the bias removed.
 ##
@@ -98,8 +94,8 @@ func next_bounded(n: int) -> int:
 	var threshold := (m32 * m32) % n
 	while true:
 		var x := next_u64()
-		if uge(x, threshold):
-			return umod(x, n)
+		if Bits.uge(x, threshold):
+			return Bits.umod(x, n)
 	return 0
 
 ## A float in `[lo, hi)`.
@@ -118,32 +114,6 @@ func set_state(s: PackedInt64Array) -> void:
 	_s2 = s[2]
 	_s3 = s[3]
 
-# ---- unsigned primitives GDScript does not have ----
-
-## Logical right shift: `>>` on its own sign-extends.
-static func ushr(x: int, n: int) -> int:
-	if n <= 0:
-		return x
-	if n >= 64:
-		return 0
-	return (x >> n) & ((1 << (64 - n)) - 1)
-
-## Rotate left, treating the value as unsigned 64.
-static func rotl(x: int, n: int) -> int:
-	return (x << n) | ushr(x, 64 - n)
-
-## `a >= b` with both read as unsigned. Flipping the sign bit on both maps the
-## unsigned order onto the signed one.
-static func uge(a: int, b: int) -> bool:
-	return (a ^ MIN) >= (b ^ MIN)
-
-## `x mod n` with `x` read as unsigned and `0 < n < 2^31`.
-##
-## Split into 32-bit halves so the arithmetic never leaves the positive range:
-## `x = hi·2³² + lo`, so `x mod n = ((hi mod n)·(2³² mod n) + lo) mod n`. Both
-## factors are below `n < 2³¹`, so the product stays under 2⁶² and cannot reach
-## the sign bit.
-static func umod(x: int, n: int) -> int:
-	var hi := ushr(x, 32)
-	var lo := x & 0xFFFFFFFF
-	return ((hi % n) * (4294967296 % n) + lo) % n
+# The unsigned primitives live in `bits.gd`, because worldgen hashes positions
+# with the same arithmetic and two copies of a rotate is exactly the kind of
+# duplication that drifts. See that file for why each one is needed.

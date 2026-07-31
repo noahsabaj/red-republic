@@ -97,6 +97,41 @@ static var b_veh_at: PackedInt32Array = PackedInt32Array()
 static var b_veh_kind: PackedInt32Array = PackedInt32Array()
 static var b_veh_count: PackedInt32Array = PackedInt32Array()
 
+# ---- worldgen plans ----
+#
+# Balance, and swept rather than picked. `river_catchment` was chosen over five
+# thresholds and three seeds against two things at once: how far the longest
+# connected channel runs, and how many of sixteen bearings a 2 km road can take
+# without meeting water. Low thresholds give a dendritic mesh that blocks every
+# bearing — not a republic divided by a river but one that cannot build a road.
+static var terrain_cell_size: float = 0.0
+static var terrain_feature_size: float = 0.0
+static var terrain_octaves: int = 0
+static var terrain_relief: float = 0.0
+static var terrain_water_below: float = 0.0
+static var terrain_forest_above: float = 0.0
+static var terrain_rock_above: float = 0.0
+static var terrain_river_catchment: float = 0.0
+static var terrain_broad_catchment: float = 0.0
+
+## The stream index geology draws on, kept apart from terrain's so that changing
+## one does not re-roll the other.
+static var geology_stream: int = 0
+
+## One row per mineral, in the order the plan fixes. Ranges are inclusive-low
+## and exclusive-high, drawn uniformly.
+static var mineral_of_plan: PackedInt32Array = PackedInt32Array()
+static var plan_bodies: PackedInt32Array = PackedInt32Array()
+static var plan_radius_lo: PackedFloat64Array = PackedFloat64Array()
+static var plan_radius_hi: PackedFloat64Array = PackedFloat64Array()
+static var plan_top_lo: PackedFloat64Array = PackedFloat64Array()
+static var plan_top_hi: PackedFloat64Array = PackedFloat64Array()
+static var plan_layers: PackedInt32Array = PackedInt32Array()
+static var plan_thickness_lo: PackedFloat64Array = PackedFloat64Array()
+static var plan_thickness_hi: PackedFloat64Array = PackedFloat64Array()
+static var plan_tonnes_lo: PackedFloat64Array = PackedFloat64Array()
+static var plan_tonnes_hi: PackedFloat64Array = PackedFloat64Array()
+
 # ---- vehicles ----
 static var vehicle_count: int = 0
 static var vehicle_ids: PackedStringArray = PackedStringArray()
@@ -173,6 +208,42 @@ static func load_tables() -> String:
 	_reset_buildings()
 	for id in building_ids:
 		_append_building(bs[id])
+
+	var tp: Dictionary = m["terrain_plan"]
+	terrain_cell_size = tp["cell_size"]
+	terrain_feature_size = tp["feature_size"]
+	terrain_octaves = tp["octaves"]
+	terrain_relief = tp["relief"]
+	terrain_water_below = tp["water_below"]
+	terrain_forest_above = tp["forest_above"]
+	terrain_rock_above = tp["rock_above"]
+	terrain_river_catchment = tp["river_catchment"]
+	terrain_broad_catchment = tp["broad_catchment"]
+
+	geology_stream = m["geology_stream"]
+	mineral_of_plan = PackedInt32Array()
+	plan_bodies = PackedInt32Array()
+	plan_radius_lo = PackedFloat64Array()
+	plan_radius_hi = PackedFloat64Array()
+	plan_top_lo = PackedFloat64Array()
+	plan_top_hi = PackedFloat64Array()
+	plan_layers = PackedInt32Array()
+	plan_thickness_lo = PackedFloat64Array()
+	plan_thickness_hi = PackedFloat64Array()
+	plan_tonnes_lo = PackedFloat64Array()
+	plan_tonnes_hi = PackedFloat64Array()
+	for row: Dictionary in (m["mineral_plan"] as Array):
+		mineral_of_plan.append(MINERALS.find(row["mineral"]))
+		plan_bodies.append(row["bodies"])
+		plan_radius_lo.append(row["radius"][0])
+		plan_radius_hi.append(row["radius"][1])
+		plan_top_lo.append(row["top"][0])
+		plan_top_hi.append(row["top"][1])
+		plan_layers.append(row["layers"])
+		plan_thickness_lo.append(row["layer_thickness"][0])
+		plan_thickness_hi.append(row["layer_thickness"][1])
+		plan_tonnes_lo.append(row["tonnes_per_layer"][0])
+		plan_tonnes_hi.append(row["tonnes_per_layer"][1])
 
 	checksum_expected = m["checksum"]
 	checksum_got = _checksum()
@@ -400,6 +471,26 @@ static func _checksum() -> String:
 		stream.append(b_pollution[b])
 		stream.append_array(serve_shares_of(b))
 		stream.append(float(b_stores_to_order[b]))
+	stream.append(terrain_cell_size)
+	stream.append(terrain_feature_size)
+	stream.append(float(terrain_octaves))
+	stream.append(terrain_relief)
+	stream.append(terrain_water_below)
+	stream.append(terrain_forest_above)
+	stream.append(terrain_rock_above)
+	stream.append(terrain_river_catchment)
+	stream.append(terrain_broad_catchment)
+	for p in mineral_of_plan.size():
+		stream.append(float(plan_bodies[p]))
+		stream.append(plan_radius_lo[p])
+		stream.append(plan_radius_hi[p])
+		stream.append(plan_top_lo[p])
+		stream.append(plan_top_hi[p])
+		stream.append(float(plan_layers[p]))
+		stream.append(plan_thickness_lo[p])
+		stream.append(plan_thickness_hi[p])
+		stream.append(plan_tonnes_lo[p])
+		stream.append(plan_tonnes_hi[p])
 	for v in vehicle_count:
 		stream.append(v_capacity[v])
 		stream.append(float(v_seats[v]))

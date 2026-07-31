@@ -13,6 +13,7 @@ func test_the_table_survives_the_crossing() -> void:
 	var err := _ready_tables()
 	expect(err.is_empty(), "load_tables() said: %s" % err)
 	expect_eq(Tables.checksum_got, Tables.checksum_expected, "checksum")
+	done()
 
 func test_the_rosters_are_the_size_the_simulation_had() -> void:
 	expect(_ready_tables().is_empty(), "table loads")
@@ -23,6 +24,7 @@ func test_the_rosters_are_the_size_the_simulation_had() -> void:
 	expect_eq(Tables.needs.size(), 4, "needs")
 	expect_eq(Tables.priorities.size(), 3, "priorities")
 	expect_eq(Tables.education.size(), 3, "education levels")
+	done()
 
 ## The offset arrays have to close: one more entry than there are buildings, and
 ## the last entry is the length of the run array. A slice off the end of these
@@ -45,6 +47,7 @@ func test_the_variable_length_runs_close() -> void:
 		expect_eq(offsets.size(), n + 1, "%s offsets has one entry per building plus a close" % label)
 		if offsets.size() == n + 1:
 			expect_eq(offsets[n], total, "%s offsets close at the end of the run" % label)
+	done()
 
 ## Every index stored into the table resolved. `find()` returns -1 on a miss, so
 ## an unrecognised resource or form name would sit in the arrays as -1 and read
@@ -68,6 +71,7 @@ func test_no_index_failed_to_resolve() -> void:
 		expect(Tables.b_schooling[b] >= 0, "%s has a schooling bar" % Tables.b_name[b])
 	for v in Tables.vehicle_count:
 		expect(Tables.v_medium[v] >= 0, "%s has a medium" % Tables.v_name[v])
+	done()
 
 ## Spot-check one row against the Rust source by hand, so a checksum that is
 ## self-consistently wrong — both sides hashing the same mistake — still fails.
@@ -77,6 +81,7 @@ func test_the_coal_mine_reads_the_way_it_did() -> void:
 	var b := Tables.building_index("CoalMine")
 	expect(b >= 0, "there is a CoalMine")
 	if b < 0:
+		done()
 		return
 	expect_eq(Tables.b_name[b], "Coal Mine", "name")
 	expect_eq(Tables.b_workers[b], 14, "workers")
@@ -92,6 +97,7 @@ func test_the_coal_mine_reads_the_way_it_did() -> void:
 		expect_exact(Tables.output_rates_of(b)[0], 6.0, "six tonnes a day")
 	expect_eq(Tables.materials_of(b).size(), 4, "four materials in the bill")
 	expect_eq(Tables.inputs_of(b).size(), 0, "a mine eats nothing")
+	done()
 
 ## A value that is not a round number, to prove the crossing keeps precision
 ## rather than only keeping integers. 15 km/h cross-country is stored as metres
@@ -102,6 +108,8 @@ func test_precision_is_not_quietly_rounded() -> void:
 	var v := Tables.vehicle_ids.find("Lorry")
 	expect(v >= 0, "there is a Lorry")
 	if v < 0:
+		done()
 		return
 	expect_exact(Tables.v_cross_country_kph[v], 15.000000000000002, "cross-country speed")
 	expect_exact(Tables.v_fuel_per_km[v], 0.0003, "fuel per km")
+	done()

@@ -70,6 +70,7 @@ func test_the_simulation_does_not_reach_for_the_engine() -> void:
 				not code.contains(token),
 				"%s uses `%s` — %s" % [path.get_file(), token, reason]
 			)
+	done()
 
 ## Comments are stripped before the scan, so that a file may *explain* why it
 ## does not use `Vector2` without tripping the rule that says so. Both this file

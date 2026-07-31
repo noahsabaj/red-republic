@@ -12,7 +12,9 @@ use red_republic_sim::building::{BUILDINGS, Need, Priority, Teaching};
 use red_republic_sim::citizen::Education;
 use red_republic_sim::fleet::VehicleKind;
 use red_republic_sim::journey::Medium;
+use red_republic_sim::mapgen::{DEFAULT_PLAN, GEOLOGY_STREAM};
 use red_republic_sim::resource::{Form, Resource};
+use red_republic_sim::terrain::DEFAULT_TERRAIN;
 
 fn q(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
@@ -125,6 +127,27 @@ fn main() {
             canon.push(v);
         }
         canon.push_bool(d.stores_to_order);
+    }
+    canon.push(DEFAULT_TERRAIN.cell_size.0);
+    canon.push(DEFAULT_TERRAIN.feature_size.0);
+    canon.push_int(DEFAULT_TERRAIN.octaves);
+    canon.push(DEFAULT_TERRAIN.relief.0);
+    canon.push(DEFAULT_TERRAIN.water_below);
+    canon.push(DEFAULT_TERRAIN.forest_above);
+    canon.push(DEFAULT_TERRAIN.rock_above);
+    canon.push(DEFAULT_TERRAIN.river_catchment);
+    canon.push(DEFAULT_TERRAIN.broad_catchment);
+    for p in &DEFAULT_PLAN {
+        canon.push_int(p.bodies);
+        canon.push(p.radius.0.0);
+        canon.push(p.radius.1.0);
+        canon.push(p.top.0.0);
+        canon.push(p.top.1.0);
+        canon.push_int(p.layers);
+        canon.push(p.layer_thickness.0.0);
+        canon.push(p.layer_thickness.1.0);
+        canon.push(p.tonnes_per_layer.0.0);
+        canon.push(p.tonnes_per_layer.1.0);
     }
     for v in VehicleKind::all() {
         let d = v.def();
@@ -322,6 +345,55 @@ fn main() {
         .collect();
     out.push_str(&rows.join(",\n"));
     out.push_str("\n  },\n");
+
+    // ---- worldgen plans ----
+    //
+    // Balance, and swept rather than picked — `river_catchment` was chosen over
+    // five thresholds and three seeds against how far the longest channel runs
+    // and how many bearings a 2 km road can take without meeting water. A
+    // figure like that belongs in the data with the rest, not in a constant.
+    let t = &DEFAULT_TERRAIN;
+    out.push_str("  \"terrain_plan\": {\n");
+    out.push_str(&format!("    \"cell_size\": {},\n", n(t.cell_size.0)));
+    out.push_str(&format!("    \"feature_size\": {},\n", n(t.feature_size.0)));
+    out.push_str(&format!("    \"octaves\": {},\n", t.octaves));
+    out.push_str(&format!("    \"relief\": {},\n", n(t.relief.0)));
+    out.push_str(&format!("    \"water_below\": {},\n", n(t.water_below)));
+    out.push_str(&format!("    \"forest_above\": {},\n", n(t.forest_above)));
+    out.push_str(&format!("    \"rock_above\": {},\n", n(t.rock_above)));
+    out.push_str(&format!(
+        "    \"river_catchment\": {},\n",
+        n(t.river_catchment)
+    ));
+    out.push_str(&format!(
+        "    \"broad_catchment\": {}\n",
+        n(t.broad_catchment)
+    ));
+    out.push_str("  },\n");
+
+    out.push_str(&format!("  \"geology_stream\": {},\n", GEOLOGY_STREAM));
+    out.push_str("  \"mineral_plan\": [\n");
+    let rows: Vec<String> = DEFAULT_PLAN
+        .iter()
+        .map(|p| {
+            format!(
+                "    {{ \"mineral\": {}, \"bodies\": {}, \"radius\": [{}, {}], \"top\": [{}, {}], \"layers\": {}, \"layer_thickness\": [{}, {}], \"tonnes_per_layer\": [{}, {}] }}",
+                q(&format!("{:?}", p.mineral)),
+                p.bodies,
+                n(p.radius.0.0),
+                n(p.radius.1.0),
+                n(p.top.0.0),
+                n(p.top.1.0),
+                p.layers,
+                n(p.layer_thickness.0.0),
+                n(p.layer_thickness.1.0),
+                n(p.tonnes_per_layer.0.0),
+                n(p.tonnes_per_layer.1.0),
+            )
+        })
+        .collect();
+    out.push_str(&rows.join(",\n"));
+    out.push_str("\n  ],\n");
 
     // ---- vehicles ----
     out.push_str("  \"vehicles\": {\n");

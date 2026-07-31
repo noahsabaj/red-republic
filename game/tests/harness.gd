@@ -39,8 +39,25 @@ func _init() -> void:
 		methods.sort()
 		for name in methods:
 			total += 1
-			case._begin("%s::%s" % [path.get_file(), name])
+			var label := "%s::%s" % [path.get_file(), name]
+			case._begin(label)
 			case.call(name)
+			# **A test that died half way through has not passed.**
+			#
+			# A GDScript runtime error — a nonexistent method, a bad index —
+			# aborts the function it happens in and returns control here as
+			# though the call completed. It cannot be caught: there are no
+			# exceptions. So the suite once printed `ok` while four tests
+			# crashed, which is the exact shape of lie this project keeps
+			# rediscovering.
+			#
+			# Every test therefore has to reach its own last line. `_begin`
+			# clears the mark and `_done()`, called by the runner immediately
+			# after, can only observe a mark the test itself set — see
+			# `TestCase._end_of_test`, which is what the base class appends to
+			# the failure list when the mark is missing.
+			if not case._reached_end:
+				failures.append("%s: aborted part way — a runtime error above says where" % label)
 		failures.append_array(case.failures)
 
 	print("ran %d tests in %d files" % [total, files.size()])

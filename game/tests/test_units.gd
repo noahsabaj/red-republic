@@ -7,10 +7,12 @@ func test_speed_converts_both_ways() -> void:
 	# 50 km/h out and back. Not exact in binary, which is the point of checking:
 	# the round trip is what the vehicle table relies on.
 	expect_near(Units.mps_to_kph(Units.kph_to_mps(50.0)), 50.0, 1e-12, "50 km/h round-trips")
+	done()
 
 func test_time_to_cover_is_distance_over_speed() -> void:
 	expect_exact(Units.time_to_cover(10.0, 100.0), 10.0, "100 m at 10 m/s")
 	expect_exact(Units.time_to_cover(Units.kph_to_mps(54.0), 900.0), 60.0, "900 m at 54 km/h is a tick")
+	done()
 
 func test_durations_convert_both_ways() -> void:
 	expect_exact(Units.minutes(1.0), 60.0, "a minute")
@@ -18,11 +20,13 @@ func test_durations_convert_both_ways() -> void:
 	expect_exact(Units.days(1.0), 86400.0, "a day")
 	expect_exact(Units.as_hours(Units.hours(7.0)), 7.0, "hours round-trip")
 	expect_exact(Units.as_days(Units.days(365.0)), 365.0, "days round-trip")
+	done()
 
 func test_distance_is_the_pythagorean_one() -> void:
 	expect_exact(Units.distance(0.0, 0.0, 3.0, 4.0), 5.0, "the 3-4-5 triangle")
 	expect_exact(Units.distance(1.0, 1.0, 1.0, 1.0), 0.0, "a point is no distance from itself")
 	expect_exact(Units.distance_squared(0.0, 0.0, 3.0, 4.0), 25.0, "squared distance")
+	done()
 
 ## The determinism rule, made concrete.
 ##
@@ -49,3 +53,4 @@ func test_a_vector2_would_lose_the_position() -> void:
 		Units.distance(x, 0.0, rounded_x, 0.0) > 0.0,
 		"rounding through a Vector2 moves the point"
 	)
+	done()

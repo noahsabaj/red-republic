@@ -254,7 +254,10 @@ impl Terrain {
 // Integer hashing plus polynomial interpolation: every operation is exact on
 // any IEEE-754 machine, which is what worldgen requires.
 
-fn hash_cell(seed: u64, x: i64, y: i64) -> u64 {
+/// Exposed so the Godot port can be checked layer by layer rather than only at
+/// the finished map. A mismatch in the generated terrain is otherwise a single
+/// red hash with no way to tell noise from hydrology.
+pub fn hash_cell(seed: u64, x: i64, y: i64) -> u64 {
     let mut h = seed;
     h ^= (x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     h = h.rotate_left(29);
@@ -296,7 +299,8 @@ fn value_noise(seed: u64, p: Point, feature: Metres) -> f64 {
 }
 
 /// Several octaves summed — big shapes with small detail on top.
-fn fractal_noise(seed: u64, p: Point, feature: Metres, octaves: u32) -> f64 {
+/// Exposed for the same reason as [`hash_cell`].
+pub fn fractal_noise(seed: u64, p: Point, feature: Metres, octaves: u32) -> f64 {
     let mut total = 0.0;
     let mut amplitude = 1.0;
     let mut sum = 0.0;

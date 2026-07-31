@@ -11,6 +11,7 @@ func test_a_fresh_stockpile_is_empty() -> void:
 	for b in 4:
 		expect(Stock.is_empty(s, b), "building %d starts empty" % b)
 		expect_exact(Stock.total(s, b), 0.0, "building %d holds nothing" % b)
+	done()
 
 ## The layout check. A flat array addressed with the wrong stride is the defect
 ## that puts a mine's coal into the building next door, and it reads as a
@@ -26,6 +27,7 @@ func test_each_building_holds_its_own() -> void:
 	expect_exact(Stock.get_at(s, 2, coal), 0.0, "the building after has none")
 	expect_exact(Stock.get_at(s, 1, steel), 0.0, "and no steel appeared")
 	expect_exact(Stock.total(s, 1), 50.0, "the total is the one holding")
+	done()
 
 ## The rule: a shortfall is a smaller delivery, not a debt.
 func test_stock_never_goes_negative() -> void:
@@ -48,6 +50,7 @@ func test_stock_never_goes_negative() -> void:
 	expect_exact(Stock.get_at(s, 0, coal), 0.0, "a negative add clamps at zero")
 	Stock.set_at(s, 0, coal, -1.0)
 	expect_exact(Stock.get_at(s, 0, coal), 0.0, "a negative set clamps at zero")
+	done()
 
 func test_a_row_reads_back_in_resource_order() -> void:
 	expect(_setup(), "table loads")
@@ -59,3 +62,4 @@ func test_a_row_reads_back_in_resource_order() -> void:
 	for r in row.size():
 		expect_exact(row[r], float(r) + 1.0, "slot %d" % r)
 	expect_exact(Stock.total(s, 0), 0.0, "the other building is untouched")
+	done()
