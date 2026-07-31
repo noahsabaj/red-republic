@@ -2386,7 +2386,11 @@ public static class Systems
             }
 
             var officeId = world.Buildings.IdAt(office);
-            var staff = world.Buildings.StaffAt(office);
+
+            // Its own people <b>and</b> whatever it has hired from abroad. A
+            // republic that bought twenty builders and could not put them on a
+            // site would have paid a placement fee for nothing.
+            var staff = world.Buildings.StaffAt(office) + world.Crews.HiredAt(officeId);
             var out_ = world.Crews.Posted(officeId);
             var spare = staff - out_;
             if (spare < t.BuildersPerSite)
@@ -2402,7 +2406,23 @@ public static class Systems
                     continue;
                 }
 
-                var party = world.Crews.Send(officeId, t.BuildersPerSite, x, y);
+                // A gang this office already has and is not using — the hands it
+                // hired from abroad, or one that finished a site — before it
+                // draws anybody new off its own staff. Without this a republic
+                // that bought twenty builders would leave them standing at the
+                // frontier post it hired them to, which is what the trajectory
+                // runner reported as a grid ordered and never laid.
+                var party = Idle(world, officeId);
+                if (party is not null)
+                {
+                    party.X = x;
+                    party.Y = y;
+                }
+                else
+                {
+                    party = world.Crews.Send(officeId, t.BuildersPerSite, x, y);
+                }
+
                 party.Working = site;
                 sent++;
                 break;
@@ -2410,6 +2430,20 @@ public static class Systems
         }
 
         return sent > 0 ? [new Mutation(MutationKind.Crew, sent, 0, -1, 0.0, 0.0)] : [];
+    }
+
+    /// <summary>A gang of this office with nothing to do, or <c>null</c>.</summary>
+    private static Party? Idle(World world, int office)
+    {
+        foreach (var party in world.Crews.OfOffice(office))
+        {
+            if (party.Working is null && party.Riding is null)
+            {
+                return party;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

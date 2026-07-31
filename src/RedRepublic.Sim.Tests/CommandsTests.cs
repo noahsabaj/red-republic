@@ -189,7 +189,20 @@ public sealed class CommandsTests
 
         Assert.Equal(5, world.Crews.HiredAt(office));
         Assert.True(world.Treasury.Of(Market.East) < before, "hiring was free");
-        Assert.Equal(5, world.Migration.HeadsWaiting());
+
+        // They stand at their own bloc's post as a gang, not as a party of
+        // settlers: they are the office's hands from the moment they land, and
+        // what they need is a bus rather than a bed.
+        var gang = Assert.Single(world.Crews.OfOffice(office));
+        Assert.Equal(5, gang.Heads);
+        Assert.Equal(Market.East, gang.HiredFrom);
+        Assert.Equal(0, world.Migration.HeadsWaiting());
+
+        var post = world.Frontier.NearestCrossing(
+            world.Buildings.XAt(at), world.Buildings.YAt(at), Market.East);
+        Assert.NotNull(post);
+        Assert.Equal(post.Value.X, gang.X);
+        Assert.Equal(post.Value.Y, gang.Y);
 
         // Hiring nobody, and hiring to something that is not an office.
         Assert.False(world.Issue(Command.HireForeign(Market.East, office, 0)).Accepted);

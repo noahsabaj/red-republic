@@ -386,7 +386,12 @@ public static class Commands
 
         world.Treasury.Take(market, fee);
         world.Crews.Hire(c.B, market, c.C);
-        world.Migration.Arrive(post.Value.X, post.Value.Y, c.C, world.Clock.DayIndex);
+
+        // A gang standing at the post, not a party of settlers. They are the
+        // office's hands from the moment they land — what they need is a bus,
+        // not a bed, and the difference is why this is a crew rather than an
+        // arrival.
+        world.Crews.Send(c.B, c.C, post.Value.X, post.Value.Y, market);
         return Outcome.Ok();
     }
 

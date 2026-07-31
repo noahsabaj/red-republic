@@ -43,6 +43,18 @@ public sealed class Rng
     /// specify. Seeding the state directly from a small integer leaves it mostly
     /// zero, and xoshiro needs several rounds to recover from that.
     /// </summary>
+    /// <summary>
+    /// A seed for one purpose, derived from another seed.
+    /// </summary>
+    /// <remarks>
+    /// A pure function of the two, so a substream never shifts because something
+    /// unrelated about the world changed. That independence is what lets the
+    /// founding shelf keep dealing the same six postings while worldgen is being
+    /// worked on.
+    /// </remarks>
+    public static ulong Derive(ulong seed, ulong purpose) =>
+        ulong.RotateLeft(seed ^ (purpose * 0x9E37_79B9_7F4A_7C15UL), 31);
+
     public static Rng FromSeed(ulong seed)
     {
         var z = seed;
