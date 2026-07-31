@@ -172,6 +172,22 @@ public sealed class Citizens(Tables tables)
         return _id.Count - 1;
     }
 
+    /// <summary>
+    /// Put somebody back exactly as they were, keeping their id.
+    /// </summary>
+    /// <remarks>
+    /// Only a load calls this. The id is not decoration: a birthday is derived
+    /// from it, so renumbering the population on load would move everybody's
+    /// birthday and quietly change when they age.
+    /// </remarks>
+    internal int Restore(int id, int home, int age, int schoolDays, double health, double loyalty)
+    {
+        var i = Add(home, age, schoolDays, health, loyalty);
+        _id[i] = id;
+        _nextId = Math.Max(_nextId, id + 1);
+        return i;
+    }
+
     /// <summary>Somebody arriving from outside, schooled, in good health.</summary>
     public int AddArrival(int home, int age) =>
         Add(home, age, _t.SchoolDays, ArrivingHealth, ArrivingLoyalty);

@@ -55,6 +55,9 @@ public static class Systems
         new("contentment", [MutationKind.Contentment], ContentmentPass),
         new("schooling", [MutationKind.Schooling], Schooling),
         new("demography", [MutationKind.Demography], Demography),
+        new("migration", [MutationKind.Migration], MigrationPass),
+        new("tourism", [MutationKind.Money], TourismPass),
+        new("crews", [MutationKind.Crew], CrewsPass),
         new("morale", [MutationKind.Morale], Morale),
         new("tracks", [MutationKind.Wear], Tracks),
     ];
@@ -78,6 +81,8 @@ public static class Systems
         new("commissioning", [MutationKind.Commission], Commissioning),
         new("fleet", [MutationKind.Arrive, MutationKind.Transfer], FleetPass),
         new("dispatch", [MutationKind.Dispatch], Dispatch),
+        new("trade", [MutationKind.Consume, MutationKind.Produce, MutationKind.Money], Trade),
+        new("clearing", [MutationKind.Ploughed], Clearing),
     ];
 
     /// <summary>
@@ -168,6 +173,13 @@ public static class Systems
                     // a change, and loading is one transaction the pass has
                     // to carry out where it decides it. The mutation records
                     // that it happened.
+                    break;
+
+                case MutationKind.Crew:
+                case MutationKind.Migration:
+                case MutationKind.Ploughed:
+                    // Movements the pass carries out where it decides them;
+                    // the mutation records that it happened.
                     break;
 
                 case MutationKind.Weather:
@@ -1393,6 +1405,331 @@ public static class Systems
     /// </remarks>
     private static double Drag(World world) =>
         1.0 + (world.Ground.Softness * (world.Tables.MudDrag - 1.0));
+
+
+    /// <summary>
+    /// The customs houses work through the standing instructions.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The order of the rules is the decision.</b> When throughput or money
+    /// runs short the first rule is served first, which is why moving one up or
+    /// down is a command of its own rather than a re-send of the whole policy.
+    /// </para>
+    /// <para>
+    /// A rule only reaches goods that are <i>at</i> a customs house within range
+    /// of a post. Trading west means hauling west — the post settles in its own
+    /// bloc's money, and that is what makes the two currencies geographic rather
+    /// than a dropdown.
+    /// </para>
+    /// </remarks>
+    private static List<Mutation> Trade(World world)
+    {
+        var t = world.Tables;
+        if (world.TradeRules.Count == 0)
+        {
+            return [];
+        }
+
+        var mutations = new List<Mutation>();
+
+        // Customs houses, and how much each can still clear today.
+        var houses = new List<(int Building, Market Bloc)>();
+        var cleared = new List<double>();
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (!world.Buildings.IsBuilt(b) || world.Buildings.Staffing(b) <= 0.0)
+            {
+                continue;
+            }
+
+            if (t.BuildingIds[world.Buildings.KindAt(b)] != "Customs")
+            {
+                continue;
+            }
+
+            var post = world.Frontier.NearestCrossing(
+                world.Buildings.XAt(b), world.Buildings.YAt(b), null);
+            if (post is null)
+            {
+                continue;
+            }
+
+            var gap = Units.Distance(
+                post.Value.X, post.Value.Y, world.Buildings.XAt(b), world.Buildings.YAt(b));
+            if (gap > t.CustomsRange)
+            {
+                continue;
+            }
+
+            houses.Add((b, post.Value.Bloc));
+            cleared.Add(t.CustomsThroughputPerDay / SimClock.TicksPerDay);
+        }
+
+        if (houses.Count == 0)
+        {
+            return mutations;
+        }
+
+        foreach (var rule in world.TradeRules)
+        {
+            for (var h = 0; h < houses.Count; h++)
+            {
+                var (building, bloc) = houses[h];
+                if (bloc != rule.Market || cleared[h] <= 0.0)
+                {
+                    continue;
+                }
+
+                var price = rule.Market == Market.East
+                    ? t.ResourcePriceEast[rule.Resource]
+                    : t.ResourcePriceWest[rule.Resource];
+
+                if (rule.Action == TradeAction.Sell)
+                {
+                    var held = world.Buildings.Stock.Get(building, rule.Resource);
+                    var sold = Math.Min(held, cleared[h]);
+                    if (sold <= 0.0)
+                    {
+                        continue;
+                    }
+
+                    cleared[h] -= sold;
+                    mutations.Add(Mutation.Consume(building, rule.Resource, sold));
+                    mutations.Add(Mutation.Money(rule.Market, sold * price));
+                }
+                else
+                {
+                    var room = world.Buildings.IntakeCapacity(building, rule.Resource)
+                        - world.Buildings.Stock.Get(building, rule.Resource);
+                    var affordable = price > 0.0
+                        ? world.Treasury.Of(rule.Market) / price
+                        : 0.0;
+                    var bought = Math.Min(Math.Min(cleared[h], Math.Max(0.0, room)), affordable);
+                    if (bought <= 0.0)
+                    {
+                        continue;
+                    }
+
+                    cleared[h] -= bought;
+                    mutations.Add(Mutation.Produce(building, rule.Resource, bought));
+                    mutations.Add(Mutation.Money(rule.Market, -bought * price));
+                }
+            }
+        }
+
+        return mutations;
+    }
+
+    /// <summary>
+    /// Construction offices send gangs to the sites that need them.
+    /// </summary>
+    /// <remarks>
+    /// <b>A crew is drawn off the office's own staff</b>, so an office nobody
+    /// works at sends nobody. Sites are served in commissioning order, which
+    /// decides which site gets a crew rather than which site gets the days —
+    /// splitting one gang across four sites would finish none of them.
+    /// </remarks>
+    private static List<Mutation> CrewsPass(World world)
+    {
+        var t = world.Tables;
+        var sent = 0;
+
+        for (var office = 0; office < world.Buildings.Count; office++)
+        {
+            if (!world.Buildings.IsBuilt(office))
+            {
+                continue;
+            }
+
+            if (t.BuildingIds[world.Buildings.KindAt(office)] != "ConstructionOffice")
+            {
+                continue;
+            }
+
+            var officeId = world.Buildings.IdAt(office);
+            var staff = world.Buildings.StaffAt(office);
+            var out_ = world.Crews.Posted(officeId);
+            var spare = staff - out_;
+            if (spare < t.BuildersPerSite)
+            {
+                continue;
+            }
+
+            // The first site with no gang on it, in commissioning order.
+            for (var b = 0; b < world.Buildings.Count; b++)
+            {
+                if (world.Buildings.IsBuilt(b) || world.Buildings.ContractorAt(b) >= 0)
+                {
+                    continue;
+                }
+
+                var site = Destination.Building(world.Buildings.IdAt(b));
+                if (world.Crews.WorkingAt(site) is not null)
+                {
+                    continue;
+                }
+
+                var party = world.Crews.Send(
+                    officeId, t.BuildersPerSite,
+                    world.Buildings.XAt(b), world.Buildings.YAt(b));
+                party.Working = site;
+                sent++;
+                break;
+            }
+        }
+
+        return sent > 0 ? [new Mutation(MutationKind.Crew, sent, 0, -1, 0.0, 0.0)] : [];
+    }
+
+    /// <summary>
+    /// Who wants to come, and who is still waiting.
+    /// </summary>
+    /// <remarks>
+    /// <b>People come to a republic that looks worth living in.</b> Nobody arrives
+    /// for a place with nowhere to live and nothing to eat, and a party that
+    /// waits too long at a post goes home — which is what makes a coach and a
+    /// road to the frontier part of the cost of growing.
+    /// </remarks>
+    private static List<Mutation> MigrationPass(World world)
+    {
+        var t = world.Tables;
+        var today = world.Clock.DayIndex;
+        var arrived = 0;
+
+        // Groups that ran out of patience.
+        var gone = world.Migration.GiveUp(today, t);
+
+        // How the republic looks from outside: the mean of what its homes are
+        // like, and room to put anybody.
+        var homes = 0;
+        var content = 0.0;
+        var room = 0;
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (!world.Buildings.IsBuilt(b) || t.BResidents[world.Buildings.KindAt(b)] == 0)
+            {
+                continue;
+            }
+
+            homes++;
+            content += world.Buildings.ContentmentAt(b).Overall(t);
+            room += t.BResidents[world.Buildings.KindAt(b)];
+        }
+
+        room -= world.Citizens.Count;
+
+        if (homes > 0 && room > 0)
+        {
+            var appeal = content / homes;
+            if (appeal >= t.ContentAttracts && world.Rng.NextDouble() < t.ArrivalOdds)
+            {
+                var post = world.Frontier.Crossings.Count > 0
+                    ? world.Frontier.Crossings[
+                        (int)world.Rng.NextBounded((ulong)world.Frontier.Crossings.Count)]
+                    : default;
+
+                if (post.Id > 0)
+                {
+                    world.Migration.Arrive(
+                        post.X, post.Y, Math.Min(t.ArrivalParty, room), today);
+                    arrived++;
+                }
+            }
+        }
+
+        return arrived + gone.Count > 0
+            ? [new Mutation(MutationKind.Migration, arrived, gone.Count, -1, 0.0, 0.0)]
+            : [];
+    }
+
+    /// <summary>
+    /// Visitors from abroad, and the hard currency they spend.
+    /// </summary>
+    /// <remarks>
+    /// A tourist is not a resident: they occupy a bed, spend foreign money and go
+    /// home. What draws them is what the republic is like to look at rather than
+    /// to live in, floored so that even a grim posting draws somebody.
+    /// </remarks>
+    private static List<Mutation> TourismPass(World world)
+    {
+        var t = world.Tables;
+        var today = world.Clock.DayIndex;
+        var mutations = new List<Mutation>();
+
+        // Whoever is staying spends every day of it, in their own bloc's money.
+        foreach (var visit in world.Tourism.Visits)
+        {
+            if (visit.StayingAt is not null)
+            {
+                mutations.Add(Mutation.Money(visit.Market, visit.SpendPerDay(t)));
+            }
+        }
+
+        foreach (var leaving in world.Tourism.Departing(today))
+        {
+            world.Tourism.Leave(leaving);
+        }
+
+        // Beds nobody is in.
+        var beds = 0;
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (world.Buildings.IsBuilt(b))
+            {
+                beds += t.BBeds[world.Buildings.KindAt(b)];
+            }
+        }
+
+        if (beds > world.Tourism.HeadsStaying()
+            && world.Frontier.Crossings.Count > 0
+            && world.Rng.NextDouble() < t.AppealFloor)
+        {
+            var post = world.Frontier.Crossings[
+                (int)world.Rng.NextBounded((ulong)world.Frontier.Crossings.Count)];
+            world.Tourism.Arrive(
+                post.X, post.Y,
+                Math.Min(t.TourParty, beds - world.Tourism.HeadsStaying()),
+                post.Bloc, today, t);
+        }
+
+        return mutations;
+    }
+
+    /// <summary>
+    /// Ploughs push the snow off what the republic drives on.
+    /// </summary>
+    /// <remarks>
+    /// <b>Snow does not know where the roads are; the plough does.</b> That split
+    /// is what makes clearing a road something you watch happen on the map rather
+    /// than a number going down.
+    /// </remarks>
+    private static List<Mutation> Clearing(World world)
+    {
+        var t = world.Tables;
+        if (world.Ground.Snow <= 0.0)
+        {
+            return [];
+        }
+
+        var swept = 0;
+        for (var v = 0; v < world.Fleet.Count; v++)
+        {
+            if (t.VRole[world.Fleet.KindAt(v)] != "Plough" || world.Fleet.IsBogged(v))
+            {
+                continue;
+            }
+
+            var cell = world.Lattice.CellOf(world.Fleet.XAt(v), world.Fleet.YAt(v));
+            if (cell >= 0 && world.Lattice.ClearedAt(cell) < 1.0 - t.PloughAt)
+            {
+                world.Lattice.Clear(cell);
+                swept++;
+            }
+        }
+
+        return swept > 0 ? [new Mutation(MutationKind.Ploughed, swept, 0, -1, 0.0, 0.0)] : [];
+    }
 
     // ---- per tick ----
 

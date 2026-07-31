@@ -207,6 +207,26 @@ public sealed class Buildings
         return _id.Count - 1;
     }
 
+    /// <summary>
+    /// Put a building back exactly as it was, keeping its id.
+    /// </summary>
+    /// <remarks>
+    /// Only a load calls this. <see cref="Add"/> mints the next id, which is
+    /// right for a new building and wrong for one that already existed — a save
+    /// that renumbered its buildings would break every journal entry and every
+    /// standing order that names one.
+    /// </remarks>
+    internal int Restore(int id, int kind, double x, double y)
+    {
+        var i = Add(kind, x, y);
+        _id[i] = id;
+
+        // Ids are never reused, so the counter has to clear the highest one the
+        // save carried rather than however many rows were read.
+        _nextId = Math.Max(_nextId, id + 1);
+        return i;
+    }
+
     /// <summary>Pull one down. Returns false if it was not there.</summary>
     public bool Demolish(int id)
     {
