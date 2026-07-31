@@ -75,7 +75,7 @@ public static class Systems
     [
         new("power", [MutationKind.Powered, MutationKind.Lamps], Power),
         new("heating", [MutationKind.Heated, MutationKind.Consume], Heating),
-        new("construction", [MutationKind.Build, MutationKind.BuildLine, MutationKind.Consume], Construction),
+        new("construction", [MutationKind.Build, MutationKind.BuildRoad, MutationKind.BuildLine, MutationKind.Consume], Construction),
         new("production", [MutationKind.Extract, MutationKind.Consume, MutationKind.Produce], Production),
         new("households", [MutationKind.Consume], Households),
         new("commissioning", [MutationKind.Commission], Commissioning),
@@ -145,6 +145,10 @@ public static class Systems
 
                 case MutationKind.BuildLine:
                     String(world, m.Subject, m.Amount);
+                    break;
+
+                case MutationKind.BuildRoad:
+                    Lay(world, m.Subject, m.Amount);
                     break;
 
                 case MutationKind.Extract:
@@ -219,6 +223,59 @@ public static class Systems
                     throw new NotSupportedException($"no writer for {m.Kind}");
             }
         }
+    }
+
+    /// <summary>
+    /// Builder-days into a way, and the last of them opens it.
+    /// </summary>
+    /// <remarks>
+    /// <b>A site is deliberately not in the network.</b> Nothing routes over it,
+    /// nothing commutes along it, and no lorry is quicker for it existing —
+    /// which is what makes the moment a road opens a real event. All of it lands
+    /// in one transaction: the site stops existing, the crew is set down where
+    /// its depot stood, and the way joins whichever network its grade carries. A
+    /// finished railway is not a road that trains happen to use.
+    /// </remarks>
+    private static void Lay(World world, int site, double builderDays)
+    {
+        var road = world.RoadWorks.Get(site);
+        if (road is null)
+        {
+            return;
+        }
+
+        var t = world.Tables;
+        var labour = road.Labour(t);
+        if (labour <= 0.0)
+        {
+            return;
+        }
+
+        var worked = Math.Min(builderDays, Math.Max(labour - road.WorkDone, 0.0));
+        var share = worked / labour;
+        var i = world.RoadWorks.IndexOf(site);
+
+        // Materials go in step with the work, exactly as on a building site.
+        for (var r = 0; r < t.Resources.Length; r++)
+        {
+            var wanted = road.Wants(r, t);
+            if (wanted > 0.0)
+            {
+                world.RoadWorks.Stock.Take(i, r, wanted * share);
+            }
+        }
+
+        road.WorkDone += worked;
+        if (!road.IsBuilt(t))
+        {
+            return;
+        }
+
+        world.RoadWorks.Finish(road);
+        world.Crews.Release(
+            Destination.RoadSite(site), (road.FromX + road.ToX) / 2.0, (road.FromY + road.ToY) / 2.0);
+        world.BuildPolicy.Forget(Destination.RoadSite(site));
+        world.Reopen(road);
     }
 
     /// <summary>
@@ -1032,10 +1089,25 @@ public static class Systems
         var t = world.Tables;
         var wanted = new List<(Destination, int, double, double)>();
 
-        // The lines first, so a span waiting on steel is in the same ranking as
-        // a factory waiting on ore rather than in a queue of its own. A site the
-        // republic is waiting on outranks a topped-up works: the thing is not
-        // there yet.
+        // The ways and the lines first, so a run waiting on gravel is in the same
+        // ranking as a factory waiting on ore rather than in a queue of its own.
+        // A site the republic is waiting on outranks a topped-up works: the thing
+        // is not there yet.
+        foreach (var road in world.RoadWorks.Sites)
+        {
+            var i = world.RoadWorks.IndexOf(road.Id);
+            var remaining = 1.0 - road.Progress(t);
+            for (var r = 0; r < t.Resources.Length; r++)
+            {
+                var outstanding = (road.Wants(r, t) * remaining)
+                    - world.RoadWorks.Stock.Get(i, r);
+                if (outstanding > t.MinLoad)
+                {
+                    wanted.Add((Destination.RoadSite(road.Id), r, outstanding, 2.0));
+                }
+            }
+        }
+
         foreach (var line in world.LineWorks.Sites)
         {
             var i = world.LineWorks.IndexOf(line.Id);
@@ -1167,9 +1239,17 @@ public static class Systems
                     return b < 0 ? null : (world.Buildings.XAt(b), world.Buildings.YAt(b));
                 }
 
+            case DestinationKind.RoadSite:
+                {
+                    // The middle of the run, because that is where the work is.
+                    var run = world.RoadWorks.Get(to.Id);
+                    return run is null
+                        ? null
+                        : ((run.FromX + run.ToX) / 2.0, (run.FromY + run.ToY) / 2.0);
+                }
+
             case DestinationKind.LineSite:
                 {
-                    // The middle of the span, because that is where the work is.
                     var site = world.LineWorks.Get(to.Id);
                     return site is null
                         ? null
@@ -1195,10 +1275,24 @@ public static class Systems
                             - world.Buildings.Stock.Get(b, resource);
                 }
 
+            case DestinationKind.RoadSite:
+                {
+                    var run = world.RoadWorks.Get(to.Id);
+                    if (run is null)
+                    {
+                        return 0.0;
+                    }
+
+                    var at = world.RoadWorks.IndexOf(run.Id);
+                    var todo = 1.0 - run.Progress(world.Tables);
+                    return (run.Wants(resource, world.Tables) * todo)
+                        - world.RoadWorks.Stock.Get(at, resource);
+                }
+
             case DestinationKind.LineSite:
                 {
-                    // Exactly what the work still to do needs, and no more: a line
-                    // site is not a warehouse.
+                    // Exactly what the work still to do needs, and no more: a site
+                    // is not a warehouse.
                     var site = world.LineWorks.Get(to.Id);
                     if (site is null)
                     {
@@ -1230,6 +1324,18 @@ public static class Systems
                     }
 
                     world.Buildings.Stock.Add(b, resource, tonnes);
+                    return tonnes;
+                }
+
+            case DestinationKind.RoadSite:
+                {
+                    var at = world.RoadWorks.IndexOf(to.Id);
+                    if (at < 0)
+                    {
+                        return 0.0;
+                    }
+
+                    world.RoadWorks.Stock.Add(at, resource, tonnes);
                     return tonnes;
                 }
 
@@ -1808,6 +1914,18 @@ public static class Systems
                 world.Buildings.XAt(b), world.Buildings.YAt(b)));
         }
 
+        foreach (var road in world.RoadWorks.Sites)
+        {
+            if (!world.RoadWorks.HasMaterials(road))
+            {
+                continue;
+            }
+
+            // The middle of the run, because that is where the work is.
+            queue.Add((road.Ordered, 1, Destination.RoadSite(road.Id),
+                (road.FromX + road.ToX) / 2.0, (road.FromY + road.ToY) / 2.0));
+        }
+
         foreach (var line in world.LineWorks.Sites)
         {
             if (!world.LineWorks.HasMaterials(line))
@@ -1815,8 +1933,7 @@ public static class Systems
                 continue;
             }
 
-            // The middle of the span, because that is where the work is.
-            queue.Add((line.Ordered, 1, Destination.LineSite(line.Id),
+            queue.Add((line.Ordered, 2, Destination.LineSite(line.Id),
                 (line.FromX + line.ToX) / 2.0, (line.FromY + line.ToY) / 2.0));
         }
 
@@ -2390,9 +2507,31 @@ public static class Systems
             }
         }
 
-        // And the lines, worked by the same crews out of the same offices. A span
-        // is a site with a bill of materials like any other: the steel has to be
-        // driven to it, and until the last builder-day lands it carries nothing.
+        // And the ways, worked by the same crews out of the same offices. A road
+        // is a site with a bill of materials like any other: the gravel has to be
+        // driven to it, and until the last builder-day lands nothing routes over
+        // it.
+        foreach (var run in world.RoadWorks.Sites)
+        {
+            if (world.Crews.WorkingAt(Destination.RoadSite(run.Id)) is not { } gang)
+            {
+                continue;
+            }
+
+            if (!world.RoadWorks.HasMaterials(run))
+            {
+                continue;
+            }
+
+            var todo = Math.Max(run.Labour(t) - run.WorkDone, 0.0);
+            var worked = Math.Min(gang.Heads / (double)SimClock.TicksPerDay, todo);
+            if (worked > 0.0)
+            {
+                mutations.Add(Mutation.BuildRoad(run.Id, worked));
+            }
+        }
+
+        // And the lines, for exactly the same reason.
         foreach (var site in world.LineWorks.Sites)
         {
             if (world.Crews.WorkingAt(Destination.LineSite(site.Id)) is not { } gang)

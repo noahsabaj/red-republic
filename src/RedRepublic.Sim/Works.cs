@@ -277,6 +277,49 @@ public sealed class RoadWorks(Tables tables)
         return RoadError.None;
     }
 
+    /// <summary>
+    /// Whether the materials for the work still to do are on hand. Same rule as
+    /// a building site: the bill falls as the work is done.
+    /// </summary>
+    public bool HasMaterials(RoadSite site)
+    {
+        ArgumentNullException.ThrowIfNull(site);
+        var i = IndexOf(site.Id);
+        if (i < 0)
+        {
+            return false;
+        }
+
+        var left = 1.0 - site.Progress(_t);
+        for (var r = 0; r < _t.Resources.Length; r++)
+        {
+            if (Stock.Get(i, r) + 1e-9 < site.Wants(r, _t) * left)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Put a site back exactly as it was, keeping its id — what a load does.
+    /// </summary>
+    public RoadSite Restore(
+        int id, double fromX, double fromY, double toX, double toY,
+        int grade, bool lamps, long ordered, double workDone)
+    {
+        var site = new RoadSite(id, fromX, fromY, toX, toY, grade, lamps, ordered)
+        {
+            WorkDone = workDone,
+        };
+
+        _sites.Add(site);
+        Stock.Grow();
+        _nextId = Math.Max(_nextId, id + 1);
+        return site;
+    }
+
     public void Finish(RoadSite site)
     {
         ArgumentNullException.ThrowIfNull(site);
@@ -285,6 +328,45 @@ public sealed class RoadWorks(Tables tables)
         {
             _sites.RemoveAt(i);
             Stock.RemoveAt(i);
+        }
+    }
+
+    /// <summary>
+    /// Lay a finished road into the network.
+    /// </summary>
+    /// <remarks>
+    /// <b>Junctions along the length, not only at the ends.</b> Access to the
+    /// network is measured from junctions, so a five-kilometre road with
+    /// junctions only at its ends would serve the two buildings at those ends and
+    /// nothing in between. Ends merge onto whatever junction already stands
+    /// there, so two roads ordered end to end become one network rather than two
+    /// islands.
+    /// </remarks>
+    public static void Open(Network network, RoadSite site, Tables t)
+    {
+        ArgumentNullException.ThrowIfNull(network);
+        ArgumentNullException.ThrowIfNull(site);
+        ArgumentNullException.ThrowIfNull(t);
+
+        var speed = Units.KphToMps(t.Grades[site.Grade].SpeedKph);
+        var steps = Math.Max(1, (int)Math.Ceiling(site.Length / t.JunctionSpacing));
+        var previous = network.JunctionAt(site.FromX, site.FromY, t.JunctionMerge);
+
+        for (var step = 1; step <= steps; step++)
+        {
+            var along = (double)step / steps;
+            var next = network.JunctionAt(
+                site.FromX + ((site.ToX - site.FromX) * along),
+                site.FromY + ((site.ToY - site.FromY) * along),
+                t.JunctionMerge);
+
+            // A junction that merged onto the one behind it adds no road.
+            if (next != previous && !network.AreConnected(previous, next))
+            {
+                network.Connect(previous, next, speed, site.Lamps);
+            }
+
+            previous = next;
         }
     }
 }

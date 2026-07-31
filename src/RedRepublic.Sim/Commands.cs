@@ -140,6 +140,7 @@ public static class Commands
             CommandKind.RepayLoan => RepayLoan(world, command),
             CommandKind.AcceptContract => AcceptContract(world, command),
             CommandKind.DeclineContract => DeclineContract(world, command),
+            CommandKind.OrderRoad => OrderRoad(world, command),
             CommandKind.OrderLine => OrderLine(world, command),
             CommandKind.NameRepublic => NameRepublic(world, command),
             _ => Outcome.No("that is not something the republic can do yet"),
@@ -233,6 +234,30 @@ public static class Commands
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Order a way. It is a site until the crew and the gravel reach it, and
+    /// nothing routes over it until then.
+    /// </summary>
+    private static Outcome OrderRoad(World world, Command c)
+    {
+        var t = world.Tables;
+        var refusal = world.RoadWorks.Order(
+            c.X, c.Y, c.ToX, c.ToY, c.A, c.Flag,
+            world.Buildings.Commissioned, world.Terrain, out var site);
+
+        return refusal switch
+        {
+            RoadError.None => Outcome.Ok(site!.Id),
+            RoadError.TooShort =>
+                Outcome.No($"a run shorter than {t.MinRoad:0} m is not worth surveying"),
+            RoadError.NoLampsOnThisGrade =>
+                Outcome.No($"{t.Grades[c.A].Name} does not carry street lighting"),
+            RoadError.NeedsABridge =>
+                Outcome.No("that run crosses open water, and a road is not a bridge"),
+            _ => Outcome.No("that run cannot be ordered"),
+        };
     }
 
     /// <summary>

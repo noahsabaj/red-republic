@@ -23,6 +23,8 @@ public readonly record struct WorldSpec(ulong Seed, double Extent, int Climate);
 /// </remarks>
 public sealed class World
 {
+    private readonly List<RoadSite> _roadbook = [];
+
     private World(WorldSpec spec, Tables tables)
     {
         Spec = spec;
@@ -92,6 +94,17 @@ public sealed class World
 
     public RoadWorks RoadWorks { get; }
 
+    /// <summary>
+    /// Every run the republic has opened, in the order it opened them.
+    /// </summary>
+    /// <remarks>
+    /// The network itself is not saved: junction merging depends on what already
+    /// stood there, so replaying the openings in order reproduces the graph
+    /// exactly while storing the graph would lose how it came to be. This is that
+    /// record, and <see cref="Reopen"/> is the only thing that adds to it.
+    /// </remarks>
+    public IReadOnlyList<RoadSite> Roadbook => _roadbook;
+
     public LineWorks LineWorks { get; }
 
     /// <summary>
@@ -154,6 +167,22 @@ public sealed class World
     {
         ArgumentNullException.ThrowIfNull(tables);
         return new World(spec, tables);
+    }
+
+    /// <summary>
+    /// Lay a finished run into the network its grade carries, and record that it
+    /// was laid.
+    /// </summary>
+    /// <remarks>
+    /// The single path a road takes into the graph, so the book and the network
+    /// cannot disagree — a run opened round the back of this would vanish on the
+    /// next reload, and the republic would come back with a hole in its roads
+    /// that nothing had reported.
+    /// </remarks>
+    internal void Reopen(RoadSite run)
+    {
+        RoadWorks.Open(NetworkFor(Tables.Grades[run.Grade].Carries), run, Tables);
+        _roadbook.Add(run);
     }
 
     /// <summary>The network a medium travels on.</summary>

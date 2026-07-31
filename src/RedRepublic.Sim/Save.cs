@@ -104,6 +104,41 @@ public static class Save
             }
         }
 
+        // The ways. Open roads go in as the runs that made them rather than as
+        // junctions and segments, and are re-laid on load — junction merging is
+        // order-dependent, so replaying the openings in order reproduces the
+        // graph exactly and storing the graph would not reproduce the merging.
+        w.Int(world.Roadbook.Count);
+        foreach (var r in world.Roadbook)
+        {
+            w.Double(r.FromX);
+            w.Double(r.FromY);
+            w.Double(r.ToX);
+            w.Double(r.ToY);
+            w.Int(r.Grade);
+            w.Bool(r.Lamps);
+        }
+
+        w.Int(world.RoadWorks.Sites.Count);
+        foreach (var s in world.RoadWorks.Sites)
+        {
+            w.Int(s.Id);
+            w.Double(s.FromX);
+            w.Double(s.FromY);
+            w.Double(s.ToX);
+            w.Double(s.ToY);
+            w.Int(s.Grade);
+            w.Bool(s.Lamps);
+            w.Long(s.Ordered);
+            w.Double(s.WorkDone);
+
+            var i = world.RoadWorks.IndexOf(s.Id);
+            for (var res = 0; res < world.Tables.Resources.Length; res++)
+            {
+                w.Double(world.RoadWorks.Stock.Get(i, res));
+            }
+        }
+
         // The lines. Energised spans go in as geometry in the order they were
         // built, and the grid is rebuilt from them on load rather than stored —
         // the union-find and every attachment are a pure function of that order
@@ -245,6 +280,31 @@ public static class Save
             {
                 world.Buildings.Stock.Set(b, res, r.Double());
                 world.Buildings.Orders.Set(b, res, r.Double());
+            }
+        }
+
+        // Re-lay in the order they were opened, so the junction merging lands
+        // exactly where it did the first time.
+        var roads = r.Int();
+        for (var i = 0; i < roads; i++)
+        {
+            var run = new RoadSite(
+                0, r.Double(), r.Double(), r.Double(), r.Double(), r.Int(), r.Bool(), 0);
+            world.Reopen(run);
+        }
+
+        var roadSites = r.Int();
+        for (var i = 0; i < roadSites; i++)
+        {
+            var id = r.Int();
+            world.RoadWorks.Restore(
+                id, r.Double(), r.Double(), r.Double(), r.Double(),
+                r.Int(), r.Bool(), r.Long(), r.Double());
+
+            var at = world.RoadWorks.IndexOf(id);
+            for (var res = 0; res < tables.Resources.Length; res++)
+            {
+                world.RoadWorks.Stock.Set(at, res, r.Double());
             }
         }
 
