@@ -82,6 +82,16 @@ public static class Systems
         new("fleet", [MutationKind.Arrive, MutationKind.Transfer], FleetPass),
         new("dispatch", [MutationKind.Dispatch], Dispatch),
         new("trade", [MutationKind.Consume, MutationKind.Produce, MutationKind.Money], Trade),
+
+        // Before dispatch: goods a belt has already moved are goods no lorry
+        // needs to be sent for, and the other way round would send a lorry for a
+        // load that was about to arrive on its own.
+        new("belts", [MutationKind.Transfer], Belts),
+        new("settling", [MutationKind.Migration, MutationKind.Dispatch], Settling),
+
+        // After settling, and sharing its coaches: somebody who wants to live
+        // here outranks somebody visiting, and the schedule is what says so.
+        new("touring", [MutationKind.Tourism, MutationKind.Dispatch], Touring),
         new("clearing", [MutationKind.Ploughed], Clearing),
     ];
 
@@ -1594,6 +1604,66 @@ public static class Systems
             var job = world.Fleet.JobAt(v);
             switch (world.Fleet.StateAt(v))
             {
+                // A coach that has reached the post takes its party aboard and
+                // sets off for the estate. Loading is one transaction where the
+                // pass decides it: a party marked as riding a coach that never
+                // took them would be people in two places at once.
+                case VehicleState.Fetching when job.Kind is JobKind.Settle or JobKind.Tour:
+                    {
+                        var to = Where(world, job.To);
+                        var onward = to is null
+                            ? null
+                            : Plan(world, v, world.Fleet.XAt(v), world.Fleet.YAt(v),
+                                to.Value.X, to.Value.Y);
+
+                        if (onward is null)
+                        {
+                            GoHome(world, v);
+                            break;
+                        }
+
+                        if (job.Kind == JobKind.Settle)
+                        {
+                            world.Migration.Board(job.Subject, v);
+                        }
+                        else
+                        {
+                            world.Tourism.Board(job.Subject, v);
+                        }
+
+                        world.Fleet.SetJourney(v, onward);
+                        world.Fleet.SetState(v, VehicleState.Delivering);
+                        break;
+                    }
+
+                // And sets them down. The party stops existing as a party in the
+                // same breath: one that arrived without being housed would be
+                // people the republic had fetched and lost.
+                case VehicleState.Delivering when job.Kind is JobKind.Settle or JobKind.Tour:
+                    {
+                        var home = world.Buildings.IndexOf(job.To.Id);
+                        if (home >= 0 && job.Kind == JobKind.Settle)
+                        {
+                            var group = world.Migration.Get(job.Subject);
+                            if (group is not null)
+                            {
+                                SettleInto(world, group.Heads, home);
+                                world.Migration.Remove(group);
+                                mutations.Add(new Mutation(
+                                    MutationKind.Migration, 1, 0, -1, 0.0, 0.0));
+                            }
+                        }
+                        else if (home >= 0)
+                        {
+                            world.Tourism.CheckIn(job.Subject, world.Buildings.IdAt(home));
+                            mutations.Add(new Mutation(
+                                MutationKind.Tourism, 1, 0, -1, 0.0, 0.0));
+                        }
+
+                        GoHome(world, v);
+                        break;
+                    }
+
                 case VehicleState.Fetching:
                     {
                         var from = world.Buildings.IndexOf(job.From);
@@ -1645,6 +1715,420 @@ public static class Systems
         }
 
         return mutations;
+    }
+
+    /// <summary>
+    /// What the belts and the pipelines move, without a lorry and without a
+    /// driver.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// What a belt buys is a haul that needs no vehicle, no driver and no diesel.
+    /// What it costs is that it goes exactly where it was built and nowhere else.
+    /// The trade against the fleet is the whole point: a mine feeding a plant
+    /// four hundred metres away wants a belt, and a mine feeding six things
+    /// scattered over a valley wants lorries.
+    /// </para>
+    /// <para>
+    /// Throughput is a property of the <b>network</b> rather than of a span,
+    /// because a belt is a belt however many sections it has: adding a kilometre
+    /// makes it longer, not wider.
+    /// </para>
+    /// </remarks>
+    private static List<Mutation> Belts(World world)
+    {
+        var t = world.Tables;
+        var perTick = 1.0 / SimClock.TicksPerDay;
+        var mutations = new List<Mutation>();
+
+        for (var kind = 0; kind < t.Utilities.Length; kind++)
+        {
+            var carries = t.Utilities[kind].Carries;
+            if (carries.Length == 0)
+            {
+                continue;
+            }
+
+            // What each network can still move this tick, and what this pass has
+            // already taken out of each yard — so two consumers on one belt are
+            // not both told the same tonne is theirs.
+            var left = new Dictionary<int, double>();
+            var lifted = new Dictionary<(int Yard, int Resource), double>();
+
+            foreach (var resource in carries)
+            {
+                // Everyone on a network of this kind who wants this, emptiest
+                // first, ties on id so the answer is reproducible.
+                var wanting = new List<(double Cover, int Building, int Network)>();
+                for (var b = 0; b < world.Buildings.Count; b++)
+                {
+                    if (!world.Buildings.IsBuilt(b) || !Consumes(t, world.Buildings.KindAt(b), resource))
+                    {
+                        continue;
+                    }
+
+                    var network = world.Grid.NetworkOf(world.Buildings.IdAt(b), kind);
+                    if (network >= 0)
+                    {
+                        wanting.Add((CoverDays(world, b, resource), b, network));
+                    }
+                }
+
+                wanting.Sort((x, y) =>
+                {
+                    var byCover = x.Cover.CompareTo(y.Cover);
+                    return byCover != 0 ? byCover : x.Building.CompareTo(y.Building);
+                });
+
+                foreach (var (_, consumer, network) in wanting)
+                {
+                    if (!left.TryGetValue(network, out var allowance))
+                    {
+                        allowance = t.Utilities[kind].Throughput * perTick;
+                    }
+
+                    if (allowance <= 1e-12)
+                    {
+                        continue;
+                    }
+
+                    var room = world.Buildings.IntakeCapacity(consumer, resource)
+                        - world.Buildings.Stock.Get(consumer, resource);
+                    if (room <= 0.0)
+                    {
+                        continue;
+                    }
+
+                    // Whoever on the same network is holding it, fullest first —
+                    // the opposite ranking from the consumers, and for the same
+                    // reason: draw down the yard closest to blocking.
+                    var from = -1;
+                    var most = 0.0;
+                    for (var y = 0; y < world.Buildings.Count; y++)
+                    {
+                        if (y == consumer || !world.Buildings.IsBuilt(y)
+                            || world.Grid.NetworkOf(world.Buildings.IdAt(y), kind) != network)
+                        {
+                            continue;
+                        }
+
+                        var held = world.Buildings.Stock.Get(y, resource)
+                            - lifted.GetValueOrDefault((y, resource));
+                        if (held > most)
+                        {
+                            most = held;
+                            from = y;
+                        }
+                    }
+
+                    if (from < 0)
+                    {
+                        continue;
+                    }
+
+                    var moved = Math.Min(most, Math.Min(room, allowance));
+                    if (moved <= 0.0)
+                    {
+                        continue;
+                    }
+
+                    left[network] = allowance - moved;
+                    lifted[(from, resource)] = lifted.GetValueOrDefault((from, resource)) + moved;
+                    world.Buildings.Stock.Take(from, resource, moved);
+                    world.Buildings.Stock.Add(consumer, resource, moved);
+                    mutations.Add(Mutation.Transfer(from, consumer, resource, moved));
+                }
+            }
+        }
+
+        return mutations;
+    }
+
+    /// <summary>How many days of cover a works has of one of its inputs.</summary>
+    private static double CoverDays(World world, int b, int resource)
+    {
+        var kind = world.Buildings.KindAt(b);
+        var inputs = world.Tables.Inputs.KeysOf(kind);
+        var rates = world.Tables.Inputs.ValuesOf(kind);
+        for (var i = 0; i < inputs.Length; i++)
+        {
+            if (inputs[i] == resource && rates[i] > 0.0)
+            {
+                return world.Buildings.Stock.Get(b, resource) / rates[i];
+            }
+        }
+
+        return double.PositiveInfinity;
+    }
+
+    private static bool Consumes(Tables t, int kind, int resource)
+    {
+        foreach (var r in t.Inputs.KeysOf(kind))
+        {
+            if (r == resource)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Getting the settlers off the frontier and into a home.
+    /// </summary>
+    /// <remarks>
+    /// <b>People wait at a post, and they give up.</b> A republic that advertises
+    /// for settlers and cannot fetch them loses them, which is what makes a coach
+    /// and a road to the post part of the cost of growing. Anybody who can walk
+    /// to a bed walks — so the coaches only ever go out for the people who
+    /// genuinely need fetching, and a republic whose estates are near its border
+    /// needs fewer of them.
+    /// </remarks>
+    private static List<Mutation> Settling(World world)
+    {
+        var t = world.Tables;
+        var mutations = new List<Mutation>();
+
+        // Housing a coach is already filling counts as spoken for: a group that
+        // walked into rooms somebody else is being driven to would put both on
+        // the street. A journey is a commitment, and a dispatcher that only reads
+        // arrivals will make it twice.
+        var booked = new Dictionary<int, int>();
+        var coming = new HashSet<int>();
+        for (var v = 0; v < world.Fleet.Count; v++)
+        {
+            var job = world.Fleet.JobAt(v);
+            if (job.Kind != JobKind.Settle)
+            {
+                continue;
+            }
+
+            coming.Add(job.Subject);
+            booked[job.To.Id] = booked.GetValueOrDefault(job.To.Id) + t.ArrivalParty;
+        }
+
+        var settled = 0;
+        foreach (var group in world.Migration.Waiting.ToList())
+        {
+            if (coming.Contains(group.Id) || group.Riding is not null)
+            {
+                continue;
+            }
+
+            // The emptiest block with room, ties on id — an intake goes where
+            // there is most room rather than filling one stairwell and leaving
+            // the next estate empty.
+            var home = Roomiest(world, booked, group.X, group.Y, t.MaxWalkM);
+            if (home >= 0)
+            {
+                var moved = SettleInto(world, group.Heads, home);
+                booked[world.Buildings.IdAt(home)] =
+                    booked.GetValueOrDefault(world.Buildings.IdAt(home)) + moved;
+                world.Migration.Remove(group);
+                settled++;
+                continue;
+            }
+
+            // Too far to walk. It wants a coach, and one that cannot make the
+            // round trip does not set out — unlike a load of gravel, a party
+            // stranded in a field is people the republic has lost the use of.
+            var bed = Roomiest(world, booked, group.X, group.Y, double.PositiveInfinity);
+            if (bed < 0)
+            {
+                continue;
+            }
+
+            var coach = Nearest(world, "Passenger", group.X, group.Y);
+            if (coach < 0)
+            {
+                continue;
+            }
+
+            var out_ = Plan(
+                world, coach, world.Fleet.XAt(coach), world.Fleet.YAt(coach), group.X, group.Y);
+            if (out_ is null)
+            {
+                continue;
+            }
+
+            world.Fleet.SetJob(coach, Job.Settle(group.Id, world.Buildings.IdAt(bed)));
+            world.Fleet.SetJourney(coach, out_);
+            world.Fleet.SetState(coach, VehicleState.Fetching);
+            booked[world.Buildings.IdAt(bed)] =
+                booked.GetValueOrDefault(world.Buildings.IdAt(bed)) + t.ArrivalParty;
+            mutations.Add(new Mutation(MutationKind.Dispatch, coach, bed, -1, 0.0, 0.0));
+        }
+
+        if (settled > 0)
+        {
+            mutations.Add(new Mutation(MutationKind.Migration, settled, 0, -1, 0.0, 0.0));
+        }
+
+        return mutations;
+    }
+
+    /// <summary>
+    /// Getting the visitors from the post to their beds.
+    /// </summary>
+    /// <remarks>
+    /// The same coaches the settlers ride, and deliberately after them: somebody
+    /// who wants to live here outranks somebody visiting, and the order of these
+    /// two passes is what says so.
+    /// </remarks>
+    private static List<Mutation> Touring(World world)
+    {
+        var t = world.Tables;
+        var mutations = new List<Mutation>();
+
+        var coming = new HashSet<int>();
+        for (var v = 0; v < world.Fleet.Count; v++)
+        {
+            var job = world.Fleet.JobAt(v);
+            if (job.Kind == JobKind.Tour)
+            {
+                coming.Add(job.Subject);
+            }
+        }
+
+        foreach (var visit in world.Tourism.Visits.ToList())
+        {
+            if (visit.StayingAt is not null || visit.Riding is not null || coming.Contains(visit.Id))
+            {
+                continue;
+            }
+
+            var hotel = Hotel(world, visit.Heads);
+            if (hotel < 0)
+            {
+                continue;
+            }
+
+            var coach = Nearest(world, "Passenger", visit.X, visit.Y);
+            if (coach < 0)
+            {
+                continue;
+            }
+
+            var out_ = Plan(
+                world, coach, world.Fleet.XAt(coach), world.Fleet.YAt(coach), visit.X, visit.Y);
+            if (out_ is null)
+            {
+                continue;
+            }
+
+            world.Fleet.SetJob(coach, Job.Tour(visit.Id, world.Buildings.IdAt(hotel)));
+            world.Fleet.SetJourney(coach, out_);
+            world.Fleet.SetState(coach, VehicleState.Fetching);
+            mutations.Add(new Mutation(MutationKind.Dispatch, coach, hotel, -1, 0.0, 0.0));
+        }
+
+        return mutations;
+    }
+
+    /// <summary>
+    /// Move a party of settlers into a block, and say how many fitted.
+    /// </summary>
+    /// <remarks>
+    /// One function because the two ways in — carried by a coach, or walked —
+    /// differ only in the journey, and a second copy of "how many fit, spread the
+    /// ages" is a second place for the answer to drift. Ages are spread across
+    /// working life so an intake is not a cohort that retires together, and they
+    /// arrive schooled because they were taught somewhere else.
+    /// </remarks>
+    private static int SettleInto(World world, int heads, int home)
+    {
+        var room = world.Tables.BResidents[world.Buildings.KindAt(home)]
+            - world.Citizens.ResidentsOf(world.Buildings.IdAt(home));
+        var taken = Math.Clamp(heads, 0, Math.Max(room, 0));
+
+        for (var i = 0; i < taken; i++)
+        {
+            world.Citizens.AddArrival(
+                world.Buildings.IdAt(home), 20 + (world.Citizens.Count % 30));
+        }
+
+        return taken;
+    }
+
+    /// <summary>
+    /// The home with the most room, within reach of a point. -1 if there is none.
+    /// </summary>
+    private static int Roomiest(
+        World world, Dictionary<int, int> booked, double x, double y, double within)
+    {
+        var t = world.Tables;
+        var best = -1;
+        var mostRoom = 0;
+
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            var kind = world.Buildings.KindAt(b);
+            if (!world.Buildings.IsBuilt(b) || t.BResidents[kind] == 0)
+            {
+                continue;
+            }
+
+            if (Units.Distance(world.Buildings.XAt(b), world.Buildings.YAt(b), x, y) > within)
+            {
+                continue;
+            }
+
+            var id = world.Buildings.IdAt(b);
+            var room = t.BResidents[kind]
+                - world.Citizens.ResidentsOf(id)
+                - booked.GetValueOrDefault(id);
+
+            if (room > mostRoom)
+            {
+                mostRoom = room;
+                best = b;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>A hotel with a bed free, or -1.</summary>
+    private static int Hotel(World world, int heads)
+    {
+        var t = world.Tables;
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            var kind = world.Buildings.KindAt(b);
+            if (world.Buildings.IsBuilt(b) && t.BBeds[kind] >= heads)
+            {
+                return b;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>The nearest idle vehicle of a role, or -1.</summary>
+    private static int Nearest(World world, string role, double x, double y)
+    {
+        var t = world.Tables;
+        var best = -1;
+        var nearest = double.PositiveInfinity;
+
+        for (var v = 0; v < world.Fleet.Count; v++)
+        {
+            if (world.Fleet.StateAt(v) != VehicleState.Idle
+                || t.VRole[world.Fleet.KindAt(v)] != role)
+            {
+                continue;
+            }
+
+            var gap = Units.Distance(world.Fleet.XAt(v), world.Fleet.YAt(v), x, y);
+            if (gap < nearest)
+            {
+                nearest = gap;
+                best = v;
+            }
+        }
+
+        return best;
     }
 
     /// <summary>Its work is over: it stands where it is with nothing to do.</summary>

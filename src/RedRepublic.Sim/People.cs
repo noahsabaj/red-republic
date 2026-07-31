@@ -283,6 +283,29 @@ public sealed class Migration
 
     public void Remove(Group group) => _waiting.Remove(group);
 
+    public Group? Get(int id)
+    {
+        foreach (var g in _waiting)
+        {
+            if (g.Id == id)
+            {
+                return g;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>A party climbs aboard a coach. They are no longer fetchable.</summary>
+    public void Board(int group, int vehicle)
+    {
+        var g = Get(group);
+        if (g is not null)
+        {
+            g.Riding = vehicle;
+        }
+    }
+
     /// <summary>Groups that waited long enough and went home.</summary>
     public List<Group> GiveUp(long today, Tables t)
     {
@@ -378,6 +401,40 @@ public sealed class Tourism
     }
 
     public void Leave(Visit visit) => _visits.Remove(visit);
+
+    public Visit? Get(int id)
+    {
+        foreach (var v in _visits)
+        {
+            if (v.Id == id)
+            {
+                return v;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>A party climbs aboard a coach.</summary>
+    public void Board(int visit, int vehicle)
+    {
+        var v = Get(visit);
+        if (v is not null)
+        {
+            v.Riding = vehicle;
+        }
+    }
+
+    /// <summary>They reach their beds, and start spending.</summary>
+    public void CheckIn(int visit, int hotel)
+    {
+        var v = Get(visit);
+        if (v is not null)
+        {
+            v.Riding = null;
+            v.StayingAt = hotel;
+        }
+    }
 
     public List<Visit> Departing(long today)
     {
