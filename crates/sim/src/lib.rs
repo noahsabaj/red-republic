@@ -54,7 +54,9 @@ pub mod utility;
 pub mod wellbeing;
 pub mod world;
 
-pub use building::{Building, BuildingId, BuildingKind, Buildings, PlacementError, Teaching};
+pub use building::{
+    Building, BuildingId, BuildingKind, Buildings, PlacementError, Priority, Teaching,
+};
 pub use citizen::{
     CitizenId, CitizenRecord, Education, HomeCensus, Learning, LifeStage, Population, Wellbeing,
 };

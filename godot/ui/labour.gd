@@ -15,6 +15,14 @@ extends CanvasLayer
 ## which is exactly why it costs the ones you have: health and loyalty fall in
 ## proportion to the hours past eight, and loyalty is what makes people leave.
 ##
+## **Standing** — who gets people first when there are not enough for everyone.
+## The other two levers are about a works the republic can already man; this is
+## the one that decides which works that is, and it is the sharpest control on
+## the screen. A republic short of hands fills First before Ordinary and
+## Ordinary before Last, so ranking the power plant above the offices is the
+## difference between a town with lights and a town without. Every kind opens at
+## a sensible standing and this is how the player disagrees.
+##
 ## # Three levels, because that is how the question gets asked
 ##
 ## A national standard, a rule for a category, an exception for one building.
@@ -294,6 +302,16 @@ func _rebuild_rows(ids: Array) -> void:
 		var name_label := Style.body("", Style.INK)
 		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		top.add_child(name_label)
+		# **Where this works stands when there are not enough people.** It sits on
+		# the top line beside the manning rather than down with the crew and hour
+		# controls, because it answers the number next to it: a works reading
+		# "9 of 16 posts" is only half an answer, and the standing is the other
+		# half. Without it a player cannot tell a republic that has no more hands
+		# from one that has ranked this place below everything else.
+		var standing := Style.button("")
+		standing.custom_minimum_size = Vector2(96, 0)
+		standing.pressed.connect(func(): _cycle_standing(id))
+		top.add_child(standing)
 		var staff := Style.small("", Style.INK_DIM)
 		staff.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		top.add_child(staff)
@@ -328,7 +346,23 @@ func _rebuild_rows(ids: Array) -> void:
 		var holder := Style.card(Style.PAPER_RAISED, Style.RULE, 7)
 		Style.card_body(holder).add_child(stack)
 		_rows.add_child(holder)
-		_row_labels[id] = [name_label, staff, roster]
+		_row_labels[id] = [name_label, staff, roster, standing]
+
+
+## Step one workplace up through the labour plan, wrapping at the top.
+##
+## A cycling button rather than three radio buttons or a dropdown: there are
+## exactly three standings, the list is short enough that stepping through it
+## costs at most two clicks, and a dropdown per row on a screen that can hold a
+## hundred workplaces is a hundred popups nobody opens.
+func _cycle_standing(id: int) -> void:
+	var row: PackedFloat32Array = _workplace(id)
+	if row.size() < 8:
+		return
+	var names: PackedStringArray = _republic.priority_names()
+	var next := (int(row[7]) + 1) % maxi(names.size(), 1)
+	_say(_republic.set_priority(id, next))
+	refresh()
 
 
 func _nudge_shifts(id: int, delta: int) -> void:
@@ -357,7 +391,7 @@ func _clear_building(id: int) -> void:
 ## One workplace's line out of the packed sweep, or an empty array.
 func _workplace(id: int) -> PackedFloat32Array:
 	var packed: PackedFloat32Array = _republic.workplaces()
-	var stride := 7
+	var stride := 8
 	var i := 0
 	while i + stride <= packed.size():
 		if int(packed[i]) == id:
@@ -373,7 +407,7 @@ func refresh() -> void:
 	_national.text = "%s hours" % _hours_text(_republic.national_shift_hours())
 
 	var packed: PackedFloat32Array = _republic.workplaces()
-	var stride := 7
+	var stride := 8
 	var ids := []
 	var kinds := []
 	var jobs := 0
@@ -422,6 +456,18 @@ func refresh() -> void:
 			var rule := int(packed[i + 6])
 			parts[0].text = String(_republic.building_kind_name(int(packed[i + 1])))
 			parts[1].text = "%d of %d posts" % [int(packed[i + 2]), int(packed[i + 3])]
+			# **Coloured by whether this place got the people it asked for, not
+			# by which standing it holds.** A full "Last" works needs no
+			# attention; a half-empty "First" one is the republic saying it has
+			# run out of hands, which is a different problem from a bad plan and
+			# wants a different answer.
+			var standings: PackedStringArray = _republic.priority_names()
+			var rank := clampi(int(packed[i + 7]), 0, maxi(standings.size() - 1, 0))
+			parts[3].text = String(standings[rank]) if standings.size() > 0 else "-"
+			parts[3].add_theme_color_override(
+				"font_color",
+				Style.INK if int(packed[i + 2]) >= int(packed[i + 3]) else Style.ALARM
+			)
 			if shifts == 0:
 				parts[2].text = "closed"
 				parts[2].add_theme_color_override("font_color", Style.ALARM)

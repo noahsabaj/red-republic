@@ -813,7 +813,21 @@ pub fn assign_labour(
         .iter()
         .filter(|b| b.is_built() && b.jobs() > 0)
         .collect();
-    workplaces.sort_by_key(|b| b.id);
+    // **Standing first, commissioning order only to break a tie.**
+    //
+    // This sorted on `b.id` alone, and the comment above called that "the same
+    // tie-break the archived build used" — which it was, except that the sort it
+    // was breaking ties *for* had been lost in the port. With nothing ahead of
+    // it, an accident of history decided the whole allocation: whichever
+    // workplace happened to be commissioned first filled to capacity and every
+    // other building in the republic sat at zero. On a ten-year run the
+    // construction office took thirteen of thirteen people; putting it last
+    // simply handed all thirteen to the motor depot instead.
+    //
+    // Reversed on standing so [`Priority::First`] sorts before
+    // [`Priority::Ordinary`], and stable underneath so the tie-break is still
+    // exactly what it claimed to be.
+    workplaces.sort_by_key(|b| (std::cmp::Reverse(b.priority), b.id));
 
     for workplace in workplaces {
         // **Every shift, not every post.** The authored `workers` is one crew,
@@ -894,7 +908,7 @@ pub fn assign_labour(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::building::{BuildingKind, Buildings};
+    use crate::building::{BuildingKind, Buildings, Priority};
     use crate::geology::{Deposit, DepositId, Geology, Layer, Mineral};
     use crate::terrain::Terrain;
     use crate::units::Tonnes;
@@ -1044,6 +1058,126 @@ mod tests {
             labour.staffing,
             vec![(mine, 14)],
             "a mining town staffs its mine"
+        );
+    }
+
+    /// Standing decides who is manned when there are not enough hands, and
+    /// commissioning order decides nothing.
+    ///
+    /// **The guard on the defect that made every republic inert.** The pass used
+    /// to sort on `id` alone, so the workplace that happened to be commissioned
+    /// first filled to capacity and every other building sat at zero — on a
+    /// ten-year run a construction office held thirteen of thirteen people while
+    /// the farm, the mine and the power plant had none, and the republic never
+    /// produced a gram of anything.
+    ///
+    /// Watched to fail: restore `workplaces.sort_by_key(|b| b.id)` and the
+    /// office takes all sixteen while the plant gets four.
+    ///
+    /// A construction office is commissioned *first* here on purpose. That is
+    /// the order a real republic builds in — an office is what puts everything
+    /// else up — which is exactly why the old tie-break-only sort was fatal
+    /// rather than merely untidy.
+    #[test]
+    fn standing_decides_who_is_staffed_when_hands_are_short() {
+        let t = ground();
+        let town = at(5_000.0, 5_000.0);
+        let g = coal_at(town);
+        let mut b = Buildings::new();
+        let office = b
+            .place_built(BuildingKind::ConstructionOffice, town, &t, &g)
+            .unwrap();
+        let plant = b
+            .place_built(BuildingKind::PowerPlant, at(5_300.0, 5_000.0), &t, &g)
+            .unwrap();
+        let homes = b
+            .place_built(BuildingKind::Apartment, at(5_150.0, 5_150.0), &t, &g)
+            .unwrap();
+
+        // Twenty people for thirty-one posts, so somebody must go short.
+        let mut p = Population::new();
+        for _ in 0..20 {
+            p.spawn_citizen(homes, 30);
+        }
+
+        let labour = assign_labour(&mut p, &b, crate::journey::Ways::on_roads(&Network::new()));
+        let staffed = |id| {
+            labour
+                .staffing
+                .iter()
+                .find(|(b, _)| *b == id)
+                .map(|(_, n)| *n)
+                .unwrap_or(0)
+        };
+
+        assert_eq!(
+            staffed(plant),
+            BuildingKind::PowerPlant.def().workers,
+            "the plant keeps the lights on, so it is manned first"
+        );
+        assert_eq!(
+            staffed(office),
+            20 - BuildingKind::PowerPlant.def().workers,
+            "and the office takes what is left rather than everything"
+        );
+        assert!(
+            BuildingKind::PowerPlant.def().priority
+                > BuildingKind::ConstructionOffice.def().priority,
+            "which is a fact about the table, not about the order they were built"
+        );
+    }
+
+    /// Moving a building's standing overrides the table, and that is the
+    /// player's call rather than the author's.
+    ///
+    /// **The plant is commissioned first here, and that is what makes this a
+    /// guard rather than a coincidence.** With the office built first, id order
+    /// and the player's wish agree, and the test would pass against a pass that
+    /// ignored standing entirely — which is exactly what it did on the first
+    /// writing. Building the plant first puts the two in opposition, so only a
+    /// pass that actually reads `priority` can satisfy it.
+    #[test]
+    fn a_player_can_outrank_the_table() {
+        let t = ground();
+        let town = at(5_000.0, 5_000.0);
+        let g = coal_at(town);
+        let mut b = Buildings::new();
+        let plant = b
+            .place_built(BuildingKind::PowerPlant, at(5_300.0, 5_000.0), &t, &g)
+            .unwrap();
+        let office = b
+            .place_built(BuildingKind::ConstructionOffice, town, &t, &g)
+            .unwrap();
+        let homes = b
+            .place_built(BuildingKind::Apartment, at(5_150.0, 5_150.0), &t, &g)
+            .unwrap();
+        let mut p = Population::new();
+        for _ in 0..20 {
+            p.spawn_citizen(homes, 30);
+        }
+
+        // The player wants the office built out before the grid is finished.
+        b.set_priority(office, Priority::First);
+        b.set_priority(plant, Priority::Last);
+
+        let labour = assign_labour(&mut p, &b, crate::journey::Ways::on_roads(&Network::new()));
+        let staffed = |id| {
+            labour
+                .staffing
+                .iter()
+                .find(|(b, _)| *b == id)
+                .map(|(_, n)| *n)
+                .unwrap_or(0)
+        };
+        assert_eq!(
+            staffed(office),
+            BuildingKind::ConstructionOffice.def().workers,
+            "the player asked for the office first"
+        );
+        assert_eq!(
+            staffed(plant),
+            20 - BuildingKind::ConstructionOffice.def().workers,
+            "and the plant goes short instead"
         );
     }
 

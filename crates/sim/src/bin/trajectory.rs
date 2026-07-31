@@ -355,6 +355,48 @@ fn main() {
         })
         .collect();
     println!("ways: {}", ways.join(" · "));
+
+    // Every building the republic ended with, and the state that decides
+    // whether it does anything at all.
+    //
+    // The columns above can only say that production was zero. They cannot say
+    // *which* building stopped, and a republic that produces nothing produces
+    // nothing for one reason per building — unbuilt, unpowered, unstaffed, or
+    // starved of an input. Reading the runner is the point of the runner, and
+    // without this the most important question it raises is the one it cannot
+    // answer.
+    println!();
+    println!("roster:");
+    for b in world.buildings().all() {
+        let d = b.def();
+        let mut why: Vec<String> = Vec::new();
+        if !b.is_built() {
+            why.push(format!("{:.0}% built", b.progress() * 100.0));
+        }
+        if d.power_draw > 0.0 && !b.powered {
+            why.push("no power".into());
+        }
+        if d.heat > 0.0 && !b.heated {
+            why.push("cold".into());
+        }
+        if d.workers > 0 {
+            why.push(format!("{}/{} staff", b.staff, d.workers));
+        }
+        for (r, _) in d.inputs {
+            if b.stock.get(*r) == Tonnes::ZERO {
+                why.push(format!("no {}", r.name().to_lowercase()));
+            }
+        }
+        println!(
+            "  {:<22} {}",
+            d.name,
+            if why.is_empty() {
+                "running".to_string()
+            } else {
+                why.join(" · ")
+            }
+        );
+    }
 }
 
 /// The autopilot: what a competent player would buy, in the order they would
@@ -381,6 +423,8 @@ struct Director {
     road: bool,
     /// Whether coal has been put on sale.
     selling: bool,
+    /// Whether the standing import rules have been set.
+    buying: bool,
     /// How many months running the current step has been refused.
     stuck: u32,
     /// What it has said out loud, so a decade does not print the same line
@@ -432,6 +476,22 @@ impl Director {
     /// sawmill and no brickworks puts down foundations nothing will ever
     /// deliver to. Three buildings in three years, against eleven when it kept
     /// paying. A player would have seen it in a week.
+    /// What the republic buys in until it can make it, and how much it keeps at
+    /// the crossing.
+    ///
+    /// A stock level rather than an order: `Buy { up_to }` tops the customs
+    /// house back up to this figure as lorries take it away, which is what a
+    /// standing import policy is. The figures are a few weeks of consumption at
+    /// the rates the building table authors — enough that a lorry breaking down
+    /// does not stop the plant, small enough that the grant is not spent on a
+    /// mountain of coal in month one.
+    const IMPORTS: &'static [(Resource, f64)] = &[
+        (Resource::Food, 120.0),
+        (Resource::Coal, 200.0),
+        (Resource::Fuel, 60.0),
+        (Resource::Machinery, 20.0),
+    ];
+
     const MATERIALS: &'static [BuildingKind] = &[
         BuildingKind::GravelQuarry,
         BuildingKind::Sawmill,
@@ -445,6 +505,7 @@ impl Director {
             hired: false,
             road: false,
             selling: false,
+            buying: false,
             stuck: 0,
             said: Vec::new(),
         }
@@ -495,8 +556,25 @@ impl Director {
         // that would take it and a command that refused it — which stalled the
         // whole plan on step seven for two and a half simulated years, with the
         // director printing one line about it and then nothing at all.
+        // **And it goes to an EASTERN post, because the grant is roubles.**
+        // This asked for the nearest crossing of any bloc, and on most seeds
+        // that is a Western one — where a purse holding 2,500,000 roubles and
+        // no dollars can buy precisely nothing. Trade then failed silently in
+        // both directions for a decade: `affordable` came out zero on every
+        // tick, no goods ever crossed, and the republic sat inert with a
+        // customs house it could not use. `scenario::GRANT_ROUBLES` says which
+        // bloc's posts the land reaches is the first thing that matters about a
+        // posting, and until now the one thing that plays the opening ignored
+        // it. Falling back to any post keeps a republic with no Eastern
+        // crossing playable, and says so rather than pretending.
         let around = if kind == BuildingKind::Customs {
-            match world.frontier().nearest_crossing(self.centre, None) {
+            let east = world
+                .frontier()
+                .nearest_crossing(self.centre, Some(Market::East));
+            if east.is_none() {
+                self.say("no Eastern post in reach — this posting must earn dollars first".into());
+            }
+            match east.or_else(|| world.frontier().nearest_crossing(self.centre, None)) {
                 Some(post) => post.at,
                 None => {
                     self.say("this republic has no frontier post at all".into());
@@ -607,19 +685,58 @@ impl Director {
         else {
             return;
         };
-        if !self.selling {
-            let bloc = world.bloc_near(house);
-            if world
+        let bloc = world.bloc_near(house);
+        // **The opening is an import problem, and this runner never once
+        // treated it as one.** A coal mine draws six megawatts, a power plant
+        // burns coal to make them, and a republic founded on empty ground has
+        // neither — so the circle cannot be broken from the inside and the
+        // first tonne has to come over the border. Fuel and machinery are the
+        // same shape: the construction office and both depots consume them from
+        // the day they open, and nothing in the republic makes either for
+        // years. Without these three rules the republic is inert for a decade,
+        // which is exactly what it was.
+        if !self.buying {
+            let mut all = true;
+            for &(resource, up_to) in Self::IMPORTS {
+                if world
+                    .issue(Command::AddTradeRule {
+                        resource,
+                        market: bloc,
+                        action: TradeAction::Buy {
+                            up_to: Tonnes(up_to),
+                        },
+                    })
+                    .is_err()
+                {
+                    all = false;
+                }
+            }
+            if all {
+                self.buying = true;
+                self.say(format!("buying coal, fuel and machinery from the {bloc:?}"));
+            }
+        }
+        // Coal goes on sale only once the republic actually digs it. Selling it
+        // from the day the house opens is what the old plan did, and it is
+        // worse than useless now that coal is also bought: the sell rule and
+        // the buy rule meet at the same customs house, so the republic would
+        // buy a tonne over the border and sell it straight back.
+        if !self.selling
+            && world
+                .buildings()
+                .all()
+                .iter()
+                .any(|b| b.kind == BuildingKind::CoalMine && b.is_built() && b.staff > 0)
+            && world
                 .issue(Command::AddTradeRule {
                     resource: Resource::Coal,
                     market: bloc,
                     action: TradeAction::Sell,
                 })
                 .is_ok()
-            {
-                self.selling = true;
-                self.say(format!("selling coal to the {bloc:?}ern bloc"));
-            }
+        {
+            self.selling = true;
+            self.say(format!("selling coal to the {bloc:?}ern bloc"));
         }
         if !self.road {
             match world.issue(Command::OrderRoad {
