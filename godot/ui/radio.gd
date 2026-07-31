@@ -137,7 +137,7 @@ func _rebuild() -> void:
 		# playlist: this build genuinely has no music, and saying where music
 		# would go is more use to a player than pretending.
 		_list.add_child(Style.body("The programme is empty.", Style.INK))
-		_list.add_child(Style.small(
+		_list.add_child(Style.paragraph(
 			"The State Radio Orchestra has not yet recorded anything. Composed "
 			+ "tracks placed in the folder below appear here, in name order.",
 			Style.INK_DIM

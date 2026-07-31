@@ -112,7 +112,7 @@ func _build() -> void:
 	margin.add_child(column)
 
 	column.add_child(Style.heading("LABOUR", Style.SIZE_TITLE))
-	column.add_child(Style.small(
+	column.add_child(Style.paragraph(
 		"A building runs the hours somebody is standing in it. More crews is more "
 		+ "goods and more people; a longer shift is more goods out of the same people, "
 		+ "and it costs them their health and their loyalty.",
