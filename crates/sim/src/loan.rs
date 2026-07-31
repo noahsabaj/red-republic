@@ -40,24 +40,119 @@ pub struct Tier {
     pub term_days: u64,
 }
 
-/// Three rungs. The smallest is a bridge, the largest is a bet.
-pub const TIERS: [Tier; 3] = [
+/// The Eastern Bloc's ladder, in roubles: large, long and cheap.
+///
+/// # Sized against what a rouble buys, which is buildings
+///
+/// A republic opens with [`crate::scenario::GRANT_ROUBLES`] and a contracted
+/// building costs `labour * CONTRACTOR_RATE` — 17,000 for the cheapest on the
+/// roster, 68,000 for the median, 210,800 for the dearest. So the rungs are a
+/// bridge, a programme and a bet, measured in buildings:
+///
+/// | rung | roubles | buys | of the grant |
+/// |---|---|---|---|
+/// | bridge | 60,000 | about one median works | 2% |
+/// | programme | 300,000 | a small chain of four or five | 12% |
+/// | bet | 1,000,000 | fifteen, most of a second founding | 40% |
+///
+/// **One ladder used to serve both currencies and it was a dollar ladder.** Its
+/// top rung was 15,000, which is less than the cheapest building on the roster —
+/// so the largest advance the Eastern Bloc offered could not raise a Woodcutter
+/// Post, against a grant that raises thirty-seven Coal Mines. Nobody had ever
+/// had a reason to compare the two numbers.
+///
+/// # The terms are long because roubles are earned slowly
+///
+/// A customs house clears [`crate::trade::CUSTOMS_THROUGHPUT_PER_DAY`] tonnes a
+/// day and coal sells east at 2 roubles the tonne, so a republic exporting flat
+/// out through one post earns about 60 roubles a day until it is making
+/// something worth more than coal. The bottom rung is repayable on exactly that
+/// with room to spare — one post, at the ceiling, over five years — and each rung
+/// above it needs a republic that has industrialised past coal. Five years on the
+/// bridge and ten on the bet is what makes them different instruments rather than
+/// the same bet at three sizes.
+///
+/// The bridge was three years first, which made it *exactly* break-even against
+/// perfect coal export for the whole term — a republic that spent three years
+/// achieving nothing but the loan. `the_bridge_is_repayable_on_coal_alone`
+/// wants half again on top, and found it.
+pub const TIERS_EAST: [Tier; 3] = [
     Tier {
-        principal: 2_000.0,
+        principal: 60_000.0,
         interest: 0.08,
+        term_days: 1_800,
+    },
+    Tier {
+        principal: 300_000.0,
+        interest: 0.14,
+        term_days: 2_700,
+    },
+    Tier {
+        principal: 1_000_000.0,
+        interest: 0.22,
+        term_days: 3_600,
+    },
+];
+
+/// The Western Alliance's ladder, in dollars: small, short and dear.
+///
+/// # A different instrument, not the same one converted
+///
+/// The two blocs are not two spellings of the same money. A republic **starts
+/// with no dollars at all** and earns them only by hauling goods to a western
+/// post, where prices are about half the eastern ones — so a western advance is
+/// measured in what it imports rather than in what it builds. Twenty-five
+/// thousand dollars is five hundred tonnes of machinery, which is the industry
+/// that earns the dollars back, and that circle is the whole reason this
+/// mechanic exists.
+///
+/// Dearer and shorter than the east's, deliberately. The fraternal creditor
+/// lends patiently and the hard-currency one does not, and that asymmetry is the
+/// same one [`crate::trade::BORDER_SPREAD`] draws: which bloc you deal with is a
+/// decision, not a detail.
+///
+/// The top rung is 25,000 rather than the 15,000 it was, for one reason worth
+/// stating: it is the least that can raise the cheapest building on the roster.
+/// A ladder whose largest rung cannot buy the smallest thing in the game is a
+/// ladder that only ever buys goods, and `the_top_rung_can_raise_a_building`
+/// holds both ladders to it.
+pub const TIERS_WEST: [Tier; 3] = [
+    Tier {
+        principal: 3_000.0,
+        interest: 0.10,
         term_days: 360,
     },
     Tier {
-        principal: 6_000.0,
-        interest: 0.14,
+        principal: 9_000.0,
+        interest: 0.16,
         term_days: 540,
     },
     Tier {
-        principal: 15_000.0,
-        interest: 0.22,
+        principal: 25_000.0,
+        interest: 0.25,
         term_days: 720,
     },
 ];
+
+/// What a bloc will advance.
+///
+/// A function rather than a field on [`Market`], because the ladder is loan data
+/// and belongs beside the tables above — a market knows what it pays for a tonne
+/// and has no business knowing what it lends.
+pub fn ladder(market: Market) -> &'static [Tier] {
+    match market {
+        Market::East => &TIERS_EAST,
+        Market::West => &TIERS_WEST,
+    }
+}
+
+/// How many rungs every ladder has.
+///
+/// Both are the same length on purpose — bridge, programme, bet is the shape of
+/// the decision, and a bloc offering four rungs where the other offers three
+/// would be a difference that means nothing. `every_ladder_is_the_same_shape`
+/// holds it.
+pub const RUNGS: usize = 3;
 
 /// What a default costs, as a fraction of what was still owed.
 ///
@@ -182,7 +277,7 @@ impl Loans {
     /// A pre-flight the UI reads to grey a button out *with its reason*, which
     /// is the whole argument for refusals carrying words.
     pub fn can_take(&self, market: Market, tier: usize) -> Result<Tier, LoanError> {
-        let terms = *TIERS.get(tier).ok_or(LoanError::NoSuchTier)?;
+        let terms = *ladder(market).get(tier).ok_or(LoanError::NoSuchTier)?;
         if self.burnt.contains(&market) {
             return Err(LoanError::Defaulted);
         }
@@ -253,14 +348,166 @@ impl Loans {
 mod tests {
     use super::*;
 
+    /// The largest advance a bloc offers must be able to raise the cheapest
+    /// building on the roster.
+    ///
+    /// **This is the check that was missing, and the bug it would have caught
+    /// shipped.** One ladder served both currencies, and its top rung was
+    /// 15,000 against a cheapest building of 17,000 — so the largest advance
+    /// the Eastern Bloc would make could not buy the smallest thing in the game,
+    /// beside a founding grant that buys thirty-seven of the median one.
+    ///
+    /// Stated as a relationship rather than as a number, so it goes on holding
+    /// when the roster grows a cheaper building or `CONTRACTOR_RATE` moves. What
+    /// it asserts is the *claim this module opens with*: an advance is the way
+    /// out of the circle where the industry that earns money is built with
+    /// money. A ladder that cannot buy a building is not a way out of anything.
+    #[test]
+    fn the_top_rung_can_raise_a_building() {
+        let cheapest = crate::building::BUILDINGS
+            .iter()
+            .map(|d| d.labour * crate::systems::CONTRACTOR_RATE)
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            cheapest.is_finite() && cheapest > 0.0,
+            "the roster priced nothing, so this proves nothing"
+        );
+        for market in Market::ALL {
+            let top = ladder(market)
+                .last()
+                .unwrap_or_else(|| panic!("{market:?} offers no advances at all"));
+            assert!(
+                top.principal >= cheapest,
+                "the largest advance {market:?} offers is {:.0} and the cheapest \
+                 building on the roster costs {cheapest:.0} to contract. An \
+                 advance is supposed to be the way out of the circle where the \
+                 industry that earns money is built with money.",
+                top.principal
+            );
+        }
+    }
+
+    /// The eastern ladder is sized against the grant a republic opens with.
+    ///
+    /// Money is not comparable between blocs — a dollar and a rouble buy
+    /// different amounts of different things — but roubles and the grant are the
+    /// same money, so this one comparison is meaningful and it is the one that
+    /// was never made. A top rung worth a rounding error against the opening
+    /// treasury is a rung nobody would ever press.
+    ///
+    /// The upper bound matters as much as the lower: an advance larger than the
+    /// founding grant would make borrowing a better start than being posted,
+    /// which is the shape this game refuses everywhere else.
+    #[test]
+    fn an_eastern_advance_is_worth_taking_and_is_not_a_second_founding() {
+        let grant = crate::scenario::GRANT_ROUBLES;
+        let top = TIERS_EAST.last().expect("the east lends").principal;
+        let bottom = TIERS_EAST.first().expect("the east lends").principal;
+        assert!(
+            top >= grant * 0.2,
+            "the largest rouble advance is {top:.0} against a grant of \
+             {grant:.0} — {:.1}% of what a republic opens with, which is not a \
+             decision anybody would weigh",
+            100.0 * top / grant
+        );
+        assert!(
+            top < grant,
+            "an advance of {top:.0} is more than the {grant:.0} grant, so \
+             borrowing would be a better start than being posted"
+        );
+        assert!(
+            bottom < top / 4.0,
+            "the rungs are {bottom:.0} and {top:.0}, close enough together that \
+             there is nothing to choose between them"
+        );
+    }
+
+    /// Both ladders are the same shape, and each climbs.
+    ///
+    /// Bridge, programme, bet is the decision; a bloc offering four rungs where
+    /// the other offers three would be a difference that means nothing. And a
+    /// rung that is larger *and* cheaper than the one below it would make every
+    /// smaller rung dead — the interest is what prices the size.
+    #[test]
+    fn every_ladder_is_the_same_shape_and_climbs() {
+        for market in Market::ALL {
+            let rungs = ladder(market);
+            assert_eq!(
+                rungs.len(),
+                RUNGS,
+                "{market:?} offers {} rungs and RUNGS says {RUNGS}",
+                rungs.len()
+            );
+            for pair in rungs.windows(2) {
+                let (lower, higher) = (pair[0], pair[1]);
+                assert!(
+                    higher.principal > lower.principal,
+                    "{market:?}: a rung of {:.0} sits above one of {:.0}",
+                    higher.principal,
+                    lower.principal
+                );
+                assert!(
+                    higher.interest > lower.interest,
+                    "{market:?}: {:.0} costs {:.0}% and {:.0} costs {:.0}%, so \
+                     the smaller rung is dead",
+                    higher.principal,
+                    100.0 * higher.interest,
+                    lower.principal,
+                    100.0 * lower.interest
+                );
+                assert!(
+                    higher.term_days >= lower.term_days,
+                    "{market:?}: the larger advance is due sooner than the \
+                     smaller one"
+                );
+            }
+        }
+    }
+
+    /// The bottom rung of each ladder is repayable by a republic exporting
+    /// through one customs house at its throughput ceiling.
+    ///
+    /// **The bridge has to be a bridge.** A smallest advance nobody can pay back
+    /// is not a way to get started, it is a way to lose a creditor for good —
+    /// and losing one is permanent, which is the whole thing that makes a
+    /// default cost anything to a republic with an empty purse.
+    ///
+    /// Priced on coal, which is the cheapest thing a young republic exports and
+    /// therefore the worst case. Anything it learns to make instead is worth
+    /// more per tonne, so a ladder that passes on coal passes on everything.
+    #[test]
+    fn the_bridge_is_repayable_on_coal_alone() {
+        for market in Market::ALL {
+            let rung = ladder(market).first().expect("every bloc lends");
+            let owed = rung.principal * (1.0 + rung.interest);
+            let a_day = crate::trade::CUSTOMS_THROUGHPUT_PER_DAY
+                * market.sell_price(crate::resource::Resource::Coal);
+            let earned = a_day * rung.term_days as f64;
+            // Half again on top of the debt, not merely enough. A bridge that is
+            // exactly break-even against three years of flawless coal export is
+            // a republic that spent three years standing still — which is what
+            // the first draft of this table did, and what this margin caught.
+            assert!(
+                earned >= owed * 1.5,
+                "{market:?}'s smallest advance owes {owed:.0} over {} days, and \
+                 one customs house running flat out on coal earns {earned:.0} in \
+                 that time. The bridge cannot be crossed.",
+                rung.term_days
+            );
+        }
+    }
+
     #[test]
     fn the_terms_are_fixed_when_the_money_is_taken() {
         let mut loans = Loans::new();
         let got = loans.take(Market::East, 0, 100).expect("first advance");
-        assert_eq!(got, TIERS[0].principal);
+        assert_eq!(got, TIERS_EAST[0].principal);
         let loan = loans.of(Market::East).expect("carrying it");
-        assert_eq!(loan.owed, TIERS[0].principal * (1.0 + TIERS[0].interest));
-        assert_eq!(loan.due_day, 100 + TIERS[0].term_days);
+        assert_eq!(
+            loan.owed,
+            TIERS_EAST[0].principal * (1.0 + TIERS_EAST[0].interest)
+        );
+        assert_eq!(loan.due_day, 100 + TIERS_EAST[0].term_days);
         assert!(loan.owed > loan.principal, "an advance costs something");
     }
 
@@ -291,12 +538,12 @@ mod tests {
     fn an_advance_comes_due_and_can_be_defaulted_on() {
         let mut loans = Loans::new();
         loans.take(Market::East, 0, 10).expect("advance");
-        let due = 10 + TIERS[0].term_days;
+        let due = 10 + TIERS_EAST[0].term_days;
         assert_eq!(loans.overdue(due - 1).count(), 0, "not yet");
         assert_eq!(loans.overdue(due).count(), 1, "the day has come");
 
         let lost = loans.default_on(Market::East).expect("there was one");
-        assert!(lost > TIERS[0].principal, "the interest was owed too");
+        assert!(lost > TIERS_EAST[0].principal, "the interest was owed too");
         assert_eq!(loans.defaulted, 1);
         assert!(loans.of(Market::East).is_none());
 

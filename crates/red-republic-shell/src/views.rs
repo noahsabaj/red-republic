@@ -1036,16 +1036,22 @@ pub fn loans(world: &World) -> PackedFloat32Array {
 /// Floats per rung in [`loan_tiers`].
 pub const TIER_STRIDE: usize = 4;
 
-/// What the blocs will advance: `[principal, interest_share, term_days,
-/// total_owed]` per rung of the ladder.
+/// What one bloc will advance: `[principal, interest_share, term_days,
+/// total_owed]` per rung of its ladder.
+///
+/// **Per bloc, because the two ladders are different instruments.** The east
+/// lends roubles by the hundred thousand over years and the west lends dollars
+/// by the thousand over months; a single read would have to pick one, and the
+/// version that did picked the dollar one — leaving the Eastern Bloc's largest
+/// advance at less than the price of the cheapest building on the roster.
 ///
 /// `total_owed` is the arithmetic the panel would otherwise do — principal times
 /// one plus the interest — and it is here rather than there because it is the
 /// number the player is actually deciding against, and because balance does not
 /// belong in a panel however small the sum.
-pub fn loan_tiers() -> PackedFloat32Array {
+pub fn loan_tiers(market: red_republic_sim::Market) -> PackedFloat32Array {
     let mut out = PackedFloat32Array::new();
-    for tier in red_republic_sim::loan::TIERS {
+    for tier in red_republic_sim::loan::ladder(market) {
         out.push(tier.principal as f32);
         out.push(tier.interest as f32);
         out.push(tier.term_days as f32);
@@ -1256,7 +1262,7 @@ pub fn journal(world: &World, from: usize, count: usize) -> PackedFloat32Array {
             C::TakeLoan { market, tier } => {
                 args[0] = bloc_index(market) as f32;
                 args[1] = tier as f32;
-                args[2] = red_republic_sim::loan::TIERS
+                args[2] = red_republic_sim::loan::ladder(market)
                     .get(tier as usize)
                     .map_or(0.0, |t| t.principal as f32);
             }

@@ -12250,7 +12250,7 @@ mod tests {
         .expect("nothing is owed yet");
 
         let advanced = w.treasury.of(bloc);
-        assert_eq!(advanced, crate::loan::TIERS[0].principal);
+        assert_eq!(advanced, crate::loan::TIERS_EAST[0].principal);
         let owed = w.loans.outstanding(bloc);
         assert!(owed > advanced, "an advance costs interest");
         let relations_before = w.contracts.penalty(bloc);
@@ -12260,7 +12260,7 @@ mod tests {
 
         // Run past the due day. The system is daily, so this also proves the
         // republic is not fined 1,440 times for one unpaid advance.
-        let due = crate::loan::TIERS[0].term_days;
+        let due = crate::loan::TIERS_EAST[0].term_days;
         for _ in 0..(due + 2) * TICKS_PER_DAY {
             w.tick();
         }
