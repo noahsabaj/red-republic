@@ -100,6 +100,9 @@ public partial class Main : Node3D
             return;
         }
 
+        Ui.Settings.Read();
+        Ui.Settings.Apply();
+
         _tables = LoadTables();
         GD.Print($"tables ok: {_tables.BuildingCount} buildings, "
             + $"{_tables.Resources.Length} resources, checksum {_tables.ChecksumGot}");
@@ -143,7 +146,14 @@ public partial class Main : Node3D
         _shell = new Ui.Shell { Name = "Shell" };
         AddChild(_shell);
         _shell.Raise(_world);
-        _shell.Ticked += () => scenery.Refresh(_world);
+        _shell.Ticked += () => scenery.Refresh(_world!);
+        _shell.TookUp += taken =>
+        {
+            // The land is the same land — a save carries its seed — so only what
+            // stands on it has to be redrawn.
+            _world = taken;
+            scenery.Refresh(taken);
+        };
         scenery.Refresh(_world);
 
         // `--shot` captures one frame and quits. It aims the camera itself,

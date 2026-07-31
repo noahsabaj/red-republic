@@ -47,6 +47,7 @@ public sealed partial class Shell : CanvasLayer
     private Hud _hud = null!;
     private Sim.World _world = null!;
     private Screen? _open;
+    private MenuScreen _menu = null!;
     private int _speed = 1;
     private double _carried;
     private double _sinceRefresh;
@@ -63,6 +64,12 @@ public sealed partial class Shell : CanvasLayer
     /// rewritten every frame costs more than the simulation does.
     /// </remarks>
     public event Action? Ticked;
+
+    /// <summary>
+    /// Raised when a save has been taken up, so the world can be rebuilt around
+    /// the republic that came back.
+    /// </summary>
+    public event Action<Sim.World>? TookUp;
 
     public void Raise(Sim.World world)
     {
@@ -87,6 +94,17 @@ public sealed partial class Shell : CanvasLayer
         Add(Key.F, new FinanceScreen());
         Add(Key.J, new JournalScreen());
         Add(Key.R, new ReferenceScreen());
+
+        var menu = new MenuScreen();
+        menu.Loaded += taken =>
+        {
+            _world = taken;
+            Shut();
+            TookUp?.Invoke(taken);
+        };
+
+        Add(Key.M, menu);
+        _menu = menu;
 
         _hud.Refresh(world, Speeds[_speed].Name);
     }
@@ -146,6 +164,10 @@ public sealed partial class Shell : CanvasLayer
             else if (Placing >= 0)
             {
                 StopPlacing();
+            }
+            else
+            {
+                Show(_menu);
             }
 
             return;
