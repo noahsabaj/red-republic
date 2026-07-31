@@ -96,6 +96,9 @@ var _buildings_shown := -1
 var _roads_shown := -1
 var _lines_shown := -1
 var _ways_shown := -1
+## Whether a capture run should stand the fixture town up first, so there is
+## something in the frame to look at.
+var _fixture_town := false
 var _shot_path := ""
 var _shot_after := 90
 var _frames := 0
@@ -186,8 +189,47 @@ func _ready() -> void:
 		_open_named_screen(_start_screen)
 	elif wants_republic or _start_screen == "game":
 		_found_default()
+		if _fixture_town:
+			republic.found_fixture_town(143)
+			# Two days, so the labour pass has run and the fleet has been
+			# dispatched — a lorry parked in a depot is not a lorry on a road,
+			# and the road is where anybody looks at one.
+			republic.advance_days(2)
 	else:
 		_set_screen(Screen.MENU)
+
+
+## The lorry body out of `models/vehicles.glb`, or a box if it is missing.
+##
+## The fallback is not defensive habit: an export that failed silently would
+## otherwise take the whole fleet off the map, and a republic whose lorries have
+## vanished looks exactly like a republic whose lorries are not being
+## dispatched -- which is a bug this repository has actually had.
+func _vehicle_mesh() -> Mesh:
+	var packed: PackedScene = load("res://models/vehicles.glb")
+	if packed != null:
+		var root := packed.instantiate()
+		var found := _first_mesh_named(root, "lorry")
+		root.queue_free()
+		if found != null:
+			return found
+	push_warning("no lorry body in models/vehicles.glb — drawing boxes")
+	var box := BoxMesh.new()
+	box.size = Vector3(6.0, 3.0, 2.5)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = _look.vehicle
+	box.material = mat
+	return box
+
+
+func _first_mesh_named(node: Node, wanted: String) -> Mesh:
+	if node is MeshInstance3D and node.name.begins_with(wanted):
+		return (node as MeshInstance3D).mesh
+	for child in node.get_children():
+		var found := _first_mesh_named(child, wanted)
+		if found != null:
+			return found
+	return null
 
 
 ## Point the camera where a capture run asked for, after everything that frames
@@ -1053,6 +1095,17 @@ func _read_arguments() -> void:
 					var parts := args[i + 1].split(",")
 					if parts.size() == 2:
 						_view_at = Vector2(float(parts[0]), float(parts[1]))
+			"--fixture":
+				# Stand the nineteen-building fixture town up before capturing.
+				#
+				# **A capture of an empty map cannot show a building, a lorry or a
+				# road**, and those are most of what there is to look at. `--shot`
+				# founds a blank posting and the shell has no player in it, so
+				# `--advance` ticks a republic that never builds anything: every
+				# world capture taken so far has been six kilometres of grass.
+				# The labour screen already reaches for this fixture for the same
+				# reason, and it is the only way either of them gets a subject.
+				_fixture_town = true
 			"--advance":
 				if i + 1 < args.size():
 					_advance_days = int(args[i + 1])
@@ -1393,15 +1446,21 @@ func _build_instance_meshes() -> void:
 		buildings_node.add_child(node)
 		_kind_nodes.append(node)
 
-	var van := BoxMesh.new()
-	van.size = Vector3(6.0, 3.0, 2.5)
-	var van_mat := StandardMaterial3D.new()
-	van_mat.albedo_color = _look.vehicle
-	van.material = van_mat
-
+	# **A lorry, not a brick.** Every vehicle in the republic was one `BoxMesh`
+	# 6.0 x 3.0 x 2.5 m in a flat colour -- a lorry, a coach, a snow plough and a
+	# recovery truck all the same grey block. At the zoom freight is actually
+	# watched from, the thing that says what a vehicle is is its outline, and
+	# there was none to read.
+	#
+	# `tools/build_vehicles.py` makes the bodies; this takes the lorry, which is
+	# what nearly everything on a road is. The other three bodies in the file are
+	# there for when `marshal::vehicle_positions` carries a kind as well as a
+	# position -- it sends flat xyz triples today, so the shell cannot yet tell a
+	# coach from a tipper and drawing them all as coaches would be a worse lie
+	# than drawing them all as lorries.
 	var vm := MultiMesh.new()
 	vm.transform_format = MultiMesh.TRANSFORM_3D
-	vm.mesh = van
+	vm.mesh = _vehicle_mesh()
 	vehicles_node.multimesh = vm
 
 	# Settlers standing at a frontier post. A marker rather than figures: what
