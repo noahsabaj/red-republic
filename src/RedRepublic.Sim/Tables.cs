@@ -131,6 +131,62 @@ public sealed class Tables
 
     public MineralPlan[] MineralPlan { get; private set; } = [];
 
+    // ---- trade, credit and tenders ----
+
+    /// <summary>
+    /// How many crossings a frontier gets. Enough that "which one" is a real
+    /// choice and few enough that one is always a haul away.
+    /// </summary>
+    public int Crossings { get; private set; }
+
+    /// <summary>How far inside the frontier a post stands.</summary>
+    public double CrossingInset { get; private set; }
+
+    public double CustomsRange { get; private set; }
+
+    /// <summary>Tonnes a customs house can clear in a day.</summary>
+    public double CustomsThroughputPerDay { get; private set; }
+
+    public double BorderSpread { get; private set; }
+
+    private Tier[] _ladderEast = [];
+    private Tier[] _ladderWest = [];
+
+    /// <summary>
+    /// A bloc's lending ladder. The two are different instruments rather than
+    /// one converted: the east lends roubles by the hundred thousand over years,
+    /// the west dollars by the thousand over months, dearer.
+    /// </summary>
+    public IReadOnlyList<Tier> Ladder(Market market) =>
+        market == Market.East ? _ladderEast : _ladderWest;
+
+    /// <summary>Share of what was outstanding that a default costs.</summary>
+    public double DefaultFine { get; private set; }
+
+    public double DefaultRelations { get; private set; }
+
+    // Tenders.
+    public long OfferEveryMonths { get; private set; }
+    public int MaxOpenOffers { get; private set; }
+    public double ValueBandEastLo { get; private set; }
+    public double ValueBandEastHi { get; private set; }
+    public double ValueBandWestLo { get; private set; }
+    public double ValueBandWestHi { get; private set; }
+    public double MinTonnes { get; private set; }
+    public double MaxTonnes { get; private set; }
+    public double PremiumLo { get; private set; }
+    public double PremiumHi { get; private set; }
+    public long DeadlineDaysLo { get; private set; }
+    public long DeadlineDaysHi { get; private set; }
+    public long OfferDays { get; private set; }
+
+    /// <summary>Share of a tender's value that a missed delivery costs.</summary>
+    public double FineShare { get; private set; }
+
+    public double RelationsHit { get; private set; }
+    public double RelationsCap { get; private set; }
+    public double RelationsDecayPerDay { get; private set; }
+
     // ---- the network ----
 
     /// <summary>How finely a fairway is sampled off the water.</summary>
@@ -586,6 +642,38 @@ public sealed class Tables
 
     private void LoadPeople(JsonElement m)
     {
+        var tr = m.GetProperty("trade");
+        Crossings = tr.GetProperty("crossings").GetInt32();
+        CrossingInset = tr.GetProperty("crossing_inset_m").GetDouble();
+        CustomsRange = tr.GetProperty("customs_range_m").GetDouble();
+        CustomsThroughputPerDay = tr.GetProperty("customs_throughput_per_day").GetDouble();
+        BorderSpread = tr.GetProperty("border_spread").GetDouble();
+
+        var ln = m.GetProperty("loans");
+        DefaultFine = ln.GetProperty("default_fine").GetDouble();
+        DefaultRelations = ln.GetProperty("default_relations").GetDouble();
+        _ladderEast = ReadLadder(ln.GetProperty("east"));
+        _ladderWest = ReadLadder(ln.GetProperty("west"));
+
+        var ct = m.GetProperty("contracts");
+        OfferEveryMonths = ct.GetProperty("offer_every_months").GetInt64();
+        MaxOpenOffers = ct.GetProperty("max_open_offers").GetInt32();
+        ValueBandEastLo = ct.GetProperty("value_band_east")[0].GetDouble();
+        ValueBandEastHi = ct.GetProperty("value_band_east")[1].GetDouble();
+        ValueBandWestLo = ct.GetProperty("value_band_west")[0].GetDouble();
+        ValueBandWestHi = ct.GetProperty("value_band_west")[1].GetDouble();
+        MinTonnes = ct.GetProperty("tonnes")[0].GetDouble();
+        MaxTonnes = ct.GetProperty("tonnes")[1].GetDouble();
+        PremiumLo = ct.GetProperty("premium")[0].GetDouble();
+        PremiumHi = ct.GetProperty("premium")[1].GetDouble();
+        DeadlineDaysLo = ct.GetProperty("deadline_days")[0].GetInt64();
+        DeadlineDaysHi = ct.GetProperty("deadline_days")[1].GetInt64();
+        OfferDays = ct.GetProperty("offer_days").GetInt64();
+        FineShare = ct.GetProperty("fine_share").GetDouble();
+        RelationsHit = ct.GetProperty("relations_hit").GetDouble();
+        RelationsCap = ct.GetProperty("relations_cap").GetDouble();
+        RelationsDecayPerDay = ct.GetProperty("relations_decay_per_day").GetDouble();
+
         var net = m.GetProperty("network");
         FairwaySpacing = net.GetProperty("fairway_spacing_m").GetDouble();
         NavigableBeam = net.GetProperty("navigable_beam_m").GetDouble();
@@ -684,6 +772,20 @@ public sealed class Tables
         }
 
         Climates = [.. list];
+    }
+
+    private static Tier[] ReadLadder(JsonElement e)
+    {
+        var tiers = new List<Tier>();
+        foreach (var t in e.EnumerateArray())
+        {
+            tiers.Add(new Tier(
+                t.GetProperty("principal").GetDouble(),
+                t.GetProperty("interest").GetDouble(),
+                t.GetProperty("term_days").GetInt64()));
+        }
+
+        return [.. tiers];
     }
 
     private static double[] Doubles(JsonElement e, string name)
@@ -844,6 +946,40 @@ public sealed class Tables
         }
 
         // People last, matching the order the dumper pushes them in.
+        h.Push(Crossings);
+        h.Push(CrossingInset);
+        h.Push(CustomsRange);
+        h.Push(CustomsThroughputPerDay);
+        h.Push(BorderSpread);
+        foreach (var ladder in new[] { _ladderEast, _ladderWest })
+        {
+            foreach (var tier in ladder)
+            {
+                h.Push(tier.Principal);
+                h.Push(tier.Interest);
+                h.Push(tier.TermDays);
+            }
+        }
+
+        h.Push(DefaultFine);
+        h.Push(DefaultRelations);
+        h.Push(OfferEveryMonths);
+        h.Push(MaxOpenOffers);
+        h.Push(ValueBandEastLo);
+        h.Push(ValueBandEastHi);
+        h.Push(ValueBandWestLo);
+        h.Push(ValueBandWestHi);
+        h.Push(MinTonnes);
+        h.Push(MaxTonnes);
+        h.Push(PremiumLo);
+        h.Push(PremiumHi);
+        h.Push(DeadlineDaysLo);
+        h.Push(DeadlineDaysHi);
+        h.Push(OfferDays);
+        h.Push(FineShare);
+        h.Push(RelationsHit);
+        h.Push(RelationsCap);
+        h.Push(RelationsDecayPerDay);
         h.Push(FairwaySpacing);
         h.Push(NavigableBeam);
         h.Push(NavigableKph);

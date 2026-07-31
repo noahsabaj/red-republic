@@ -1,5 +1,5 @@
 {
-  "checksum": "bf086914f9c62f3e",
+  "checksum": "1821211472a64be7",
   "resources": ["Coal", "IronOre", "Steel", "Oil", "Fuel", "Bitumen", "Chemicals", "Wood", "Planks", "Gravel", "Bricks", "Cement", "Concrete", "PrefabPanel", "Asphalt", "Crops", "Food", "Clothes", "Alcohol", "Machinery", "Electronics", "Waste"],
   "forms": ["Aggregate", "Liquid", "Bulk", "Open", "Covered"],
   "needs": ["Health", "Culture", "Schooling", "Safety"],
@@ -2155,6 +2155,9 @@
     "river_catchment": 0.1,
     "broad_catchment": 0.25
   },
+  "trade": { "crossings": 4, "crossing_inset_m": 120.0, "customs_range_m": 400.0, "customs_throughput_per_day": 30.0, "border_spread": 0.8, "markets": ["East", "West"] },
+  "loans": { "default_fine": 0.25, "default_relations": 0.15, "east": [{ "principal": 60000.0, "interest": 0.08, "term_days": 1800 }, { "principal": 300000.0, "interest": 0.14, "term_days": 2700 }, { "principal": 1000000.0, "interest": 0.22, "term_days": 3600 }], "west": [{ "principal": 3000.0, "interest": 0.1, "term_days": 360 }, { "principal": 9000.0, "interest": 0.16, "term_days": 540 }, { "principal": 25000.0, "interest": 0.25, "term_days": 720 }] },
+  "contracts": { "offer_every_months": 2, "max_open_offers": 2, "value_band_east": [250.0, 1250.0], "value_band_west": [125.0, 625.0], "tonnes": [2.0, 200.0], "premium": [0.15, 0.25], "deadline_days": [60, 90], "offer_days": 30, "fine_share": 0.25, "relations_hit": 0.12, "relations_cap": 0.25, "relations_decay_per_day": 0.002 },
   "network": { "fairway_spacing_m": 40.0, "navigable_beam_m": 24.0, "navigable_kph": 24.0, "airway_kph": 600.0, "default_road_kph": 50.0 },
   "people": { "max_walk_m": 2000.0, "road_access_m": 300.0, "walk_kph": 5.0, "working_age": [16, 60], "school_age": [6, 16], "university_age": [16, 19], "school_days": 1800, "university_days": 1080, "max_commute_s": 2700.0, "stop_walk_m": 600.0, "night_walk_m": 400.0, "fuel_per_seat_day": 0.002 },
   "journey": { "terminal_reach_m": 120.0, "min_leg_ticks": 1.0, "shunting_kph": 15.000000000000002, "media": ["Road", "Rail", "Tram", "Metro", "Water", "Air"], "commercial_kph": [20.0, 55.0, 17.0, 38.0, 12.0, 300.0] },

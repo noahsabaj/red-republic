@@ -48,6 +48,8 @@ public struct Fnv1a()
     /// </remarks>
     public void Push(int v) => Push((double)v);
 
+    public void Push(long v) => Push((double)v);
+
     public void Push(bool v) => Push(v ? 1.0 : 0.0);
 
     public void PushByte(byte b)

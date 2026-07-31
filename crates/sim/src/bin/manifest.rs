@@ -16,6 +16,11 @@ use red_republic_sim::citizen::{
 use red_republic_sim::climate::{
     CLIMATES, HEAT_DEMAND_CEILING, HEAT_DESIGN_C, HEAT_THRESHOLD_C, WET_DAY_SHARE,
 };
+use red_republic_sim::contract::{
+    DEADLINE_DAYS, FINE_SHARE, MAX_OPEN_OFFERS, MAX_TONNES, MIN_TONNES, OFFER_DAYS,
+    OFFER_EVERY_MONTHS, PREMIUM, RELATIONS_CAP, RELATIONS_DECAY_PER_DAY, RELATIONS_HIT,
+    VALUE_BAND_EAST, VALUE_BAND_WEST,
+};
 use red_republic_sim::fleet::VehicleKind;
 use red_republic_sim::ground::{
     DROWNED, DRYING_FULL_AT_C, DRYING_PER_DAY, FREEZE_C, FROST_LAG, FROST_RANGE_C, GROUND_CELL,
@@ -24,6 +29,7 @@ use red_republic_sim::ground::{
     WEAR_RELIEF, going,
 };
 use red_republic_sim::journey::{MIN_LEG_TICKS, Medium, SHUNTING, TERMINAL_REACH};
+use red_republic_sim::loan::{DEFAULT_FINE, DEFAULT_RELATIONS, TIERS_EAST, TIERS_WEST};
 use red_republic_sim::mapgen::{DEFAULT_PLAN, GEOLOGY_STREAM};
 use red_republic_sim::network::{
     AIRWAY_SPEED, FAIRWAY_SPACING, NAVIGABLE_BEAM, NAVIGABLE_SPEED, default_road_speed,
@@ -34,6 +40,9 @@ use red_republic_sim::shifts::{
     STANDARD_HOURS,
 };
 use red_republic_sim::terrain::{DEFAULT_TERRAIN, Surface};
+use red_republic_sim::trade::{
+    BORDER_SPREAD, CROSSING_INSET, CROSSINGS, CUSTOMS_RANGE, CUSTOMS_THROUGHPUT_PER_DAY, Market,
+};
 use red_republic_sim::transport::{FUEL_PER_SEAT_DAY, MAX_COMMUTE, NIGHT_WALK, STOP_WALK};
 
 fn q(s: &str) -> String {
@@ -254,6 +263,38 @@ fn main() {
     }
     // People: how far somebody will walk, how long they will travel, and the
     // ages that decide what they are doing with their life.
+    // Trade, credit and tenders: the money half of the game.
+    canon.push_int(CROSSINGS as u32);
+    canon.push(CROSSING_INSET.0);
+    canon.push(CUSTOMS_RANGE.0);
+    canon.push(CUSTOMS_THROUGHPUT_PER_DAY);
+    canon.push(BORDER_SPREAD);
+    for ladder in [&TIERS_EAST, &TIERS_WEST] {
+        for tier in ladder.iter() {
+            canon.push(tier.principal);
+            canon.push(tier.interest);
+            canon.push(tier.term_days as f64);
+        }
+    }
+    canon.push(DEFAULT_FINE);
+    canon.push(DEFAULT_RELATIONS);
+    canon.push(OFFER_EVERY_MONTHS as f64);
+    canon.push(MAX_OPEN_OFFERS as f64);
+    canon.push(VALUE_BAND_EAST.0);
+    canon.push(VALUE_BAND_EAST.1);
+    canon.push(VALUE_BAND_WEST.0);
+    canon.push(VALUE_BAND_WEST.1);
+    canon.push(MIN_TONNES);
+    canon.push(MAX_TONNES);
+    canon.push(PREMIUM.0);
+    canon.push(PREMIUM.1);
+    canon.push(DEADLINE_DAYS.0 as f64);
+    canon.push(DEADLINE_DAYS.1 as f64);
+    canon.push(OFFER_DAYS as f64);
+    canon.push(FINE_SHARE);
+    canon.push(RELATIONS_HIT);
+    canon.push(RELATIONS_CAP);
+    canon.push(RELATIONS_DECAY_PER_DAY);
     canon.push(FAIRWAY_SPACING.0);
     canon.push(NAVIGABLE_BEAM.0);
     canon.push(NAVIGABLE_SPEED.as_kph());
@@ -493,6 +534,56 @@ fn main() {
     // Climate is balance, and the two halves are authored together on purpose:
     // the taiga is cold and dry, the maritime posting is mild and wet, and those
     // are different problems rather than one dial.
+    out.push_str(&format!(
+        "  \"trade\": {{ \"crossings\": {}, \"crossing_inset_m\": {}, \"customs_range_m\": {}, \"customs_throughput_per_day\": {}, \"border_spread\": {}, \"markets\": {} }},
+",
+        CROSSINGS,
+        n(CROSSING_INSET.0),
+        n(CUSTOMS_RANGE.0),
+        n(CUSTOMS_THROUGHPUT_PER_DAY),
+        n(BORDER_SPREAD),
+        list(&Market::ALL, |m| q(&format!("{m:?}")))
+    ));
+    out.push_str(&format!(
+        "  \"loans\": {{ \"default_fine\": {}, \"default_relations\": {}, \"east\": {}, \"west\": {} }},
+",
+        n(DEFAULT_FINE),
+        n(DEFAULT_RELATIONS),
+        list(&TIERS_EAST, |t| format!(
+            "{{ \"principal\": {}, \"interest\": {}, \"term_days\": {} }}",
+            n(t.principal),
+            n(t.interest),
+            t.term_days
+        )),
+        list(&TIERS_WEST, |t| format!(
+            "{{ \"principal\": {}, \"interest\": {}, \"term_days\": {} }}",
+            n(t.principal),
+            n(t.interest),
+            t.term_days
+        ))
+    ));
+    out.push_str(&format!(
+        "  \"contracts\": {{ \"offer_every_months\": {}, \"max_open_offers\": {}, \"value_band_east\": [{}, {}], \"value_band_west\": [{}, {}], \"tonnes\": [{}, {}], \"premium\": [{}, {}], \"deadline_days\": [{}, {}], \"offer_days\": {}, \"fine_share\": {}, \"relations_hit\": {}, \"relations_cap\": {}, \"relations_decay_per_day\": {} }},
+",
+        OFFER_EVERY_MONTHS,
+        MAX_OPEN_OFFERS,
+        n(VALUE_BAND_EAST.0),
+        n(VALUE_BAND_EAST.1),
+        n(VALUE_BAND_WEST.0),
+        n(VALUE_BAND_WEST.1),
+        n(MIN_TONNES),
+        n(MAX_TONNES),
+        n(PREMIUM.0),
+        n(PREMIUM.1),
+        DEADLINE_DAYS.0,
+        DEADLINE_DAYS.1,
+        OFFER_DAYS,
+        n(FINE_SHARE),
+        n(RELATIONS_HIT),
+        n(RELATIONS_CAP),
+        n(RELATIONS_DECAY_PER_DAY)
+    ));
+
     out.push_str(&format!(
         "  \"network\": {{ \"fairway_spacing_m\": {}, \"navigable_beam_m\": {}, \"navigable_kph\": {}, \"airway_kph\": {}, \"default_road_kph\": {} }},
 ",
