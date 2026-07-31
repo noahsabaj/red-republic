@@ -27,6 +27,46 @@ public partial class Main : Node3D
     private Tables? _tables;
     private Sim.World? _world;
     private Terrain? _terrain;
+    private World.Scenery? _scenery;
+    private Ui.Shell? _shell;
+
+    /// <summary>
+    /// Put a building where the player clicked.
+    /// </summary>
+    /// <remarks>
+    /// <b>The hit test asks the ground where the cursor is</b>, rather than the
+    /// interface guessing from a screen position. A ray from the camera against
+    /// the terrain is the only answer that stays right as the camera moves, and
+    /// the refusal comes back from the simulation in words a panel can print:
+    /// this file never decides whether a building may stand somewhere.
+    /// </remarks>
+    public override void _UnhandledInput(InputEvent @event)
+    {
+        if (_world is null || _shell is null || _scenery is null
+            || _shell.Placing < 0
+            || @event is not InputEventMouseButton click
+            || !click.Pressed || click.ButtonIndex != MouseButton.Left)
+        {
+            return;
+        }
+
+        var at = _scenery.GroundUnder(GetViewport(), click.Position, _world.Terrain);
+        if (at is null)
+        {
+            return;
+        }
+
+        var outcome = _world.Issue(Command.Place(_shell.Placing, at.Value.X, at.Value.Y));
+        if (outcome.Accepted)
+        {
+            _shell.StopPlacing();
+            _shell.Refused("");
+        }
+        else
+        {
+            _shell.Refused(outcome.Refusal);
+        }
+    }
 
     public override void _Ready()
     {
@@ -73,6 +113,15 @@ public partial class Main : Node3D
         var scenery = new World.Scenery(World.Look.Default) { Name = "Scenery" };
         AddChild(scenery);
         scenery.Raise(_world, atX, atZ);
+        _scenery = scenery;
+
+        // The opening grant. A republic is a blank slate — the land, a rouble
+        // balance, and whatever the player does next.
+        Scenario.Found(_world);
+
+        _shell = new Ui.Shell { Name = "Shell" };
+        AddChild(_shell);
+        _shell.Raise(_world);
 
         // `--shot` captures one frame and quits. It aims the camera itself,
         // because the sky is only visible below about twenty-five degrees and a

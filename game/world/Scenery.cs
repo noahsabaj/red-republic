@@ -39,6 +39,49 @@ public sealed partial class Scenery : Node3D
         Camera((float)world.Terrain.Extent, (float)atX, (float)atZ);
     }
 
+    /// <summary>
+    /// Where on the ground a screen position points, or <c>null</c> if it misses
+    /// the map.
+    /// </summary>
+    /// <remarks>
+    /// Marched along the ray rather than intersected analytically, because the
+    /// ground is a heightmap and not a plane: a plane test puts a building on the
+    /// far side of a hill from where the player clicked, and does it silently.
+    /// The step is the terrain's own cell size, so the search is as fine as the
+    /// map it is searching.
+    /// </remarks>
+    public (double X, double Y)? GroundUnder(Viewport viewport, Vector2 at, Terrain terrain)
+    {
+        ArgumentNullException.ThrowIfNull(viewport);
+        ArgumentNullException.ThrowIfNull(terrain);
+
+        var camera = viewport.GetCamera3D();
+        if (camera is null)
+        {
+            return null;
+        }
+
+        var from = camera.ProjectRayOrigin(at);
+        var along = camera.ProjectRayNormal(at);
+        var step = (float)terrain.CellSize;
+
+        for (var travelled = 0.0f; travelled < camera.Far; travelled += step)
+        {
+            var here = from + (along * travelled);
+            if (!terrain.Contains(here.X, here.Z))
+            {
+                continue;
+            }
+
+            if (here.Y <= TerrainMesh.GroundAt(terrain, here.X, here.Z))
+            {
+                return (here.X, here.Z);
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>Aim the camera. Capture runs use this.</summary>
     public void Aim(float pitchDegrees, float distance)
     {
