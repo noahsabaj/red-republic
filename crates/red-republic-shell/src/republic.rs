@@ -1923,11 +1923,22 @@ impl Republic {
             .map_or_else(PackedFloat32Array::new, views::loans)
     }
 
-    /// The ladder: what may be borrowed and on what terms. See
+    /// One bloc's ladder: what it will advance and on what terms. See
     /// [`views::loan_tiers`].
+    ///
+    /// Per bloc rather than one table for both, because the two are different
+    /// instruments — the east lends roubles by the hundred thousand over years,
+    /// the west dollars by the thousand over months.
     #[func]
-    fn loan_tiers(&self) -> PackedFloat32Array {
-        views::loan_tiers()
+    fn loan_tiers(&self, market: i64) -> PackedFloat32Array {
+        views::loan_tiers(market_at(market))
+    }
+
+    /// How many rungs a ladder has, so a screen cannot draw fewer than there
+    /// are.
+    #[func]
+    fn loan_rungs(&self) -> i64 {
+        red_republic_sim::loan::RUNGS as i64
     }
 
     /// Whether a bloc would advance this rung, and the reason if it would not.

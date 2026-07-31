@@ -179,7 +179,12 @@ pub enum Command {
     /// Withdraw one.
     RemoveTradeRule { index: u32 },
 
-    /// Take an advance from a bloc. `tier` indexes `loan::TIERS`.
+    /// Take an advance from a bloc. `tier` indexes that bloc's `loan::ladder`.
+    ///
+    /// **The two ladders are different instruments, not one converted.** The
+    /// east lends roubles by the hundred thousand over years; the west lends
+    /// dollars by the thousand over months, dearer. Which bloc you ask is the
+    /// decision, and the rung is only how far you are willing to go with it.
     TakeLoan { market: Market, tier: u32 },
 
     /// Pay some of an advance back. More than is owed pays off what is owed.

@@ -479,7 +479,7 @@ func _check_trade() -> void:
 
 ## Borrow, read the debt back, and repay it.
 func _check_finance() -> void:
-	var tiers: PackedFloat32Array = republic.loan_tiers()
+	var tiers: PackedFloat32Array = republic.loan_tiers(0)
 	if tiers.size() < int(finance_screen.T_STRIDE):
 		printerr("finance check FAILED: the blocs offer no advances at all")
 		return

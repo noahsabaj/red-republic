@@ -146,6 +146,19 @@ func _build() -> void:
 # ---- what is owed ------------------------------------------------------------
 
 
+## A term in the words a player thinks in.
+##
+## Days below a year, years above it — because "2 700 days" is a number somebody
+## has to divide before it means anything, and the eastern ladder runs to ten
+## years. Singular at exactly one, because "1 years" is the kind of thing that
+## makes a form look unfinished, and this is held to a release standard.
+static func _term(days: int) -> String:
+	if days < 360:
+		return "%d day%s" % [days, "" if days == 1 else "s"]
+	var years := float(days) / 360.0
+	return "%s year%s" % [Parts.clean(years), "" if is_equal_approx(years, 1.0) else "s"]
+
+
 func _rebuild_owing(loans: PackedFloat32Array) -> void:
 	for child in _owing.get_children():
 		child.queue_free()
@@ -178,7 +191,7 @@ func _rebuild_owing(loans: PackedFloat32Array) -> void:
 			BLOC_MONEY[bloc],
 		]), OWING_COLUMNS[1][1], HORIZONTAL_ALIGNMENT_RIGHT))
 
-		var clock := Parts.figure("%d days" % days if days > 0 else "today")
+		var clock := Parts.figure(_term(days) if days > 0 else "today")
 		clock.add_theme_color_override(
 			"font_color", P.ALARM if days < 60 else P.PAPER
 		)
@@ -216,13 +229,22 @@ func _on_repay(bloc: int, amount: float) -> void:
 ## Both blocs on one list rather than a bloc picker, because which one you borrow
 ## from is a decision about which currency you will have to earn back — and a
 ## picker hides the comparison the player is actually making.
-func _rebuild_offers(tiers: PackedFloat32Array) -> void:
+func _rebuild_offers() -> void:
 	for child in _offers.get_children():
 		child.queue_free()
 
-	@warning_ignore("integer_division")
-	var rungs: int = tiers.size() / T_STRIDE
 	for bloc in BLOC_WORDS.size():
+		# **Each bloc's own ladder.** They are different instruments, not one
+		# converted: the east lends roubles by the hundred thousand over years
+		# and the west dollars by the thousand over months. A screen that read
+		# one table for both would be showing one bloc somebody else's terms.
+		var tiers: PackedFloat32Array = _republic.loan_tiers(bloc)
+		@warning_ignore("integer_division")
+		var rungs: int = tiers.size() / T_STRIDE
+		if rungs != _republic.loan_rungs():
+			push_warning("bloc %d offers %d rungs and the simulation says %d" % [
+				bloc, rungs, _republic.loan_rungs(),
+			])
 		_offers.add_child(Parts.gap(P.GAP_TIGHT))
 		var head := Parts.say(
 			"%s  ·  %s" % [BLOC_WORDS[bloc].to_upper(), BLOC_MONEY[bloc]], "Stamp"
@@ -243,7 +265,7 @@ func _rebuild_offers(tiers: PackedFloat32Array) -> void:
 				int(round(tiers[o + T_INTEREST] * 100.0)),
 			]), OFFER_COLUMNS[1][1], HORIZONTAL_ALIGNMENT_RIGHT))
 			line.add_child(Parts.cell(
-				Parts.figure("%d days" % int(tiers[o + T_TERM])),
+				Parts.figure(_term(int(tiers[o + T_TERM]))),
 				OFFER_COLUMNS[2][1],
 				HORIZONTAL_ALIGNMENT_RIGHT
 			))
@@ -306,18 +328,25 @@ func refresh() -> void:
 
 	var cleared: int = _republic.loans_cleared()
 	var defaulted: int = _republic.loans_defaulted()
-	if cleared == 0 and defaulted == 0:
-		_record.text = "This republic has never borrowed."
-	else:
+	if cleared > 0 or defaulted > 0:
 		_record.text = "%d advance%s repaid, %d defaulted on." % [
 			cleared, "" if cleared == 1 else "s", defaulted,
 		]
+	elif owed.size() > 0:
+		# **It said "never borrowed" over a live debt of 342 000.** The record is
+		# about advances that have *closed*, and a republic still carrying its
+		# first has closed none — which is not the same statement at all, and the
+		# frame that showed both lines at once is what said so.
+		_record.text = "Nothing settled yet: this is its first advance."
+	else:
+		_record.text = "This republic has never borrowed."
+
 	_record.add_theme_color_override(
 		"font_color", P.ALARM if defaulted > 0 else P.PAPER_FAINT
 	)
 
 	_rebuild_owing(_republic.loans())
-	_rebuild_offers(_republic.loan_tiers())
+	_rebuild_offers()
 
 
 func _say(why: String) -> void:
