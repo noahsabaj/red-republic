@@ -816,15 +816,9 @@ impl Republic {
         self.world.as_ref().map_or(0, |w| w.fleet().len() as i64)
     }
 
-    #[func]
-    fn rubles(&self) -> f64 {
-        self.world.as_ref().map_or(0.0, |w| w.treasury().rubles)
-    }
-
-    #[func]
-    fn dollars(&self) -> f64 {
-        self.world.as_ref().map_or(0.0, |w| w.treasury().dollars)
-    }
+    // `rubles` and `dollars` were here, one binding each, and `purse` returns
+    // both in one read. Two ways to ask the same question is one of them that
+    // nothing calls — which is exactly what the reachability guard found.
 
     #[func]
     fn temperature_c(&self) -> f64 {
@@ -1767,6 +1761,28 @@ impl Republic {
         )
     }
 
+    /// Whether builders could be hired to this building from this bloc, or the
+    /// reason they could not.
+    ///
+    /// Asks exactly what [`Republic::hire_foreign`] will ask, because
+    /// `World::can_hire` is the rule the command uses. **The inspector's first
+    /// version decided this for itself** — it offered hiring wherever a building
+    /// had staff to spare — and a rendered frame showed a coal power plant
+    /// offering to hire five builders from the Eastern Bloc.
+    #[func]
+    fn can_hire(&self, office: i64, market: i64) -> GString {
+        let Some(w) = &self.world else {
+            return GString::from("no republic has been founded");
+        };
+        match w.can_hire(
+            red_republic_sim::BuildingId(office.max(0) as u32),
+            market_at(market),
+        ) {
+            Ok(_) => GString::from(""),
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
     /// Hire builders from a bloc for an office. `market` is 0 East, 1 West.
     ///
     /// Empty string on success, or the reason — which carries the fee against
@@ -1792,92 +1808,162 @@ impl Republic {
         }
     }
 
-    /// Tenders on the table and running, one line each.
+    // ---- Tenders ----------------------------------------------------------
+    //
+    // **These four replace `contract_line`, `trade_rule_line`, `loan_line` and
+    // `journal_line`, which each formatted an English sentence in Rust.** Those
+    // were written before the interface became Godot's, and they were the last
+    // paragraphs of player-facing prose left on this side of the boundary — a
+    // `{:?}` on a simulation enum reaching a screen as a heading. A packed read
+    // and the sentence composed in `godot/ui/` is the shape every other panel
+    // already had.
+
+    /// Every tender, offered or running. See [`views::contracts`].
     #[func]
-    fn contract_count(&self) -> i64 {
+    fn contracts(&self) -> PackedFloat32Array {
         self.world
             .as_ref()
-            .map_or(0, |w| w.contracts().all().len() as i64)
+            .map_or_else(PackedFloat32Array::new, views::contracts)
     }
 
+    /// How many states a tender can be in, so a screen naming them cannot name
+    /// fewer than there are.
     #[func]
-    fn contract_line(&self, index: i64) -> GString {
-        let Some(w) = &self.world else {
-            return GString::from("");
-        };
-        let Some(c) = w.contracts().all().get(index.max(0) as usize) else {
-            return GString::from("");
-        };
-        GString::from(
-            format!(
-                "{:?} · {:.0}/{:.0} t {} · due day {} · {:?}",
-                c.market,
-                c.delivered.0,
-                c.amount.0,
-                c.resource.name(),
-                c.deadline_day,
-                c.state
-            )
-            .as_str(),
-        )
+    fn contract_states(&self) -> i64 {
+        views::CONTRACT_STATES as i64
     }
+
+    /// Take a tender the Foreign Trade Directorate has offered. Empty string on
+    /// success, or the reason it was refused.
+    #[func]
+    fn accept_contract(&mut self, contract: i64) -> GString {
+        self.command(Command::AcceptContract {
+            contract: red_republic_sim::ContractId(contract.max(0) as u32),
+        })
+    }
+
+    /// Turn one down. It leaves the table immediately.
+    #[func]
+    fn decline_contract(&mut self, contract: i64) -> GString {
+        self.command(Command::DeclineContract {
+            contract: red_republic_sim::ContractId(contract.max(0) as u32),
+        })
+    }
+
+    /// How sour each bloc is on the republic, in `Market::ALL` order.
+    #[func]
+    fn bloc_relations(&self) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, views::bloc_relations)
+    }
+
+    // ---- The export plan --------------------------------------------------
 
     /// The republic's standing instructions to its customs houses, in the
     /// player's own order — which matters, because the first rule is served
-    /// first when throughput or money runs short.
+    /// first when throughput or money runs short. See [`views::trade_rules`].
     #[func]
-    fn trade_rule_count(&self) -> i64 {
+    fn trade_rules(&self) -> PackedFloat32Array {
         self.world
             .as_ref()
-            .map_or(0, |w| w.trade_policy().rules.len() as i64)
+            .map_or_else(PackedFloat32Array::new, views::trade_rules)
     }
 
+    /// Add a standing instruction. `buy` of false sells whatever reaches the
+    /// customs house; true keeps it topped up to `up_to` tonnes.
     #[func]
-    fn trade_rule_line(&self, index: i64) -> GString {
-        let Some(w) = &self.world else {
-            return GString::from("");
+    fn add_trade_rule(&mut self, resource: i64, market: i64, buy: bool, up_to: f64) -> GString {
+        let Some(&resource) = red_republic_sim::Resource::ALL.get(resource.max(0) as usize) else {
+            return GString::from("no such resource");
         };
-        let Some(rule) = w.trade_policy().rules.get(index.max(0) as usize) else {
-            return GString::from("");
+        let action = if buy {
+            red_republic_sim::TradeAction::Buy {
+                up_to: red_republic_sim::Tonnes(up_to.max(0.0)),
+            }
+        } else {
+            red_republic_sim::TradeAction::Sell
         };
-        let what = match rule.action {
-            red_republic_sim::TradeAction::Sell => "sell".to_string(),
-            red_republic_sim::TradeAction::Buy { up_to } => format!("buy up to {:.0} t", up_to.0),
-        };
-        GString::from(format!("{} {} · {:?}", what, rule.resource.name(), rule.market).as_str())
+        self.command(Command::AddTradeRule {
+            resource,
+            market: market_at(market),
+            action,
+        })
     }
 
-    /// What each bloc has advanced and what is still owed, one line each.
+    /// Withdraw one.
+    #[func]
+    fn remove_trade_rule(&mut self, index: i64) -> GString {
+        self.command(Command::RemoveTradeRule {
+            index: index.max(0) as u32,
+        })
+    }
+
+    /// Move one up or down the running order, which **is** the decision: the
+    /// first rule is served first when throughput or hard currency runs short.
+    #[func]
+    fn move_trade_rule(&mut self, from: i64, to: i64) -> GString {
+        self.command(Command::MoveTradeRule {
+            from: from.max(0) as u32,
+            to: to.max(0) as u32,
+        })
+    }
+
+    // ---- Advances ---------------------------------------------------------
+
+    /// What each bloc has advanced and what is still owed. See [`views::loans`].
     ///
     /// A republic that cannot see its own debts cannot plan around the day they
     /// come due — and a default costs a quarter of what is outstanding plus
     /// relations that price every future trade with that bloc.
     #[func]
-    fn loan_count(&self) -> i64 {
+    fn loans(&self) -> PackedFloat32Array {
         self.world
             .as_ref()
-            .map_or(0, |w| w.loans().all().len() as i64)
+            .map_or_else(PackedFloat32Array::new, views::loans)
     }
 
+    /// The ladder: what may be borrowed and on what terms. See
+    /// [`views::loan_tiers`].
     #[func]
-    fn loan_line(&self, index: i64) -> GString {
+    fn loan_tiers(&self) -> PackedFloat32Array {
+        views::loan_tiers()
+    }
+
+    /// Whether a bloc would advance this rung, and the reason if it would not.
+    ///
+    /// Asks exactly what [`Republic::take_loan`] will ask, because
+    /// `Loans::can_take` is the same rule the commit uses — the argument for
+    /// refusals carrying words, in the same shape the placement ghost uses.
+    #[func]
+    fn can_take_loan(&self, market: i64, tier: i64) -> GString {
         let Some(w) = &self.world else {
-            return GString::from("");
+            return GString::from("no republic has been founded");
         };
-        let Some(loan) = w.loans().all().get(index.max(0) as usize) else {
-            return GString::from("");
-        };
-        let today = w.clock().day_index();
-        GString::from(
-            format!(
-                "{:?}: {:.0} of {:.0} owed · {} days",
-                loan.market,
-                loan.outstanding(),
-                loan.owed,
-                loan.days_left(today),
-            )
-            .as_str(),
-        )
+        match w.loans().can_take(market_at(market), tier.max(0) as usize) {
+            Ok(_) => GString::from(""),
+            Err(why) => GString::from(why.to_string().as_str()),
+        }
+    }
+
+    /// Take an advance. `tier` indexes the ladder [`Republic::loan_tiers`]
+    /// reports.
+    #[func]
+    fn take_loan(&mut self, market: i64, tier: i64) -> GString {
+        self.command(Command::TakeLoan {
+            market: market_at(market),
+            tier: tier.max(0) as u32,
+        })
+    }
+
+    /// Pay some of one back. More than is owed pays off what is owed, and it can
+    /// never overdraw the purse it comes out of.
+    #[func]
+    fn repay_loan(&mut self, market: i64, amount: f64) -> GString {
+        self.command(Command::RepayLoan {
+            market: market_at(market),
+            amount: amount.max(0.0),
+        })
     }
 
     /// How much a bloc is still owed. Zero when nothing is outstanding.
@@ -1907,6 +1993,8 @@ impl Republic {
             .map_or(0, |w| i64::from(w.loans().defaulted))
     }
 
+    // ---- The journal ------------------------------------------------------
+
     /// Everything the player has done, in order. A republic that can show its
     /// own history is one whose save can be replayed and whose bug report is
     /// reproducible.
@@ -1915,15 +2003,116 @@ impl Republic {
         self.world.as_ref().map_or(0, |w| w.journal().len() as i64)
     }
 
+    /// A window on the journal: `count` entries from `from`, oldest first. See
+    /// [`views::journal`] for what each verb's figures mean.
+    ///
+    /// Windowed because a decade of play is tens of thousands of entries and a
+    /// screen shows thirty.
     #[func]
-    fn journal_line(&self, index: i64) -> GString {
-        let Some(w) = &self.world else {
-            return GString::from("");
-        };
-        let Some(entry) = w.journal().entries().get(index.max(0) as usize) else {
-            return GString::from("");
-        };
-        GString::from(format!("t{} {:?}", entry.tick, entry.command).as_str())
+    fn journal_page(&self, from: i64, count: i64) -> PackedFloat32Array {
+        match &self.world {
+            Some(w) => views::journal(w, from.max(0) as usize, count.max(0) as usize),
+            None => PackedFloat32Array::new(),
+        }
+    }
+
+    /// The one string an entry carries — today only a republic's name, which is
+    /// the player's own words rather than anything this crate wrote.
+    #[func]
+    fn journal_text(&self, index: i64) -> GString {
+        match &self.world {
+            Some(w) => views::journal_text(w, index.max(0) as usize),
+            None => GString::from(""),
+        }
+    }
+
+    /// How many kinds of command the journal can hold, so a screen that names
+    /// them can check it names all of them.
+    #[func]
+    fn journal_verbs(&self) -> i64 {
+        views::VERBS as i64
+    }
+
+    // ---- The pick, and the one building under it --------------------------
+    //
+    // Clicking a building is how a player asks anything about a particular one,
+    // and until this existed the answer to every such question was already on
+    // the shell and reachable from nowhere: thirteen bindings hanging off a
+    // panel that did not exist.
+
+    /// The building whose footprint covers a point, or `0` for open ground.
+    ///
+    /// Asks exactly the question placement asks, because `World::building_at`
+    /// tests the same rectangle `Building::overlaps` refuses to overlap. A hit
+    /// test written in GDScript against drawn geometry would be a second copy of
+    /// that rule — the same argument that makes the placement ghost call
+    /// `can_place` rather than guessing.
+    ///
+    /// Zero rather than `-1` for nothing, because building ids are one-based and
+    /// handed out in commissioning order, so zero is already a number no
+    /// building has.
+    #[func]
+    fn building_at(&self, x: f64, y: f64) -> i64 {
+        self.world.as_ref().map_or(0, |w| {
+            w.building_at(Point::new(Metres(x), Metres(y)))
+                .map_or(0, |id| i64::from(id.0))
+        })
+    }
+
+    /// Everything the inspector needs about one building, in one read. Empty
+    /// when there is no such building. See [`views::building_state`].
+    #[func]
+    fn building_state(&self, building: i64) -> PackedFloat32Array {
+        match &self.world {
+            Some(w) => {
+                views::building_state(w, red_republic_sim::BuildingId(building.max(0) as u32))
+            }
+            None => PackedFloat32Array::new(),
+        }
+    }
+
+    /// How many reasons a building can be stopped for, so a panel naming them
+    /// cannot name fewer than there are.
+    #[func]
+    fn stall_count(&self) -> i64 {
+        views::STALL_COUNT as i64
+    }
+
+    /// What is in one building's yard: `[resource_index, tonnes]` per line, and
+    /// only what it is actually holding.
+    #[func]
+    fn building_stock(&self, building: i64) -> PackedFloat32Array {
+        match &self.world {
+            Some(w) => {
+                views::building_stock(w, red_republic_sim::BuildingId(building.max(0) as u32))
+            }
+            None => PackedFloat32Array::new(),
+        }
+    }
+
+    /// What a site is still waiting for: `[resource_index, wanted, delivered]`
+    /// per line of its bill of materials.
+    #[func]
+    fn site_bill(&self, building: i64) -> PackedFloat32Array {
+        match &self.world {
+            Some(w) => views::site_bill(w, red_republic_sim::BuildingId(building.max(0) as u32)),
+            None => PackedFloat32Array::new(),
+        }
+    }
+
+    /// Pull a building down. Empty string on success, or the reason.
+    ///
+    /// **Refused while a gang is standing on it**, and refused on a Construction
+    /// Office with crews still out — both because the alternative is people
+    /// belonging to a building that no longer exists, and no amount of tidying
+    /// up afterwards answers "so where are they now?". The refusal is a sentence
+    /// the simulation wrote, so the panel prints it rather than inventing a rule
+    /// of its own about when the button should be grey.
+    #[func]
+    fn demolish(&mut self, building: i64) -> GString {
+        self.command(Command::Demolish {
+            building: red_republic_sim::BuildingId(building.max(0) as u32),
+        })
     }
 
     // ---- The one write. ----------------------------------------------------
