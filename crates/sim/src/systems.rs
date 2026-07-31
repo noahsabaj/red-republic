@@ -505,6 +505,21 @@ pub enum Mutation {
         journey: Journey,
         burn: Tonnes,
     },
+    /// A group of settlers who walked in from the border on their own.
+    ///
+    /// **Not a shortcut around the coach, and the bound is what makes it one
+    /// rule rather than two.** People assigned to a posting, standing at a
+    /// frontier post, will walk to a home they can reach on foot — the same
+    /// [`crate::citizen::MAX_WALK`] every worker in the republic lives under.
+    /// Further than that and somebody has to fetch them, which leaves the
+    /// mechanic intact.
+    ///
+    /// It exists because without it a blank map could never be settled at all:
+    /// a coach needs a driver, a driver is a citizen, and a republic with no
+    /// citizens has none — so a posting stood with nineteen buildings, a road
+    /// and coal on sale while seven hundred and twenty people were turned back
+    /// at its border over three years. The same circle the crew bus was in.
+    WalkIn { group: GroupId, home: BuildingId },
 }
 
 /// A [`Mutation`]'s kind, without its payload.
@@ -571,6 +586,7 @@ pub enum MutationKind {
     Takings,
     Board,
     Settle,
+    WalkIn,
 }
 
 impl Mutation {
@@ -632,6 +648,7 @@ impl Mutation {
             Mutation::CheckIn { .. } => MutationKind::CheckIn,
             Mutation::Takings { .. } => MutationKind::Takings,
             Mutation::Settle { .. } => MutationKind::Settle,
+            Mutation::WalkIn { .. } => MutationKind::WalkIn,
         }
     }
 }
@@ -762,7 +779,16 @@ pub const WRITE_SETS: &[(&str, &[MutationKind])] = &[
     // a branch of `crews`, because the two rank different things and draw on
     // different vehicles: a bus depot's coaches must never be spent on
     // foundations, nor a construction office's buses on immigrants.
-    ("settling", &[MutationKind::Dispatch, MutationKind::Bog]),
+    // Three kinds: a coach sent, a coach that stuck on the way, and a group
+    // that walked in because the border was nearer than a bus was.
+    (
+        "settling",
+        &[
+            MutationKind::Dispatch,
+            MutationKind::Bog,
+            MutationKind::WalkIn,
+        ],
+    ),
     // The fourth pool, and the fourth dispatcher. What it ranks is a stretch of
     // buried road rather than a consignee, which is why it is not a branch of
     // `dispatch`.
@@ -1625,7 +1651,39 @@ pub fn apply(world: &mut World, mutations: &[Mutation]) {
                     v.state = VehicleState::Returning;
                 }
             }
+            &Mutation::WalkIn { group, home } => settle_into(world, group, home),
         }
+    }
+}
+
+/// Move a group of settlers into a block, however they got there.
+///
+/// One function because the two ways in — carried by a coach, or walked —
+/// differ only in the journey, and a second copy of "how many fit, spread the
+/// ages, record who was turned away" is a second place for the answer to drift.
+fn settle_into(world: &mut World, group: GroupId, home: BuildingId) {
+    let occupied = world
+        .population
+        .residents_by_home()
+        .get(&home)
+        .copied()
+        .unwrap_or(0);
+    let room = world
+        .buildings
+        .get(home)
+        .filter(|b| b.is_built())
+        .map(|b| b.def().residents.saturating_sub(occupied))
+        .unwrap_or(0);
+    if let Some(g) = world.migration.settle(group) {
+        let taken = g.heads.min(room);
+        for _ in 0..taken {
+            // Spread across working life so an intake is not a cohort that
+            // retires together. They arrive schooled because they were taught
+            // somewhere else — see `Population::spawn_citizen`.
+            let age = 20 + (world.population.count() as u32 % 30);
+            world.population.spawn_citizen(home, age);
+        }
+        world.migration.record_turned_away(g.heads - taken);
     }
 }
 
@@ -3639,7 +3697,7 @@ fn available(world: &World, role: Role) -> Vec<VehicleId> {
             .of_garage(garage.id)
             .filter(|v| !v.is_idle())
             .count() as u32;
-        let mut slots = crewed(garage).saturating_sub(running);
+        let mut slots = crewed(garage, world.crews.on_payroll(garage.id)).saturating_sub(running);
         for v in world.fleet.of_garage(garage.id) {
             if slots == 0 {
                 break;
@@ -5252,10 +5310,27 @@ pub fn migration(world: &World) -> Vec<Mutation> {
         centre.0 += home.centre.x.0 * f64::from(here.residents);
         centre.1 += home.centre.y.0 * f64::from(here.residents);
     }
-    if heads == 0 {
-        return out;
-    }
-    let average = scored / f64::from(heads);
+    // **An empty republic is failing nobody, and must not be scored as if it
+    // were failing everybody.** This used to return here, which made a blank
+    // map permanently uninhabited: nobody lives here, so the average of what
+    // the republic offers its residents is an average over an empty set, and
+    // calling that zero says "you are failing people you do not have". The
+    // trajectory runner reported it as plainly as anything it has ever found —
+    // three simulated years of a republic with nineteen buildings, a road, coal
+    // on sale and a population of nought.
+    //
+    // It is the same rule `Contentment` already applies twice: warmth is 1.0 on
+    // a warm day and schooling is 1.0 in a block with no children, because a
+    // republic should not be marked down for a demand that does not exist. A
+    // new posting with housing standing empty is exactly that case, and it is
+    // what the fiction says besides — Moscow assigns people to a posting, and
+    // how the republic treats them decides whether any more come.
+    let empty = heads == 0;
+    let average = if empty {
+        1.0
+    } else {
+        scored / f64::from(heads)
+    };
     if average < crate::wellbeing::CONTENT_ATTRACTS {
         return out;
     }
@@ -5280,10 +5355,26 @@ pub fn migration(world: &World) -> Vec<Mutation> {
         return out;
     }
 
-    let town = Point::new(
-        Metres(centre.0 / f64::from(heads)),
-        Metres(centre.1 / f64::from(heads)),
-    );
+    let town = if empty {
+        // Nobody to average over, so the housing itself says where the town is.
+        let homes: Vec<Point> = world
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().residents > 0)
+            .map(|b| b.centre)
+            .collect();
+        let n = homes.len() as f64;
+        Point::new(
+            Metres(homes.iter().map(|p| p.x.0).sum::<f64>() / n),
+            Metres(homes.iter().map(|p| p.y.0).sum::<f64>() / n),
+        )
+    } else {
+        Point::new(
+            Metres(centre.0 / f64::from(heads)),
+            Metres(centre.1 / f64::from(heads)),
+        )
+    };
     let Some(post) = world.frontier.nearest_crossing(town, None) else {
         return out;
     };
@@ -5312,10 +5403,76 @@ pub const ARRIVAL_ODDS: f64 = 0.15;
 /// The round trip priced here is the **whole** trip — post, then estate, then
 /// yard — because a coach that ran dry with two dozen people aboard is the
 /// stranded-gang failure with more people in it.
+/// Settlers close enough to a home to walk to it.
+///
+/// **The bound is [`crate::citizen::MAX_WALK`], deliberately the same one work
+/// answers to.** A republic whose crossing is twenty minutes from its housing
+/// does not need a coach service to be settled, and one whose crossing is
+/// across the map does — which is the same geography every other decision here
+/// answers to, rather than a second rule invented for settlers.
+///
+/// Emptiest block first, ties on id, exactly as the coach half ranks them, and
+/// each block is spoken for once per pass so two groups are not both sent to
+/// the same last four rooms.
+fn walk_ins(world: &World) -> Vec<Mutation> {
+    let mut out = Vec::new();
+    let occupants = world.population.residents_by_home();
+    let mut taken: BTreeMap<BuildingId, u32> = BTreeMap::new();
+    let coming: Vec<crate::migration::GroupId> = world
+        .fleet
+        .all()
+        .iter()
+        .filter_map(|v| v.job.and_then(Job::settling))
+        .map(|(group, _)| group)
+        .collect();
+    // Housing a coach is already filling counts as spoken for: a group that
+    // walked into rooms somebody else is being driven to would put both on the
+    // street.
+    for (_, home) in world
+        .fleet
+        .all()
+        .iter()
+        .filter_map(|v| v.job.and_then(Job::settling))
+    {
+        *taken.entry(home).or_default() += crate::wellbeing::ARRIVAL_PARTY;
+    }
+
+    let waiting: Vec<(crate::migration::GroupId, Point)> = world
+        .migration
+        .unfetched()
+        .filter(|g| !coming.contains(&g.id))
+        .map(|g| (g.id, g.at))
+        .collect();
+
+    for (group, at) in waiting {
+        let mut housing: Vec<(u32, BuildingId)> = world
+            .buildings
+            .all()
+            .iter()
+            .filter(|b| b.is_built() && b.def().residents > 0)
+            .filter(|b| b.centre.distance_to(at).0 <= crate::citizen::MAX_WALK.0)
+            .filter_map(|b| {
+                let here = occupants.get(&b.id).copied().unwrap_or(0)
+                    + taken.get(&b.id).copied().unwrap_or(0);
+                let room = b.def().residents.saturating_sub(here);
+                (room > 0).then_some((room, b.id))
+            })
+            .collect();
+        housing.sort_by(|(ra, ia), (rb, ib)| rb.cmp(ra).then_with(|| ia.cmp(ib)));
+        let Some(&(_, home)) = housing.first() else {
+            continue;
+        };
+        *taken.entry(home).or_default() += crate::wellbeing::ARRIVAL_PARTY;
+        out.push(Mutation::WalkIn { group, home });
+    }
+    out
+}
+
 pub fn settling(world: &World) -> Vec<Mutation> {
+    let mut out = walk_ins(world);
     let mut coaches = available(world, Role::Passenger);
     if coaches.is_empty() {
-        return Vec::new();
+        return out;
     }
 
     // Groups a coach is already on its way to. The lesson `crews` learnt twice:
@@ -5345,12 +5502,20 @@ pub fn settling(world: &World) -> Vec<Mutation> {
     let now = world.clock.ticks() as f64;
     let day = world.clock.day_index();
     let mut drawn: BTreeMap<BuildingId, Tonnes> = BTreeMap::new();
-    let mut out = Vec::new();
 
+    // Anybody who could walk has been dealt with above, so the coaches only
+    // ever go out for people who genuinely need fetching.
+    let walked: Vec<crate::migration::GroupId> = out
+        .iter()
+        .filter_map(|m| match m {
+            Mutation::WalkIn { group, .. } => Some(*group),
+            _ => None,
+        })
+        .collect();
     let waiting: Vec<(crate::migration::GroupId, Point, u32)> = world
         .migration
         .unfetched()
-        .filter(|g| !coming.contains(&g.id))
+        .filter(|g| !coming.contains(&g.id) && !walked.contains(&g.id))
         .map(|g| (g.id, g.at, g.heads))
         .collect();
 
@@ -6910,6 +7075,144 @@ mod tests {
         assert!(
             w.buildings.get(works).unwrap().staff > 0,
             "nobody could be carried to a night shift on an unlit road"
+        );
+    }
+
+    /// A republic with nobody in it can be got off the ground.
+    ///
+    /// **Every other fixture in this file starts with citizens, and that is
+    /// what hid three separate deadlocks for as long as the founding dealt a
+    /// town.** All 418 tests passed against a blank map that could not be
+    /// played at all:
+    ///
+    /// 1. **The crew bus.** `crewed` read citizen staff only, so an office with
+    ///    twenty paid builders standing at the border could not move the one bus
+    ///    that would have fetched them. They stood there for two and a half
+    ///    simulated years while the republic built nothing.
+    /// 2. **The first settler.** Immigration averages contentment over the
+    ///    people already living here and returned early when there were none —
+    ///    scoring an empty republic as though it were failing everybody. Nobody
+    ///    was ever offered.
+    /// 3. **The first coach.** Once settlers were offered, fetching them needed
+    ///    a driver, a driver is a citizen, and there were none: 720 people
+    ///    turned back at the border over three years.
+    ///
+    /// Every one was found by the trajectory runner playing the opening, and
+    /// none by reasoning about it. This is the guard for the class: a world with
+    /// nothing in it, taken through the documented bootstrap, ending with people
+    /// in it.
+    #[test]
+    fn a_republic_can_be_started_from_nothing_at_all() {
+        let mut w = bare();
+        crate::scenario::found(&mut w);
+        assert_eq!(w.population.count(), 0, "the map is supposed to be empty");
+        assert_eq!(w.buildings.all().len(), 0);
+
+        // Contract the two things the opening needs, because a republic that
+        // owns nothing can build neither of them itself.
+        let centre = at(1_000.0, 1_000.0);
+        for kind in [BuildingKind::ConstructionOffice, BuildingKind::Apartment] {
+            let site = crate::scenario::find_site(&w, kind, centre, Metres(900.0))
+                .expect("somewhere near the middle of a flat map");
+            w.issue(crate::command::Command::ContractBuild {
+                kind,
+                at: site,
+                market: Market::East,
+            })
+            .expect("a rouble grant covers two buildings");
+        }
+        for _ in 0..TICKS_PER_DAY * 90 {
+            w.tick();
+        }
+        let office = w
+            .buildings
+            .of_kind(BuildingKind::ConstructionOffice)
+            .find(|b| b.is_built())
+            .map(|b| b.id)
+            .expect("the firm finished the office");
+
+        w.issue(crate::command::Command::HireForeign {
+            market: Market::East,
+            office,
+            heads: 10,
+        })
+        .expect("the grant covers ten placement fees");
+
+        // Long enough for a bus to reach the border and come back, and for the
+        // first settlers to be offered and to walk in.
+        for _ in 0..TICKS_PER_DAY * 120 {
+            w.tick();
+        }
+
+        assert_eq!(
+            w.crews.stranded().map(|p| p.heads).sum::<u32>(),
+            0,
+            "the builders the republic paid for are still standing at the border"
+        );
+        assert!(
+            w.population.count() > 0,
+            "a republic with housing standing empty was never sent anybody: \
+             {} settled, {} still waiting at the border",
+            w.migration.settled(),
+            w.migration.waiting_heads()
+        );
+    }
+
+    /// An office with no citizens can still send the bus that fetches the
+    /// builders it paid for.
+    ///
+    /// **Its own test, with no housing anywhere, because the wider one could
+    /// not isolate it.** In a republic that has somewhere to live, settlers walk
+    /// in, become citizens, staff the office and crew the bus — so zeroing the
+    /// fix left `a_republic_can_be_started_from_nothing_at_all` passing. Found
+    /// by sabotaging it and watching it stay green, which is the only way that
+    /// kind of hole is ever found.
+    ///
+    /// Nowhere to live means nobody can arrive, so the only thing that can move
+    /// this bus is the office counting the people it is already paying.
+    #[test]
+    fn an_office_with_no_citizens_can_still_fetch_the_crews_it_hired() {
+        let mut w = bare();
+        crate::scenario::found(&mut w);
+        let site = crate::scenario::find_site(
+            &w,
+            BuildingKind::ConstructionOffice,
+            at(1_000.0, 1_000.0),
+            Metres(900.0),
+        )
+        .expect("open ground");
+        w.issue(crate::command::Command::ContractBuild {
+            kind: BuildingKind::ConstructionOffice,
+            at: site,
+            market: Market::East,
+        })
+        .expect("the grant covers one office");
+        for _ in 0..TICKS_PER_DAY * 90 {
+            w.tick();
+        }
+        let office = w
+            .buildings
+            .of_kind(BuildingKind::ConstructionOffice)
+            .find(|b| b.is_built())
+            .map(|b| b.id)
+            .expect("the firm finished it");
+        assert_eq!(w.population.count(), 0, "nowhere to live, so nobody lives");
+
+        w.issue(crate::command::Command::HireForeign {
+            market: Market::East,
+            office,
+            heads: 10,
+        })
+        .expect("the grant covers ten fees");
+        for _ in 0..TICKS_PER_DAY * 60 {
+            w.tick();
+        }
+
+        assert_eq!(w.population.count(), 0, "somebody moved in after all");
+        assert_eq!(
+            w.crews.stranded().map(|p| p.heads).sum::<u32>(),
+            0,
+            "ten builders the republic is paying daily are still at the border,              and the office that hired them has a bus in the yard"
         );
     }
 

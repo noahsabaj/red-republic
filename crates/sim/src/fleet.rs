@@ -773,12 +773,31 @@ pub const HELP_AFTER: u64 = 1;
 /// threshold nobody can see. It is checked **at dispatch only** — a lorry
 /// already out on a job finishes it, because a republic that loses a shift does
 /// not abandon its vehicles in a field.
-pub fn crewed(garage: &Building) -> u32 {
+pub fn crewed(garage: &Building, also_employed: u32) -> u32 {
     if !garage.is_built() {
         return 0;
     }
     let establishment: u32 = garage.def().vehicles.iter().map(|&(_, n)| n).sum();
-    (f64::from(establishment) * garage.staffing() * maintained(garage)).floor() as u32
+    // **`also_employed` is what broke the opening, and it is a consistency fix
+    // rather than a new rule.** A Construction Office that has paid for twenty
+    // builders standing at a frontier post employs twenty builders — the crew
+    // dispatcher's own `heads` closure has always counted them that way when
+    // deciding who may be *posted*. Crewing did not, so an office with no
+    // citizens could not move the one bus that would have fetched them, and the
+    // documented bootstrap — contract an office, hire abroad, build out — was a
+    // circle: no people, no driver, no crews, no people. The trajectory runner
+    // found it in one run of a blank map: twenty builders waiting at the border
+    // for two and a half years while the republic built nothing at all.
+    //
+    // Deliberately the *fill* fraction and not the day's work: a garage with
+    // three shifts of drivers still has only as many lorries as it owns.
+    let jobs = garage.def().workers;
+    let manning = if jobs == 0 {
+        1.0
+    } else {
+        (f64::from(garage.staff + also_employed) / f64::from(jobs)).clamp(0.0, 1.0)
+    };
+    (f64::from(establishment) * manning * maintained(garage)).floor() as u32
 }
 
 /// What share of a garage's establishment is roadworthy.
@@ -973,7 +992,7 @@ mod tests {
     #[test]
     fn an_unstaffed_garage_runs_nothing_and_a_full_one_runs_everything() {
         let (mut b, id) = garage();
-        assert_eq!(crewed(b.get(id).unwrap()), 0, "nobody to drive");
+        assert_eq!(crewed(b.get(id).unwrap(), 0), 0, "nobody to drive");
 
         let def = BuildingKind::MotorDepot.def();
         let establishment: u32 = def.vehicles.iter().map(|&(_, n)| n).sum();
@@ -984,7 +1003,7 @@ mod tests {
             .unwrap()
             .stock
             .add(Resource::Machinery, Tonnes(5.0));
-        assert_eq!(crewed(b.get(id).unwrap()), establishment);
+        assert_eq!(crewed(b.get(id).unwrap(), 0), establishment);
 
         // And the other half of the same rule: take the spares away and the
         // shed keeps half of them.
@@ -993,7 +1012,7 @@ mod tests {
             .stock
             .set(Resource::Machinery, Tonnes::ZERO);
         assert_eq!(
-            crewed(b.get(id).unwrap()),
+            crewed(b.get(id).unwrap(), 0),
             (f64::from(establishment) * crate::systems::WORN_EFFICIENCY).floor() as u32,
             "a depot with an empty parts bin ran its whole fleet"
         );
@@ -1005,7 +1024,7 @@ mod tests {
         let def = BuildingKind::MotorDepot.def();
         let establishment: u32 = def.vehicles.iter().map(|&(_, n)| n).sum();
         b.get_mut(id).unwrap().staff = def.workers / 2;
-        let running = crewed(b.get(id).unwrap());
+        let running = crewed(b.get(id).unwrap(), 0);
         assert!(
             running > 0 && running <= establishment / 2 + 1,
             "{running} of {establishment} on half a shift"
@@ -1023,7 +1042,7 @@ mod tests {
             .place(BuildingKind::MotorDepot, at(1_000.0, 1_000.0), &t, &g)
             .expect("open ground");
         b.get_mut(id).unwrap().staff = BuildingKind::MotorDepot.def().workers;
-        assert_eq!(crewed(b.get(id).unwrap()), 0);
+        assert_eq!(crewed(b.get(id).unwrap(), 0), 0);
     }
 
     #[test]
