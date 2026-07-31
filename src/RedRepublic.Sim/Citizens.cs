@@ -188,6 +188,21 @@ public sealed class Citizens(Tables tables)
         return i;
     }
 
+    /// <summary>How many people live in one building.</summary>
+    public int ResidentsOf(int home)
+    {
+        var living = 0;
+        for (var i = 0; i < Count; i++)
+        {
+            if (HomeAt(i) == home)
+            {
+                living++;
+            }
+        }
+
+        return living;
+    }
+
     /// <summary>Somebody arriving from outside, schooled, in good health.</summary>
     public int AddArrival(int home, int age) =>
         Add(home, age, _t.SchoolDays, ArrivingHealth, ArrivingLoyalty);

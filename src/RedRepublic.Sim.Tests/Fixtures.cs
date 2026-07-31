@@ -36,6 +36,12 @@ public static class Fixtures
 
     public static JsonElement Vectors => VectorsLazy.Value.RootElement;
 
+    /// <summary>
+    /// A republic with nothing in it, for tests about a rule rather than about a
+    /// seed. Its networks are empty and its map is whatever the seed gave.
+    /// </summary>
+    public static World Flat() => World.Found(new WorldSpec(1961, 6000.0, 0), Tables);
+
     /// <summary>Sixteen hex digits to a <see cref="ulong"/>.</summary>
     /// <remarks>
     /// The vectors carry every 64-bit value and every double as a bit pattern in

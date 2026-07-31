@@ -158,6 +158,10 @@ public readonly record struct Mutation(
     public static Mutation Heated(int building, bool on) =>
         new(MutationKind.Heated, building, 0, -1, on ? 1.0 : 0.0, 0.0);
 
+    /// <summary>Whether one stretch of street has its lamps burning tonight.</summary>
+    public static Mutation Lamps(int segment, bool alight) =>
+        new(MutationKind.Lamps, segment, 0, -1, alight ? 1.0 : 0.0, 0.0);
+
     public static Mutation Extract(int deposit, int building, int resource, double tonnes) =>
         new(MutationKind.Extract, deposit, building, resource, tonnes, 0.0);
 

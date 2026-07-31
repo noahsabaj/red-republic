@@ -5,7 +5,7 @@ Run:
     python tools/fetch_art.py
 
 Downloads from ambientCG, keeps the three maps Godot actually shades with, and
-writes `godot/art/textures/` plus a SOURCES.md recording where every file came
+writes `game/art/textures/` plus a SOURCES.md recording where every file came
 from. The results are committed, so this is run when the material set changes
 rather than as part of a build -- the same deal as `tools/build_icon.py`.
 
@@ -39,7 +39,7 @@ import urllib.request
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "godot", "art", "textures")
+OUT = os.path.join(ROOT, "game", "art", "textures")
 
 # Our semantic name -> the ambientCG asset it comes from. The names on the left
 # are what the shaders ask for; the ids on the right are what somebody has to
@@ -101,7 +101,7 @@ def main():
         print(f"    kept {', '.join(sorted(kept))}")
         rows.append((name, asset_id, description))
 
-    with open(os.path.join(ROOT, "godot", "art", "SOURCES.md"), "w", encoding="utf-8") as handle:
+    with open(os.path.join(ROOT, "game", "art", "SOURCES.md"), "w", encoding="utf-8") as handle:
         handle.write("# Where the art came from\n\n")
         handle.write(
             "Written by `tools/fetch_art.py`. Everything below is **CC0** from\n"
@@ -121,7 +121,7 @@ def main():
     total = sum(
         os.path.getsize(os.path.join(OUT, f)) for f in os.listdir(OUT) if f.endswith(".jpg")
     )
-    print(f"\nwrote {len(rows)} materials to godot/art/textures ({total / 1024 / 1024:.1f} MB)")
+    print(f"\nwrote {len(rows)} materials to game/art/textures ({total / 1024 / 1024:.1f} MB)")
     return 0
 
 

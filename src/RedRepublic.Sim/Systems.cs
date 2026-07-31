@@ -47,7 +47,7 @@ public static class Systems
         new("weather", [MutationKind.Weather], Weather),
         new("sanitation", [MutationKind.Waste], Sanitation),
         new("pollution", [MutationKind.Pollution], Pollution),
-        new("labour", [MutationKind.Staff, MutationKind.Employ], Labour),
+        new("labour", [MutationKind.Staff, MutationKind.Employ, MutationKind.Consume], Labour),
         new("contracts", [MutationKind.Contract, MutationKind.Money], ContractsPass),
         new("loans", [MutationKind.Loan, MutationKind.Money], LoansPass),
         new("wages", [MutationKind.Money], Wages),
@@ -73,15 +73,25 @@ public static class Systems
     /// </remarks>
     public static IReadOnlyList<SimSystem> PerTick { get; } =
     [
-        new("power", [MutationKind.Powered], Power),
-        new("heating", [MutationKind.Heated], Heating),
-        new("construction", [MutationKind.Build, MutationKind.Consume], Construction),
+        new("power", [MutationKind.Powered, MutationKind.Lamps], Power),
+        new("heating", [MutationKind.Heated, MutationKind.Consume], Heating),
+        new("construction", [MutationKind.Build, MutationKind.BuildRoad, MutationKind.BuildLine, MutationKind.Consume], Construction),
         new("production", [MutationKind.Extract, MutationKind.Consume, MutationKind.Produce], Production),
         new("households", [MutationKind.Consume], Households),
         new("commissioning", [MutationKind.Commission], Commissioning),
         new("fleet", [MutationKind.Arrive, MutationKind.Transfer], FleetPass),
         new("dispatch", [MutationKind.Dispatch], Dispatch),
         new("trade", [MutationKind.Consume, MutationKind.Produce, MutationKind.Money], Trade),
+
+        // Before dispatch: goods a belt has already moved are goods no lorry
+        // needs to be sent for, and the other way round would send a lorry for a
+        // load that was about to arrive on its own.
+        new("belts", [MutationKind.Transfer], Belts),
+        new("settling", [MutationKind.Migration, MutationKind.Dispatch], Settling),
+
+        // After settling, and sharing its coaches: somebody who wants to live
+        // here outranks somebody visiting, and the schedule is what says so.
+        new("touring", [MutationKind.Tourism, MutationKind.Dispatch], Touring),
         new("clearing", [MutationKind.Ploughed], Clearing),
     ];
 
@@ -137,6 +147,18 @@ public static class Systems
 
                 case MutationKind.Heated:
                     world.Buildings.SetHeated(m.Subject, m.Amount > 0.0);
+                    break;
+
+                case MutationKind.Lamps:
+                    world.Roads.SetAlight(m.Subject, m.Amount > 0.0);
+                    break;
+
+                case MutationKind.BuildLine:
+                    String(world, m.Subject, m.Amount);
+                    break;
+
+                case MutationKind.BuildRoad:
+                    Lay(world, m.Subject, m.Amount);
                     break;
 
                 case MutationKind.Extract:
@@ -211,6 +233,113 @@ public static class Systems
                     throw new NotSupportedException($"no writer for {m.Kind}");
             }
         }
+    }
+
+    /// <summary>
+    /// Builder-days into a way, and the last of them opens it.
+    /// </summary>
+    /// <remarks>
+    /// <b>A site is deliberately not in the network.</b> Nothing routes over it,
+    /// nothing commutes along it, and no lorry is quicker for it existing —
+    /// which is what makes the moment a road opens a real event. All of it lands
+    /// in one transaction: the site stops existing, the crew is set down where
+    /// its depot stood, and the way joins whichever network its grade carries. A
+    /// finished railway is not a road that trains happen to use.
+    /// </remarks>
+    private static void Lay(World world, int site, double builderDays)
+    {
+        var road = world.RoadWorks.Get(site);
+        if (road is null)
+        {
+            return;
+        }
+
+        var t = world.Tables;
+        var labour = road.Labour(t);
+        if (labour <= 0.0)
+        {
+            return;
+        }
+
+        var worked = Math.Min(builderDays, Math.Max(labour - road.WorkDone, 0.0));
+        var share = worked / labour;
+        var i = world.RoadWorks.IndexOf(site);
+
+        // Materials go in step with the work, exactly as on a building site.
+        for (var r = 0; r < t.Resources.Length; r++)
+        {
+            var wanted = road.Wants(r, t);
+            if (wanted > 0.0)
+            {
+                world.RoadWorks.Stock.Take(i, r, wanted * share);
+            }
+        }
+
+        road.WorkDone += worked;
+        if (!road.IsBuilt(t))
+        {
+            return;
+        }
+
+        world.RoadWorks.Finish(road);
+        world.Crews.Release(
+            Destination.RoadSite(site), (road.FromX + road.ToX) / 2.0, (road.FromY + road.ToY) / 2.0);
+        world.BuildPolicy.Forget(Destination.RoadSite(site));
+        world.Reopen(road);
+    }
+
+    /// <summary>
+    /// Builder-days into a line, and the last of them energises it.
+    /// </summary>
+    /// <remarks>
+    /// One transaction, because the pieces must never land apart: the span
+    /// leaves the works, the crew is set down where its depot stood, and the
+    /// grid takes it over. A site removed without being energised is steel
+    /// nobody can find; a span energised without the site being removed is one
+    /// lorries keep delivering to. And everything already standing within reach
+    /// is plugged in on the same breath — a line that came alive and connected
+    /// nobody until the next placement would be a grid that woke for no reason
+    /// the player could see.
+    /// </remarks>
+    private static void String(World world, int site, double builderDays)
+    {
+        var line = world.LineWorks.Get(site);
+        if (line is null)
+        {
+            return;
+        }
+
+        var t = world.Tables;
+        var labour = line.Labour(t);
+        if (labour <= 0.0)
+        {
+            return;
+        }
+
+        var worked = Math.Min(builderDays, Math.Max(labour - line.WorkDone, 0.0));
+        var share = worked / labour;
+        var i = world.LineWorks.IndexOf(site);
+
+        // Materials go in step with the work, exactly as on a building site: the
+        // total a span eats over its life is its bill, rather than its bill being
+        // demanded at every moment.
+        foreach (var bill in t.Utilities[line.Kind].Materials)
+        {
+            world.LineWorks.Stock.Take(i, bill.Resource, bill.Tonnes * line.Kilometres * share);
+        }
+
+        line.WorkDone += worked;
+        if (!line.IsBuilt(t))
+        {
+            return;
+        }
+
+        world.LineWorks.Finish(line);
+        world.Crews.Release(
+            Destination.LineSite(site), (line.FromX + line.ToX) / 2.0, (line.FromY + line.ToY) / 2.0);
+        world.BuildPolicy.Forget(Destination.LineSite(site));
+        world.Grid.Energise(line);
+        world.Grid.AttachAlong(world.Buildings, line.Kind);
     }
 
     // ---- daily ----
@@ -356,6 +485,15 @@ public static class Systems
 
         var taken = new bool[world.Citizens.Count];
 
+        // What the depots can carry today, fixed for the whole pass rather than
+        // recomputed per workplace: it is one fleet serving the republic, not a
+        // fresh allowance for every factory. Read off yesterday's staffing,
+        // because a depot staffed yesterday is what runs buses this morning —
+        // deriving it from the staffing this pass is about to decide would let a
+        // depot carry its own drivers to work.
+        var services = Transport.Services(world);
+        var seatsUsed = 0;
+
         foreach (var b in order)
         {
             if (!world.Buildings.IsBuilt(b))
@@ -366,42 +504,84 @@ public static class Systems
 
             var wanted = world.Buildings.Jobs(b);
             var bar = (Education)t.BSchooling[world.Buildings.KindAt(b)];
-            var hired = 0;
 
+            // Whether getting here means being out in the dark. A place running
+            // more than a day shift needs a lit way in or a seat on something,
+            // and that is the join between the roster and the street lamps:
+            // without it, lighting a road would be a decoration nothing read.
+            var dark = world.Buildings.WorksAfterDark(b);
+
+            // Rank: walkers first, then by journey time, then by id. A seat spent
+            // on somebody who could have walked is a seat denied to somebody who
+            // could not.
+            var candidates = new List<(int Rank, double Time, int Citizen, Commute How)>();
             foreach (var c in free)
             {
-                if (hired >= wanted)
-                {
-                    break;
-                }
-
                 if (taken[c] || world.Citizens.EducationAt(c) < bar)
                 {
                     continue;
                 }
 
-                // A job is only a job if there is a way to get to it.
                 var home = world.Buildings.IndexOf(world.Citizens.HomeAt(c));
                 if (home < 0)
                 {
                     continue;
                 }
 
-                var distance = Units.Distance(
+                var how = Transport.ReachAt(
+                    world,
                     world.Buildings.XAt(home), world.Buildings.YAt(home),
-                    world.Buildings.XAt(b), world.Buildings.YAt(b));
+                    world.Buildings.XAt(b), world.Buildings.YAt(b),
+                    services, dark);
 
-                if (distance > t.MaxWalkM)
+                if (how is null)
                 {
-                    // Beyond walking: it needs a seat, and seats are the bus
-                    // depot's business. Until one carries them, this is not a
-                    // job they can hold.
                     continue;
+                }
+
+                candidates.Add((how.Value.IsCarried ? 1 : 0, how.Value.Time, c, how.Value));
+            }
+
+            candidates.Sort((x, y) =>
+            {
+                var byRank = x.Rank.CompareTo(y.Rank);
+                if (byRank != 0)
+                {
+                    return byRank;
+                }
+
+                var byTime = x.Time.CompareTo(y.Time);
+                return byTime != 0 ? byTime : x.Citizen.CompareTo(y.Citizen);
+            });
+
+            var hired = 0;
+            foreach (var (_, _, c, how) in candidates)
+            {
+                if (hired >= wanted)
+                {
+                    break;
+                }
+
+                if (how.IsCarried)
+                {
+                    var at = services.FindIndex(s => (int)s.Medium == how.Medium);
+
+                    // That service is full. Everyone behind this candidate is
+                    // either also a rider or ranked worse, so keep scanning
+                    // rather than stopping — a nearer rider might still be a
+                    // walker for a later workplace.
+                    if (at < 0 || services[at].Seats <= 0)
+                    {
+                        continue;
+                    }
+
+                    services[at] = services[at] with { Seats = services[at].Seats - 1 };
+                    seatsUsed++;
                 }
 
                 taken[c] = true;
                 hired++;
-                world.Citizens.SetWorkplace(c, world.Buildings.IdAt(b), Commute.OnFoot(distance, t));
+                world.Citizens.SetWorkplace(c, world.Buildings.IdAt(b), how);
             }
 
             mutations.Add(Mutation.Staff(b, hired));
@@ -414,6 +594,14 @@ public static class Systems
             {
                 world.Citizens.SetWorkplace(c, -1, Commute.None);
             }
+        }
+
+        // And the depots burn for what they carried. A commute is an ongoing
+        // cost against the same refinery output everything else wants.
+        var fuel = t.ResourceIndex("Fuel");
+        foreach (var (depot, tonnes) in Transport.FuelBurn(world, seatsUsed))
+        {
+            mutations.Add(Mutation.Consume(depot, fuel, tonnes));
         }
 
         return mutations;
@@ -965,10 +1153,54 @@ public static class Systems
     /// three special cases, and the ranking is what a player is really deciding
     /// when they set a priority.
     /// </remarks>
-    private static List<(int Building, int Resource, double Tonnes, double Urgency)> Needs(World world)
+    private static List<(Destination To, int Resource, double Tonnes, double Urgency)> Needs(World world)
     {
         var t = world.Tables;
-        var wanted = new List<(int, int, double, double)>();
+        var wanted = new List<(Destination, int, double, double)>();
+
+        // The ways and the lines first, so a run waiting on gravel is in the same
+        // ranking as a factory waiting on ore rather than in a queue of its own.
+        // A site the republic is waiting on outranks a topped-up works: the thing
+        // is not there yet.
+        //
+        // <b>A site is served whatever the quantity</b>, where a finished works
+        // has to want a load worth rolling for. The minimum exists to stop a
+        // lorry being sent for four kilograms of something a farm produces
+        // continuously; a site's outstanding bill is finite and terminal, so
+        // refusing to deliver it does not defer the trip, it cancels the
+        // building. The trajectory runner found exactly that: a span wanting
+        // seven hundred kilograms of steel, two hundred tonnes of it standing at
+        // the customs house, six idle lorries, and a republic that sat dark for
+        // three years because nothing would roll for less than a load.
+        foreach (var road in world.RoadWorks.Sites)
+        {
+            var i = world.RoadWorks.IndexOf(road.Id);
+            var remaining = 1.0 - road.Progress(t);
+            for (var r = 0; r < t.Resources.Length; r++)
+            {
+                var outstanding = (road.Wants(r, t) * remaining)
+                    - world.RoadWorks.Stock.Get(i, r);
+                if (outstanding > 1e-9)
+                {
+                    wanted.Add((Destination.RoadSite(road.Id), r, outstanding, 2.0));
+                }
+            }
+        }
+
+        foreach (var line in world.LineWorks.Sites)
+        {
+            var i = world.LineWorks.IndexOf(line.Id);
+            var left = 1.0 - line.Progress(t);
+            foreach (var bill in t.Utilities[line.Kind].Materials)
+            {
+                var outstanding = (bill.Tonnes * line.Kilometres * left)
+                    - world.LineWorks.Stock.Get(i, bill.Resource);
+                if (outstanding > 1e-9)
+                {
+                    wanted.Add((Destination.LineSite(line.Id), bill.Resource, outstanding, 2.0));
+                }
+            }
+        }
 
         for (var b = 0; b < world.Buildings.Count; b++)
         {
@@ -986,11 +1218,11 @@ public static class Systems
                 for (var i = 0; i < res.Length; i++)
                 {
                     var outstanding = world.Buildings.MaterialOutstanding(b, res[i]);
-                    if (outstanding > t.MinLoad)
+                    if (outstanding > 1e-9)
                     {
                         // A site the republic is waiting on outranks a topped-up
                         // works: the building is not there yet.
-                        wanted.Add((b, res[i], outstanding, 2.0));
+                        wanted.Add((Destination.Building(world.Buildings.IdAt(b)), res[i], outstanding, 2.0));
                     }
                 }
 
@@ -1011,7 +1243,9 @@ public static class Systems
                     if (short_ > t.MinLoad)
                     {
                         // An empty bin is a stall; a low one is only a warning.
-                        wanted.Add((b, inputs[i], short_, held <= 0.0 ? 3.0 : 1.0));
+                        wanted.Add((
+                            Destination.Building(world.Buildings.IdAt(b)),
+                            inputs[i], short_, held <= 0.0 ? 3.0 : 1.0));
                     }
                 }
             }
@@ -1025,7 +1259,7 @@ public static class Systems
                 var held = world.Buildings.Stock.Get(b, r);
                 if (target - held > t.MinLoad)
                 {
-                    wanted.Add((b, r, target - held, 2.5));
+                    wanted.Add((Destination.Building(world.Buildings.IdAt(b)), r, target - held, 2.5));
                 }
             }
 
@@ -1037,7 +1271,7 @@ public static class Systems
                     var held = world.Buildings.Stock.Get(b, r);
                     if (ordered - held > t.MinLoad)
                     {
-                        wanted.Add((b, r, ordered - held, 1.5));
+                        wanted.Add((Destination.Building(world.Buildings.IdAt(b)), r, ordered - held, 1.5));
                     }
                 }
             }
@@ -1053,11 +1287,152 @@ public static class Systems
                 return byUrgency;
             }
 
-            var byBuilding = world.Buildings.IdAt(a.Item1).CompareTo(world.Buildings.IdAt(b.Item1));
-            return byBuilding != 0 ? byBuilding : a.Item2.CompareTo(b.Item2);
+            var byKind = a.Item1.Kind.CompareTo(b.Item1.Kind);
+            if (byKind != 0)
+            {
+                return byKind;
+            }
+
+            var byId = a.Item1.Id.CompareTo(b.Item1.Id);
+            return byId != 0 ? byId : a.Item2.CompareTo(b.Item2);
         });
 
         return wanted;
+    }
+
+    /// <summary>
+    /// Where a lorry pulls up for a consignee, or <c>null</c> if it is gone.
+    /// </summary>
+    /// <remarks>
+    /// A site can finish or be pulled down while a lorry is on its way to it,
+    /// which is why every caller has to be able to be told there is nowhere to go
+    /// rather than being handed a plausible pair of coordinates.
+    /// </remarks>
+    internal static (double X, double Y)? Where(World world, Destination to)
+    {
+        switch (to.Kind)
+        {
+            case DestinationKind.Building:
+                {
+                    var b = world.Buildings.IndexOf(to.Id);
+                    return b < 0 ? null : (world.Buildings.XAt(b), world.Buildings.YAt(b));
+                }
+
+            case DestinationKind.RoadSite:
+                {
+                    // The middle of the run, because that is where the work is.
+                    var run = world.RoadWorks.Get(to.Id);
+                    return run is null
+                        ? null
+                        : ((run.FromX + run.ToX) / 2.0, (run.FromY + run.ToY) / 2.0);
+                }
+
+            case DestinationKind.LineSite:
+                {
+                    var site = world.LineWorks.Get(to.Id);
+                    return site is null
+                        ? null
+                        : ((site.FromX + site.ToX) / 2.0, (site.FromY + site.ToY) / 2.0);
+                }
+
+            default:
+                return (to.X, to.Y);
+        }
+    }
+
+    /// <summary>How much more of a material a consignee will take.</summary>
+    private static double Room(World world, Destination to, int resource)
+    {
+        switch (to.Kind)
+        {
+            case DestinationKind.Building:
+                {
+                    var b = world.Buildings.IndexOf(to.Id);
+                    return b < 0
+                        ? 0.0
+                        : world.Buildings.IntakeCapacity(b, resource)
+                            - world.Buildings.Stock.Get(b, resource);
+                }
+
+            case DestinationKind.RoadSite:
+                {
+                    var run = world.RoadWorks.Get(to.Id);
+                    if (run is null)
+                    {
+                        return 0.0;
+                    }
+
+                    var at = world.RoadWorks.IndexOf(run.Id);
+                    var todo = 1.0 - run.Progress(world.Tables);
+                    return (run.Wants(resource, world.Tables) * todo)
+                        - world.RoadWorks.Stock.Get(at, resource);
+                }
+
+            case DestinationKind.LineSite:
+                {
+                    // Exactly what the work still to do needs, and no more: a site
+                    // is not a warehouse.
+                    var site = world.LineWorks.Get(to.Id);
+                    if (site is null)
+                    {
+                        return 0.0;
+                    }
+
+                    var i = world.LineWorks.IndexOf(site.Id);
+                    var left = 1.0 - site.Progress(world.Tables);
+                    return (site.Wants(resource, world.Tables) * left)
+                        - world.LineWorks.Stock.Get(i, resource);
+                }
+
+            default:
+                return 0.0;
+        }
+    }
+
+    /// <summary>Set a load down at a consignee, and say how much of it went in.</summary>
+    private static double SetDown(World world, Destination to, int resource, double tonnes)
+    {
+        switch (to.Kind)
+        {
+            case DestinationKind.Building:
+                {
+                    var b = world.Buildings.IndexOf(to.Id);
+                    if (b < 0)
+                    {
+                        return 0.0;
+                    }
+
+                    world.Buildings.Stock.Add(b, resource, tonnes);
+                    return tonnes;
+                }
+
+            case DestinationKind.RoadSite:
+                {
+                    var at = world.RoadWorks.IndexOf(to.Id);
+                    if (at < 0)
+                    {
+                        return 0.0;
+                    }
+
+                    world.RoadWorks.Stock.Add(at, resource, tonnes);
+                    return tonnes;
+                }
+
+            case DestinationKind.LineSite:
+                {
+                    var i = world.LineWorks.IndexOf(to.Id);
+                    if (i < 0)
+                    {
+                        return 0.0;
+                    }
+
+                    world.LineWorks.Stock.Add(i, resource, tonnes);
+                    return tonnes;
+                }
+
+            default:
+                return 0.0;
+        }
     }
 
     /// <summary>
@@ -1148,7 +1523,7 @@ public static class Systems
         }
 
         var needs = Needs(world);
-        var claimed = new HashSet<(int, int)>();
+        var claimed = new HashSet<(Destination, int)>();
 
         foreach (var v in idle)
         {
@@ -1159,7 +1534,13 @@ public static class Systems
                     continue;
                 }
 
-                var from = Supplier(world, resource, consignee, t.MinLoad);
+                // A works is not sent to fetch from itself. Nothing else can be
+                // both ends of a haul: a line site holds goods and consumes them,
+                // so it never supplies anybody.
+                var notThis = consignee.Kind == DestinationKind.Building
+                    ? world.Buildings.IndexOf(consignee.Id)
+                    : -1;
+                var from = Supplier(world, resource, notThis, t.MinLoad);
                 if (from < 0)
                 {
                     continue;
@@ -1179,10 +1560,7 @@ public static class Systems
                 }
 
                 world.Fleet.SetJob(v, Job.Haul(
-                    world.Buildings.IdAt(from),
-                    Destination.Building(world.Buildings.IdAt(consignee)),
-                    resource,
-                    load));
+                    world.Buildings.IdAt(from), consignee, resource, load));
                 world.Fleet.SetJourney(v, journey);
                 world.Fleet.SetState(v, VehicleState.Fetching);
                 mutations.Add(new Mutation(
@@ -1236,52 +1614,108 @@ public static class Systems
             var job = world.Fleet.JobAt(v);
             switch (world.Fleet.StateAt(v))
             {
+                // A coach that has reached the post takes its party aboard and
+                // sets off for the estate. Loading is one transaction where the
+                // pass decides it: a party marked as riding a coach that never
+                // took them would be people in two places at once.
+                case VehicleState.Fetching when job.Kind is JobKind.Settle or JobKind.Tour:
+                    {
+                        var to = Where(world, job.To);
+                        var onward = to is null
+                            ? null
+                            : Plan(world, v, world.Fleet.XAt(v), world.Fleet.YAt(v),
+                                to.Value.X, to.Value.Y);
+
+                        if (onward is null)
+                        {
+                            GoHome(world, v);
+                            break;
+                        }
+
+                        if (job.Kind == JobKind.Settle)
+                        {
+                            world.Migration.Board(job.Subject, v);
+                        }
+                        else
+                        {
+                            world.Tourism.Board(job.Subject, v);
+                        }
+
+                        world.Fleet.SetJourney(v, onward);
+                        world.Fleet.SetState(v, VehicleState.Delivering);
+                        break;
+                    }
+
+                // And sets them down. The party stops existing as a party in the
+                // same breath: one that arrived without being housed would be
+                // people the republic had fetched and lost.
+                case VehicleState.Delivering when job.Kind is JobKind.Settle or JobKind.Tour:
+                    {
+                        var home = world.Buildings.IndexOf(job.To.Id);
+                        if (home >= 0 && job.Kind == JobKind.Settle)
+                        {
+                            var group = world.Migration.Get(job.Subject);
+                            if (group is not null)
+                            {
+                                SettleInto(world, group.Heads, home);
+                                world.Migration.Remove(group);
+                                mutations.Add(new Mutation(
+                                    MutationKind.Migration, 1, 0, -1, 0.0, 0.0));
+                            }
+                        }
+                        else if (home >= 0)
+                        {
+                            world.Tourism.CheckIn(job.Subject, world.Buildings.IdAt(home));
+                            mutations.Add(new Mutation(
+                                MutationKind.Tourism, 1, 0, -1, 0.0, 0.0));
+                        }
+
+                        GoHome(world, v);
+                        break;
+                    }
+
                 case VehicleState.Fetching:
-                {
-                    var from = world.Buildings.IndexOf(job.From);
-                    var to = world.Buildings.IndexOf(job.To.Id);
-                    if (from < 0 || to < 0)
                     {
-                        GoHome(world, v);
+                        var from = world.Buildings.IndexOf(job.From);
+                        var to = Where(world, job.To);
+                        if (from < 0 || to is null)
+                        {
+                            GoHome(world, v);
+                            break;
+                        }
+
+                        var loaded = world.Buildings.Stock.Take(from, job.Resource, job.Tonnes);
+                        world.Fleet.Cargo.Add(v, job.Resource, loaded);
+
+                        var onward = Plan(
+                            world, v, world.Fleet.XAt(v), world.Fleet.YAt(v), to.Value.X, to.Value.Y);
+
+                        if (onward is null)
+                        {
+                            GoHome(world, v);
+                            break;
+                        }
+
+                        world.Fleet.SetJourney(v, onward);
+                        world.Fleet.SetState(v, VehicleState.Delivering);
                         break;
                     }
-
-                    var loaded = world.Buildings.Stock.Take(from, job.Resource, job.Tonnes);
-                    world.Fleet.Cargo.Add(v, job.Resource, loaded);
-
-                    var onward = Plan(
-                        world, v,
-                        world.Fleet.XAt(v), world.Fleet.YAt(v),
-                        world.Buildings.XAt(to), world.Buildings.YAt(to));
-
-                    if (onward is null)
-                    {
-                        GoHome(world, v);
-                        break;
-                    }
-
-                    world.Fleet.SetJourney(v, onward);
-                    world.Fleet.SetState(v, VehicleState.Delivering);
-                    break;
-                }
 
                 case VehicleState.Delivering:
-                {
-                    var to = world.Buildings.IndexOf(job.To.Id);
-                    if (to >= 0)
                     {
                         var carried = world.Fleet.Cargo.Get(v, job.Resource);
-                        var room = world.Buildings.IntakeCapacity(to, job.Resource)
-                            - world.Buildings.Stock.Get(to, job.Resource);
-                        var setDown = Math.Max(0.0, Math.Min(carried, room));
-                        world.Fleet.Cargo.Take(v, job.Resource, setDown);
-                        world.Buildings.Stock.Add(to, job.Resource, setDown);
-                        mutations.Add(Mutation.Transfer(v, to, job.Resource, setDown));
-                    }
+                        var room = Math.Max(0.0, Room(world, job.To, job.Resource));
+                        var setDown = Math.Min(carried, room);
+                        if (setDown > 0.0)
+                        {
+                            setDown = SetDown(world, job.To, job.Resource, setDown);
+                            world.Fleet.Cargo.Take(v, job.Resource, setDown);
+                            mutations.Add(Mutation.Transfer(v, job.To.Id, job.Resource, setDown));
+                        }
 
-                    GoHome(world, v);
-                    break;
-                }
+                        GoHome(world, v);
+                        break;
+                    }
 
                 default:
                     world.Fleet.SetState(v, VehicleState.Idle);
@@ -1291,6 +1725,420 @@ public static class Systems
         }
 
         return mutations;
+    }
+
+    /// <summary>
+    /// What the belts and the pipelines move, without a lorry and without a
+    /// driver.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// What a belt buys is a haul that needs no vehicle, no driver and no diesel.
+    /// What it costs is that it goes exactly where it was built and nowhere else.
+    /// The trade against the fleet is the whole point: a mine feeding a plant
+    /// four hundred metres away wants a belt, and a mine feeding six things
+    /// scattered over a valley wants lorries.
+    /// </para>
+    /// <para>
+    /// Throughput is a property of the <b>network</b> rather than of a span,
+    /// because a belt is a belt however many sections it has: adding a kilometre
+    /// makes it longer, not wider.
+    /// </para>
+    /// </remarks>
+    private static List<Mutation> Belts(World world)
+    {
+        var t = world.Tables;
+        var perTick = 1.0 / SimClock.TicksPerDay;
+        var mutations = new List<Mutation>();
+
+        for (var kind = 0; kind < t.Utilities.Length; kind++)
+        {
+            var carries = t.Utilities[kind].Carries;
+            if (carries.Length == 0)
+            {
+                continue;
+            }
+
+            // What each network can still move this tick, and what this pass has
+            // already taken out of each yard — so two consumers on one belt are
+            // not both told the same tonne is theirs.
+            var left = new Dictionary<int, double>();
+            var lifted = new Dictionary<(int Yard, int Resource), double>();
+
+            foreach (var resource in carries)
+            {
+                // Everyone on a network of this kind who wants this, emptiest
+                // first, ties on id so the answer is reproducible.
+                var wanting = new List<(double Cover, int Building, int Network)>();
+                for (var b = 0; b < world.Buildings.Count; b++)
+                {
+                    if (!world.Buildings.IsBuilt(b) || !Consumes(t, world.Buildings.KindAt(b), resource))
+                    {
+                        continue;
+                    }
+
+                    var network = world.Grid.NetworkOf(world.Buildings.IdAt(b), kind);
+                    if (network >= 0)
+                    {
+                        wanting.Add((CoverDays(world, b, resource), b, network));
+                    }
+                }
+
+                wanting.Sort((x, y) =>
+                {
+                    var byCover = x.Cover.CompareTo(y.Cover);
+                    return byCover != 0 ? byCover : x.Building.CompareTo(y.Building);
+                });
+
+                foreach (var (_, consumer, network) in wanting)
+                {
+                    if (!left.TryGetValue(network, out var allowance))
+                    {
+                        allowance = t.Utilities[kind].Throughput * perTick;
+                    }
+
+                    if (allowance <= 1e-12)
+                    {
+                        continue;
+                    }
+
+                    var room = world.Buildings.IntakeCapacity(consumer, resource)
+                        - world.Buildings.Stock.Get(consumer, resource);
+                    if (room <= 0.0)
+                    {
+                        continue;
+                    }
+
+                    // Whoever on the same network is holding it, fullest first —
+                    // the opposite ranking from the consumers, and for the same
+                    // reason: draw down the yard closest to blocking.
+                    var from = -1;
+                    var most = 0.0;
+                    for (var y = 0; y < world.Buildings.Count; y++)
+                    {
+                        if (y == consumer || !world.Buildings.IsBuilt(y)
+                            || world.Grid.NetworkOf(world.Buildings.IdAt(y), kind) != network)
+                        {
+                            continue;
+                        }
+
+                        var held = world.Buildings.Stock.Get(y, resource)
+                            - lifted.GetValueOrDefault((y, resource));
+                        if (held > most)
+                        {
+                            most = held;
+                            from = y;
+                        }
+                    }
+
+                    if (from < 0)
+                    {
+                        continue;
+                    }
+
+                    var moved = Math.Min(most, Math.Min(room, allowance));
+                    if (moved <= 0.0)
+                    {
+                        continue;
+                    }
+
+                    left[network] = allowance - moved;
+                    lifted[(from, resource)] = lifted.GetValueOrDefault((from, resource)) + moved;
+                    world.Buildings.Stock.Take(from, resource, moved);
+                    world.Buildings.Stock.Add(consumer, resource, moved);
+                    mutations.Add(Mutation.Transfer(from, consumer, resource, moved));
+                }
+            }
+        }
+
+        return mutations;
+    }
+
+    /// <summary>How many days of cover a works has of one of its inputs.</summary>
+    private static double CoverDays(World world, int b, int resource)
+    {
+        var kind = world.Buildings.KindAt(b);
+        var inputs = world.Tables.Inputs.KeysOf(kind);
+        var rates = world.Tables.Inputs.ValuesOf(kind);
+        for (var i = 0; i < inputs.Length; i++)
+        {
+            if (inputs[i] == resource && rates[i] > 0.0)
+            {
+                return world.Buildings.Stock.Get(b, resource) / rates[i];
+            }
+        }
+
+        return double.PositiveInfinity;
+    }
+
+    private static bool Consumes(Tables t, int kind, int resource)
+    {
+        foreach (var r in t.Inputs.KeysOf(kind))
+        {
+            if (r == resource)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Getting the settlers off the frontier and into a home.
+    /// </summary>
+    /// <remarks>
+    /// <b>People wait at a post, and they give up.</b> A republic that advertises
+    /// for settlers and cannot fetch them loses them, which is what makes a coach
+    /// and a road to the post part of the cost of growing. Anybody who can walk
+    /// to a bed walks — so the coaches only ever go out for the people who
+    /// genuinely need fetching, and a republic whose estates are near its border
+    /// needs fewer of them.
+    /// </remarks>
+    private static List<Mutation> Settling(World world)
+    {
+        var t = world.Tables;
+        var mutations = new List<Mutation>();
+
+        // Housing a coach is already filling counts as spoken for: a group that
+        // walked into rooms somebody else is being driven to would put both on
+        // the street. A journey is a commitment, and a dispatcher that only reads
+        // arrivals will make it twice.
+        var booked = new Dictionary<int, int>();
+        var coming = new HashSet<int>();
+        for (var v = 0; v < world.Fleet.Count; v++)
+        {
+            var job = world.Fleet.JobAt(v);
+            if (job.Kind != JobKind.Settle)
+            {
+                continue;
+            }
+
+            coming.Add(job.Subject);
+            booked[job.To.Id] = booked.GetValueOrDefault(job.To.Id) + t.ArrivalParty;
+        }
+
+        var settled = 0;
+        foreach (var group in world.Migration.Waiting.ToList())
+        {
+            if (coming.Contains(group.Id) || group.Riding is not null)
+            {
+                continue;
+            }
+
+            // The emptiest block with room, ties on id — an intake goes where
+            // there is most room rather than filling one stairwell and leaving
+            // the next estate empty.
+            var home = Roomiest(world, booked, group.X, group.Y, t.MaxWalkM);
+            if (home >= 0)
+            {
+                var moved = SettleInto(world, group.Heads, home);
+                booked[world.Buildings.IdAt(home)] =
+                    booked.GetValueOrDefault(world.Buildings.IdAt(home)) + moved;
+                world.Migration.Remove(group);
+                settled++;
+                continue;
+            }
+
+            // Too far to walk. It wants a coach, and one that cannot make the
+            // round trip does not set out — unlike a load of gravel, a party
+            // stranded in a field is people the republic has lost the use of.
+            var bed = Roomiest(world, booked, group.X, group.Y, double.PositiveInfinity);
+            if (bed < 0)
+            {
+                continue;
+            }
+
+            var coach = Nearest(world, "Passenger", group.X, group.Y);
+            if (coach < 0)
+            {
+                continue;
+            }
+
+            var out_ = Plan(
+                world, coach, world.Fleet.XAt(coach), world.Fleet.YAt(coach), group.X, group.Y);
+            if (out_ is null)
+            {
+                continue;
+            }
+
+            world.Fleet.SetJob(coach, Job.Settle(group.Id, world.Buildings.IdAt(bed)));
+            world.Fleet.SetJourney(coach, out_);
+            world.Fleet.SetState(coach, VehicleState.Fetching);
+            booked[world.Buildings.IdAt(bed)] =
+                booked.GetValueOrDefault(world.Buildings.IdAt(bed)) + t.ArrivalParty;
+            mutations.Add(new Mutation(MutationKind.Dispatch, coach, bed, -1, 0.0, 0.0));
+        }
+
+        if (settled > 0)
+        {
+            mutations.Add(new Mutation(MutationKind.Migration, settled, 0, -1, 0.0, 0.0));
+        }
+
+        return mutations;
+    }
+
+    /// <summary>
+    /// Getting the visitors from the post to their beds.
+    /// </summary>
+    /// <remarks>
+    /// The same coaches the settlers ride, and deliberately after them: somebody
+    /// who wants to live here outranks somebody visiting, and the order of these
+    /// two passes is what says so.
+    /// </remarks>
+    private static List<Mutation> Touring(World world)
+    {
+        var t = world.Tables;
+        var mutations = new List<Mutation>();
+
+        var coming = new HashSet<int>();
+        for (var v = 0; v < world.Fleet.Count; v++)
+        {
+            var job = world.Fleet.JobAt(v);
+            if (job.Kind == JobKind.Tour)
+            {
+                coming.Add(job.Subject);
+            }
+        }
+
+        foreach (var visit in world.Tourism.Visits.ToList())
+        {
+            if (visit.StayingAt is not null || visit.Riding is not null || coming.Contains(visit.Id))
+            {
+                continue;
+            }
+
+            var hotel = Hotel(world, visit.Heads);
+            if (hotel < 0)
+            {
+                continue;
+            }
+
+            var coach = Nearest(world, "Passenger", visit.X, visit.Y);
+            if (coach < 0)
+            {
+                continue;
+            }
+
+            var out_ = Plan(
+                world, coach, world.Fleet.XAt(coach), world.Fleet.YAt(coach), visit.X, visit.Y);
+            if (out_ is null)
+            {
+                continue;
+            }
+
+            world.Fleet.SetJob(coach, Job.Tour(visit.Id, world.Buildings.IdAt(hotel)));
+            world.Fleet.SetJourney(coach, out_);
+            world.Fleet.SetState(coach, VehicleState.Fetching);
+            mutations.Add(new Mutation(MutationKind.Dispatch, coach, hotel, -1, 0.0, 0.0));
+        }
+
+        return mutations;
+    }
+
+    /// <summary>
+    /// Move a party of settlers into a block, and say how many fitted.
+    /// </summary>
+    /// <remarks>
+    /// One function because the two ways in — carried by a coach, or walked —
+    /// differ only in the journey, and a second copy of "how many fit, spread the
+    /// ages" is a second place for the answer to drift. Ages are spread across
+    /// working life so an intake is not a cohort that retires together, and they
+    /// arrive schooled because they were taught somewhere else.
+    /// </remarks>
+    private static int SettleInto(World world, int heads, int home)
+    {
+        var room = world.Tables.BResidents[world.Buildings.KindAt(home)]
+            - world.Citizens.ResidentsOf(world.Buildings.IdAt(home));
+        var taken = Math.Clamp(heads, 0, Math.Max(room, 0));
+
+        for (var i = 0; i < taken; i++)
+        {
+            world.Citizens.AddArrival(
+                world.Buildings.IdAt(home), 20 + (world.Citizens.Count % 30));
+        }
+
+        return taken;
+    }
+
+    /// <summary>
+    /// The home with the most room, within reach of a point. -1 if there is none.
+    /// </summary>
+    private static int Roomiest(
+        World world, Dictionary<int, int> booked, double x, double y, double within)
+    {
+        var t = world.Tables;
+        var best = -1;
+        var mostRoom = 0;
+
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            var kind = world.Buildings.KindAt(b);
+            if (!world.Buildings.IsBuilt(b) || t.BResidents[kind] == 0)
+            {
+                continue;
+            }
+
+            if (Units.Distance(world.Buildings.XAt(b), world.Buildings.YAt(b), x, y) > within)
+            {
+                continue;
+            }
+
+            var id = world.Buildings.IdAt(b);
+            var room = t.BResidents[kind]
+                - world.Citizens.ResidentsOf(id)
+                - booked.GetValueOrDefault(id);
+
+            if (room > mostRoom)
+            {
+                mostRoom = room;
+                best = b;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>A hotel with a bed free, or -1.</summary>
+    private static int Hotel(World world, int heads)
+    {
+        var t = world.Tables;
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            var kind = world.Buildings.KindAt(b);
+            if (world.Buildings.IsBuilt(b) && t.BBeds[kind] >= heads)
+            {
+                return b;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>The nearest idle vehicle of a role, or -1.</summary>
+    private static int Nearest(World world, string role, double x, double y)
+    {
+        var t = world.Tables;
+        var best = -1;
+        var nearest = double.PositiveInfinity;
+
+        for (var v = 0; v < world.Fleet.Count; v++)
+        {
+            if (world.Fleet.StateAt(v) != VehicleState.Idle
+                || t.VRole[world.Fleet.KindAt(v)] != role)
+            {
+                continue;
+            }
+
+            var gap = Units.Distance(world.Fleet.XAt(v), world.Fleet.YAt(v), x, y);
+            if (gap < nearest)
+            {
+                nearest = gap;
+                best = v;
+            }
+        }
+
+        return best;
     }
 
     /// <summary>Its work is over: it stands where it is with nothing to do.</summary>
@@ -1548,31 +2396,46 @@ public static class Systems
             }
 
             var officeId = world.Buildings.IdAt(office);
-            var staff = world.Buildings.StaffAt(office);
+
+            // Its own people <b>and</b> whatever it has hired from abroad. A
+            // republic that bought twenty builders and could not put them on a
+            // site would have paid a placement fee for nothing.
+            var staff = world.Buildings.StaffAt(office) + world.Crews.HiredAt(officeId);
+            // A gang this office already has and is not using costs nothing to
+            // post: its heads are counted against the establishment either way.
+            // Requiring spare capacity for it is what left twenty hired builders
+            // standing at a frontier post for three years while the office read
+            // as fully committed to them.
+            var idle = Idle(world, officeId);
             var out_ = world.Crews.Posted(officeId);
-            var spare = staff - out_;
-            if (spare < t.BuildersPerSite)
+            if (idle is null && staff - out_ < t.BuildersPerSite)
             {
                 continue;
             }
 
             // The first site with no gang on it, in commissioning order.
-            for (var b = 0; b < world.Buildings.Count; b++)
+            foreach (var (site, x, y) in SitesInOrder(world))
             {
-                if (world.Buildings.IsBuilt(b) || world.Buildings.ContractorAt(b) >= 0)
-                {
-                    continue;
-                }
-
-                var site = Destination.Building(world.Buildings.IdAt(b));
                 if (world.Crews.WorkingAt(site) is not null)
                 {
                     continue;
                 }
 
-                var party = world.Crews.Send(
-                    officeId, t.BuildersPerSite,
-                    world.Buildings.XAt(b), world.Buildings.YAt(b));
+                // The gang it already has before anybody new off its own staff:
+                // the hands it hired from abroad, or one that has finished a
+                // site. Without this a republic that bought twenty builders
+                // leaves them standing at the frontier post it hired them to.
+                var party = idle;
+                if (party is not null)
+                {
+                    party.X = x;
+                    party.Y = y;
+                }
+                else
+                {
+                    party = world.Crews.Send(officeId, t.BuildersPerSite, x, y);
+                }
+
                 party.Working = site;
                 sent++;
                 break;
@@ -1580,6 +2443,109 @@ public static class Systems
         }
 
         return sent > 0 ? [new Mutation(MutationKind.Crew, sent, 0, -1, 0.0, 0.0)] : [];
+    }
+
+    /// <summary>A gang of this office with nothing to do, or <c>null</c>.</summary>
+    private static Party? Idle(World world, int office)
+    {
+        foreach (var party in world.Crews.OfOffice(office))
+        {
+            if (party.Working is null && party.Riding is null)
+            {
+                return party;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Every site with its materials on hand, in commissioning order, and where a
+    /// gang would stand to work it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Shared by the construction pass and the crews pass because they have to
+    /// agree on the queue: a crew posted to the third site while the first is
+    /// being worked would make the commissioning order something the player can
+    /// see and cannot rely on.
+    /// </para>
+    /// <para>
+    /// Buildings and lines are ranked <b>together</b>. A building's id is its
+    /// place in the order; a span carries the count as it stood when it was
+    /// ordered, and ties go to the building, because the building holding that
+    /// number was placed first. Ordering a line therefore takes its turn like
+    /// anything else rather than jumping the queue or waiting behind every
+    /// factory in the republic.
+    /// </para>
+    /// </remarks>
+    private static List<(Destination Site, double X, double Y)> SitesInOrder(World world)
+    {
+        var queue = new List<(long Ordered, int Tie, Destination Site, double X, double Y)>();
+
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            // A site somebody else is being paid to build is not a site your
+            // crews work, and it does not want your gravel either: you bought the
+            // labour and the materials together, which is what makes a contractor
+            // cost several times a builder-day.
+            if (world.Buildings.IsBuilt(b) || world.Buildings.ContractorAt(b) >= 0)
+            {
+                continue;
+            }
+
+            if (!world.Buildings.HasMaterials(b))
+            {
+                continue;
+            }
+
+            var id = world.Buildings.IdAt(b);
+            queue.Add((id, 0, Destination.Building(id),
+                world.Buildings.XAt(b), world.Buildings.YAt(b)));
+        }
+
+        foreach (var road in world.RoadWorks.Sites)
+        {
+            if (!world.RoadWorks.HasMaterials(road))
+            {
+                continue;
+            }
+
+            // The middle of the run, because that is where the work is.
+            queue.Add((road.Ordered, 1, Destination.RoadSite(road.Id),
+                (road.FromX + road.ToX) / 2.0, (road.FromY + road.ToY) / 2.0));
+        }
+
+        foreach (var line in world.LineWorks.Sites)
+        {
+            if (!world.LineWorks.HasMaterials(line))
+            {
+                continue;
+            }
+
+            queue.Add((line.Ordered, 2, Destination.LineSite(line.Id),
+                (line.FromX + line.ToX) / 2.0, (line.FromY + line.ToY) / 2.0));
+        }
+
+        queue.Sort(static (a, b) =>
+        {
+            var order = a.Ordered.CompareTo(b.Ordered);
+            if (order != 0)
+            {
+                return order;
+            }
+
+            var tie = a.Tie.CompareTo(b.Tie);
+            return tie != 0 ? tie : a.Site.Id.CompareTo(b.Site.Id);
+        });
+
+        var sites = new List<(Destination, double, double)>(queue.Count);
+        foreach (var entry in queue)
+        {
+            sites.Add((entry.Site, entry.X, entry.Y));
+        }
+
+        return sites;
     }
 
     /// <summary>
@@ -1600,10 +2566,12 @@ public static class Systems
         // Groups that ran out of patience.
         var gone = world.Migration.GiveUp(today, t);
 
-        // How the republic looks from outside: the mean of what its homes are
-        // like, and room to put anybody.
+        // How the republic looks from outside: what it offers the people already
+        // living in it, weighted by how many that is — one wretched outpost does
+        // not cancel a working city, and an unweighted mean would say it did.
         var homes = 0;
-        var content = 0.0;
+        var scored = 0.0;
+        var heads = 0;
         var room = 0;
         for (var b = 0; b < world.Buildings.Count; b++)
         {
@@ -1613,16 +2581,41 @@ public static class Systems
             }
 
             homes++;
-            content += world.Buildings.ContentmentAt(b).Overall(t);
             room += t.BResidents[world.Buildings.KindAt(b)];
+
+            var here = world.Citizens.ResidentsOf(world.Buildings.IdAt(b));
+            if (here == 0)
+            {
+                continue;
+            }
+
+            scored += world.Buildings.ContentmentAt(b).Overall(t) * here;
+            heads += here;
         }
 
-        room -= world.Citizens.Count;
+        room -= world.Citizens.Count + world.Migration.HeadsWaiting();
 
         if (homes > 0 && room > 0)
         {
-            var appeal = content / homes;
-            if (appeal >= t.ContentAttracts && world.Rng.NextDouble() < t.ArrivalOdds)
+            // <b>An empty republic is failing nobody, and must not be scored as
+            // if it were failing everybody.</b> Nobody lives here, so the average
+            // of what the republic offers its residents is an average over an
+            // empty set, and calling that zero says "you are failing people you
+            // do not have" — which leaves a blank map permanently uninhabited and
+            // the opening unable to start at all.
+            //
+            // It is the same rule contentment already applies twice: warmth is
+            // full on a warm day and schooling is full in a block with no
+            // children, because a republic is not marked down for a demand that
+            // does not exist. New housing standing empty is exactly that case.
+            var appeal = heads == 0 ? 1.0 : scored / heads;
+
+            // How keen they are: how far past the threshold the republic is, so a
+            // barely-adequate one gets a trickle and a good one a stream.
+            var keenness = Math.Clamp(
+                (appeal - t.ContentAttracts) / (1.0 - t.ContentAttracts), 0.0, 1.0);
+
+            if (appeal >= t.ContentAttracts && world.Rng.NextDouble() < keenness * t.ArrivalOdds)
             {
                 var post = world.Frontier.Crossings.Count > 0
                     ? world.Frontier.Crossings[
@@ -1744,18 +2737,64 @@ public static class Systems
     private static List<Mutation> Power(World world)
     {
         var t = world.Tables;
-        var generated = 0.0;
+        var wire = t.UtilityIndex("Power");
+
+        // What each grid can supply, after what its own length loses.
+        var available = new Dictionary<int, double>();
+        var drawn = new Dictionary<int, double>();
 
         for (var b = 0; b < world.Buildings.Count; b++)
         {
-            if (world.Buildings.IsBuilt(b))
+            if (!world.Buildings.IsBuilt(b))
             {
-                generated += t.BPowerOutput[world.Buildings.KindAt(b)] * world.Buildings.Activity(b);
+                continue; // a half-built plant generates nothing
+            }
+
+            var kind = world.Buildings.KindAt(b);
+            if (t.BPowerOutput[kind] <= 0.0 || world.Buildings.Staffing(b) <= 0.0)
+            {
+                continue;
+            }
+
+            if (!IsFuelled(world, b, kind))
+            {
+                continue;
+            }
+
+            // A plant strung to nothing lights nothing — including itself, which
+            // is correct: an isolated power station is a shed full of turbines
+            // with nowhere to send the current.
+            var network = world.Grid.NetworkOf(world.Buildings.IdAt(b), wire);
+            if (network < 0)
+            {
+                continue;
+            }
+
+            var made = t.BPowerOutput[kind] * world.Buildings.Activity(b)
+                * world.Grid.Efficiency(network, wire);
+            available[network] = available.GetValueOrDefault(network) + made;
+        }
+
+        // The stations that actually serve anybody: built, staffed, and on a
+        // grid. Collected once rather than searched per consumer.
+        var stations = new List<(double X, double Y, int Network)>();
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            var kind = world.Buildings.KindAt(b);
+            if (!world.Buildings.IsBuilt(b) || !t.BTransforms[kind]
+                || world.Buildings.Staffing(b) <= 0.0)
+            {
+                continue;
+            }
+
+            var network = world.Grid.NetworkOf(world.Buildings.IdAt(b), wire);
+            if (network >= 0)
+            {
+                stations.Add((world.Buildings.XAt(b), world.Buildings.YAt(b), network));
             }
         }
 
         var mutations = new List<Mutation>();
-        var spare = generated;
 
         foreach (var b in Consumers(world))
         {
@@ -1766,16 +2805,92 @@ public static class Systems
                 continue;
             }
 
-            var fed = spare >= draw;
-            if (fed)
+            var on = world.Buildings.IsBuilt(b) && Feed(
+                Feeder(stations, world.Buildings.XAt(b), world.Buildings.YAt(b), t), draw);
+            mutations.Add(Mutation.Powered(b, on));
+        }
+
+        // <b>The streets are served last, and that is a decision rather than an
+        // accident of ordering.</b> A republic short of generation should put its
+        // lamps out before it stops a factory: the works is what pays for the
+        // lamps. It is also visible — a town that goes dark at the edges is a
+        // power shortage a player can see from the camera.
+        for (var s = 0; s < world.Roads.SegmentCount; s++)
+        {
+            if (!world.Roads.Segments[s].Lamps)
             {
-                spare -= draw;
+                continue;
             }
 
-            mutations.Add(Mutation.Powered(b, fed));
+            var draw = t.LampMwPerKm * (world.Roads.Segments[s].Length / 1000.0);
+
+            // The middle of the stretch, because that is what a station has to
+            // reach: a segment is at most one junction spacing long, so its
+            // midpoint is never far from either end.
+            var lit = Feed(
+                Feeder(stations, world.Roads.MidpointX(s), world.Roads.MidpointY(s), t), draw);
+            mutations.Add(Mutation.Lamps(s, lit));
         }
 
         return mutations;
+
+        // The nearest station in reach of a point, and through it its grid.
+        // Written once because two different consumers ask it: a building, and a
+        // lit stretch of street. A lamp is wired to a station exactly as a
+        // factory is, so it is the same query and must stay the same answer.
+        static int Feeder(List<(double X, double Y, int Network)> stations, double x, double y, Tables t)
+        {
+            var best = -1;
+            var bestGap = 0.0;
+            foreach (var (sx, sy, network) in stations)
+            {
+                var gap = Units.Distance(sx, sy, x, y);
+                if (gap > t.TransformerRange)
+                {
+                    continue;
+                }
+
+                if (best < 0 || gap < bestGap || (gap == bestGap && network < best))
+                {
+                    best = network;
+                    bestGap = gap;
+                }
+            }
+
+            return best;
+        }
+
+        bool Feed(int network, double draw)
+        {
+            if (network < 0)
+            {
+                return false;
+            }
+
+            var spent = drawn.GetValueOrDefault(network);
+            if (spent + draw > available.GetValueOrDefault(network))
+            {
+                return false;
+            }
+
+            drawn[network] = spent + draw;
+            return true;
+        }
+    }
+
+    /// <summary>Whether a works has at least a little of everything it burns.</summary>
+    private static bool IsFuelled(World world, int b, int kind)
+    {
+        var inputs = world.Tables.Inputs.KeysOf(kind);
+        foreach (var r in inputs)
+        {
+            if (world.Buildings.Stock.Get(b, r) <= 0.0)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>Who the boilers can reach, on a day cold enough to need them.</summary>
@@ -1797,34 +2912,148 @@ public static class Systems
             return warm;
         }
 
-        var produced = 0.0;
+        var main = t.UtilityIndex("Heat");
+        var perTick = 1.0 / SimClock.TicksPerDay;
+
+        // Heat is a <b>network</b> quantity, not a republic-wide one. A block is
+        // warm only if a main runs past it and something on the same main is
+        // burning coal — which is what makes district heating a town-scale
+        // decision rather than a number that covers the map.
+        var demand = new Dictionary<int, double>();
         for (var b = 0; b < world.Buildings.Count; b++)
         {
-            if (world.Buildings.IsBuilt(b))
+            var wanted = t.BHeat[world.Buildings.KindAt(b)];
+            if (!world.Buildings.IsBuilt(b) || wanted <= 0.0)
             {
-                produced += t.BHeatOutput[world.Buildings.KindAt(b)] * world.Buildings.Activity(b);
+                continue;
+            }
+
+            var network = world.Grid.NetworkOf(world.Buildings.IdAt(b), main);
+            if (network >= 0)
+            {
+                demand[network] = demand.GetValueOrDefault(network) + (wanted * demandFactor);
             }
         }
 
         var mutations = new List<Mutation>();
-        var spare = produced;
+        var budget = new Dictionary<int, double>();
+
+        for (var boiler = 0; boiler < world.Buildings.Count; boiler++)
+        {
+            var kind = world.Buildings.KindAt(boiler);
+            if (!world.Buildings.IsBuilt(boiler) || t.BHeatOutput[kind] <= 0.0)
+            {
+                continue;
+            }
+
+            // A boiler house with no main out of it heats nothing but itself, and
+            // the simulation says so rather than quietly warming the republic.
+            var network = world.Grid.NetworkOf(world.Buildings.IdAt(boiler), main);
+            if (network < 0)
+            {
+                continue;
+            }
+
+            // A boiler house is a building like any other: no crew or no
+            // electricity for its pumps and it makes nothing. Exempting it would
+            // mean a blackout in January quietly left the heating on.
+            if (t.BPowerDraw[kind] > 0.0 && !world.Buildings.PoweredAt(boiler))
+            {
+                continue;
+            }
+
+            var capacity = t.BHeatOutput[kind] * world.Buildings.Activity(boiler);
+            if (capacity <= 0.0)
+            {
+                continue;
+            }
+
+            // What survives the pipes. Heat leaks badly, so a main strung across
+            // the map delivers a fraction of what the boiler burnt for — the
+            // whole reason district heating is a town-scale thing.
+            var kept = world.Grid.Efficiency(network, main);
+            if (kept <= 0.0)
+            {
+                continue;
+            }
+
+            // Throttle to what is still wanted <b>at the far end of the main</b>.
+            // A boiler serving a mild day does not burn a cold day's coal — but
+            // it must burn enough to cover what the pipes lose. Throttling to
+            // demand and taking the loss out afterwards leaves it short by
+            // exactly the loss, every time.
+            var throttle = Math.Clamp(
+                demand.GetValueOrDefault(network) / (capacity * kept), 0.0, 1.0);
+            if (throttle <= 0.0)
+            {
+                continue;
+            }
+
+            // And burn only in proportion to what it actually manages to make.
+            var inputs = t.Inputs.KeysOf(kind);
+            var rates = t.Inputs.ValuesOf(kind);
+            var fuelFactor = 1.0;
+            for (var i = 0; i < inputs.Length; i++)
+            {
+                var needed = rates[i] * perTick * world.Buildings.Activity(boiler) * throttle;
+                if (needed > 0.0)
+                {
+                    fuelFactor = Math.Min(
+                        fuelFactor,
+                        Math.Clamp(world.Buildings.Stock.Get(boiler, inputs[i]) / needed, 0.0, 1.0));
+                }
+            }
+
+            var running = throttle * fuelFactor;
+            if (running <= 0.0)
+            {
+                continue;
+            }
+
+            for (var i = 0; i < inputs.Length; i++)
+            {
+                mutations.Add(Mutation.Consume(
+                    boiler, inputs[i], rates[i] * perTick * world.Buildings.Activity(boiler) * running));
+            }
+
+            var made = capacity * running * kept;
+            budget[network] = budget.GetValueOrDefault(network) + made;
+            demand[network] = Math.Max(demand.GetValueOrDefault(network) - made, 0.0);
+        }
 
         foreach (var b in Consumers(world))
         {
-            var wanted = t.BHeat[world.Buildings.KindAt(b)] * demandFactor;
-            if (wanted <= 0.0)
+            var need = t.BHeat[world.Buildings.KindAt(b)] * demandFactor;
+            if (!world.Buildings.IsBuilt(b) || need <= 0.0)
             {
                 mutations.Add(Mutation.Heated(b, true));
                 continue;
             }
 
-            var reached = spare >= wanted;
-            if (reached)
+            // A block with no main past it is cold, whatever the republic is
+            // burning elsewhere. This is the state the whole network exists to
+            // make representable, and it is why heating is no longer a number.
+            var network = world.Grid.NetworkOf(world.Buildings.IdAt(b), main);
+            if (network < 0)
             {
-                spare -= wanted;
+                mutations.Add(Mutation.Heated(b, false));
+                continue;
             }
 
-            mutations.Add(Mutation.Heated(b, reached));
+            // The epsilon is load-bearing: a boiler throttled to demand produces
+            // exactly demand, but demand was accumulated by summing and this is
+            // spent by subtracting, and those two orders do not round the same
+            // way. Without slack the last block on the list comes up a few ulps
+            // short and goes cold on mild days while a hard January is fine —
+            // which is the wrong way round, and is what gives it away.
+            var held = budget.GetValueOrDefault(network);
+            var on = held >= need - 1e-9;
+            if (on)
+            {
+                budget[network] = held - need;
+            }
+
+            mutations.Add(Mutation.Heated(b, on));
         }
 
         return mutations;
@@ -1892,6 +3121,51 @@ public static class Systems
                         mutations.Add(Mutation.Consume(b, res[i], eaten));
                     }
                 }
+            }
+        }
+
+        // And the ways, worked by the same crews out of the same offices. A road
+        // is a site with a bill of materials like any other: the gravel has to be
+        // driven to it, and until the last builder-day lands nothing routes over
+        // it.
+        foreach (var run in world.RoadWorks.Sites)
+        {
+            if (world.Crews.WorkingAt(Destination.RoadSite(run.Id)) is not { } gang)
+            {
+                continue;
+            }
+
+            if (!world.RoadWorks.HasMaterials(run))
+            {
+                continue;
+            }
+
+            var todo = Math.Max(run.Labour(t) - run.WorkDone, 0.0);
+            var worked = Math.Min(gang.Heads / (double)SimClock.TicksPerDay, todo);
+            if (worked > 0.0)
+            {
+                mutations.Add(Mutation.BuildRoad(run.Id, worked));
+            }
+        }
+
+        // And the lines, for exactly the same reason.
+        foreach (var site in world.LineWorks.Sites)
+        {
+            if (world.Crews.WorkingAt(Destination.LineSite(site.Id)) is not { } gang)
+            {
+                continue;
+            }
+
+            if (!world.LineWorks.HasMaterials(site))
+            {
+                continue;
+            }
+
+            var left = Math.Max(site.Labour(t) - site.WorkDone, 0.0);
+            var days = Math.Min(gang.Heads / (double)SimClock.TicksPerDay, left);
+            if (days > 0.0)
+            {
+                mutations.Add(Mutation.BuildLine(site.Id, days));
             }
         }
 

@@ -32,7 +32,7 @@ public enum LineError
 /// </remarks>
 public sealed class RoadSite(
     int id, double fromX, double fromY, double toX, double toY,
-    int grade, bool lamps, long orderedDay)
+    int grade, bool lamps, long ordered)
 {
     public int Id { get; } = id;
 
@@ -54,7 +54,13 @@ public sealed class RoadSite(
     /// </summary>
     public bool Lamps { get; } = lamps;
 
-    public long OrderedDay { get; } = orderedDay;
+    /// <summary>
+    /// Where this sits in the republic's commissioning order — the count of
+    /// things commissioned when it was ordered, not a date. It is what makes a
+    /// road take its turn in the build queue like anything else, rather than
+    /// jumping it or waiting behind every factory in the republic.
+    /// </summary>
+    public long Ordered { get; } = ordered;
 
     public double WorkDone { get; internal set; }
 
@@ -115,7 +121,7 @@ public sealed class RoadSite(
 /// drive the steel out to it.
 /// </remarks>
 public sealed class LineSite(
-    int id, int kind, double fromX, double fromY, double toX, double toY, long orderedDay)
+    int id, int kind, double fromX, double fromY, double toX, double toY, long ordered)
 {
     public int Id { get; } = id;
 
@@ -130,7 +136,13 @@ public sealed class LineSite(
 
     public double ToY { get; } = toY;
 
-    public long OrderedDay { get; } = orderedDay;
+    /// <summary>
+    /// Where this sits in the republic's commissioning order — the count of
+    /// things commissioned when it was ordered, not a date. It is what makes a
+    /// road take its turn in the build queue like anything else, rather than
+    /// jumping it or waiting behind every factory in the republic.
+    /// </summary>
+    public long Ordered { get; } = ordered;
 
     public double WorkDone { get; internal set; }
 
@@ -145,6 +157,12 @@ public sealed class LineSite(
     }
 
     public bool IsBuilt(Tables t) => WorkDone >= Labour(t);
+
+    public double Progress(Tables t)
+    {
+        var labour = Labour(t);
+        return labour <= 0.0 ? 1.0 : Math.Clamp(WorkDone / labour, 0.0, 1.0);
+    }
 
     public double Wants(int resource, Tables t)
     {
@@ -163,25 +181,24 @@ public sealed class LineSite(
 }
 
 /// <summary>A finished line, carrying something between two points.</summary>
-public readonly record struct Line(int Id, int Kind, double FromX, double FromY, double ToX, double ToY)
+/// <param name="A">
+/// The union-find node at the <c>From</c> end. Two lines that share an end share
+/// a node, which is what makes them one network — see <see cref="Networks"/>.
+/// </param>
+/// <param name="B">The node at the <c>To</c> end.</param>
+public readonly record struct Line(
+    int Id, int Kind, double FromX, double FromY, double ToX, double ToY, int A, int B)
 {
     public double Length => Units.Distance(FromX, FromY, ToX, ToY);
 
     public double Kilometres => Length / 1000.0;
 
     /// <summary>
-    /// What fraction of what enters this line comes out the other end.
+    /// How far a point is from this span, measured to the segment rather than to
+    /// either end — a building beside the middle of a line is beside the line.
     /// </summary>
-    /// <remarks>
-    /// Loss by the kilometre is what makes <i>where you put the power station</i>
-    /// matter. Without it a plant anywhere lights everything, which is the
-    /// abstraction lines exist to replace.
-    /// </remarks>
-    public double Efficiency(Tables t)
-    {
-        ArgumentNullException.ThrowIfNull(t);
-        return Math.Clamp(1.0 - (t.Utilities[Kind].LossPerKm * Kilometres), 0.0, 1.0);
-    }
+    public double DistanceTo(double x, double y) =>
+        Units.DistanceToSegment(x, y, FromX, FromY, ToX, ToY);
 }
 
 /// <summary>Every way the republic has ordered but not finished.</summary>
@@ -232,7 +249,7 @@ public sealed class RoadWorks(Tables tables)
     /// </remarks>
     public RoadError Order(
         double fromX, double fromY, double toX, double toY,
-        int grade, bool lamps, long today, Terrain terrain, out RoadSite? site)
+        int grade, bool lamps, long ordered, Terrain terrain, out RoadSite? site)
     {
         ArgumentNullException.ThrowIfNull(terrain);
         site = null;
@@ -254,10 +271,53 @@ public sealed class RoadWorks(Tables tables)
             return RoadError.NeedsABridge;
         }
 
-        site = new RoadSite(_nextId++, fromX, fromY, toX, toY, grade, lamps, today);
+        site = new RoadSite(_nextId++, fromX, fromY, toX, toY, grade, lamps, ordered);
         _sites.Add(site);
         Stock.Grow();
         return RoadError.None;
+    }
+
+    /// <summary>
+    /// Whether the materials for the work still to do are on hand. Same rule as
+    /// a building site: the bill falls as the work is done.
+    /// </summary>
+    public bool HasMaterials(RoadSite site)
+    {
+        ArgumentNullException.ThrowIfNull(site);
+        var i = IndexOf(site.Id);
+        if (i < 0)
+        {
+            return false;
+        }
+
+        var left = 1.0 - site.Progress(_t);
+        for (var r = 0; r < _t.Resources.Length; r++)
+        {
+            if (Stock.Get(i, r) + 1e-9 < site.Wants(r, _t) * left)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Put a site back exactly as it was, keeping its id — what a load does.
+    /// </summary>
+    public RoadSite Restore(
+        int id, double fromX, double fromY, double toX, double toY,
+        int grade, bool lamps, long ordered, double workDone)
+    {
+        var site = new RoadSite(id, fromX, fromY, toX, toY, grade, lamps, ordered)
+        {
+            WorkDone = workDone,
+        };
+
+        _sites.Add(site);
+        Stock.Grow();
+        _nextId = Math.Max(_nextId, id + 1);
+        return site;
     }
 
     public void Finish(RoadSite site)
@@ -270,23 +330,103 @@ public sealed class RoadWorks(Tables tables)
             Stock.RemoveAt(i);
         }
     }
+
+    /// <summary>
+    /// Lay a finished road into the network.
+    /// </summary>
+    /// <remarks>
+    /// <b>Junctions along the length, not only at the ends.</b> Access to the
+    /// network is measured from junctions, so a five-kilometre road with
+    /// junctions only at its ends would serve the two buildings at those ends and
+    /// nothing in between. Ends merge onto whatever junction already stands
+    /// there, so two roads ordered end to end become one network rather than two
+    /// islands.
+    /// </remarks>
+    public static void Open(Network network, RoadSite site, Tables t)
+    {
+        ArgumentNullException.ThrowIfNull(network);
+        ArgumentNullException.ThrowIfNull(site);
+        ArgumentNullException.ThrowIfNull(t);
+
+        var speed = Units.KphToMps(t.Grades[site.Grade].SpeedKph);
+        var steps = Math.Max(1, (int)Math.Ceiling(site.Length / t.JunctionSpacing));
+        var previous = network.JunctionAt(site.FromX, site.FromY, t.JunctionMerge);
+
+        for (var step = 1; step <= steps; step++)
+        {
+            var along = (double)step / steps;
+            var next = network.JunctionAt(
+                site.FromX + ((site.ToX - site.FromX) * along),
+                site.FromY + ((site.ToY - site.FromY) * along),
+                t.JunctionMerge);
+
+            // A junction that merged onto the one behind it adds no road.
+            if (next != previous && !network.AreConnected(previous, next))
+            {
+                network.Connect(previous, next, speed, site.Lamps);
+            }
+
+            previous = next;
+        }
+    }
 }
 
-/// <summary>Every line ordered, and every line finished.</summary>
+/// <summary>
+/// Every line the republic has ordered and not yet energised.
+/// </summary>
+/// <remarks>
+/// Sites only. A finished span leaves here and joins <see cref="Networks"/>,
+/// because the two answer different questions: this one is a thing lorries
+/// deliver steel to, and that one is a thing current travels along.
+/// </remarks>
 public sealed class LineWorks(Tables tables)
 {
     private readonly Tables _t = tables;
     private readonly List<LineSite> _sites = [];
-    private readonly List<Line> _lines = [];
 
     private int _nextSiteId = 1;
-    private int _nextLineId = 1;
 
     public IReadOnlyList<LineSite> Sites => _sites;
 
-    public IReadOnlyList<Line> Lines => _lines;
-
     public GrowableStock Stock { get; } = new(tables.Resources.Length);
+
+    public LineSite? Get(int id)
+    {
+        foreach (var s in _sites)
+        {
+            if (s.Id == id)
+            {
+                return s;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Whether the materials for the work still to do are on hand. Same rule as
+    /// a building site: the bill falls as the work is done.
+    /// </summary>
+    public bool HasMaterials(LineSite site)
+    {
+        ArgumentNullException.ThrowIfNull(site);
+        var i = IndexOf(site.Id);
+        if (i < 0)
+        {
+            return false;
+        }
+
+        var left = site.Kilometres * (1.0 - site.Progress(_t));
+        foreach (var bill in _t.Utilities[site.Kind].Materials)
+        {
+            if (Stock.Get(i, bill.Resource) + 1e-9 < bill.Tonnes * left)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     public int IndexOf(int siteId)
     {
@@ -303,7 +443,7 @@ public sealed class LineWorks(Tables tables)
 
     public LineError Order(
         int kind, double fromX, double fromY, double toX, double toY,
-        long today, out LineSite? site)
+        long ordered, out LineSite? site)
     {
         site = null;
         if (Units.Distance(fromX, fromY, toX, toY) < _t.MinLine)
@@ -311,14 +451,41 @@ public sealed class LineWorks(Tables tables)
             return LineError.TooShort;
         }
 
-        site = new LineSite(_nextSiteId++, kind, fromX, fromY, toX, toY, today);
+        site = new LineSite(_nextSiteId++, kind, fromX, fromY, toX, toY, ordered);
         _sites.Add(site);
         Stock.Grow();
         return LineError.None;
     }
 
-    /// <summary>The site is done: it becomes a line and stops being a site.</summary>
-    public Line Finish(LineSite site)
+    /// <summary>
+    /// Put a site back exactly as it was, keeping its id — what a load does.
+    /// </summary>
+    /// <remarks>
+    /// Ids come back as they were rather than being renumbered, because a save
+    /// that renumbered its sites would break every journal entry that names one.
+    /// </remarks>
+    public LineSite Restore(
+        int id, int kind, double fromX, double fromY, double toX, double toY,
+        long ordered, double workDone)
+    {
+        var site = new LineSite(id, kind, fromX, fromY, toX, toY, ordered)
+        {
+            WorkDone = workDone,
+        };
+
+        _sites.Add(site);
+        Stock.Grow();
+        _nextSiteId = Math.Max(_nextSiteId, id + 1);
+        return site;
+    }
+
+    /// <summary>
+    /// Take a finished site off the books. Energising it is
+    /// <see cref="Networks.Energise"/>'s business, and the two are called
+    /// together — a site that left here without joining a grid would be steel
+    /// nobody can find.
+    /// </summary>
+    public void Finish(LineSite site)
     {
         ArgumentNullException.ThrowIfNull(site);
         var i = IndexOf(site.Id);
@@ -327,39 +494,5 @@ public sealed class LineWorks(Tables tables)
             _sites.RemoveAt(i);
             Stock.RemoveAt(i);
         }
-
-        var line = new Line(
-            _nextLineId++, site.Kind, site.FromX, site.FromY, site.ToX, site.ToY);
-        _lines.Add(line);
-        return line;
-    }
-
-    /// <summary>Every line of one kind — what the power or heat pass walks.</summary>
-    public List<Line> OfKind(int kind)
-    {
-        var found = new List<Line>();
-        foreach (var l in _lines)
-        {
-            if (l.Kind == kind)
-            {
-                found.Add(l);
-            }
-        }
-
-        return found;
-    }
-
-    public double TotalLength(int kind)
-    {
-        var total = 0.0;
-        foreach (var l in _lines)
-        {
-            if (l.Kind == kind)
-            {
-                total += l.Length;
-            }
-        }
-
-        return total;
     }
 }

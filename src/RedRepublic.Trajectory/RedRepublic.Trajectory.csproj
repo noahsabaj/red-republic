@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The headless trajectory runner.
+
+    It reads the simulation and nothing else — no engine, no test framework —
+    which is what makes "play the opening and print what happened" a thing that
+    can be run in a second on any machine.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>trajectory</AssemblyName>
+    <RootNamespace>RedRepublic.Trajectory</RootNamespace>
+
+    <!-- A warning that is not an error is a warning nobody reads. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RedRepublic.Sim\RedRepublic.Sim.csproj" />
+  </ItemGroup>
+
+</Project>

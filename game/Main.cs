@@ -25,12 +25,91 @@ namespace RedRepublic;
 public partial class Main : Node3D
 {
     private Tables? _tables;
+    private Sim.World? _world;
     private Terrain? _terrain;
+    private World.Scenery? _scenery;
+    private Ui.Shell? _shell;
+
+    /// <summary>
+    /// Put a building where the player clicked.
+    /// </summary>
+    /// <remarks>
+    /// <b>The hit test asks the ground where the cursor is</b>, rather than the
+    /// interface guessing from a screen position. A ray from the camera against
+    /// the terrain is the only answer that stays right as the camera moves, and
+    /// the refusal comes back from the simulation in words a panel can print:
+    /// this file never decides whether a building may stand somewhere.
+    /// </remarks>
+    public override void _UnhandledInput(InputEvent @event)
+    {
+        if (_world is null || _shell is null || _scenery is null
+            || @event is not InputEventMouseButton click
+            || !click.Pressed || click.ButtonIndex != MouseButton.Left)
+        {
+            return;
+        }
+
+        var at = _scenery.GroundUnder(GetViewport(), click.Position, _world.Terrain);
+        if (at is null)
+        {
+            return;
+        }
+
+        // Nothing on the cursor: the click is asking what is there. The pick
+        // comes from the simulation, because the rule about what ground a
+        // building occupies is the same rule placement answers to.
+        if (_shell.Placing < 0)
+        {
+            _shell.Inspect(_world.Buildings.At(at.Value.X, at.Value.Y));
+            return;
+        }
+
+        var outcome = _world.Issue(Command.Place(_shell.Placing, at.Value.X, at.Value.Y));
+        if (outcome.Accepted)
+        {
+            _shell.StopPlacing();
+            _shell.Refused("");
+        }
+        else
+        {
+            _shell.Refused(outcome.Refusal);
+        }
+    }
 
     public override void _Ready()
     {
         var args = OS.GetCmdlineUserArgs();
         var check = System.Array.IndexOf(args, "--check") >= 0;
+
+        // Rewrite the theme from the palette and quit. A checked-in generator
+        // and a committed artifact: the editor previews what the game ships, and
+        // "the hairline is one shade lighter" is one constant rather than
+        // twenty-six literals in a resource nobody can read.
+        if (System.Array.IndexOf(args, "--build-theme") >= 0)
+        {
+            var why = Ui.ThemeBuilder.Build();
+            GD.Print(why == Error.Ok
+                ? $"wrote {Ui.ThemeBuilder.Path}"
+                : $"could not write {Ui.ThemeBuilder.Path}: {why}");
+            GetTree().Quit(why == Error.Ok ? 0 : 1);
+            return;
+        }
+
+        // Bring the balance table's checksum back into agreement with its
+        // contents, after a deliberate edit to it.
+        //
+        // <b>The manifest is the authored source now</b>, so the checksum no
+        // longer proves the table was generated — it proves the file the game
+        // loaded is the file somebody meant to write, byte for byte, which is
+        // what catches a figure that arrived one ulp out.
+        if (System.Array.IndexOf(args, "--stamp-balance") >= 0)
+        {
+            GetTree().Quit(StampBalance() ? 0 : 1);
+            return;
+        }
+
+        Ui.Settings.Read();
+        Ui.Settings.Apply();
 
         _tables = LoadTables();
         GD.Print($"tables ok: {_tables.BuildingCount} buildings, "
@@ -39,14 +118,128 @@ public partial class Main : Node3D
         // A seed a person can type. The founding shelf will own this properly;
         // for now it is what makes `--check` exercise worldgen rather than only
         // the table.
-        _terrain = Terrain.Generate(1961, 3000.0, _tables);
+        _world = Sim.World.Found(new WorldSpec(1961, 3000.0, 0), _tables);
+        _terrain = _world.Terrain;
         GD.Print($"founded on a {_terrain.Cells}-cell map, "
             + $"{_terrain.FractionOf(Surface.Water) * 100.0:F1}% water");
 
         if (check)
         {
             GetTree().Quit();
+            return;
         }
+
+        // Where the posting actually is, which the geology decides — so it is
+        // routinely nowhere near the middle of the map, and opening on the
+        // centre means opening on empty ground with the town off the edge of
+        // interest.
+        var (atX, atZ) = Scenario.Site(_world);
+        var scenery = new World.Scenery(World.Look.Default) { Name = "Scenery" };
+        AddChild(scenery);
+        scenery.Raise(_world, atX, atZ);
+        _scenery = scenery;
+
+        // The opening grant. A republic is a blank slate — the land, a rouble
+        // balance, and whatever the player does next.
+        Scenario.Found(_world);
+
+        // `--town` stands the test fixture up instead. <b>Not a way to play</b> —
+        // a real founding places nothing — but the only way a capture can show
+        // what a working republic looks like without somebody playing one first.
+        if (System.Array.IndexOf(args, "--town") >= 0)
+        {
+            Scenario.Town(_world, Scenario.Settlers);
+        }
+
+        _shell = new Ui.Shell { Name = "Shell" };
+        AddChild(_shell);
+        _shell.Raise(_world);
+        _shell.Ticked += () => scenery.Refresh(_world!);
+        _shell.TookUp += taken =>
+        {
+            // The land is the same land — a save carries its seed — so only what
+            // stands on it has to be redrawn.
+            _world = taken;
+            scenery.Refresh(taken);
+        };
+        scenery.Refresh(_world);
+
+        // `--shot` captures one frame and quits. It aims the camera itself,
+        // because the sky is only visible below about twenty-five degrees and a
+        // capture that cannot tilt cannot photograph it at all.
+        var shot = System.Array.IndexOf(args, "--shot");
+        if (shot >= 0 && shot + 1 < args.Length)
+        {
+            Capture(scenery, args, args[shot + 1]);
+        }
+    }
+
+    /// <summary>
+    /// Take one frame and quit.
+    /// </summary>
+    /// <remarks>
+    /// <b>Never under <c>--headless</c>.</b> It waits for a frame that never
+    /// arrives and spins silently for ever. And the point of it is that somebody
+    /// <i>looks</i> at the image: Godot culls back faces, so geometry wound the
+    /// wrong way renders as nothing at all — which reads as "not built yet" and
+    /// never as "inside out", and no number in the run says otherwise.
+    /// </remarks>
+    private void Capture(World.Scenery scenery, string[] args, string path)
+    {
+        var pitch = Argument(args, "--pitch", 50.0f);
+        var distance = Argument(args, "--at", 900.0f);
+        scenery.Aim(pitch, distance);
+
+        RenderingServer.FramePostDraw += () =>
+        {
+            var image = GetViewport().GetTexture().GetImage();
+            var why = image.SavePng(path);
+            GD.Print(why == Error.Ok ? $"shot {path}" : $"could not write {path}: {why}");
+            GetTree().Quit(why == Error.Ok ? 0 : 1);
+        };
+    }
+
+    private static float Argument(string[] args, string name, float fallback)
+    {
+        var at = System.Array.IndexOf(args, name);
+        return at >= 0 && at + 1 < args.Length && float.TryParse(args[at + 1], out var value)
+            ? value
+            : fallback;
+    }
+
+    /// <summary>
+    /// Rewrite the manifest's checksum from its own contents.
+    /// </summary>
+    /// <remarks>
+    /// Writes through Godot's own file access to the same path the game reads,
+    /// so running it from a source checkout edits the checked-in artifact — which
+    /// is the whole point. There is nothing to run in an exported build, and
+    /// nothing there to edit.
+    /// </remarks>
+    private static bool StampBalance()
+    {
+        const string path = "res://data/manifest.json";
+
+        using var read = FileAccess.Open(path, FileAccess.ModeFlags.Read);
+        if (read is null)
+        {
+            GD.PrintErr($"{path} could not be opened: {FileAccess.GetOpenError()}");
+            return false;
+        }
+
+        var stamped = Tables.Restamp(read.GetAsText());
+        read.Close();
+
+        using var write = FileAccess.Open(path, FileAccess.ModeFlags.Write);
+        if (write is null)
+        {
+            GD.PrintErr($"{path} could not be written: {FileAccess.GetOpenError()}");
+            return false;
+        }
+
+        write.StoreString(stamped);
+        GD.Print($"stamped {path}: {Tables.Load(stamped).ChecksumGot}");
+        return true;
     }
 
     /// <summary>

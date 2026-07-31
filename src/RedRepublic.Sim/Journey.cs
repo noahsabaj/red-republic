@@ -73,6 +73,37 @@ public sealed class Journey
 
     public bool OnLastLeg => Leg + 1 >= Legs;
 
+    /// <summary>
+    /// Put a journey back exactly where it was — what a load does.
+    /// </summary>
+    /// <remarks>
+    /// A vehicle halfway to a site is state, not a decision, so the file carries
+    /// it rather than re-planning: a re-planned journey would arrive at a
+    /// different tick and the republic would diverge from the one that was saved.
+    /// </remarks>
+    public static Journey Restore(
+        IReadOnlyList<double> x, IReadOnlyList<double> y, IReadOnlyList<double> limit,
+        int leg, double legStart, double legEnd)
+    {
+        ArgumentNullException.ThrowIfNull(x);
+        ArgumentNullException.ThrowIfNull(y);
+        ArgumentNullException.ThrowIfNull(limit);
+        return new Journey([.. x], [.. y], [.. limit], 0.0, 0.0)
+        {
+            Leg = leg,
+            LegStart = legStart,
+            LegEnd = legEnd,
+        };
+    }
+
+    /// <summary>The waypoints, for the save. Leg <c>i</c> runs from <c>i</c> to <c>i + 1</c>.</summary>
+    public IReadOnlyList<double> PathX => _x;
+
+    public IReadOnlyList<double> PathY => _y;
+
+    /// <summary>What the way allows on each leg, negative across open ground.</summary>
+    public IReadOnlyList<double> Limits => _limit;
+
     public static Journey Begin(
         IReadOnlyList<double> x, IReadOnlyList<double> y, IReadOnlyList<double> limit,
         double now, double firstLeg)

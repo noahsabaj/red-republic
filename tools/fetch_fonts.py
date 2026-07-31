@@ -4,7 +4,7 @@ Run:
 
     python tools/fetch_fonts.py
 
-Downloads from the Google Fonts repository, writes `godot/art/fonts/`, and
+Downloads from the Google Fonts repository, writes `game/art/fonts/`, and
 records the provenance and the licence beside them. The results are committed,
 so this is run when the type changes rather than as part of a build -- the same
 deal as `tools/fetch_art.py` and `tools/build_icon.py`.
@@ -40,12 +40,12 @@ import os
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "godot", "art", "fonts")
+OUT = os.path.join(ROOT, "game", "art", "fonts")
 
 RAW = "https://raw.githubusercontent.com/google/fonts/main/"
 
 # Our name -> (path in google/fonts, what it is for). The names on the left are
-# what `godot/ui/theme.tres` asks for; the paths on the right are what somebody
+# what `game/ui/theme.tres` asks for; the paths on the right are what somebody
 # has to look up if a face ever needs replacing.
 FACES = {
     "PTSans-Regular.ttf": (

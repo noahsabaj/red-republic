@@ -124,23 +124,25 @@ public sealed class WorksTests
     public void A_line_site_becomes_a_line()
     {
         var works = new LineWorks(T);
+        var grid = new Networks(T);
         var power = UtilityIndex("Power");
 
         Assert.Equal(LineError.None, works.Order(power, 0.0, 0.0, 4000.0, 0.0, 0, out var site));
         Assert.NotNull(site);
         Assert.Single(works.Sites);
-        Assert.Empty(works.Lines);
+        Assert.Empty(grid.Lines);
         Assert.Equal(4.0, site.Kilometres);
         Assert.True(site.Labour(T) > 0.0);
 
-        var line = works.Finish(site);
+        works.Finish(site);
+        var line = grid.Energise(site);
 
         Assert.Empty(works.Sites);
-        Assert.Single(works.Lines);
+        Assert.Single(grid.Lines);
         Assert.Equal(4000.0, line.Length);
         Assert.Equal(power, line.Kind);
-        Assert.Single(works.OfKind(power));
-        Assert.Equal(4000.0, works.TotalLength(power));
+        Assert.Single(grid.OfKind(power));
+        Assert.Equal(4000.0, grid.LengthOf(power));
     }
 
     /// <summary>
@@ -148,28 +150,31 @@ public sealed class WorksTests
     /// matter.</b> Without it a plant anywhere lights everything, which is the
     /// abstraction lines exist to replace.
     /// </summary>
+    /// <remarks>
+    /// Charged on the span of the whole grid rather than of one line, because
+    /// current travels the wire rather than the straight line — so a network that
+    /// doubles back on itself really does lose more.
+    /// </remarks>
     [Fact]
-    public void A_long_line_delivers_less_than_a_short_one()
+    public void A_long_grid_delivers_less_than_a_short_one()
     {
-        var works = new LineWorks(T);
         var power = UtilityIndex("Power");
 
-        works.Order(power, 0.0, 0.0, 500.0, 0.0, 0, out var shortSite);
-        works.Order(power, 0.0, 1000.0, 20_000.0, 1000.0, 0, out var longSite);
-        Assert.NotNull(shortSite);
-        Assert.NotNull(longSite);
+        Assert.True(Efficiency(500.0) > Efficiency(20_000.0));
+        Assert.InRange(Efficiency(500.0), 0.0, 1.0);
 
-        var near = works.Finish(shortSite);
-        var far = works.Finish(longSite);
+        // A network long enough loses everything rather than going negative.
+        Assert.Equal(0.0, Efficiency(5_000_000.0));
 
-        Assert.True(near.Efficiency(T) > far.Efficiency(T));
-        Assert.InRange(near.Efficiency(T), 0.0, 1.0);
-        Assert.InRange(far.Efficiency(T), 0.0, 1.0);
-
-        // A line long enough loses everything rather than going negative.
-        works.Order(power, 0.0, 2000.0, 5_000_000.0, 2000.0, 0, out var absurd);
-        Assert.NotNull(absurd);
-        Assert.Equal(0.0, works.Finish(absurd).Efficiency(T));
+        double Efficiency(double length)
+        {
+            var works = new LineWorks(T);
+            var grid = new Networks(T);
+            works.Order(power, 0.0, 0.0, length, 0.0, 0, out var site);
+            Assert.NotNull(site);
+            var line = grid.Energise(site);
+            return grid.Efficiency(line.A, power);
+        }
     }
 
     /// <summary>Stock follows the site, and the table stays in step as sites finish.</summary>

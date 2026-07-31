@@ -14,36 +14,63 @@ public sealed class SaveTests
 {
     private static Tables T => Fixtures.Tables;
 
-    /// <summary>A republic with something in it, so a save has something to lose.</summary>
+    /// <summary>
+    /// A republic with something in it, so a save has something to lose.
+    /// </summary>
+    /// <remarks>
+    /// <b>Every structure the world holds wants to be in here.</b> A narrow
+    /// fixture is how a save format ends up carrying three of a dozen things and
+    /// passing its own round-trip test: what is not in the republic cannot be
+    /// missed from the file. This one has a fleet, crews, a debt, standing
+    /// orders, a road, an energised span and people at the frontier.
+    /// </remarks>
     private static World Lived(int days = 20)
     {
-        var world = World.Found(new WorldSpec(1961, 1500.0, 1), T);
-        var kind = T.BuildingIndex("Apartment");
-
-        var (x, y) = (0.0, 0.0);
-        for (var py = 120.0; py < world.Terrain.Extent - 120.0 && y == 0.0; py += 40.0)
-        {
-            for (var px = 120.0; px < world.Terrain.Extent - 120.0; px += 40.0)
-            {
-                if (Commands.CanPlace(world, kind, px, py) is null)
-                {
-                    (x, y) = (px, py);
-                    break;
-                }
-            }
-        }
+        var world = World.Found(new WorldSpec(1961, 3000.0, 1), T);
 
         world.Issue(Command.NameRepublic("Novaya Zarya"));
-        var placed = world.Issue(Command.ContractBuild(kind, x, y, Market.East));
-        var home = world.Buildings.IndexOf(placed.Id);
-        world.Buildings.AddWork(home, T.BLabour[kind]);
-        world.Buildings.SetContractor(home, -1);
-        world.Issue(Command.SetPriority(placed.Id, Priority.First));
-        world.Treasury.Add(Market.East, 250_000.0);
+        world.Treasury.Add(Market.East, 2_500_000.0);
+
+        var home = Finish(world, Site(world, "Apartment", Market.East));
+        var office = Finish(world, Site(world, "ConstructionOffice", Market.East));
+        var garage = Finish(world, Site(world, "MotorDepot", Market.East));
+        var depot = Finish(world, Site(world, "Depot", Market.East));
+        Site(world, "Sawmill", Market.East);
+
+        world.Issue(Command.SetPriority(world.Buildings.IdAt(home), Priority.First));
+        world.Issue(Command.SetStandingOrder(
+            world.Buildings.IdAt(depot), T.ResourceIndex("Planks"), 40.0));
+        world.Issue(Command.SetShifts(world.Buildings.IdAt(office), 2));
+        world.Issue(Command.SetBuildingHours(world.Buildings.IdAt(office), T.MaxHours));
+        world.Issue(Command.AddTradeRule(
+            T.ResourceIndex("Coal"), Market.East, TradeAction.Sell));
+        world.Issue(Command.TakeLoan(Market.East, 0));
+        world.Issue(Command.SetImportPolicy(null, world.Frontier.Crossings[0].Id));
+        world.Issue(Command.HireForeign(Market.East, world.Buildings.IdAt(office), 4));
+
+        world.Buildings.Stock.Add(depot, T.ResourceIndex("Fuel"), 30.0);
+        world.Buildings.Stock.Add(garage, T.ResourceIndex("Fuel"), 30.0);
+        world.Buildings.Stock.Add(depot, T.ResourceIndex("Gravel"), 200.0);
+        world.Buildings.Stock.Add(depot, T.ResourceIndex("Steel"), 200.0);
 
         for (var i = 0; i < 25; i++)
         {
             world.Citizens.AddArrival(world.Buildings.IdAt(home), 20 + i);
+        }
+
+        // A way and a span, both under construction, so the file has to carry
+        // sites and their materials as well as finished works.
+        var at = (X: world.Buildings.XAt(office), Y: world.Buildings.YAt(office));
+        world.Issue(Command.OrderLine(
+            T.UtilityIndex("Power"), at.X, at.Y, at.X + 300.0, at.Y));
+
+        for (var y = 200.0; y < world.Terrain.Extent - 1200.0; y += 100.0)
+        {
+            if (!world.Terrain.CrossesWater(200.0, y, 1000.0, y))
+            {
+                world.Issue(Command.OrderRoad(200.0, y, 1000.0, y, T.GradeIndex("Gravel"), false));
+                break;
+            }
         }
 
         for (var tick = 0; tick < SimClock.TicksPerDay * days; tick++)
@@ -51,7 +78,42 @@ public sealed class SaveTests
             world.Tick();
         }
 
+        // And people still on their way in, so the frontier is not empty either.
+        world.Migration.Arrive(
+            world.Frontier.Crossings[0].X, world.Frontier.Crossings[0].Y, 5, world.Clock.DayIndex);
+        world.Tick();
+
         return world;
+    }
+
+    /// <summary>Commission a building somewhere it will stand.</summary>
+    private static int Site(World world, string id, Market market)
+    {
+        var kind = T.BuildingIndex(id);
+        for (var y = 150.0; y < world.Terrain.Extent - 150.0; y += 40.0)
+        {
+            for (var x = 150.0; x < world.Terrain.Extent - 150.0; x += 40.0)
+            {
+                if (Commands.CanPlace(world, kind, x, y) is not null)
+                {
+                    continue;
+                }
+
+                var placed = world.Issue(Command.ContractBuild(kind, x, y, market));
+                Assert.True(placed.Accepted, placed.Refusal);
+                return world.Buildings.IndexOf(placed.Id);
+            }
+        }
+
+        throw new InvalidOperationException($"nowhere on this map will take a {id}");
+    }
+
+    /// <summary>Stand it up now, and take the contractor off it.</summary>
+    private static int Finish(World world, int b)
+    {
+        world.Buildings.AddWork(b, T.BLabour[world.Buildings.KindAt(b)]);
+        world.Buildings.SetContractor(b, -1);
+        return b;
     }
 
     /// <summary>
@@ -67,25 +129,64 @@ public sealed class SaveTests
         var bytes = Save.Write(original);
         var loaded = Save.Read(bytes, T);
 
-        static (long Ticks, int People, double Purse, double Snow, double Moisture,
-            double Frost, int Buildings, double Provisioned, int Schooled) Fingerprint(World w)
+        // <b>The fingerprint has to reach everything the world holds.</b> What it
+        // does not look at cannot be missed from the file, which is how a format
+        // ends up carrying three of a dozen structures and passing its own
+        // round-trip test. Every line here was added because the thing it names
+        // was absent from the save and nothing said so.
+        static string Fingerprint(World w)
         {
-            var provisioned = 0.0;
+            var text = new System.Text.StringBuilder();
+            text.Append(w.Clock.Ticks).Append('|')
+                .Append(w.Citizens.Count).Append('|')
+                .Append(w.Citizens.ByEducation(Education.Schooled)).Append('|')
+                .Append(w.Treasury.Of(Market.East).ToString("R", null)).Append('|')
+                .Append(w.Treasury.Of(Market.West).ToString("R", null)).Append('|')
+                .Append(w.Ground.Snow.ToString("R", null)).Append('|')
+                .Append(w.Ground.Moisture.ToString("R", null)).Append('|')
+                .Append(w.Ground.Frost.ToString("R", null)).Append('|')
+                .Append(w.Buildings.Count).Append('|')
+                .Append(w.Fleet.Count).Append('|')
+                .Append(w.Crews.All.Count).Append('|')
+                .Append(w.Crews.HiredTotal()).Append('|')
+                .Append(w.Migration.HeadsWaiting()).Append('|')
+                .Append(w.Tourism.HeadsStaying()).Append('|')
+                .Append(w.Loans.Outstanding(Market.East).ToString("R", null)).Append('|')
+                .Append(w.Contracts.All.Count).Append('|')
+                .Append(w.Contracts.Relations(Market.East).ToString("R", null)).Append('|')
+                .Append(w.TradeRules.Count).Append('|')
+                .Append(w.RoadWorks.Sites.Count).Append('|')
+                .Append(w.LineWorks.Sites.Count).Append('|')
+                .Append(w.Grid.Count).Append('|')
+                .Append(w.Roads.SegmentCount).Append('|')
+                .Append(w.Buildings.Shifts.National.ToString("R", null)).Append('|')
+                .Append(w.BuildPolicy.Global).Append('|')
+                .Append(w.BuildPolicy.Overrides).Append('|');
+
             for (var b = 0; b < w.Buildings.Count; b++)
             {
-                provisioned += w.Buildings.ProvisionedAt(b);
+                text.Append(w.Buildings.IdAt(b)).Append(':')
+                    .Append(w.Buildings.StaffAt(b)).Append(':')
+                    .Append(w.Buildings.WorkDoneAt(b).ToString("R", null)).Append(':')
+                    .Append(w.Buildings.ProvisionedAt(b).ToString("R", null)).Append(':')
+                    .Append(w.Buildings.HoursAt(b).ToString("R", null)).Append(';');
+
+                for (var r = 0; r < w.Tables.Resources.Length; r++)
+                {
+                    text.Append(w.Buildings.Stock.Get(b, r).ToString("R", null)).Append(',');
+                }
             }
 
-            return (
-                w.Clock.Ticks,
-                w.Citizens.Count,
-                w.Treasury.Of(Market.East),
-                w.Ground.Snow,
-                w.Ground.Moisture,
-                w.Ground.Frost,
-                w.Buildings.Count,
-                provisioned,
-                w.Citizens.ByEducation(Education.Schooled));
+            for (var v = 0; v < w.Fleet.Count; v++)
+            {
+                text.Append(w.Fleet.IdAt(v)).Append(':')
+                    .Append((int)w.Fleet.StateAt(v)).Append(':')
+                    .Append(w.Fleet.XAt(v).ToString("R", null)).Append(':')
+                    .Append(w.Fleet.YAt(v).ToString("R", null)).Append(':')
+                    .Append(w.Fleet.FuelAt(v).ToString("R", null)).Append(';');
+            }
+
+            return text.ToString();
         }
 
         // Identical the moment it comes back...

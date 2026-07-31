@@ -91,6 +91,32 @@ public sealed class Crews
         return null;
     }
 
+    /// <summary>Put a gang back exactly as it was, keeping its id.</summary>
+    public Party Restore(
+        int id, int office, int heads, double x, double y, Market? from,
+        Destination? working, int? riding)
+    {
+        var party = new Party(id, office, heads, x, y, from)
+        {
+            Working = working,
+            Riding = riding,
+        };
+
+        _parties.Add(party);
+        _nextId = Math.Max(_nextId, id + 1);
+        return party;
+    }
+
+    /// <summary>Restore the standing count of who was hired from where.</summary>
+    public void RestoreHired(int office, Market from, int heads)
+    {
+        _hiredByOffice[office] = heads;
+        _hiredFromBloc[from] = _hiredFromBloc.GetValueOrDefault(from) + heads;
+    }
+
+    /// <summary>Which offices hold hired hands, for the save.</summary>
+    public IReadOnlyDictionary<int, int> HiredByOffice => _hiredByOffice;
+
     public Party Send(int office, int heads, double x, double y, Market? from = null)
     {
         var party = new Party(_nextId++, office, heads, x, y, from);
@@ -131,6 +157,31 @@ public sealed class Crews
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Call the gang off a site. They down tools where they stand and wait for
+    /// their office to send a bus.
+    /// </summary>
+    /// <remarks>
+    /// There is no way to make people appear back at the office — the same rule
+    /// that makes construction physical in the first place. A site that finishes
+    /// under them releases them here too, in the same transaction that removes
+    /// it, because a party still pointed at a site that no longer exists would be
+    /// pointed at nothing.
+    /// </remarks>
+    public bool Release(Destination site, double x, double y)
+    {
+        var party = WorkingAt(site);
+        if (party is null)
+        {
+            return false;
+        }
+
+        party.Working = null;
+        party.X = x;
+        party.Y = y;
+        return true;
     }
 
     /// <summary>Gangs standing about with nowhere to be — what a bus is sent for.</summary>
@@ -249,6 +300,15 @@ public sealed class Migration
         return heads;
     }
 
+    /// <summary>Put a waiting party back exactly as it was, keeping its id.</summary>
+    public Group Restore(int id, double x, double y, int heads, long since, int? riding)
+    {
+        var g = new Group(id, x, y, heads, since) { Riding = riding };
+        _waiting.Add(g);
+        _nextId = Math.Max(_nextId, id + 1);
+        return g;
+    }
+
     public Group Arrive(double x, double y, int heads, long today)
     {
         var group = new Group(_nextId++, x, y, heads, today);
@@ -257,6 +317,29 @@ public sealed class Migration
     }
 
     public void Remove(Group group) => _waiting.Remove(group);
+
+    public Group? Get(int id)
+    {
+        foreach (var g in _waiting)
+        {
+            if (g.Id == id)
+            {
+                return g;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>A party climbs aboard a coach. They are no longer fetchable.</summary>
+    public void Board(int group, int vehicle)
+    {
+        var g = Get(group);
+        if (g is not null)
+        {
+            g.Riding = vehicle;
+        }
+    }
 
     /// <summary>Groups that waited long enough and went home.</summary>
     public List<Group> GiveUp(long today, Tables t)
@@ -344,6 +427,22 @@ public sealed class Tourism
         return heads;
     }
 
+    /// <summary>Put a visiting party back exactly as it was, keeping its id.</summary>
+    public Visit Restore(
+        int id, double x, double y, int heads, Market market, long since, long until,
+        int? riding, int? stayingAt)
+    {
+        var v = new Visit(id, x, y, heads, market, since, until)
+        {
+            Riding = riding,
+            StayingAt = stayingAt,
+        };
+
+        _visits.Add(v);
+        _nextId = Math.Max(_nextId, id + 1);
+        return v;
+    }
+
     public Visit Arrive(double x, double y, int heads, Market market, long today, Tables t)
     {
         ArgumentNullException.ThrowIfNull(t);
@@ -353,6 +452,40 @@ public sealed class Tourism
     }
 
     public void Leave(Visit visit) => _visits.Remove(visit);
+
+    public Visit? Get(int id)
+    {
+        foreach (var v in _visits)
+        {
+            if (v.Id == id)
+            {
+                return v;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>A party climbs aboard a coach.</summary>
+    public void Board(int visit, int vehicle)
+    {
+        var v = Get(visit);
+        if (v is not null)
+        {
+            v.Riding = vehicle;
+        }
+    }
+
+    /// <summary>They reach their beds, and start spending.</summary>
+    public void CheckIn(int visit, int hotel)
+    {
+        var v = Get(visit);
+        if (v is not null)
+        {
+            v.Riding = null;
+            v.StayingAt = hotel;
+        }
+    }
 
     public List<Visit> Departing(long today)
     {
@@ -398,6 +531,9 @@ public sealed class BuildPolicy
     public void SetGlobal(int? crossing) => Global = crossing;
 
     public void SetSite(Destination site, int? crossing) => _bySite[site] = crossing;
+
+    /// <summary>Every site with an instruction of its own, for the save.</summary>
+    public IReadOnlyDictionary<Destination, int?> Sites => _bySite;
 
     /// <summary>Put a site back under the republic's default.</summary>
     public bool ClearSite(Destination site) => _bySite.Remove(site);

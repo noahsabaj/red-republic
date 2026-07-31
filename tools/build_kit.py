@@ -4,7 +4,7 @@ Run headless:
 
     blender --background --python tools/build_kit.py
 
-Writes `godot/models/kit.glb`, holding one mesh per component. Nothing here
+Writes `game/models/kit.glb`, holding one mesh per component. Nothing here
 knows what a Coal Mine looks like — it makes *panels, roofs, stacks, silos and
 gantries*, and Godot assembles a building out of them from the art data
 authored beside it. That split is the whole point:
@@ -32,7 +32,7 @@ import bpy
 import bmesh
 from mathutils import Vector
 
-OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "godot", "models")
+OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "game", "models")
 
 # One prefab panel is three metres across. Everything that reads as "made of
 # panels" is a multiple of this, and it is the number that makes a wall look
