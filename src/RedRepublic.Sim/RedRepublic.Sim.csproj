@@ -37,4 +37,19 @@
     <Deterministic>true</Deterministic>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!--
+      The suite drives state that only the simulation's own systems are meant to
+      write — a crew's site, a visitor's hotel, how far a road has got. Those
+      setters are `internal` to say exactly that: a caller reads them and a
+      system writes them.
+
+      Opening them to the test assembly rather than making them public keeps the
+      distinction real. A test that sets up "this gang is stranded" is doing what
+      a system would have done to reach that state, which is the only honest way
+      to test the rule that fires when it happens.
+    -->
+    <InternalsVisibleTo Include="RedRepublic.Sim.Tests" />
+  </ItemGroup>
+
 </Project>
