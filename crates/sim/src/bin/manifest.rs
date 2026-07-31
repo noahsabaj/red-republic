@@ -21,6 +21,7 @@ use red_republic_sim::contract::{
     OFFER_EVERY_MONTHS, PREMIUM, RELATIONS_CAP, RELATIONS_DECAY_PER_DAY, RELATIONS_HIT,
     VALUE_BAND_EAST, VALUE_BAND_WEST,
 };
+use red_republic_sim::crews::{FOREIGN_WAGE, HIRING_FEE};
 use red_republic_sim::fleet::VehicleKind;
 use red_republic_sim::ground::{
     DROWNED, DRYING_FULL_AT_C, DRYING_PER_DAY, FREEZE_C, FROST_LAG, FROST_RANGE_C, GROUND_CELL,
@@ -31,21 +32,31 @@ use red_republic_sim::ground::{
 use red_republic_sim::journey::{MIN_LEG_TICKS, Medium, SHUNTING, TERMINAL_REACH};
 use red_republic_sim::loan::{DEFAULT_FINE, DEFAULT_RELATIONS, TIERS_EAST, TIERS_WEST};
 use red_republic_sim::mapgen::{DEFAULT_PLAN, GEOLOGY_STREAM};
+use red_republic_sim::migration::PATIENCE;
 use red_republic_sim::network::{
     AIRWAY_SPEED, FAIRWAY_SPACING, NAVIGABLE_BEAM, NAVIGABLE_SPEED, default_road_speed,
 };
 use red_republic_sim::resource::{Form, Resource};
+use red_republic_sim::roadworks::{
+    GRADES, JUNCTION_MERGE, JUNCTION_SPACING, LAMP_LABOUR, LAMP_MATERIALS, LAMP_MW_PER_KM, MIN_ROAD,
+};
 use red_republic_sim::shifts::{
     DAYLIGHT_HOURS, MAX_HOURS, MAX_SHIFTS, MIN_HOURS, OVERWORK_HEALTH, OVERWORK_LOYALTY,
     STANDARD_HOURS,
 };
 use red_republic_sim::terrain::{DEFAULT_TERRAIN, Surface};
+use red_republic_sim::tourism::{APPEAL_FLOOR, PARTY as TOUR_PARTY, SPEND_PER_HEAD_PER_DAY, STAY};
 use red_republic_sim::trade::{
     BORDER_SPREAD, CROSSING_INSET, CROSSINGS, CUSTOMS_RANGE, CUSTOMS_THROUGHPUT_PER_DAY, Market,
 };
 use red_republic_sim::transport::{FUEL_PER_SEAT_DAY, MAX_COMMUTE, NIGHT_WALK, STOP_WALK};
+use red_republic_sim::utility::{JOIN, MIN_LINE, UTILITIES};
+use red_republic_sim::wellbeing::{
+    ALCOHOL_HEALTH_COST, ARRIVAL_PARTY, CONTENT_ATTRACTS, Contentment, EMIGRATION_ODDS,
+    HEALTH_DRIFT, HEALTH_UNSERVED, LOYALTY_DRIFT, LOYALTY_LEAVES,
+};
 
-fn q(s: &str) -> String {
+fn q_str(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
@@ -263,6 +274,54 @@ fn main() {
     }
     // People: how far somebody will walk, how long they will travel, and the
     // ages that decide what they are doing with their life.
+    // Ways and lines: what it costs to connect the republic to itself.
+    canon.push(JUNCTION_SPACING.0);
+    canon.push(JUNCTION_MERGE.0);
+    canon.push(MIN_ROAD.0);
+    canon.push(LAMP_LABOUR);
+    canon.push(LAMP_MW_PER_KM);
+    for &(_, q) in LAMP_MATERIALS {
+        canon.push(q);
+    }
+    for g in GRADES {
+        canon.push(g.speed.as_kph());
+        canon.push(g.labour);
+        canon.push_bool(g.lamps);
+        for &(_, q) in g.materials {
+            canon.push(q);
+        }
+    }
+    canon.push(JOIN.0);
+    canon.push(MIN_LINE.0);
+    for u in UTILITIES {
+        canon.push(u.labour);
+        canon.push(u.reach.0);
+        canon.push(u.loss_per_km);
+        canon.push(u.throughput);
+        for &(_, q) in u.materials {
+            canon.push(q);
+        }
+    }
+    // How people are, and how they feel about the republic.
+    for w in Contentment::WEIGHTS {
+        canon.push(w);
+    }
+    canon.push(Contentment::COMFORT_LIFT);
+    canon.push(LOYALTY_DRIFT);
+    canon.push(LOYALTY_LEAVES);
+    canon.push(EMIGRATION_ODDS);
+    canon.push(HEALTH_DRIFT);
+    canon.push(ALCOHOL_HEALTH_COST);
+    canon.push(HEALTH_UNSERVED);
+    canon.push(CONTENT_ATTRACTS);
+    canon.push_int(ARRIVAL_PARTY);
+    canon.push(PATIENCE as f64);
+    canon.push(HIRING_FEE);
+    canon.push(FOREIGN_WAGE);
+    canon.push(STAY as f64);
+    canon.push_int(TOUR_PARTY);
+    canon.push(SPEND_PER_HEAD_PER_DAY);
+    canon.push(APPEAL_FLOOR);
     // Trade, credit and tenders: the money half of the game.
     canon.push_int(CROSSINGS as u32);
     canon.push(CROSSING_INSET.0);
@@ -325,7 +384,7 @@ fn main() {
     // ---- the enum rosters, in declaration order, because the port indexes them ----
     out.push_str(&format!(
         "  \"resources\": {},\n",
-        list(&Resource::ALL, |r| q(&format!("{r:?}")))
+        list(&Resource::ALL, |r| q_str(&format!("{r:?}")))
     ));
     out.push_str(&format!(
         "  \"forms\": {},\n",
@@ -337,14 +396,14 @@ fn main() {
                 Form::Open,
                 Form::Covered
             ],
-            |f| q(&format!("{f:?}"))
+            |f| q_str(&format!("{f:?}"))
         )
     ));
     out.push_str(&format!(
         "  \"needs\": {},\n",
         list(
             &[Need::Health, Need::Culture, Need::Schooling, Need::Safety],
-            |x| q(&format!("{x:?}"))
+            |x| q_str(&format!("{x:?}"))
         )
     ));
     out.push_str(&format!(
@@ -355,14 +414,14 @@ fn main() {
                 Education::Schooled,
                 Education::Graduate
             ],
-            |x| q(&format!("{x:?}"))
+            |x| q_str(&format!("{x:?}"))
         )
     ));
     out.push_str(&format!(
         "  \"priorities\": {},\n",
         list(
             &[Priority::Last, Priority::Ordinary, Priority::First],
-            |x| q(&format!("{x:?}"))
+            |x| q_str(&format!("{x:?}"))
         )
     ));
 
@@ -373,14 +432,14 @@ fn main() {
         .map(|&r| {
             format!(
                 "    {}: {{ \"name\": {}, \"form\": {}, \"price_east\": {}, \"price_west\": {}, \"is_comfort\": {}, \"from_mineral\": {} }}",
-                q(&format!("{r:?}")),
-                q(r.name()),
-                q(&format!("{:?}", r.form())),
+                q_str(&format!("{r:?}")),
+                q_str(r.name()),
+                q_str(&format!("{:?}", r.form())),
                 n(r.price_east()),
                 n(r.price_west()),
                 r.is_comfort(),
                 r.from_mineral()
-                    .map(|m| q(&format!("{m:?}")))
+                    .map(|m| q_str(&format!("{m:?}")))
                     .unwrap_or_else(|| "null".into())
             )
         })
@@ -396,7 +455,7 @@ fn main() {
     // from renumbering every building in every save.
     out.push_str(&format!(
         "  \"building_order\": {},\n",
-        list(BUILDINGS, |d| q(&format!("{:?}", d.kind)))
+        list(BUILDINGS, |d| q_str(&format!("{:?}", d.kind)))
     ));
     out.push_str("  \"buildings\": {\n");
     let rows: Vec<String> = BUILDINGS
@@ -404,13 +463,13 @@ fn main() {
         .map(|d| {
             let k = d.kind;
             let mut f = String::new();
-            f.push_str(&format!("      \"name\": {},\n", q(d.name)));
+            f.push_str(&format!("      \"name\": {},\n", q_str(d.name)));
             f.push_str(&format!("      \"width\": {},\n", n(d.width.0)));
             f.push_str(&format!("      \"depth\": {},\n", n(d.depth.0)));
             f.push_str(&format!("      \"workers\": {},\n", d.workers));
             f.push_str(&format!(
                 "      \"priority\": {},\n",
-                q(&format!("{:?}", d.priority))
+                q_str(&format!("{:?}", d.priority))
             ));
             f.push_str(&format!("      \"power_draw\": {},\n", n(d.power_draw)));
             f.push_str(&format!("      \"power_output\": {},\n", n(d.power_output)));
@@ -421,7 +480,7 @@ fn main() {
                 "      \"vehicles\": {},\n",
                 list(d.vehicles, |&(v, c)| format!(
                     "[{}, {}]",
-                    q(&format!("{v:?}")),
+                    q_str(&format!("{v:?}")),
                     c
                 ))
             ));
@@ -429,7 +488,7 @@ fn main() {
                 "      \"inputs\": {},\n",
                 list(d.inputs, |&(r, v)| format!(
                     "[{}, {}]",
-                    q(&format!("{r:?}")),
+                    q_str(&format!("{r:?}")),
                     n(v)
                 ))
             ));
@@ -437,7 +496,7 @@ fn main() {
                 "      \"outputs\": {},\n",
                 list(d.outputs, |&(r, v)| format!(
                     "[{}, {}]",
-                    q(&format!("{r:?}")),
+                    q_str(&format!("{r:?}")),
                     n(v)
                 ))
             ));
@@ -445,38 +504,38 @@ fn main() {
                 "      \"materials\": {},\n",
                 list(d.materials, |&(r, v)| format!(
                     "[{}, {}]",
-                    q(&format!("{r:?}")),
+                    q_str(&format!("{r:?}")),
                     n(v)
                 ))
             ));
             f.push_str(&format!("      \"labour\": {},\n", n(d.labour)));
             f.push_str(&format!(
                 "      \"sells\": {},\n",
-                list(d.sells, |r| q(&format!("{r:?}")))
+                list(d.sells, |r| q_str(&format!("{r:?}")))
             ));
             f.push_str(&format!(
                 "      \"taps\": {},\n",
                 d.taps
-                    .map(|m| q(&format!("{m:?}")))
+                    .map(|m| q_str(&format!("{m:?}")))
                     .unwrap_or_else(|| "null".into())
             ));
             f.push_str(&format!("      \"residents\": {},\n", d.residents));
             f.push_str(&format!("      \"storage\": {},\n", n(d.storage)));
             f.push_str(&format!(
                 "      \"admits\": {},\n",
-                list(d.admits, |x| q(&format!("{x:?}")))
+                list(d.admits, |x| q_str(&format!("{x:?}")))
             ));
             f.push_str(&format!("      \"beds\": {},\n", d.beds));
             f.push_str(&format!("      \"wear\": {},\n", n(d.wear)));
             f.push_str(&format!("      \"farms\": {},\n", d.farms));
             f.push_str(&format!(
                 "      \"schooling\": {},\n",
-                q(&format!("{:?}", d.schooling))
+                q_str(&format!("{:?}", d.schooling))
             ));
             f.push_str(&format!(
                 "      \"teaches\": {},\n",
                 d.teaches
-                    .map(|t: Teaching| q(&format!("{t:?}")))
+                    .map(|t: Teaching| q_str(&format!("{t:?}")))
                     .unwrap_or_else(|| "null".into())
             ));
             f.push_str(&format!("      \"transforms\": {},\n", d.transforms));
@@ -485,14 +544,14 @@ fn main() {
             f.push_str(&format!(
                 "      \"medium\": {},\n",
                 d.medium
-                    .map(|m: Medium| q(&format!("{m:?}")))
+                    .map(|m: Medium| q_str(&format!("{m:?}")))
                     .unwrap_or_else(|| "null".into())
             ));
             f.push_str(&format!(
                 "      \"serves\": {},\n",
                 list(d.serves, |&(need, v)| format!(
                     "[{}, {}]",
-                    q(&format!("{need:?}")),
+                    q_str(&format!("{need:?}")),
                     n(v)
                 ))
             ));
@@ -500,7 +559,7 @@ fn main() {
                 "      \"stores_to_order\": {}\n",
                 d.stores_to_order
             ));
-            format!("    {}: {{\n{}    }}", q(&format!("{k:?}")), f)
+            format!("    {}: {{\n{}    }}", q_str(&format!("{k:?}")), f)
         })
         .collect();
     out.push_str(&rows.join(",\n"));
@@ -535,6 +594,116 @@ fn main() {
     // the taiga is cold and dry, the maritime posting is mild and wet, and those
     // are different problems rather than one dial.
     out.push_str(&format!(
+        "  \"roadworks\": {{ \"junction_spacing_m\": {}, \"junction_merge_m\": {}, \"min_road_m\": {}, \"lamp_labour\": {}, \"lamp_mw_per_km\": {}, \"lamp_materials\": {} }},
+",
+        n(JUNCTION_SPACING.0),
+        n(JUNCTION_MERGE.0),
+        n(MIN_ROAD.0),
+        n(LAMP_LABOUR),
+        n(LAMP_MW_PER_KM),
+        list(LAMP_MATERIALS, |&(r, q)| format!(
+            "[{}, {}]",
+            q_str(&format!("{r:?}")),
+            n(q)
+        ))
+    ));
+    out.push_str(
+        "  \"grades\": [
+",
+    );
+    let rows: Vec<String> = GRADES
+        .iter()
+        .map(|g| {
+            format!(
+                "    {{ \"grade\": {}, \"name\": {}, \"carries\": {}, \"speed_kph\": {}, \"labour\": {}, \"lamps\": {}, \"materials\": {} }}",
+                q_str(&format!("{:?}", g.grade)),
+                q_str(g.name),
+                q_str(&format!("{:?}", g.carries)),
+                n(g.speed.as_kph()),
+                n(g.labour),
+                g.lamps,
+                list(g.materials, |&(r, x)| format!(
+                    "[{}, {}]",
+                    q_str(&format!("{r:?}")),
+                    n(x)
+                ))
+            )
+        })
+        .collect();
+    out.push_str(&rows.join(
+        ",
+",
+    ));
+    out.push_str(
+        "
+  ],
+",
+    );
+
+    out.push_str(&format!(
+        "  \"utility_join\": {{ \"join_m\": {}, \"min_line_m\": {} }},
+",
+        n(JOIN.0),
+        n(MIN_LINE.0)
+    ));
+    out.push_str(
+        "  \"utilities\": [
+",
+    );
+    let rows: Vec<String> = UTILITIES
+        .iter()
+        .map(|u| {
+            format!(
+                "    {{ \"kind\": {}, \"name\": {}, \"labour\": {}, \"reach_m\": {}, \"loss_per_km\": {}, \"throughput\": {}, \"carries\": {}, \"materials\": {} }}",
+                q_str(&format!("{:?}", u.kind)),
+                q_str(u.name),
+                n(u.labour),
+                n(u.reach.0),
+                n(u.loss_per_km),
+                n(u.throughput),
+                list(u.carries, |r| q_str(&format!("{r:?}"))),
+                list(u.materials, |&(r, x)| format!(
+                    "[{}, {}]",
+                    q_str(&format!("{r:?}")),
+                    n(x)
+                ))
+            )
+        })
+        .collect();
+    out.push_str(&rows.join(
+        ",
+",
+    ));
+    out.push_str(
+        "
+  ],
+",
+    );
+
+    out.push_str(&format!(
+        "  \"wellbeing\": {{ \"weights\": {}, \"names\": {}, \"comfort_lift\": {}, \"loyalty_drift\": {}, \"loyalty_leaves\": {}, \"emigration_odds\": {}, \"health_drift\": {}, \"alcohol_health_cost\": {}, \"health_unserved\": {}, \"content_attracts\": {}, \"arrival_party\": {}, \"patience_days\": {}, \"hiring_fee\": {}, \"foreign_wage\": {}, \"stay_days\": {}, \"tour_party\": {}, \"spend_per_head_per_day\": {}, \"appeal_floor\": {} }},
+",
+        list(&Contentment::WEIGHTS, |w| n(*w)),
+        list(&Contentment::NAMES, |s| q_str(s)),
+        n(Contentment::COMFORT_LIFT),
+        n(LOYALTY_DRIFT),
+        n(LOYALTY_LEAVES),
+        n(EMIGRATION_ODDS),
+        n(HEALTH_DRIFT),
+        n(ALCOHOL_HEALTH_COST),
+        n(HEALTH_UNSERVED),
+        n(CONTENT_ATTRACTS),
+        ARRIVAL_PARTY,
+        PATIENCE,
+        n(HIRING_FEE),
+        n(FOREIGN_WAGE),
+        STAY,
+        TOUR_PARTY,
+        n(SPEND_PER_HEAD_PER_DAY),
+        n(APPEAL_FLOOR)
+    ));
+
+    out.push_str(&format!(
         "  \"trade\": {{ \"crossings\": {}, \"crossing_inset_m\": {}, \"customs_range_m\": {}, \"customs_throughput_per_day\": {}, \"border_spread\": {}, \"markets\": {} }},
 ",
         CROSSINGS,
@@ -542,7 +711,7 @@ fn main() {
         n(CUSTOMS_RANGE.0),
         n(CUSTOMS_THROUGHPUT_PER_DAY),
         n(BORDER_SPREAD),
-        list(&Market::ALL, |m| q(&format!("{m:?}")))
+        list(&Market::ALL, |m| q_str(&format!("{m:?}")))
     ));
     out.push_str(&format!(
         "  \"loans\": {{ \"default_fine\": {}, \"default_relations\": {}, \"east\": {}, \"west\": {} }},
@@ -620,7 +789,7 @@ fn main() {
         n(TERMINAL_REACH.0),
         n(MIN_LEG_TICKS),
         n(SHUNTING.as_kph()),
-        list(&Medium::ALL, |m| q(&format!("{m:?}"))),
+        list(&Medium::ALL, |m| q_str(&format!("{m:?}"))),
         list(&Medium::ALL, |m| n(m.commercial_speed().as_kph()))
     ));
 
@@ -769,8 +938,8 @@ fn main() {
         .map(|c| {
             format!(
                 "    {{ \"id\": {}, \"name\": {}, \"monthly_mean_c\": {}, \"daily_swing_c\": {}, \"monthly_rain_mm\": {} }}",
-                q(&format!("{:?}", c.id)),
-                q(c.name),
+                q_str(&format!("{:?}", c.id)),
+                q_str(c.name),
                 list(&c.monthly_mean_c, |v| n(*v)),
                 n(c.daily_swing_c),
                 list(&c.monthly_rain_mm, |v| n(*v))
@@ -787,7 +956,7 @@ fn main() {
         .map(|p| {
             format!(
                 "    {{ \"mineral\": {}, \"bodies\": {}, \"radius\": [{}, {}], \"top\": [{}, {}], \"layers\": {}, \"layer_thickness\": [{}, {}], \"tonnes_per_layer\": [{}, {}] }}",
-                q(&format!("{:?}", p.mineral)),
+                q_str(&format!("{:?}", p.mineral)),
                 p.bodies,
                 n(p.radius.0.0),
                 n(p.radius.1.0),
@@ -811,10 +980,10 @@ fn main() {
             let d = v.def();
             format!(
                 "    {}: {{ \"name\": {}, \"role\": {}, \"medium\": {}, \"capacity_t\": {}, \"seats\": {}, \"on_road_kph\": {}, \"cross_country_kph\": {}, \"fuel_per_km\": {}, \"tank_t\": {}, \"ground\": {}, \"load_penalty\": {} }}",
-                q(&format!("{v:?}")),
-                q(d.name),
-                q(&format!("{:?}", d.role)),
-                q(&format!("{:?}", d.medium)),
+                q_str(&format!("{v:?}")),
+                q_str(d.name),
+                q_str(&format!("{:?}", d.role)),
+                q_str(&format!("{:?}", d.medium)),
                 n(d.capacity.0),
                 d.seats,
                 n(d.on_road.as_mps() * 3.6),

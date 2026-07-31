@@ -284,3 +284,42 @@ public enum TradeAction
 /// command of its own rather than a re-send of the whole policy.
 /// </remarks>
 public readonly record struct TradeRule(int Resource, Market Market, TradeAction Action);
+
+/// <summary>So much of a resource — a line in a bill of materials.</summary>
+public readonly record struct Bill(int Resource, double Tonnes);
+
+/// <summary>
+/// One grade of way: what it carries, how fast, and what it costs by the
+/// kilometre.
+/// </summary>
+/// <remarks>
+/// A dirt track and a railway are the same kind of thing here, which is what
+/// lets one order-a-way command serve both. <paramref name="Lamps"/> is refused
+/// on anything but paved road — nobody hangs a street light over a railway.
+/// </remarks>
+public readonly record struct GradeDef(
+    string Id,
+    string Name,
+    Medium Carries,
+    double SpeedKph,
+    double Labour,
+    bool Lamps,
+    Bill[] Materials);
+
+/// <summary>
+/// One kind of line: what it carries, how far, and what it loses on the way.
+/// </summary>
+/// <remarks>
+/// Power and heat used to be quantities with no geography at all — a plant
+/// anywhere lit everything. A line is what makes both physical, and
+/// <paramref name="LossPerKm"/> is what makes where you put the plant matter.
+/// </remarks>
+public readonly record struct UtilityDef(
+    string Id,
+    string Name,
+    double Labour,
+    double Reach,
+    double LossPerKm,
+    double Throughput,
+    int[] Carries,
+    Bill[] Materials);

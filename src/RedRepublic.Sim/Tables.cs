@@ -131,6 +131,71 @@ public sealed class Tables
 
     public MineralPlan[] MineralPlan { get; private set; } = [];
 
+    // ---- ways and lines ----
+
+    /// <summary>How often a long road drops a junction.</summary>
+    public double JunctionSpacing { get; private set; }
+
+    /// <summary>How close two junctions have to be to become one.</summary>
+    public double JunctionMerge { get; private set; }
+
+    /// <summary>The shortest stretch worth ordering.</summary>
+    public double MinRoad { get; private set; }
+
+    public double LampLabour { get; private set; }
+
+    /// <summary>What a kilometre of lit road draws off the grid.</summary>
+    public double LampMwPerKm { get; private set; }
+
+    public Bill[] LampMaterials { get; private set; } = [];
+
+    public GradeDef[] Grades { get; private set; } = [];
+
+    public double UtilityJoin { get; private set; }
+    public double MinLine { get; private set; }
+    public UtilityDef[] Utilities { get; private set; } = [];
+
+    // ---- how people are, and how they feel ----
+
+    /// <summary>The most that fully-stocked comforts add to a home's score.</summary>
+    public double ComfortLift { get; private set; }
+
+    /// <summary>How fast loyalty follows the contentment of a home.</summary>
+    /// <remarks>
+    /// Slowly, so one bad winter does not empty a town and one good month does
+    /// not fill it.
+    /// </remarks>
+    public double LoyaltyDrift { get; private set; }
+
+    /// <summary>Below this, somebody starts thinking about leaving.</summary>
+    public double LoyaltyLeaves { get; private set; }
+
+    public double EmigrationOdds { get; private set; }
+    public double HealthDrift { get; private set; }
+
+    /// <summary>What drink costs in health — the price the one comfort carries.</summary>
+    public double AlcoholHealthCost { get; private set; }
+
+    /// <summary>Where health settles for somebody with no doctor in reach.</summary>
+    public double HealthUnserved { get; private set; }
+
+    /// <summary>How content a republic has to look before outsiders want in.</summary>
+    public double ContentAttracts { get; private set; }
+
+    public int ArrivalParty { get; private set; }
+
+    /// <summary>How long a group waiting at a post will wait before giving up.</summary>
+    public long PatienceDays { get; private set; }
+
+    public double HiringFee { get; private set; }
+    public double ForeignWage { get; private set; }
+    public long StayDays { get; private set; }
+    public int TourParty { get; private set; }
+    public double SpendPerHeadPerDay { get; private set; }
+
+    /// <summary>The least appealing a republic can be and still draw anyone.</summary>
+    public double AppealFloor { get; private set; }
+
     // ---- trade, credit and tenders ----
 
     /// <summary>
@@ -148,6 +213,14 @@ public sealed class Tables
     public double CustomsThroughputPerDay { get; private set; }
 
     public double BorderSpread { get; private set; }
+
+    private double[] _contentmentWeights = [];
+
+    /// <summary>
+    /// How much each want counts, in the order <see cref="Contentment.Names"/>
+    /// lists them. Carried so the guard can check the two agree.
+    /// </summary>
+    public IReadOnlyList<double> ContentmentWeights => _contentmentWeights;
 
     private Tier[] _ladderEast = [];
     private Tier[] _ladderWest = [];
@@ -642,6 +715,74 @@ public sealed class Tables
 
     private void LoadPeople(JsonElement m)
     {
+        var rw = m.GetProperty("roadworks");
+        JunctionSpacing = rw.GetProperty("junction_spacing_m").GetDouble();
+        JunctionMerge = rw.GetProperty("junction_merge_m").GetDouble();
+        MinRoad = rw.GetProperty("min_road_m").GetDouble();
+        LampLabour = rw.GetProperty("lamp_labour").GetDouble();
+        LampMwPerKm = rw.GetProperty("lamp_mw_per_km").GetDouble();
+        LampMaterials = ReadBill(rw.GetProperty("lamp_materials"));
+
+        var grades = new List<GradeDef>();
+        foreach (var g in m.GetProperty("grades").EnumerateArray())
+        {
+            grades.Add(new GradeDef(
+                g.GetProperty("grade").GetString()!,
+                g.GetProperty("name").GetString()!,
+                (Medium)IndexIn(Media, g.GetProperty("carries").GetString()!),
+                g.GetProperty("speed_kph").GetDouble(),
+                g.GetProperty("labour").GetDouble(),
+                g.GetProperty("lamps").GetBoolean(),
+                ReadBill(g.GetProperty("materials"))));
+        }
+
+        Grades = [.. grades];
+
+        var uj = m.GetProperty("utility_join");
+        UtilityJoin = uj.GetProperty("join_m").GetDouble();
+        MinLine = uj.GetProperty("min_line_m").GetDouble();
+
+        var utilities = new List<UtilityDef>();
+        foreach (var u in m.GetProperty("utilities").EnumerateArray())
+        {
+            var carries = new List<int>();
+            foreach (var r in u.GetProperty("carries").EnumerateArray())
+            {
+                carries.Add(ResourceIndex(r.GetString()!));
+            }
+
+            utilities.Add(new UtilityDef(
+                u.GetProperty("kind").GetString()!,
+                u.GetProperty("name").GetString()!,
+                u.GetProperty("labour").GetDouble(),
+                u.GetProperty("reach_m").GetDouble(),
+                u.GetProperty("loss_per_km").GetDouble(),
+                u.GetProperty("throughput").GetDouble(),
+                [.. carries],
+                ReadBill(u.GetProperty("materials"))));
+        }
+
+        Utilities = [.. utilities];
+
+        var wb = m.GetProperty("wellbeing");
+        ComfortLift = wb.GetProperty("comfort_lift").GetDouble();
+        LoyaltyDrift = wb.GetProperty("loyalty_drift").GetDouble();
+        LoyaltyLeaves = wb.GetProperty("loyalty_leaves").GetDouble();
+        EmigrationOdds = wb.GetProperty("emigration_odds").GetDouble();
+        HealthDrift = wb.GetProperty("health_drift").GetDouble();
+        AlcoholHealthCost = wb.GetProperty("alcohol_health_cost").GetDouble();
+        HealthUnserved = wb.GetProperty("health_unserved").GetDouble();
+        ContentAttracts = wb.GetProperty("content_attracts").GetDouble();
+        ArrivalParty = wb.GetProperty("arrival_party").GetInt32();
+        PatienceDays = wb.GetProperty("patience_days").GetInt64();
+        HiringFee = wb.GetProperty("hiring_fee").GetDouble();
+        ForeignWage = wb.GetProperty("foreign_wage").GetDouble();
+        StayDays = wb.GetProperty("stay_days").GetInt64();
+        TourParty = wb.GetProperty("tour_party").GetInt32();
+        SpendPerHeadPerDay = wb.GetProperty("spend_per_head_per_day").GetDouble();
+        AppealFloor = wb.GetProperty("appeal_floor").GetDouble();
+        _contentmentWeights = Doubles(wb, "weights");
+
         var tr = m.GetProperty("trade");
         Crossings = tr.GetProperty("crossings").GetInt32();
         CrossingInset = tr.GetProperty("crossing_inset_m").GetDouble();
@@ -772,6 +913,17 @@ public sealed class Tables
         }
 
         Climates = [.. list];
+    }
+
+    private Bill[] ReadBill(JsonElement e)
+    {
+        var bill = new List<Bill>();
+        foreach (var pair in e.EnumerateArray())
+        {
+            bill.Add(new Bill(ResourceIndex(pair[0].GetString()!), pair[1].GetDouble()));
+        }
+
+        return [.. bill];
     }
 
     private static Tier[] ReadLadder(JsonElement e)
@@ -946,6 +1098,62 @@ public sealed class Tables
         }
 
         // People last, matching the order the dumper pushes them in.
+        h.Push(JunctionSpacing);
+        h.Push(JunctionMerge);
+        h.Push(MinRoad);
+        h.Push(LampLabour);
+        h.Push(LampMwPerKm);
+        foreach (var b in LampMaterials)
+        {
+            h.Push(b.Tonnes);
+        }
+
+        foreach (var g in Grades)
+        {
+            h.Push(g.SpeedKph);
+            h.Push(g.Labour);
+            h.Push(g.Lamps);
+            foreach (var b in g.Materials)
+            {
+                h.Push(b.Tonnes);
+            }
+        }
+
+        h.Push(UtilityJoin);
+        h.Push(MinLine);
+        foreach (var u in Utilities)
+        {
+            h.Push(u.Labour);
+            h.Push(u.Reach);
+            h.Push(u.LossPerKm);
+            h.Push(u.Throughput);
+            foreach (var b in u.Materials)
+            {
+                h.Push(b.Tonnes);
+            }
+        }
+
+        foreach (var w in _contentmentWeights)
+        {
+            h.Push(w);
+        }
+
+        h.Push(ComfortLift);
+        h.Push(LoyaltyDrift);
+        h.Push(LoyaltyLeaves);
+        h.Push(EmigrationOdds);
+        h.Push(HealthDrift);
+        h.Push(AlcoholHealthCost);
+        h.Push(HealthUnserved);
+        h.Push(ContentAttracts);
+        h.Push(ArrivalParty);
+        h.Push(PatienceDays);
+        h.Push(HiringFee);
+        h.Push(ForeignWage);
+        h.Push(StayDays);
+        h.Push(TourParty);
+        h.Push(SpendPerHeadPerDay);
+        h.Push(AppealFloor);
         h.Push(Crossings);
         h.Push(CrossingInset);
         h.Push(CustomsRange);

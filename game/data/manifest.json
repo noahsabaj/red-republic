@@ -1,5 +1,5 @@
 {
-  "checksum": "1821211472a64be7",
+  "checksum": "0c69dd2221f56cbb",
   "resources": ["Coal", "IronOre", "Steel", "Oil", "Fuel", "Bitumen", "Chemicals", "Wood", "Planks", "Gravel", "Bricks", "Cement", "Concrete", "PrefabPanel", "Asphalt", "Crops", "Food", "Clothes", "Alcohol", "Machinery", "Electronics", "Waste"],
   "forms": ["Aggregate", "Liquid", "Bulk", "Open", "Covered"],
   "needs": ["Health", "Culture", "Schooling", "Safety"],
@@ -2155,6 +2155,26 @@
     "river_catchment": 0.1,
     "broad_catchment": 0.25
   },
+  "roadworks": { "junction_spacing_m": 200.0, "junction_merge_m": 20.0, "min_road_m": 50.0, "lamp_labour": 35.0, "lamp_mw_per_km": 0.02, "lamp_materials": [["Steel", 6.0], ["Electronics", 1.5]] },
+  "grades": [
+    { "grade": "Dirt", "name": "Dirt Track", "carries": "Road", "speed_kph": 25.0, "labour": 25.0, "lamps": false, "materials": [] },
+    { "grade": "Gravel", "name": "Gravel Road", "carries": "Road", "speed_kph": 45.0, "labour": 70.0, "lamps": false, "materials": [["Gravel", 60.0]] },
+    { "grade": "Paved", "name": "Paved Road", "carries": "Road", "speed_kph": 60.00000000000001, "labour": 140.0, "lamps": true, "materials": [["Gravel", 40.0], ["Asphalt", 25.0]] },
+    { "grade": "Bridge", "name": "Bridge", "carries": "Road", "speed_kph": 40.0, "labour": 520.0, "lamps": false, "materials": [["Steel", 120.0], ["Bricks", 90.0], ["Gravel", 60.0]] },
+    { "grade": "Railway", "name": "Railway", "carries": "Rail", "speed_kph": 80.0, "labour": 260.0, "lamps": false, "materials": [["Steel", 90.0], ["Gravel", 140.0]] },
+    { "grade": "RailBridge", "name": "Railway Bridge", "carries": "Rail", "speed_kph": 50.0, "labour": 780.0, "lamps": false, "materials": [["Steel", 220.0], ["Bricks", 120.0], ["Gravel", 90.0]] },
+    { "grade": "Tramway", "name": "Tramway", "carries": "Tram", "speed_kph": 30.000000000000004, "labour": 120.0, "lamps": false, "materials": [["Steel", 45.0], ["Gravel", 40.0]] },
+    { "grade": "MetroTunnel", "name": "Metro Tunnel", "carries": "Metro", "speed_kph": 70.0, "labour": 1400.0, "lamps": false, "materials": [["Steel", 180.0], ["Bricks", 320.0], ["Gravel", 240.0], ["Machinery", 12.0]] }
+  ],
+  "utility_join": { "join_m": 30.0, "min_line_m": 50.0 },
+  "utilities": [
+    { "kind": "Power", "name": "Power Line", "labour": 35.0, "reach_m": 250.0, "loss_per_km": 0.012, "throughput": 0.0, "carries": [], "materials": [["Steel", 6.0]] },
+    { "kind": "Heat", "name": "Heat Main", "labour": 95.0, "reach_m": 110.0, "loss_per_km": 0.07, "throughput": 0.0, "carries": [], "materials": [["Steel", 18.0], ["Bricks", 12.0]] },
+    { "kind": "Conveyor", "name": "Conveyor", "labour": 120.0, "reach_m": 60.0, "loss_per_km": 0.0, "throughput": 60.0, "carries": ["Coal", "IronOre", "Gravel", "Bricks", "Crops", "Wood", "Waste"], "materials": [["Steel", 30.0], ["Machinery", 4.0]] },
+    { "kind": "Pipeline", "name": "Pipeline", "labour": 150.0, "reach_m": 70.0, "loss_per_km": 0.0, "throughput": 180.0, "carries": ["Oil", "Fuel"], "materials": [["Steel", 45.0], ["Machinery", 3.0]] },
+    { "kind": "Trolleywire", "name": "Trolley Wire", "labour": 30.0, "reach_m": 200.0, "loss_per_km": 0.02, "throughput": 0.0, "carries": [], "materials": [["Steel", 4.0]] }
+  ],
+  "wellbeing": { "weights": [3.0, 2.0, 1.0, 0.75, 0.75, 1.5, 1.0, 0.9], "names": ["Provisions", "Warmth", "Health", "Culture", "Schooling", "Work", "Cleanliness", "Safety"], "comfort_lift": 0.12, "loyalty_drift": 0.02, "loyalty_leaves": 0.35, "emigration_odds": 0.02, "health_drift": 0.01, "alcohol_health_cost": 0.1, "health_unserved": 0.55, "content_attracts": 0.6, "arrival_party": 24, "patience_days": 90, "hiring_fee": 40.0, "foreign_wage": 1.5, "stay_days": 14, "tour_party": 20, "spend_per_head_per_day": 0.9, "appeal_floor": 0.15 },
   "trade": { "crossings": 4, "crossing_inset_m": 120.0, "customs_range_m": 400.0, "customs_throughput_per_day": 30.0, "border_spread": 0.8, "markets": ["East", "West"] },
   "loans": { "default_fine": 0.25, "default_relations": 0.15, "east": [{ "principal": 60000.0, "interest": 0.08, "term_days": 1800 }, { "principal": 300000.0, "interest": 0.14, "term_days": 2700 }, { "principal": 1000000.0, "interest": 0.22, "term_days": 3600 }], "west": [{ "principal": 3000.0, "interest": 0.1, "term_days": 360 }, { "principal": 9000.0, "interest": 0.16, "term_days": 540 }, { "principal": 25000.0, "interest": 0.25, "term_days": 720 }] },
   "contracts": { "offer_every_months": 2, "max_open_offers": 2, "value_band_east": [250.0, 1250.0], "value_band_west": [125.0, 625.0], "tonnes": [2.0, 200.0], "premium": [0.15, 0.25], "deadline_days": [60, 90], "offer_days": 30, "fine_share": 0.25, "relations_hit": 0.12, "relations_cap": 0.25, "relations_decay_per_day": 0.002 },
