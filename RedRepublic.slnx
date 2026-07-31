@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/game/">
+    <Project Path="game/RedRepublic.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/RedRepublic.Sim.Tests/RedRepublic.Sim.Tests.csproj" />
+    <Project Path="src/RedRepublic.Sim/RedRepublic.Sim.csproj" />
+  </Folder>
+</Solution>

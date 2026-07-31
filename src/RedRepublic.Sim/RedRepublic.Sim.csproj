@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The simulation, and it has NO reference to Godot.
+
+    That absence is the architecture. `crates/sim` had zero engine dependencies
+    as a rule rather than an accident, and under GDScript the only way to keep
+    that was a source scan that read the files and grepped for `Vector2`. Here
+    it is a property of the build: this project does not reference GodotSharp,
+    so a line that reaches for the engine does not compile. An invalid state
+    made unrepresentable rather than detected.
+
+    It also means the whole simulation is testable, and the trajectory runner
+    runnable, without the engine in the loop at all.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+
+    <!-- A warning that is not an error is a warning nobody reads. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+
+    <!--
+      Determinism, stated to the compiler.
+
+      The simulation must reproduce bit-for-bit, so the JIT must not be allowed
+      to contract a multiply and an add into an FMA or otherwise reassociate
+      floats. .NET makes no such transformations on `double`/`float` arithmetic
+      by default — unlike a C compiler with fast-math — and there is no switch
+      here that turns them on. This block exists to say that was checked rather
+      than assumed, and `Determinism` in the test suite is what holds it.
+    -->
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+</Project>

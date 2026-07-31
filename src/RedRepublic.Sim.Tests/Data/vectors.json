@@ -1,0 +1,62 @@
+{
+  "next_u64": {
+    "00000000000007a9": ["634f6a5ed66645f9", "b20f9d6743a1fd6f", "95803b6c7e1d712a", "bbce25e96b6e11db", "26e8bc56af11e012", "12490d00cdb51d02", "a5183e4d62654fe1", "c4849726bb2ea9e0", "79b5131d2481b838", "0d5af7b4548780e4", "286fb4e86db5ef3e", "82c1e9c5150e6f99", "ff9bc81edb1e5b72", "4ca7ad9c935dd374", "5f9cb0f48247cc45", "e3556014ff982302"],
+    "0000000000000000": ["53175d61490b23df", "61da6f3dc380d507", "5c0fdf91ec9a7bfc", "02eebf8c3bbe5e1a", "7eca04ebaf4a5eea", "0543c37757f08d9a", "db7490c75ab5026e", "d87343e6464bc959", "4b7da0a02389f0ff", "1300fc58c0424c16", "5084843206c19968", "10ea073de9aa4dfc", "1aae554343960cc1", "1804139f10fae720", "10d790e7b8ac10fa", "667d2bffdd1496f7"],
+    "0000000000000001": ["cfc5d07f6f03c29b", "bf424132963fe08d", "19a37d5757aaf520", "bf08119f05cd56d6", "2f47184b86186fa4", "97299fcae7202345", "fca3c79508f41507", "85fea5c90363f221", "18bae5b30d334bd0", "226113c9f026ec16", "eb9e0ef9dccfe649", "57efaedd9f6cffb3", "128ae2d5697640d6", "65033a4eee505049", "16e9453ed54a88ba", "28065aa8f428a8bb"],
+    "000000000000002a": ["d0764d4f4476689f", "519e4174576f3791", "fbe07cfb0c24ed8c", "b37d9f600cd835b8", "cb231c3874846a73", "968d9f004e50de7d", "201718ff221a3556", "9ae94e070ed8cb46", "352cf3daf095ccc7", "eeefd63219b4a0d4", "8f3dfa98020e7942", "d99b8e00792f360d", "ae14e77054359b98", "11ccbfbb36590dbd", "672fcfd4efd0e0bd", "8bc6e858d0501168"],
+    "ffffffffffffffff": ["56ccf8ce948e27b2", "e68588432e5a5b90", "e3e9b5a48119ca8b", "460f19495532ae73", "a7d62040ea9263e1", "66f1fb2ac9402c14", "e243b47de8a73f68", "7c93fdab4c7b3dff", "a285b65e80080825", "daa2984842f0ced7", "578ae4525854cedf", "a4c8e50e9dcc99d4", "ec90040814db4071", "0f07e2e73e5b4591", "445d4b54e963d2dd", "53b23301313ec105"]
+  },
+  "next_f64_bits": {
+    "00000000000007a9": ["3fd8d3da97b59990", "3fe641f3ace8743f", "3fe2b0076d8fc3ae", "3fe779c4bd2d6dc2", "3fc3745e2b5788f0", "3fb2490d00cdb518", "3fe4a307c9ac4ca9", "3fe89092e4d765d5", "3fde6d44c749206e", "3faab5ef68a90f00", "3fc437da7436daf4", "3fe0583d38a2a1cd", "3feff37903db63cb", "3fd329eb6724d774", "3fd7e72c3d2091f2", "3fec6aac029ff304"],
+    "0000000000000000": ["3fd4c5d7585242c8", "3fd8769bcf70e034", "3fd703f7e47b269e", "3f8775fc61ddf2c0", "3fdfb2813aebd296", "3f950f0ddd5fc220", "3feb6e9218eb56a0", "3feb0e687cc8c979", "3fd2df682808e27c", "3fb300fc58c04248", "3fd421210c81b066", "3fb0ea073de9aa48", "3fbaae5543439608", "3fb804139f10fae0", "3fb0d790e7b8ac10", "3fd99f4afff74524"],
+    "0000000000000001": ["3fe9f8ba0fede078", "3fe7e8482652c7fc", "3fb9a37d5757aaf0", "3fe7e10233e0b9aa", "3fc7a38c25c30c34", "3fe2e533f95ce404", "3fef9478f2a11e82", "3fe0bfd4b9206c7e", "3fb8bae5b30d3348", "3fc13089e4f81374", "3fed73c1df3b99fc", "3fd5fbebb767db3e", "3fb28ae2d5697640", "3fd940ce93bb9414", "3fb6e9453ed54a88", "3fc4032d547a1454"],
+    "000000000000002a": ["3fea0ec9a9e88ecd", "3fd467905d15dbcc", "3fef7c0f9f61849d", "3fe66fb3ec019b06", "3fe96463870e908d", "3fe2d1b3e009ca1b", "3fc00b8c7f910d18", "3fe35d29c0e1db19", "3fca9679ed784ae4", "3fedddfac6433694", "3fe1e7bf530041cf", "3feb3371c00f25e6", "3fe5c29cee0a86b3", "3fb1ccbfbb365908", "3fd9cbf3f53bf438", "3fe178dd0b1a0a02"],
+    "ffffffffffffffff": ["3fd5b33e33a52388", "3fecd0b10865cb4b", "3fec7d36b4902339", "3fd183c652554caa", "3fe4fac4081d524c", "3fd9bc7ecab2500a", "3fec48768fbd14e7", "3fdf24ff6ad31ece", "3fe450b6cbd00101", "3feb545309085e19", "3fd5e2b914961532", "3fe4991ca1d3b993", "3fed920081029b68", "3fae0fc5ce7cb680", "3fd11752d53a58f4", "3fd4ec8cc04c4fb0"]
+  },
+  "next_bounded": {
+    "1": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "2": [1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 0, 1, 1],
+    "7": [4, 4, 6, 5, 1, 2, 4, 1, 1, 0, 3, 2, 2, 4, 4, 6, 6, 5, 1, 1, 6, 6, 1, 2],
+    "10": [7, 5, 4, 1, 8, 6, 1, 8, 0, 0, 4, 7, 4, 4, 5, 2, 3, 1, 9, 6, 6, 4, 1, 1],
+    "1000": [377, 415, 914, 491, 378, 546, 841, 8, 400, 660, 414, 17, 234, 844, 485, 162, 553, 901, 89, 846, 406, 554, 271, 41],
+    "1000003": [43267, 399161, 608220, 853024, 214998, 809646, 689114, 113216, 702813, 550976, 93159, 899065, 907818, 749890, 991964, 660864, 914878, 908783, 597757, 326547, 805730, 501899, 172336, 537365]
+  },
+  "resume": {
+    "seed": 7,
+    "draws_before": 500,
+    "after": ["8768f2d14b1e9ac5", "9834aa948b38d888", "eb584391730ff304", "1fd3429d8f6261d4", "639213fce0ca17e3", "82404071d74c789c", "010fac33a2030d83", "ebae2c4762865e7b"]
+  },
+  "terrain": {
+    "hash_cell": [
+      ["0000000000000000", "0000000000000000", "74b665ad256289fe"],
+      ["0000000000000001", "0000000000000000", "74b6ef00ebc62d83"],
+      ["0000000000000000", "0000000000000001", "cf2534c9f2893edd"],
+      ["ffffffffffffffff", "ffffffffffffffff", "537385595e0177fc"],
+      ["0000000000003039", "fffffffffffef6ce", "90a33a4cff361ce2"],
+      ["ffffffffffffffff", "0020000000000001", "843f84a6da84a0f8"]
+    ],
+    "fractal_noise": [
+      [0.0, 0.0, "3fd9d0a885b84791"],
+      [5.0, 5.0, "3fd9cffe243fb11f"],
+      [1234.5, 6789.25, "3fe1a68139846539"],
+      [2000.0, 2000.0, "3fd18f4e9e864ad3"],
+      [5995.0, 5995.0, "3fe6d0283f20d415"]
+    ],
+    "maps": [
+      { "seed": 1961, "extent": 1200.0, "cells": 120, "surface_fnv": "44f6c4cd53962f4f", "height_fnv": "c52fbdf95cb3a6e6", "counts": [13066, 1091, 0, 243] },
+      { "seed": 1961, "extent": 3000.0, "cells": 300, "surface_fnv": "32cfbd69998bac93", "height_fnv": "eae755dd7aa93be2", "counts": [59620, 25609, 0, 4771] },
+      { "seed": 7, "extent": 1200.0, "cells": 120, "surface_fnv": "8ee20eba99fd7ac4", "height_fnv": "3ffbf2cee27f2a46", "counts": [0, 10905, 3325, 170] },
+      { "seed": 7, "extent": 3000.0, "cells": 300, "surface_fnv": "acf6db96d35bfe42", "height_fnv": "aa6f66abf6499974", "counts": [876, 83900, 4905, 319] },
+      { "seed": 42, "extent": 1200.0, "cells": 120, "surface_fnv": "5f5994af4746ecce", "height_fnv": "659680225958bac0", "counts": [6211, 7958, 0, 231] },
+      { "seed": 42, "extent": 3000.0, "cells": 300, "surface_fnv": "2783ea32d7ff862b", "height_fnv": "3a2402b64c90fc6e", "counts": [9128, 79033, 1426, 413] }
+    ]
+  },
+  "geology": [
+    { "seed": 1961, "extent": 3000.0, "deposits": 18, "layers": 46, "fnv": "f66bc751c69a0791", "total_tonnes_bits": "4166e2c367fbe806" },
+    { "seed": 1961, "extent": 10000.0, "deposits": 18, "layers": 46, "fnv": "9fb1574f8ab9e343", "total_tonnes_bits": "4166e2c367fbe806" },
+    { "seed": 7, "extent": 3000.0, "deposits": 18, "layers": 46, "fnv": "bfcb05d5e943b596", "total_tonnes_bits": "4168d6a4a1abd824" },
+    { "seed": 7, "extent": 10000.0, "deposits": 18, "layers": 46, "fnv": "22205356310535ab", "total_tonnes_bits": "4168d6a4a1abd824" },
+    { "seed": 42, "extent": 3000.0, "deposits": 18, "layers": 46, "fnv": "633351b4debfefc8", "total_tonnes_bits": "416973b146951c35" },
+    { "seed": 42, "extent": 10000.0, "deposits": 18, "layers": 46, "fnv": "3c1e8decabf9c86a", "total_tonnes_bits": "416973b146951c35" }
+  ]
+}

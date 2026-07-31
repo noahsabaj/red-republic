@@ -1,0 +1,65 @@
+; Red Republic — the Godot project.
+;
+; The engine half. The simulation lives in `../src/RedRepublic.Sim`, a plain C#
+; library with no reference to Godot at all — so the boundary `crates/sim` used
+; to hold by rule is now held by the build: a line in the simulation that reaches
+; for the engine does not compile.
+
+config_version=5
+
+[application]
+
+config/name="Red Republic"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.7", "C#", "Forward Plus")
+config/icon="res://icon.png"
+
+[dotnet]
+
+; The assembly this project builds, and the name Godot looks for when it loads
+; the game's C# side. It must match the .csproj file name beside this one.
+project/assembly_name="RedRepublic"
+
+[display]
+
+window/size/viewport_width=1600
+window/size/viewport_height=900
+
+; Vsync OFF by default during development, and this is not a preference.
+;
+; With it on, every frame measurement comes back as exactly 16.67 ms whatever
+; the load, so a benchmark reports a healthy number for a scene that is
+; drowning. Measured on this machine; it silently invalidated a whole probe run
+; before anyone noticed. `ui/settings_store.gd` owns what a player ends up with.
+window/vsync/vsync_mode=0
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
+
+; Anti-aliasing. Both MSAA and TAA, because they cover different things: MSAA
+; fixes geometry edges and does nothing for alpha-tested foliage; TAA fixes that
+; and the shimmer of a tiled ground texture at distance.
+anti_aliasing/quality/msaa_3d=2
+anti_aliasing/quality/use_taa=true
+; Sky and fog gradients over 6 km are exactly where 8-bit banding shows.
+anti_aliasing/quality/use_debanding=true
+
+; A 6 km map is seen almost edge-on at the horizon, which is the case trilinear
+; filtering blurs to mush and anisotropic exists for.
+textures/default_filters/anisotropic_filtering_level=3
+
+; The shadow map is stretched across kilometres on a framed posting. 4096 is not
+; enough resolution to spend over that; 8192 is.
+lights_and_shadows/directional_shadow/size=8192
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
+
+[shader_globals]
+
+; How dark it is, 0 broad daylight to 1 the middle of the night. A global rather
+; than a parameter on every material, because it is one value the whole scene
+; shares and there are a hundred and thirty building materials that want it.
+night={
+"type": "float",
+"value": 0.0
+}

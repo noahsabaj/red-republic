@@ -1,0 +1,30 @@
+<Project Sdk="Godot.NET.Sdk/4.7.1">
+
+  <!--
+    The game: the engine half.
+
+    Everything a player sees is here; everything the republic *is* lives in
+    RedRepublic.Sim, which this references and which does not reference back.
+    That one-way arrow is the architecture, and it is enforced by the build
+    rather than by a rule in a document — the simulation project has no
+    reference to Godot, so a line in it that reaches for the engine does not
+    compile.
+
+    The consequence worth stating: the simulation is testable and the trajectory
+    runner runnable with no engine in the loop, which is why `dotnet test` takes
+    a fifth of a second.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>RedRepublic</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\src\RedRepublic.Sim\RedRepublic.Sim.csproj" />
+  </ItemGroup>
+
+</Project>
