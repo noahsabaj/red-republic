@@ -179,7 +179,20 @@ pub fn stockpiles(world: &World) -> PackedFloat32Array {
             .iter()
             .map(|b| b.stock.get(resource).0)
             .sum();
-        out.push(held as f32);
+        // **A stockpile is a quantity, so it leaves here non-negative.** Every
+        // row of the HUD's stockpile table read `-0.0 t` on a republic holding
+        // nothing at all — a negative zero, which `print` hides and `%.1f`
+        // faithfully signs. `absf()` and `+ 0.0` in GDScript both made it go
+        // away, which is what identified it; `signf()` does not distinguish, so
+        // it looked for a while like the formatter's fault rather than the
+        // value's.
+        //
+        // `max` rather than a formatting guard in the panel, because the panel
+        // is not the only thing that will ever read this and a tonnage that can
+        // arrive signed is a fact about the view, not about the label. In Rust
+        // `(-0.0f64).max(0.0)` is `+0.0`, so this normalises the sign and
+        // clamps any genuine negative in the same move.
+        out.push(held.max(0.0) as f32);
     }
     out
 }
