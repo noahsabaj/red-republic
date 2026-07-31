@@ -49,6 +49,8 @@ var _climate_names := PackedStringArray()
 ## armed rows is a screen where the player has lost track of what a click does.
 var _armed := ""
 var _armed_action := ""
+## The format stamp in the footer. See `_ready` for why it is there.
+var _format: Label = null
 
 
 func _ready() -> void:
@@ -72,6 +74,15 @@ func _ready() -> void:
 
 	Sheet.close_button(sheet["footer"], "BACK", func(): closed.emit())
 
+	# **What this build reads, stamped on the archive itself.**
+	# Every save file in the folder carries its format in its name, and a row
+	# that will not open says which format it is -- both of which are numbers
+	# with nothing to compare against unless the screen says what *this* build
+	# is. It is the one fact on this screen that is about the build rather than
+	# about a republic, which is why it sits in the footer and not in the list.
+	_format = Parts.say("", "Stamp")
+	sheet["footer"].add_child(_format)
+
 
 func open(republic: Republic, mode: int) -> void:
 	_republic = republic
@@ -80,6 +91,7 @@ func open(republic: Republic, mode: int) -> void:
 	_notice.text = ""
 	_climate_names = republic.climate_names()
 	_title.text = "THE ARCHIVE" if mode == Mode.LOAD else "FILE THE REPUBLIC"
+	_format.text = "SAVE FORMAT %d" % republic.save_version()
 	refresh()
 
 
@@ -186,7 +198,9 @@ func _build_row(row: Dictionary, alt: bool) -> void:
 
 func _on_save_new() -> void:
 	_write(Saves.name_for(
-		String(_republic.republic_name()), String(_republic.date_text())
+		String(_republic.republic_name()),
+		String(_republic.date_text()),
+		_republic.save_version()
 	))
 
 

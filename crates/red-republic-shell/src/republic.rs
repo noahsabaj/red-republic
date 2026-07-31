@@ -605,6 +605,26 @@ impl Republic {
         crate::tables::floats(crate::tables::lamp_materials())
     }
 
+    /// Every kind of line the republic can string, packed. See
+    /// [`crate::tables::utility_table`].
+    #[func]
+    fn utility_table(&self) -> PackedFloat32Array {
+        crate::tables::floats(crate::tables::utility_table())
+    }
+
+    /// Floats per kind of line in [`Republic::utility_table`].
+    #[func]
+    fn utility_stride(&self) -> i64 {
+        crate::tables::UTILITY_STRIDE as i64
+    }
+
+    /// What a kilometre of one kind of line is made of: `[resource, tonnes]`
+    /// per line.
+    #[func]
+    fn utility_materials(&self, index: i64) -> PackedFloat32Array {
+        crate::tables::floats(crate::tables::utility_materials(index.max(0) as usize))
+    }
+
     /// What the player calls each mineral.
     #[func]
     fn mineral_names(&self) -> PackedStringArray {
@@ -788,6 +808,35 @@ impl Republic {
         };
         let d = w.clock().date();
         GString::from(format!("{:04}-{:02}-{:02}", d.year, d.month, d.day).as_str())
+    }
+
+    /// The shape of the republic's year: `[day_index, day_of_year,
+    /// days_per_year, days_per_month, days_since_founding]`.
+    ///
+    /// `day_index` counts from the epoch and is the argument
+    /// [`Republic::temperature_on_day`] takes, so a screen that wants the
+    /// weather on some other day can say which day it means. The two lengths
+    /// come with it because a 360-day year of twelve equal months is a decision
+    /// this simulation made, and a screen that laid out twelve months of thirty
+    /// days from constants of its own would be a second copy of that decision —
+    /// wrong in silence the day the calendar changed.
+    ///
+    /// `days_since_founding` is last because it answers a different question
+    /// from the rest: how much of the record is the republic's own. Weather
+    /// before the founding is weather in an empty field, and a screen that read
+    /// it back would be reporting a winter nobody was here for.
+    #[func]
+    fn calendar(&self) -> PackedInt32Array {
+        let mut out = PackedInt32Array::new();
+        let Some(w) = &self.world else {
+            return out;
+        };
+        out.push(w.clock().day_index() as i32);
+        out.push(w.clock().day_of_year() as i32);
+        out.push(red_republic_sim::time::DAYS_PER_YEAR as i32);
+        out.push(red_republic_sim::time::DAYS_PER_MONTH as i32);
+        out.push(w.clock().days_elapsed() as i32);
+        out
     }
 
     #[func]
@@ -1031,6 +1080,45 @@ impl Republic {
             Some(c) if c.capacity.0 > 0.0 => c.held.0 / c.capacity.0,
             _ => -1.0,
         }
+    }
+
+    /// One vehicle, packed. See [`views::vehicle_state`] for the layout.
+    #[func]
+    fn vehicle_state(&self, vehicle: i64) -> PackedFloat32Array {
+        self.world
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, |w| {
+                views::vehicle_state(w, vehicle.max(0) as usize)
+            })
+    }
+
+    /// Floats per vehicle in [`Republic::vehicle_state`].
+    #[func]
+    fn vehicle_state_stride(&self) -> i64 {
+        views::VEHICLE_STATE_STRIDE as i64
+    }
+
+    /// How many kinds of work the fleet can be given, so a panel naming them
+    /// cannot name fewer than there are.
+    #[func]
+    fn vehicle_job_count(&self) -> i64 {
+        views::VEHICLE_JOB_COUNT as i64
+    }
+
+    /// The vehicle nearest a point on the map, or `-1`.
+    ///
+    /// Takes the reach in metres from the caller because how near a click counts
+    /// as a hit is a question about the drawn body and the camera height, and
+    /// both of those are Godot's.
+    #[func]
+    fn vehicle_at(&self, x: f64, y: f64, radius: f64) -> i64 {
+        let Some(w) = &self.world else { return -1 };
+        views::vehicle_at(
+            w,
+            Point::new(Metres(x), Metres(y)),
+            Metres(radius.max(0.0)),
+            self.now(),
+        )
     }
 
     /// Every building crew that is out: `[x, y, heads, state, office]`, with

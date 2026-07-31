@@ -73,6 +73,7 @@ const STATE_ROWS := [
 	["", "waiting", "at the frontier"],
 	["", "visitors", "visitors"],
 	["Networks", "ways", "ways"],
+	["", "lit", "street lighting"],
 	["", "grid", "power & heat"],
 	["", "unserved", "not served"],
 	["", "imports", "imports"],
@@ -340,6 +341,16 @@ func refresh(republic: Republic, overlay_mode: int, speed_names: Array) -> void:
 
 	var name: String = Overlays.NAMES[overlay_mode]
 	_hint_overlay = "OVERLAY %s" % (name.to_upper() if name != "" else "NONE")
+	# **How coarse the picture is, said on the picture.** The painted overlays
+	# are sampled off the traversal lattice, not off the terrain: a 6 km map is a
+	# 60x60 texture, so a red patch is at best one cell across and a player
+	# reading it as "this hillside" rather than "this hundred metres" is reading
+	# it wrong. The survey draws deposits at their real radius and is not sampled
+	# at all, so it says nothing.
+	if overlay_mode != Overlays.Mode.NONE and overlay_mode != Overlays.Mode.SURVEY:
+		var cell: float = republic.lattice_cell_size()
+		if cell > 0.0:
+			_hint_overlay += "  ·  %.0f M CELLS" % cell
 	_show_hint()
 
 
@@ -515,6 +526,19 @@ func _refresh_networks(republic: Republic) -> void:
 				])
 	_write("ways", "  ·  ".join(parts) if parts.size() > 0 else "none",
 		P.PAPER if parts.size() > 0 else P.PAPER_FAINT)
+
+	# **Two numbers, because they are two different problems.** Built lamps are
+	# what the republic paid for; burning lamps are what is actually alight, and
+	# the gap between them is a grid that has run short -- a thing to fix rather
+	# than a thing to build, which is the opposite instruction from "lay more
+	# lit road". A single figure could not tell the player which one they are in.
+	var lit: PackedFloat32Array = republic.lit_road_km()
+	if lit.size() < 2 or lit[0] < 0.05:
+		_write("lit", "none", P.PAPER_FAINT)
+	elif lit[1] < lit[0] - 0.05:
+		_write("lit", "%.1f km laid  ·  %.1f km alight" % [lit[0], lit[1]], P.ALARM)
+	else:
+		_write("lit", "%.1f km, all alight" % lit[0])
 
 	var grid: PackedFloat32Array = republic.utility_totals()
 	var kinds := _utility_names.size()

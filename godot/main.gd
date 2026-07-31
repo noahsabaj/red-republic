@@ -55,7 +55,7 @@ const DEFAULT_NAME := "Novo-Uralsk"
 ## player left it running -- see `_set_screen`.
 enum Screen {
 	MENU, FOUNDING, PLAYING, PAUSED, SETTINGS, SAVES, REFERENCE, RADIO,
-	TRADE, FINANCE, JOURNAL,
+	TRADE, FINANCE, JOURNAL, YEAR,
 }
 
 ## **Typed as `Republic`, not as `Node`, and that is a bug fix rather than
@@ -79,6 +79,7 @@ enum Screen {
 @onready var vehicles_node: MultiMeshInstance3D = $Vehicles
 @onready var newcomers_node: MultiMeshInstance3D = $Newcomers
 @onready var roads_node: MeshInstance3D = $Roads
+@onready var road_sites_node: MeshInstance3D = $RoadSites
 @onready var lines_node: MeshInstance3D = $Lines
 @onready var ways_node: MeshInstance3D = $Ways
 @onready var hud: CanvasLayer = $HUD
@@ -97,12 +98,15 @@ enum Screen {
 ## The building inspector. A panel over the map rather than a screen instead of
 ## it, so it lives beside the HUD rather than in the `Screen` enum.
 @onready var inspector: CanvasLayer = $Inspector
+@onready var vehicle_panel: CanvasLayer = $VehiclePanel
 @onready var trade_screen: CanvasLayer = $Trade
 @onready var finance_screen: CanvasLayer = $Finance
 @onready var journal_screen: CanvasLayer = $Journal
+@onready var year_screen: CanvasLayer = $Year
 
 var _buildings_shown := -1
 var _roads_shown := -1
+var _sites_shown := -1
 var _lines_shown := -1
 var _ways_shown := -1
 ## Whether a capture run should stand the fixture town up first, so there is
@@ -157,11 +161,15 @@ var _ghost: MeshInstance3D = null
 ## Laying a way: the grade in hand, whether it takes lamps, and where the first
 ## click landed. A road is two points rather than one, so it is its own mode
 ## beside the building ghost rather than a shape the ghost can take.
-var _way_grade := -1
-var _way_lamps := false
-var _way_from := Vector3.ZERO
-var _way_started := false
-var _way_ghost: MeshInstance3D = null
+var _span_grade := -1
+## Stringing a line: which kind, or -1. Held apart from the grade rather than
+## folded into it, because the two end in different commands and a single
+## number with two meanings is how one of them gets issued as the other.
+var _span_line := -1
+var _span_lamps := false
+var _span_from := Vector3.ZERO
+var _span_started := false
+var _span_ghost: MeshInstance3D = null
 
 
 func _ready() -> void:
@@ -316,11 +324,17 @@ func _found_default() -> void:
 		_check_building()
 		_check_labour()
 		_check_road()
+		_check_lines()
 		_check_reference()
 		_check_inspector()
 		_check_trade()
 		_check_finance()
 		_check_journal()
+		# Last, because it is the one check that has to put a working town on the
+		# map to have anything to look at: a freshly founded republic owns no
+		# vehicles, and standing the fixture up changes the world every earlier
+		# check reasons about.
+		_check_vehicle()
 		get_tree().quit()
 
 
@@ -340,28 +354,40 @@ func _found_default() -> void:
 ## GDScript, so it is checked here.
 func _check_reference() -> void:
 	reference.open(republic)
-	var names := ["how it works", "goods", "buildings", "vehicles", "ways"]
+	var names := ["how it works", "goods", "buildings", "vehicles", "ways and lines"]
 	# Sampled from the rosters rather than typed: a name written here would be a
 	# second copy of the table, which is the whole thing the reference exists not
 	# to be. The *last* of each, because a truncated walk still emits the first.
+	#
+	# A list per section rather than one name, because the last section carries
+	# two rosters: the grades and the kinds of line. One sample would have gone
+	# on passing with every line in the game missing from the document.
 	var wanted := [
-		"",
-		String(republic.resource_names()[republic.resource_names().size() - 1]),
-		String(republic.building_kind_name(republic.building_kind_count() - 1)),
-		String(republic.vehicle_kind_names()[republic.vehicle_kind_names().size() - 1]),
-		String(republic.grade_names()[republic.grade_names().size() - 1]),
+		[],
+		[String(republic.resource_names()[republic.resource_names().size() - 1])],
+		[String(republic.building_kind_name(republic.building_kind_count() - 1))],
+		[String(republic.vehicle_kind_names()[republic.vehicle_kind_names().size() - 1])],
+		[
+			String(republic.grade_names()[republic.grade_names().size() - 1]),
+			String(republic.utility_names()[republic.utility_names().size() - 1]),
+		],
 	]
+	var sampled := 0
 	for i in names.size():
 		var text: String = reference.section_text(i)
 		if text.strip_edges() == "":
 			printerr("reference check FAILED: the %s section is empty" % names[i])
 			return
-		if wanted[i] != "" and not text.contains(wanted[i]):
-			printerr("reference check FAILED: %s is not in the %s section" % [
-				wanted[i], names[i],
-			])
-			return
-	print("reference check ok: %d sections, and the last of every roster is in one" % names.size())
+		for name in wanted[i]:
+			sampled += 1
+			if not text.contains(String(name)):
+				printerr("reference check FAILED: %s is not in the %s section" % [
+					name, names[i],
+				])
+				return
+	print("reference check ok: %d sections, and the last of %d rosters is in one" % [
+		names.size(), sampled,
+	])
 
 
 ## Click a building, read it back, and pull it down.
@@ -422,6 +448,80 @@ func _check_inspector() -> void:
 		printerr("inspector check FAILED: a building that does not exist was demolished")
 		return
 	print("inspector check ok: picked, read %d figures, and pulled it down" % state.size())
+
+
+## Put a way and a line on the map that nobody has finished yet.
+##
+## Reached only from `--screen town`. Both go through the bindings the tools
+## press, so what stands on the map is what a player's clicks would have left
+## there — and a few days after them, so the ribbons are part-filled rather than
+## sitting at zero, which is the state the drawing has to be right about.
+func _order_some_works() -> void:
+	var centre := Vector2(republic.centre_x(), republic.centre_y())
+	# Out of the town rather than through it, so the sites are not drawn under
+	# the buildings the rest of the capture is checking.
+	#
+	# **Long enough that four days does not finish them**, which is the whole
+	# point: a site that completes between the order and the shutter is a
+	# finished road, and the thing being looked at is the part-built ribbon —
+	# solid up to where the crew have got, a marked-out strip beyond it. A short
+	# dirt track is twenty builder-days and this town has ten builders.
+	var _way := republic.order_way(
+		0, centre.x + 200.0, centre.y + 200.0, centre.x + 2400.0, centre.y + 1900.0, false
+	)
+	var _line := republic.order_line(
+		0, centre.x + 200.0, centre.y - 150.0, centre.x + 2000.0, centre.y - 1500.0
+	)
+	# One day, which on a way this long leaves it part-made — the state worth
+	# looking at. Ten builders finish a 2.8 km dirt track inside a week, and a
+	# capture taken after that is a capture of a road.
+	republic.advance_days(1)
+
+
+## The first vehicle with a job in hand, or 0 if the whole fleet is parked.
+##
+## Reached only from `--screen vehicle`. Reads the same packed state the panel
+## slices, so it cannot pick a vehicle the panel would then fail to compose.
+func _a_vehicle_on_the_move() -> int:
+	var job := int(vehicle_panel.JOB)
+	for i in republic.vehicle_count():
+		var state: PackedFloat32Array = republic.vehicle_state(i)
+		if state.size() > job and state[job] >= 0.0:
+			return i
+	return 0
+
+
+## Click a lorry and read it back.
+##
+## The same argument the inspector check makes, about the other half of the map.
+## `cargo test` proves the fleet dispatches and proves `bog_chance` is a
+## probability; what only the shell can get wrong is whether the point under a
+## cursor reaches a vehicle, and whether the packed state comes back the width
+## the panel slices it at. A stride that moved would show a panel of plausible
+## wrong numbers, in Rust and in GDScript both, and neither language's tests
+## would see it.
+func _check_vehicle() -> void:
+	# A republic owns no vehicles at its founding -- they are bought by garages
+	# out of an economy that has to exist first -- so the fixture town is what
+	# puts something on the road to click on.
+	republic.found_fixture_town(143)
+	# Long enough for the garages to have taken delivery and for the freight
+	# system to have sent something somewhere. A parked lorry would still exercise
+	# the pick, but not the journey columns.
+	republic.advance_days(3)
+	if republic.vehicle_count() < 1:
+		printerr("vehicle check FAILED: three days of a working town raised no vehicles")
+		return
+	# Open ground, which must find nothing: a pick that answered a vehicle
+	# everywhere would pass the panel's own check and be useless.
+	if republic.vehicle_at(-5000.0, -5000.0, 30.0) >= 0:
+		printerr("vehicle check FAILED: the pick found a vehicle off the map")
+		return
+	var words: String = vehicle_panel.check(republic)
+	if words.begins_with("vehicle check ok"):
+		print(words)
+	else:
+		printerr(words)
 
 
 ## Write a trade rule, move it, and answer a tender.
@@ -689,6 +789,54 @@ func _check_road() -> void:
 	])
 
 
+## String a line, and check every kind of them has a colour and a price.
+##
+## `order_line` was in the state `order_way` had been in for six milestones, and
+## this is the line in CI that stops it going back: a republic that cannot string
+## a wire is a republic whose power stations light nothing but themselves.
+##
+## The roster checks are the other half. `Utility::ALL` has grown twice, and both
+## times something on this side kept its old length -- a colour list of four
+## against five kinds draws the fifth in fallback white, which reads as a
+## rendering choice rather than as a missing row.
+func _check_lines() -> void:
+	var kinds: PackedStringArray = republic.utility_names()
+	if kinds.size() < 1:
+		printerr("line check FAILED: the republic strings nothing at all")
+		return
+	if UTILITY_TONES.size() != kinds.size():
+		printerr("line check FAILED: %d kinds of line and %d colours for them" % [
+			kinds.size(), UTILITY_TONES.size(),
+		])
+		return
+	var table: PackedFloat32Array = republic.utility_table()
+	var stride: int = republic.utility_stride()
+	if table.size() != kinds.size() * stride:
+		printerr("line check FAILED: %d kinds of line and a table of %d floats at %d wide" % [
+			kinds.size(), table.size(), stride,
+		])
+		return
+
+	var centre := republic.map_extent() * 0.5
+	# Power, because it is the one every republic strings first and the one whose
+	# absence is felt on day one. A check that the order goes through rather than
+	# that the crew finish it -- nothing carries current until the last
+	# builder-day is paid.
+	var why := "nowhere tried"
+	for ring in 8:
+		var a: float = centre + float(ring) * 140.0
+		why = String(republic.order_line(0, a, a, a + 500.0, a))
+		if why == "":
+			break
+	if why != "":
+		printerr("line check FAILED: %s" % why)
+		return
+	if republic.utility_sites().size() < 1:
+		printerr("line check FAILED: the order was accepted and no site appeared")
+		return
+	print("line check ok: %d kind(s) of line, each priced, and a power line ordered" % kinds.size())
+
+
 ## Write settings, read them back through a fresh store, and check they survived.
 ##
 ## "Settings that work" is a clause of the release standard that nothing checked.
@@ -741,7 +889,9 @@ func _check_saves() -> void:
 		"buildings": republic.building_count(),
 	}
 
-	var file_name: String = SaveFiles.name_for(before["name"], before["date"])
+	var file_name: String = SaveFiles.name_for(
+		before["name"], before["date"], republic.save_version()
+	)
 	var why: String = republic.save_to(SaveFiles.path_for(file_name))
 	if why != "":
 		printerr("save check FAILED to write: %s" % why)
@@ -808,8 +958,8 @@ func _enter_republic() -> void:
 	hud.set_utility_names(republic.utility_names())
 	hud.set_way_names(republic.way_names())
 	hud.set_hint(
-		"0-5 speed  ·  space pause  ·  click a building  ·  "
-		+ "B build  L labour  C trade  M finance  J journal  ·  esc menu  ·  "
+		"0-5 speed  ·  space pause  ·  click a building or a lorry  ·  "
+		+ "B build  L labour  C trade  M finance  J journal  Y weather  ·  esc menu  ·  "
 		+ "F none  G going  T tracks  R survey  P smoke  N snow  ·  "
 		+ "WASD pan  ·  right-drag orbit  ·  wheel zoom"
 	)
@@ -833,6 +983,7 @@ func _enter_republic() -> void:
 func _reset_shown() -> void:
 	_buildings_shown = -1
 	_roads_shown = -1
+	_sites_shown = -1
 	_lines_shown = -1
 	_ways_shown = -1
 	_overlay_day = -1
@@ -864,11 +1015,13 @@ func _connect_screens() -> void:
 	pause_menu.abandon_pressed.connect(_on_abandon)
 	build_menu.chose.connect(_begin_placement)
 	build_menu.chose_way.connect(_begin_way)
+	build_menu.chose_line.connect(_begin_line)
 	build_menu.closed.connect(func(): _set_screen(Screen.PLAYING))
 	labour_screen.closed.connect(func(): _set_screen(Screen.PLAYING))
 	trade_screen.closed.connect(func(): _set_screen(Screen.PLAYING))
 	finance_screen.closed.connect(func(): _set_screen(Screen.PLAYING))
 	journal_screen.closed.connect(func(): _set_screen(Screen.PLAYING))
+	year_screen.closed.connect(func(): _set_screen(Screen.PLAYING))
 	# The inspector closing is not a screen change: the republic was never
 	# stopped for it, because it is a panel over a running map.
 	inspector.closed.connect(func(): hud.set_placing("", ""))
@@ -967,11 +1120,13 @@ func _set_screen(screen: int) -> void:
 	trade_screen.visible = screen == Screen.TRADE
 	finance_screen.visible = screen == Screen.FINANCE
 	journal_screen.visible = screen == Screen.JOURNAL
+	year_screen.visible = screen == Screen.YEAR
 	hud.visible = screen == Screen.PLAYING
 	# The inspector rides with the HUD rather than with the screen it is over: it
 	# is a panel about a building on the map, and a full sheet drawn over the map
 	# has covered the building.
 	inspector.visible = screen == Screen.PLAYING and inspector.is_open()
+	vehicle_panel.visible = screen == Screen.PLAYING and vehicle_panel.is_open()
 
 	if screen == Screen.PLAYING:
 		return
@@ -1001,6 +1156,8 @@ func _set_screen(screen: int) -> void:
 			finance_screen.open(republic)
 		Screen.JOURNAL:
 			journal_screen.open(republic)
+		Screen.YEAR:
+			year_screen.open(republic)
 
 
 func _refresh_continue() -> void:
@@ -1060,6 +1217,14 @@ func _open_named_screen(spec: String) -> void:
 			_found_default()
 			republic.found_fixture_town(143)
 			republic.advance_days(2)
+			# **Works in progress, because a finished republic never shows
+			# them.** A half-built way and an unstrung line are their own
+			# geometry — a ribbon that fills in from the near end, a thin span
+			# lifted clear — and Godot culls back faces, so either of them wound
+			# the wrong way renders as nothing at all and reads as "not built
+			# yet" rather than as a fault. There is no way to see that except in
+			# a frame, and no other capture puts one on the map.
+			_order_some_works()
 			if _start_hour >= 0.0:
 				republic.advance_to_hour(_start_hour)
 			_enter_republic()
@@ -1085,6 +1250,29 @@ func _open_named_screen(spec: String) -> void:
 			# and a capture that only ever saw one of them would be checking a
 			# third of the panel.
 			inspector.open(republic, _store, maxi(page, 1))
+		"vehicle":
+			# A panel about a lorry needs a lorry, and a lorry needs an economy
+			# that bought it. The fixture town plus a few days is the only thing
+			# that puts one on a road without a player, and a capture of an empty
+			# vehicle panel would be a capture of a heading.
+			#
+			# **Three days is not enough and that is the whole difficulty.** The
+			# fixture town is dealt with full bins, so nothing needs fetching
+			# until something has been consumed -- at three days every lorry in
+			# the republic is parked and the journey columns are a row of
+			# dashes. A month of the town eating its stores is what puts freight
+			# on the road.
+			_found_default()
+			republic.found_fixture_town(143)
+			republic.advance_days(30)
+			_enter_republic()
+			_apply_view_flags()
+			_set_screen(Screen.PLAYING)
+			# `page` picks which vehicle, and with no page given the harness
+			# aims itself at one that is actually out. Nearly every lorry in a
+			# republic is parked at any moment, so `vehicle:0` is reliably a
+			# panel of dashes -- and half a panel is half a check.
+			vehicle_panel.open(republic, page if page > 0 else _a_vehicle_on_the_move())
 		"trade", "finance":
 			# **Both of these render an empty table on a freshly founded
 			# republic**, and a capture of a screen with no rows checks nothing —
@@ -1095,6 +1283,24 @@ func _open_named_screen(spec: String) -> void:
 			_found_default()
 			_play_a_few_orders()
 			_set_screen(Screen.TRADE if name == "trade" else Screen.FINANCE)
+		"year":
+			# **A year screen needs a year, and a fresh founding has nine days.**
+			# On day one the chart is a single point, the frost figures say
+			# "none" and there is no previous year at all -- a capture of that
+			# checks the title block and nothing else. Advancing through a whole
+			# winter is what puts a curve on the screen and fills both columns,
+			# which is the layout that has to be looked at.
+			#
+			# 800 days rather than a round 400: the founding is the first of
+			# March, so a whole calendar year is only behind the republic once
+			# the second January has come round -- at 400 the right-hand column
+			# still reads "nothing on record yet", which is the half of this
+			# screen most worth looking at. 800 lands in the following May, so
+			# both columns have a winter in them and the two curves overlap
+			# rather than one of them being a single point.
+			_found_default()
+			republic.advance_days(800)
+			_set_screen(Screen.YEAR)
 		"journal":
 			# **The fixture town is no use here and that is worth stating.** It
 			# stands buildings up directly, without issuing a command for any of
@@ -1162,9 +1368,10 @@ func _process(delta: float) -> void:
 	if _screen == Screen.PLAYING:
 		_run_the_sun()
 		_update_ghost()
-		_update_way()
+		_update_span()
 		_refresh_buildings()
 		_refresh_roads()
+		_refresh_road_sites()
 		_refresh_lines()
 		_refresh_ways()
 		_refresh_vehicles()
@@ -1203,7 +1410,9 @@ func _maybe_autosave() -> void:
 	if day - _last_autosave_day < interval:
 		return
 	_last_autosave_day = day
-	var file_name: String = SaveFiles.autosave_name(String(republic.republic_name()))
+	var file_name: String = SaveFiles.autosave_name(
+		String(republic.republic_name()), republic.save_version()
+	)
 	var why: String = republic.save_to(SaveFiles.path_for(file_name))
 	if why != "":
 		push_warning("autosave failed: %s" % why)
@@ -1304,13 +1513,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 
-	if _way_grade >= 0 and event is InputEventMouseButton and event.pressed:
+	if _laying() and event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_LEFT:
-			_click_way()
+			_click_span()
 			get_viewport().set_input_as_handled()
 			return
 		if event.button_index == MOUSE_BUTTON_RIGHT:
-			_cancel_way()
+			_cancel_span()
 			get_viewport().set_input_as_handled()
 			return
 
@@ -1341,13 +1550,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		if _build_kind >= 0:
 			_cancel_placement()
 			return
-		if _way_grade >= 0:
-			_cancel_way()
+		if _laying():
+			_cancel_span()
 			return
 		# Then the inspector, for the same reason: escape means "put down what
 		# you are holding" before it means "leave the game".
 		if _screen == Screen.PLAYING and inspector.is_open():
 			inspector.close_panel()
+			return
+		if _screen == Screen.PLAYING and vehicle_panel.is_open():
+			vehicle_panel.close_panel()
 			return
 		match _screen:
 			Screen.PLAYING:
@@ -1382,6 +1594,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		_set_screen(Screen.FINANCE)
 	elif event.keycode == KEY_J:
 		_set_screen(Screen.JOURNAL)
+	elif event.keycode == KEY_Y:
+		_set_screen(Screen.YEAR)
 	elif speeds.has(event.keycode):
 		republic.set_speed(speeds[event.keycode])
 	elif event.keycode == KEY_SPACE:
@@ -2105,6 +2319,97 @@ func _refresh_roads() -> void:
 	roads_node.mesh = mesh
 
 
+## Ways that have been ordered and are not drivable yet.
+##
+## **The HUD could say there were three and never where.** A road site routes
+## nothing -- a lorry will not touch it until the last builder-day is paid -- so
+## a player who ordered a road and sees no road on the map has no way to tell an
+## order that is being worked from an order that was refused, or from one whose
+## crews never arrived. Utility sites have been drawn since the grid landed; this
+## is the same fact about the other network, and it was the one missing.
+##
+## Its own mesh rather than a surface on the roads, because the two change on
+## completely different schedules: a road segment moves when one is built or a
+## lamp goes out, and a site's progress moves every tick a builder works on it.
+## Sharing a mesh would mean rebuilding every road in the republic to advance one
+## bar.
+func _refresh_road_sites() -> void:
+	var flat: PackedFloat32Array = republic.road_sites()
+	var stride := 6
+	@warning_ignore("integer_division")
+	var count: int = flat.size() / stride
+	# **Progress is in the stamp, and quantised.** Unlike a road, a site changes
+	# every tick a builder is on it, so a count alone would freeze the bar and a
+	# raw float would rebuild sixty times a second to move it a hair. Two
+	# hundredths is finer than the eye reads at map height and coarser than a
+	# day's work on anything worth ordering.
+	var stamp := count * 7919
+	for i in count:
+		stamp = stamp * 211 + int(clampf(flat[i * stride + 4], 0.0, 1.0) * 200.0)
+	if stamp == _sites_shown:
+		return
+	_sites_shown = stamp
+	if count == 0:
+		road_sites_node.mesh = null
+		return
+	var mesh := ImmediateMesh.new()
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, mat)
+	for i in count:
+		var o := i * stride
+		var a := Vector3(flat[o], 0.0, flat[o + 1])
+		var b := Vector3(flat[o + 2], 0.0, flat[o + 3])
+		var progress: float = clampf(flat[o + 4], 0.0, 1.0)
+		var kph: float = flat[o + 5]
+		# The width the finished road will have, from the same limit the built
+		# ones read. A site that drew at one width would misreport what is coming.
+		var half: float = lerpf(2.6, 4.4, clampf((kph - 25.0) / 35.0, 0.0, 1.0))
+		# **Drawn as the road being made, from the near end**: the share that is
+		# paid for in the road's own colour, and the rest pegged out in survey
+		# ochre at the same width, so the shape of the finished way is legible
+		# before any of it exists.
+		#
+		# The two differ by *colour* and not by width, which is a correction made
+		# off a rendered frame. The first version drew the unbuilt stretch half
+		# as wide and a quarter as strong -- and at the height this camera
+		# actually sits at, a road is one pixel across, so half a road is half a
+		# pixel and the whole distinction vanished into the anti-aliasing. Both
+		# halves were being drawn perfectly and the picture said nothing.
+		var done: Vector3 = a.lerp(b, progress)
+		if progress > 0.001:
+			_stepped_span(mesh, a, done, Color(_look.road_dirt, 0.95), half, 0.45)
+		if progress < 0.999:
+			_stepped_span(mesh, done, b, PEGGED_OUT, half, 0.45)
+	mesh.surface_end()
+	road_sites_node.mesh = mesh
+
+
+## A ribbon between two points that follows the ground under it.
+##
+## `_span` samples the height at each end only, which is right for the short
+## segments a built network is already cut into and wrong for a site: an ordered
+## road is one span of any length, and a flat quad over a valley either floats
+## over it or disappears into the hillside. Stepped at the same 40 m the laying
+## ghost uses, for the same reason -- what the player is asking is whether the
+## line goes where they think it does.
+func _stepped_span(
+	mesh: ImmediateMesh, a: Vector3, b: Vector3, tone: Color, half: float, lift: float
+) -> void:
+	var along := b - a
+	along.y = 0.0
+	if along.length() < 0.5:
+		return
+	var steps: int = clampi(int(along.length() / 40.0), 1, 64)
+	for i in steps:
+		var p := a.lerp(b, float(i) / float(steps))
+		var q := a.lerp(b, float(i + 1) / float(steps))
+		_span(mesh, p.x, p.z, q.x, q.z, tone, half, lift)
+
+
 ## Lamp posts, as a second surface on the road mesh.
 ##
 ## **Emissive geometry rather than `OmniLight3D` nodes**, and that is a measured
@@ -2269,16 +2574,39 @@ const TRAM_TONE := Color(0.52, 0.48, 0.44)
 const METRO_TONE := Color(0.46, 0.38, 0.52, 0.55)
 
 
-## In the order `Utility::ALL` declares: power, heat, conveyor, pipeline.
+## In the order `Utility::ALL` declares: power, heat, conveyor, pipeline,
+## trolley wire.
 ##
-## Four distinct hues rather than a ramp, because these are categories and not a
+## Five distinct hues rather than a ramp, because these are categories and not a
 ## quantity -- a player has to be able to tell a belt from a pipe at a glance,
 ## and two shades of the same colour would read as "more of the same thing".
+##
+## **Checked against the roster on load rather than trusted.** `Utility::ALL`
+## went from two to five while this list stayed at four, and the fifth drew in
+## the fallback white -- which looks like a rendering choice rather than like a
+## missing row, and is exactly the silent fallback the project's own rules warn
+## about. `_check_lines` is what makes the next one fail loudly.
+## A stretch of way that has been ordered and not yet made.
+##
+## Scraped clay, at the width the finished road will have. It reads as a line
+## pegged out across the ground rather than as a pale road, which is the whole
+## job: a player who ordered a road and sees nothing has no way to tell work in
+## hand from an order that was refused.
+##
+## **Clay rather than the survey ochre this was first drawn in.** Ochre put it
+## within a shade of `UTILITY_TONES`' power line, and a pegged-out road that
+## looks like a wire is worse than no marking at all. Every other span on the
+## map has a hue of its own and this one has to as well — and being kin to the
+## dirt road it is about to become is the right kinship for it to have.
+const PEGGED_OUT := Color(0.74, 0.54, 0.30, 0.55)
+
+
 const UTILITY_TONES := [
 	Color(0.86, 0.80, 0.42),  # power: overhead line
 	Color(0.78, 0.42, 0.32),  # heat: hot main
 	Color(0.55, 0.60, 0.66),  # conveyor: steel belt
 	Color(0.44, 0.56, 0.44),  # pipeline: painted pipe
+	Color(0.62, 0.56, 0.72),  # trolley wire: thin overhead
 ]
 
 
@@ -2329,6 +2657,11 @@ func _refresh_status() -> void:
 func _refresh_inspector() -> void:
 	if inspector.is_open():
 		inspector.refresh()
+	# The vehicle panel wants it more than the building one does: a lorry moves
+	# every frame, and its distance-left, its leg and its bogging odds all move
+	# with it.
+	if vehicle_panel.is_open():
+		vehicle_panel.refresh()
 
 
 ## Overlays are rebuilt on the day boundary rather than per frame.
@@ -2394,17 +2727,31 @@ func _cursor_ground() -> Vector3:
 	return hit
 
 
-## Open the inspector on whatever is under the cursor, or close it.
+## Open a panel on whatever is under the cursor, or close both.
 ##
 ## **Asks the simulation what is there rather than testing the drawn geometry.**
 ## `building_at` runs the same footprint rule placement refuses to overlap, so a
 ## building that is visibly standing somewhere is always selectable there — a hit
 ## test written here against the `MultiMesh` transforms would be a second copy of
-## that rule, and it is the copy that drifts.
+## that rule, and it is the copy that drifts. `vehicle_at` answers from the same
+## positions the renderer draws from, for the same reason.
 ##
-## Clicking open ground closes the panel, which is what a player means by it.
+## **Vehicles are tried first, and that is the right way round.** A lorry parked
+## in its garage's yard stands inside a footprint, so a building-first pick would
+## make every parked vehicle in the republic unclickable — and the parked ones
+## are exactly the ones a player wants to ask about. A moving lorry is never
+## inside a footprint, so the order costs a building click nothing.
+##
+## Clicking open ground closes whatever is up, which is what a player means by it.
 func _pick_building() -> void:
 	var at := _cursor_ground()
+	var vehicle := republic.vehicle_at(at.x, at.z, vehicle_panel.PICK_RADIUS)
+	if vehicle >= 0:
+		inspector.close_panel()
+		vehicle_panel.open(republic, vehicle)
+		audio.play("click")
+		return
+	vehicle_panel.close_panel()
 	var id := republic.building_at(at.x, at.z)
 	if id <= 0:
 		inspector.close_panel()
@@ -2517,51 +2864,92 @@ func _commit_placement() -> void:
 ## which on a map that now starts empty means a republic could put up a factory
 ## and never connect it to anything.
 func _begin_way(grade: int, lamps: bool) -> void:
+	_begin_span()
+	_span_grade = grade
+	_span_lamps = lamps
+
+
+## Start stringing a line: the same two clicks, for the other network.
+##
+## **`order_line` was in exactly the state `order_way` had been in.** A republic
+## could raise a power station and had no way to run a wire out of it, so every
+## building beyond a plant's own reach was dark for ever and the whole utility
+## module -- ordered spans, a bill of materials per kilometre, a crew that builds
+## them, loss over the length of the network -- was reachable from the simulation
+## and from nowhere a player goes.
+##
+## The same tool rather than a second one, because it is the same act: two points
+## on the ground and something laid between them. What differs is the command it
+## ends in and how the band is drawn.
+func _begin_line(kind: int) -> void:
+	_begin_span()
+	_span_line = kind
+
+
+## The half the two share: put down whatever is in hand and raise the band.
+func _begin_span() -> void:
 	_cancel_placement()
-	_way_grade = grade
-	_way_lamps = lamps
-	_way_started = false
+	_cancel_span()
 	_set_screen(Screen.PLAYING)
-	if _way_ghost == null:
-		_way_ghost = MeshInstance3D.new()
+	if _span_ghost == null:
+		_span_ghost = MeshInstance3D.new()
 		var mat := StandardMaterial3D.new()
 		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		mat.vertex_color_use_as_albedo = true
-		_way_ghost.material_override = mat
-		add_child(_way_ghost)
-	_way_ghost.visible = true
+		_span_ghost.material_override = mat
+		add_child(_span_ghost)
+	_span_ghost.visible = true
 
 
-func _cancel_way() -> void:
-	_way_grade = -1
-	_way_started = false
-	if _way_ghost != null:
-		_way_ghost.visible = false
+## Is there a span in hand at all? Either kind counts.
+func _laying() -> bool:
+	return _span_grade >= 0 or _span_line >= 0
+
+
+func _cancel_span() -> void:
+	_span_grade = -1
+	_span_line = -1
+	_span_started = false
+	if _span_ghost != null:
+		_span_ghost.visible = false
 	hud.set_placing("", "")
 
 
-## First click sets the near end, second orders the way and starts the next one
-## from where this ended -- so a chain of road is a chain of clicks.
-func _click_way() -> void:
+## First click sets the near end, second orders the span and starts the next one
+## from where this ended -- so a chain of road, or of wire, is a chain of clicks.
+func _click_span() -> void:
 	var at := _cursor_ground()
-	if not _way_started:
-		_way_from = at
-		_way_started = true
+	if not _span_started:
+		_span_from = at
+		_span_started = true
 		return
-	var why := String(
-		republic.order_way(_way_grade, _way_from.x, _way_from.z, at.x, at.z, _way_lamps)
-	)
-	hud.set_placing(_way_label(), why)
+	var why := ""
+	if _span_line >= 0:
+		why = String(
+			republic.order_line(_span_line, _span_from.x, _span_from.z, at.x, at.z)
+		)
+	else:
+		why = String(
+			republic.order_way(_span_grade, _span_from.x, _span_from.z, at.x, at.z, _span_lamps)
+		)
+	hud.set_placing(_span_label(), why)
 	if why == "":
+		# A line site is drawn off `_lines_shown` and a way site off
+		# `_sites_shown`; both count what the simulation reports, so both notice
+		# the new order on their own. The road mesh does not -- a promoted track
+		# is the only thing that changes it -- so it is told.
 		_roads_shown = -1
-		_way_from = at
+		_span_from = at
 
 
-func _way_label() -> String:
+func _span_label() -> String:
+	if _span_line >= 0:
+		var lines := republic.utility_names()
+		return String(lines[_span_line]) if _span_line < lines.size() else "line"
 	var names := republic.grade_names()
-	var name := String(names[_way_grade]) if _way_grade < names.size() else "way"
-	return "%s%s" % [name, " with lamps" if _way_lamps else ""]
+	var name := String(names[_span_grade]) if _span_grade < names.size() else "way"
+	return "%s%s" % [name, " with lamps" if _span_lamps else ""]
 
 
 ## The rubber band between the first click and the cursor.
@@ -2569,21 +2957,26 @@ func _way_label() -> String:
 ## Drawn rather than described, because the whole question a player is asking
 ## while laying a road is "does this line go where I think it does" -- and on
 ## ground with relief in it, an unlit line at a fixed height would answer wrongly.
-func _update_way() -> void:
-	if _way_grade < 0 or _way_ghost == null:
+func _update_span() -> void:
+	if not _laying() or _span_ghost == null:
 		return
 	var at := _cursor_ground()
-	if not _way_started:
-		hud.set_placing(_way_label(), "click the near end")
-		_way_ghost.mesh = null
+	if not _span_started:
+		hud.set_placing(_span_label(), "click the near end")
+		_span_ghost.mesh = null
 		return
 	var mesh := ImmediateMesh.new()
-	var along := at - _way_from
+	var along := at - _span_from
 	along.y = 0.0
 	if along.length() > 0.5:
-		var side := along.normalized().cross(Vector3.UP).normalized() * 3.5
-		var lift := Vector3(0.0, 0.6, 0.0)
-		var tone := Color(0.45, 0.85, 0.5, 0.5)
+		# A wire is not a road, and the band says so before the first click
+		# lands: narrower, higher off the ground, and in the tone the strung
+		# spans are already drawn in rather than the road green.
+		var wire := _span_line >= 0
+		var side := along.normalized().cross(Vector3.UP).normalized() * (1.6 if wire else 3.5)
+		var lift := Vector3(0.0, 6.0 if wire else 0.6, 0.0)
+		var tone := _utility_tone(_span_line) if wire else Color(0.45, 0.85, 0.5, 0.5)
+		tone.a = 0.5
 		mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, null)
 		# Stepped along the ground rather than a single quad, so the band follows
 		# the relief it is being drawn over.
@@ -2591,8 +2984,8 @@ func _update_way() -> void:
 		for i in steps:
 			var t0 := float(i) / float(steps)
 			var t1 := float(i + 1) / float(steps)
-			var a := _way_from.lerp(at, t0)
-			var b := _way_from.lerp(at, t1)
+			var a := _span_from.lerp(at, t0)
+			var b := _span_from.lerp(at, t1)
 			a.y = _ground_height(a.x, a.z)
 			b.y = _ground_height(b.x, b.z)
 			var p0 := a - side + lift
@@ -2603,10 +2996,10 @@ func _update_way() -> void:
 				mesh.surface_set_color(tone)
 				mesh.surface_add_vertex(v)
 		mesh.surface_end()
-	_way_ghost.mesh = mesh
+	_span_ghost.mesh = mesh
 	hud.set_placing(
-		_way_label(),
-		"%.0f m  ·  click the far end, right click or esc to stop" % _way_from.distance_to(at)
+		_span_label(),
+		"%.0f m  ·  click the far end, right click or esc to stop" % _span_from.distance_to(at)
 	)
 
 

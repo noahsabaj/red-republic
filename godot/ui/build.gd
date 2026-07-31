@@ -40,6 +40,9 @@ signal chose(kind: int, market: int)
 ## Emitted when the player picks a way to lay. `lamps` asks for street lighting,
 ## which only paved road may carry.
 signal chose_way(grade: int, lamps: bool)
+## Emitted when the player picks a kind of line to string, by its place in
+## `Utility::ALL`.
+signal chose_line(kind: int)
 signal closed
 
 ## The two tables' columns. Head and rows read the same arrays, which is what
@@ -57,12 +60,26 @@ const WAY_COLUMNS := [
 	["days / km", 1.3, HORIZONTAL_ALIGNMENT_RIGHT],
 	["", 2.4, HORIZONTAL_ALIGNMENT_RIGHT],
 ]
+const LINE_COLUMNS := [
+	["line", 1.9],
+	["reach", 1.0, HORIZONTAL_ALIGNMENT_RIGHT],
+	["days / km", 1.1, HORIZONTAL_ALIGNMENT_RIGHT],
+	["", 2.2, HORIZONTAL_ALIGNMENT_RIGHT],
+]
+
+## The layout of `tables::utility_table`.
+const U_LABOUR := 0
+const U_REACH := 1
+const U_LOSS := 2
+const U_THROUGHPUT := 3
+const U_CARRIES := 4
 
 ## How wide the two action buttons are held at, so that a column of them is a
 ## column. Both are as wide as their longest label needs and no wider.
 const CONTRACT_WIDTH := 168
 const LAMPS_WIDTH := 128
 const LAY_WIDTH := 64
+const STRING_WIDTH := 80
 
 var _republic: Republic = null
 var _purse: Label = null
@@ -127,16 +144,37 @@ func _build() -> void:
 	for kind in _republic.building_kind_count():
 		_building_row(buildings, kind, facts_of.call(kind), kind % 2 == 1)
 
-	var right := Parts.section(
+	var middle := Parts.section(
 		columns,
 		"Ways",
 		"Laid between two points, in your own materials and your own builder-days. "
 		+ "Street lighting draws off the grid and is what lets a night shift walk home.",
+		1.4
+	)
+	Parts.head(middle, WAY_COLUMNS)
+	_way_rows(Parts.scroller(middle))
+	middle.add_child(Parts.gap(P.GAP_TIGHT))
+	middle.add_child(Parts.prose(_lamp_bill(), "Faint"))
+
+	# **A third column rather than a second table under the ways**, and that is
+	# a layout decision taken off a rendered frame: stacked, each list had room
+	# for two rows of six and the republic's whole choice of way and line was
+	# below a fold in a panel a metre wide.
+	#
+	# Lines were unreachable in exactly the way ways had been. `order_line` was
+	# on the shell and no `.gd` file called it, so a republic could raise a power
+	# station and never run a wire out of it — the same shape `place` and
+	# `order_way` were in before this screen existed.
+	var right := Parts.section(
+		columns,
+		"Lines",
+		"A plant lights only what it is strung to and a boiler warms only what a "
+		+ "main runs past. Reach is how far a building may stand from the line and "
+		+ "still be on it; loss is what the length of the whole network costs you.",
 		1.5
 	)
-	Parts.head(right, WAY_COLUMNS)
-	var ways := Parts.scroller(right)
-	_way_rows(ways)
+	Parts.head(right, LINE_COLUMNS)
+	_line_rows(Parts.scroller(right))
 
 	Sheet.close_button(sheet["footer"], "BACK", close)
 
@@ -244,6 +282,88 @@ func _way_rows(into: VBoxContainer) -> void:
 		plain.pressed.connect(func(): _pick_way(grade, false))
 		actions.add_child(plain)
 		line.add_child(Parts.cell(actions, WAY_COLUMNS[3][1]))
+
+
+## Power, heat, belts, pipelines and trolley wire — everything strung between two
+## points.
+##
+## The same four columns the ways table has, for the same reason: this is a
+## chooser, and what is chosen between is reach, cost and what the thing is good
+## for. The bill of materials is in the reference beside the grades' own, where a
+## list of a different length per row does not have to fit in a column.
+func _line_rows(into: VBoxContainer) -> void:
+	var names := _republic.utility_names()
+	var facts: PackedFloat32Array = _republic.utility_table()
+	var stride: int = _republic.utility_stride()
+	for kind in names.size():
+		var o := kind * stride
+		if o + stride > facts.size():
+			break
+		var line := Parts.row(into, kind % 2 == 1)
+		line.add_child(Parts.cell(
+			Parts.say(String(names[kind]), "Small"), LINE_COLUMNS[0][1]
+		))
+		line.add_child(Parts.cell(
+			Parts.figure("%.0f m" % facts[o + U_REACH]),
+			LINE_COLUMNS[1][1],
+			HORIZONTAL_ALIGNMENT_RIGHT
+		))
+		line.add_child(Parts.cell(
+			Parts.figure("%.0f" % facts[o + U_LABOUR]),
+			LINE_COLUMNS[2][1],
+			HORIZONTAL_ALIGNMENT_RIGHT
+		))
+
+		var actions := HBoxContainer.new()
+		actions.alignment = BoxContainer.ALIGNMENT_END
+		actions.add_theme_constant_override("separation", P.GAP_TIGHT)
+		# **What a kind of line is *for* differs, and the difference is the
+		# choice.** A belt and a pipeline are a throughput; power and heat are
+		# neither, because what they carry is not tonnage — what matters about
+		# them is what the span leaks over its length, which is the whole
+		# argument for siting a plant near what it serves.
+		actions.add_child(Parts.say(
+			"%s t / day" % Parts.clean(facts[o + U_THROUGHPUT])
+			if facts[o + U_CARRIES] > 0.5
+			else "%.1f%% lost / km" % (facts[o + U_LOSS] * 100.0),
+			"Faint"
+		))
+		var string_it := Parts.button("STRING")
+		string_it.custom_minimum_size = Vector2(STRING_WIDTH, P.BUTTON_HEIGHT)
+		string_it.pressed.connect(func(): _pick_line(kind))
+		actions.add_child(string_it)
+		line.add_child(Parts.cell(actions, LINE_COLUMNS[3][1]))
+
+
+func _pick_line(kind: int) -> void:
+	visible = false
+	chose_line.emit(kind)
+
+
+## What a kilometre of street lighting costs on top of the road under it.
+##
+## **One sentence under the table rather than a column, because it is one price.**
+## Lamps are a variant of the road and the bill is the same whichever grade
+## carries them, so a per-row column would print the identical figures on every
+## line that has the button. Without it WITH LAMPS was a button that spent
+## builder-days, steel, electronics and megawatts and named none of them --
+## which is the one thing a player has to know before pressing it, because the
+## draw is permanent and comes off a grid that may not have it.
+func _lamp_bill() -> String:
+	var bill: PackedFloat32Array = _republic.lamp_cost()
+	if bill.size() < 2:
+		return ""
+	var names: PackedStringArray = _republic.resource_names()
+	var goods := PackedStringArray()
+	var i := 2
+	while i + 1 < bill.size():
+		var resource := int(bill[i])
+		if resource >= 0 and resource < names.size():
+			goods.append("%s t %s" % [Parts.clean(bill[i + 1]), String(names[resource]).to_lower()])
+		i += 2
+	return "Lamps add %s builder-days and %s to every kilometre, and draw %.2f MW off the grid once they are burning." % [
+		Parts.clean(bill[0]), ", ".join(goods), bill[1],
+	]
 
 
 func _pick_way(grade: int, lamps: bool) -> void:
