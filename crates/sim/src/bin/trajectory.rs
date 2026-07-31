@@ -413,7 +413,25 @@ fn main() {
     }
 
     println!();
-    println!("roster:");
+    // **Say when this was taken, because it is one instant and not a summary.**
+    // The founding is the first of March, so a run of whole years always lands
+    // back in March -- and in March nothing grows. A farm reads as producing
+    // nothing, a food factory reads `no crops`, and a silo that fed the town all
+    // winter reads empty, every one of which is what a *working* food chain
+    // looks like at the end of a winter.
+    //
+    // That cost a wrong conclusion on 2026-07-31: I read `no crops` off this
+    // line, decided a standing order at a grain silo delivered nothing, and
+    // recorded it as a defect. It was a seasonal system sampled in the one month
+    // of the year where the reading means nothing. `tests/opening.rs` takes
+    // peaks and totals for exactly this reason and this did not.
+    println!(
+        "roster on {:04}-{:02}-{:02} — one instant, and a seasonal republic reads",
+        world.clock().date().year,
+        world.clock().date().month,
+        world.clock().date().day
+    );
+    println!("differently in February than in July:");
     for b in world.buildings().all() {
         let d = b.def();
         let mut why: Vec<String> = Vec::new();
