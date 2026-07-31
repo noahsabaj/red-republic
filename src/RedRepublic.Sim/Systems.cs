@@ -51,7 +51,10 @@ public static class Systems
         new("contracts", [MutationKind.Contract, MutationKind.Money], ContractsPass),
         new("loans", [MutationKind.Loan, MutationKind.Money], LoansPass),
         new("wages", [MutationKind.Money], Wages),
+        new("contracting", [MutationKind.Money], Contracting),
         new("contentment", [MutationKind.Contentment], ContentmentPass),
+        new("schooling", [MutationKind.Schooling], Schooling),
+        new("demography", [MutationKind.Demography], Demography),
         new("morale", [MutationKind.Morale], Morale),
         new("tracks", [MutationKind.Wear], Tracks),
     ];
@@ -71,6 +74,7 @@ public static class Systems
         new("heating", [MutationKind.Heated], Heating),
         new("construction", [MutationKind.Build, MutationKind.Consume], Construction),
         new("production", [MutationKind.Extract, MutationKind.Consume, MutationKind.Produce], Production),
+        new("households", [MutationKind.Consume], Households),
     ];
 
     /// <summary>
@@ -142,6 +146,15 @@ public static class Systems
 
                 case MutationKind.Build:
                     world.Buildings.AddWork(m.Subject, m.Amount);
+                    break;
+
+                case MutationKind.Contentment:
+                case MutationKind.Morale:
+                case MutationKind.Demography:
+                case MutationKind.Schooling:
+                    // Censuses rather than changes: the pass has already
+                    // written what it decided, and the mutation records that
+                    // it ran so the journal and a replay can see it.
                     break;
 
                 case MutationKind.Weather:
@@ -525,6 +538,339 @@ public static class Systems
     {
         world.Lattice.Fade(world.Tables.WearFadePerDay);
         return [];
+    }
+
+
+    /// <summary>
+    /// People take what they need off a shelf within reach.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Within reach is the whole mechanic.</b> A republic with a full
+    /// warehouse and no shop near the housing is a republic whose people go
+    /// hungry, and that is the point: goods have to be somewhere, and getting
+    /// them somewhere is what lorries are for.
+    /// </para>
+    /// <para>
+    /// Shops are drawn on nearest first, ties by id, so two runs of the same
+    /// republic empty the same shelves in the same order.
+    /// </para>
+    /// <para>
+    /// Comforts are counted apart from wants. Falling short of food is a failure
+    /// and falling short of televisions is a missed opportunity, and contentment
+    /// applies them as a lift rather than as one more thing to be short of.
+    /// </para>
+    /// </remarks>
+    private static List<Mutation> Households(World world)
+    {
+        var t = world.Tables;
+        var taken = new List<Mutation>();
+        var perTick = 1.0 / SimClock.TicksPerDay;
+
+        var census = world.Citizens.CensusByHome();
+        if (census.Count == 0)
+        {
+            return taken;
+        }
+
+        var shops = new List<int>();
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (world.Buildings.IsBuilt(b) && t.Sells.LengthOf(world.Buildings.KindAt(b)) > 0)
+            {
+                shops.Add(b);
+            }
+        }
+
+        if (shops.Count == 0)
+        {
+            return taken;
+        }
+
+        var alcohol = t.ResourceIndex("Alcohol");
+        var wants = new[]
+        {
+            (Resource: t.ResourceIndex("Food"), PerHead: t.FoodPerCitizen),
+            (Resource: t.ResourceIndex("Clothes"), PerHead: t.ClothesPerCitizen),
+            (Resource: alcohol, PerHead: t.AlcoholPerCitizen),
+            (Resource: t.ResourceIndex("Electronics"), PerHead: t.ElectronicsPerCitizen),
+        };
+
+        // Homes in id order, so the republic serves the same estates first every
+        // run rather than in whatever order the census happened to be built.
+        foreach (var homeId in census.Keys.Order())
+        {
+            var home = world.Buildings.IndexOf(homeId);
+            if (home < 0 || census[homeId].Residents == 0)
+            {
+                continue;
+            }
+
+            var residents = census[homeId].Residents;
+            var reachable = new List<(double Gap, int Shop)>();
+            foreach (var shop in shops)
+            {
+                var gap = Units.Distance(
+                    world.Buildings.XAt(shop), world.Buildings.YAt(shop),
+                    world.Buildings.XAt(home), world.Buildings.YAt(home));
+                if (gap <= t.ServiceRadius)
+                {
+                    reachable.Add((gap, shop));
+                }
+            }
+
+            reachable.Sort((a, b) =>
+            {
+                var byGap = a.Gap.CompareTo(b.Gap);
+                return byGap != 0
+                    ? byGap
+                    : world.Buildings.IdAt(a.Shop).CompareTo(world.Buildings.IdAt(b.Shop));
+            });
+
+            var met = 0.0;
+            var wanted = 0.0;
+            var comfortShare = 0.0;
+            var comforts = 0;
+            var drink = 0.0;
+
+            foreach (var (resource, perHead) in wants)
+            {
+                var need = residents * perHead * perTick;
+                var got = 0.0;
+                var outstanding = need;
+
+                foreach (var (_, shop) in reachable)
+                {
+                    if (outstanding <= 0.0)
+                    {
+                        break;
+                    }
+
+                    var off = Math.Min(world.Buildings.Stock.Get(shop, resource), outstanding);
+                    if (off > 0.0)
+                    {
+                        outstanding -= off;
+                        got += off;
+                        taken.Add(Mutation.Consume(shop, resource, off));
+                    }
+                }
+
+                var share = need > 0.0 ? Math.Clamp(got / need, 0.0, 1.0) : 1.0;
+                if (t.ResourceIsComfort[resource])
+                {
+                    comfortShare += share;
+                    comforts++;
+                    if (resource == alcohol)
+                    {
+                        drink = share;
+                    }
+                }
+                else
+                {
+                    wanted += need;
+                    met += got;
+                }
+            }
+
+            world.Buildings.SetProvisioned(
+                home, wanted > 0.0 ? Math.Clamp(met / wanted, 0.0, 1.0) : 1.0);
+            world.Buildings.SetComforted(home, comforts > 0 ? comfortShare / comforts : 0.0);
+            world.Buildings.SetDrink(home, drink);
+        }
+
+        return taken;
+    }
+
+    /// <summary>
+    /// What a contracted firm charges for a day's work.
+    /// </summary>
+    /// <remarks>
+    /// Several times what your own crews cost, which is the entire argument for
+    /// building a Construction Office and training people. A republic that never
+    /// stops contracting is a republic spending its grant on what it could have
+    /// done itself — and that is a decision the player gets to make badly.
+    /// </remarks>
+    private static List<Mutation> Contracting(World world)
+    {
+        var t = world.Tables;
+        var owed = new double[2];
+
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            var market = world.Buildings.ContractorAt(b);
+            if (market < 0 || world.Buildings.IsBuilt(b))
+            {
+                continue;
+            }
+
+            owed[market] += t.ContractorDays * t.ContractorRate;
+        }
+
+        var mutations = new List<Mutation>();
+        for (var m = 0; m < owed.Length; m++)
+        {
+            if (owed[m] > 0.0)
+            {
+                mutations.Add(Mutation.Money((Market)m, -owed[m]));
+            }
+        }
+
+        return mutations;
+    }
+
+    /// <summary>
+    /// Who is born and who dies.
+    /// </summary>
+    /// <remarks>
+    /// <b>A household decides whether to have a child by how the republic is
+    /// treating it today</b>, which is why this runs after contentment. Nobody
+    /// outlives the oldest age, and a republic cannot grow into housing it has
+    /// not built.
+    /// </remarks>
+    private static List<Mutation> Demography(World world)
+    {
+        var t = world.Tables;
+        var today = world.Clock.DayIndex;
+        var born = 0;
+        var died = 0;
+
+        // Backwards, so removing somebody does not skip the next.
+        for (var c = world.Citizens.Count - 1; c >= 0; c--)
+        {
+            // Birthdays are spread over the year by id, because a cohort that
+            // ages together dies together and that sawtooth is an artefact.
+            if (world.Citizens.BirthdayAt(c) == today % SimClock.DaysPerYear)
+            {
+                world.Citizens.SetAge(c, world.Citizens.AgeAt(c) + 1);
+            }
+
+            var age = world.Citizens.AgeAt(c);
+            var frailty = age >= t.Oldest
+                ? 1.0
+                : (1.0 - world.Citizens.HealthAt(c)) * 0.0004 * (age / 40.0);
+
+            if (world.Rng.NextDouble() < frailty)
+            {
+                world.Citizens.RemoveAt(c);
+                died++;
+            }
+        }
+
+        foreach (var (homeId, row) in world.Citizens.CensusByHome())
+        {
+            var home = world.Buildings.IndexOf(homeId);
+            if (home < 0 || row.WorkingAge < 2)
+            {
+                continue;
+            }
+
+            if (world.Buildings.ContentmentAt(home).Overall(t) < t.BirthsNeed)
+            {
+                continue;
+            }
+
+            if (row.Residents >= t.BResidents[world.Buildings.KindAt(home)])
+            {
+                continue;
+            }
+
+            var odds = row.WorkingAge / 2 * t.BirthsPerPairYear / SimClock.DaysPerYear;
+            if (world.Rng.NextDouble() < odds)
+            {
+                world.Citizens.Add(homeId, 0, 0, 1.0, Citizens.ArrivingLoyalty);
+                born++;
+            }
+        }
+
+        return born + died > 0
+            ? [new Mutation(MutationKind.Demography, born, died, -1, 0.0, 0.0)]
+            : [];
+    }
+
+    /// <summary>
+    /// A day at school, for anyone of school age with a place to go.
+    /// </summary>
+    /// <remarks>
+    /// Attendance is what makes a school worth building: a republic that never
+    /// builds one raises a generation that cannot run its own mines.
+    /// </remarks>
+    private static List<Mutation> Schooling(World world)
+    {
+        var t = world.Tables;
+        var taught = 0;
+
+        var schools = new List<(int Building, int Teaches, int Places)>();
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (!world.Buildings.IsBuilt(b))
+            {
+                continue;
+            }
+
+            var teaches = t.BTeaches[world.Buildings.KindAt(b)];
+            if (teaches >= 0 && world.Buildings.Staffing(b) > 0.0)
+            {
+                schools.Add((b, teaches, t.BWorkers[world.Buildings.KindAt(b)] * 12));
+            }
+        }
+
+        if (schools.Count == 0)
+        {
+            return [];
+        }
+
+        var places = new int[schools.Count];
+        for (var i = 0; i < schools.Count; i++)
+        {
+            places[i] = schools[i].Places;
+        }
+
+        for (var c = 0; c < world.Citizens.Count; c++)
+        {
+            var age = world.Citizens.AgeAt(c);
+            var wantsSchool = age >= t.SchoolAgeFrom && age < t.SchoolAgeTo;
+            var wantsUniversity = !wantsSchool
+                && age >= t.UniversityAgeFrom && age < t.UniversityAgeTo
+                && world.Citizens.EducationAt(c) == Education.Schooled;
+
+            if (!wantsSchool && !wantsUniversity)
+            {
+                continue;
+            }
+
+            var home = world.Buildings.IndexOf(world.Citizens.HomeAt(c));
+            if (home < 0)
+            {
+                continue;
+            }
+
+            var wanted = wantsUniversity ? 1 : 0;
+            for (var i = 0; i < schools.Count; i++)
+            {
+                if (schools[i].Teaches != wanted || places[i] <= 0)
+                {
+                    continue;
+                }
+
+                var gap = Units.Distance(
+                    world.Buildings.XAt(schools[i].Building),
+                    world.Buildings.YAt(schools[i].Building),
+                    world.Buildings.XAt(home), world.Buildings.YAt(home));
+
+                if (gap > t.ServiceRadius)
+                {
+                    continue;
+                }
+
+                places[i]--;
+                world.Citizens.AddSchoolDay(c);
+                world.Citizens.SetStudying(c, wantsUniversity);
+                taught++;
+                break;
+            }
+        }
+
+        return taught > 0 ? [new Mutation(MutationKind.Schooling, taught, 0, -1, 0.0, 0.0)] : [];
     }
 
     // ---- per tick ----
