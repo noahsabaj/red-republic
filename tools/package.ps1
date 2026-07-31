@@ -171,6 +171,9 @@ Step 'generating the export preset'
 #
 # `exclude_filter` drops icon.ico from the pack: the executable's icon is read
 # from disk at export time, so packing it as well would ship the same 19 kB twice.
+# It also drops `tools/`, which holds the generator that writes `ui/theme.tres`.
+# The generated resource ships; the generator is a development tool and has no
+# business in a player's install.
 $preset = @"
 [preset.0]
 
@@ -182,7 +185,7 @@ dedicated_server=false
 custom_features=""
 export_filter="all_resources"
 include_filter=""
-exclude_filter="icon.ico"
+exclude_filter="icon.ico,tools/*"
 export_path=""
 encryption_include_filters=""
 encryption_exclude_filters=""

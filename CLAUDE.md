@@ -54,6 +54,8 @@ The 1.x TypeScript build is frozen at `D:\archive`. It is a **balance reference 
 - **Balance lives in data, behaviour lives in systems.** A list of entity ids inside logic is a smell — whatever you forget to edit lands silently in a fallback. Author the property beside the fields it relates to and guard it so an unauthored case fails the build.
 - **Where a rule can be enforced in code, build the enforcement instead of writing it here.** Prefer making an invalid state unrepresentable over guarding against it.
 - **Never hand the UI a dictionary per entity; hand it a packed array and slice it.** Keep the engine-owned views coarse.
+- **The interface is Godot's, entirely.** Rust hands over figures, names and indices; every sentence a player reads, and every decision about what a screen looks like, is in `godot/ui/`. A `String` crossing the boundary is either a name authored beside the thing it names or a refusal the simulation wrote — never a heading, a label or a paragraph.
+- **One theme resource, and no screen styles itself.** `godot/ui/palette.gd` is where a colour or a measurement is chosen; `godot/ui/theme.tres` is generated from it and is the project's default theme, so a control is correct before any script touches it. A screen that sets a colour is either a missing theme variation or a mistake — the exception is tinting by what the simulation says, which reads the palette rather than typing a triple.
 
 ## Commands
 
@@ -63,3 +65,5 @@ The 1.x TypeScript build is frozen at `D:\archive`. It is a **balance reference 
 - `-- --screen <name>` renders one screen; `-- --shot <path>` captures a frame, aimed with `--pitch`, `--hour`, `--at`. **Never add `--headless` to a capture** — it waits for a frame that never arrives and spins silently for ever. **Look at the image.** Godot culls back faces, so geometry wound the wrong way renders as *nothing*, which reads as "not built yet" and never as "inside out".
 - **`pwsh tools/package.ps1`** — builds the Windows installer into `dist/`.
 - `python tools/build_icon.py` — regenerate the icon, only when the design changes.
+- **`godot --headless --path godot --script res://tools/build_theme.gd`** — rewrites `godot/ui/theme.tres` from `godot/ui/palette.gd`. Run it after touching the palette and commit both; nothing does it for you, and the editor and the game both read the committed resource.
+- `python tools/fetch_fonts.py` — re-download the PT faces, only when the type changes.

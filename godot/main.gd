@@ -307,7 +307,48 @@ func _found_default() -> void:
 		_check_building()
 		_check_labour()
 		_check_road()
+		_check_reference()
 		get_tree().quit()
+
+
+## Compile the reference and check every authored roster reaches it.
+##
+## **This is the guard that came across with the reference itself.** The document
+## used to be composed in Rust, where a unit test asserted that every building,
+## good, vehicle and grade appeared in it -- because there is no tutorial and no
+## advisor in this game, so anything the reference omits is something a player has
+## no way to find out.
+##
+## Composing it in GDScript makes an *omission* unrepresentable: the screen walks
+## `building_kind_count()` rather than a list of entries somebody wrote. What is
+## still representable is a section that composes to nothing at all -- a bad
+## index, an empty roster, a packed read whose stride moved -- and that failure
+## looks exactly like a screen nobody has opened yet. `cargo test` cannot see
+## GDScript, so it is checked here.
+func _check_reference() -> void:
+	reference.open(republic)
+	var names := ["how it works", "goods", "buildings", "vehicles", "ways"]
+	# Sampled from the rosters rather than typed: a name written here would be a
+	# second copy of the table, which is the whole thing the reference exists not
+	# to be. The *last* of each, because a truncated walk still emits the first.
+	var wanted := [
+		"",
+		String(republic.resource_names()[republic.resource_names().size() - 1]),
+		String(republic.building_kind_name(republic.building_kind_count() - 1)),
+		String(republic.vehicle_kind_names()[republic.vehicle_kind_names().size() - 1]),
+		String(republic.grade_names()[republic.grade_names().size() - 1]),
+	]
+	for i in names.size():
+		var text: String = reference.section_text(i)
+		if text.strip_edges() == "":
+			printerr("reference check FAILED: the %s section is empty" % names[i])
+			return
+		if wanted[i] != "" and not text.contains(wanted[i]):
+			printerr("reference check FAILED: %s is not in the %s section" % [
+				wanted[i], names[i],
+			])
+			return
+	print("reference check ok: %d sections, and the last of every roster is in one" % names.size())
 
 
 ## Contract a building and check one goes up.
@@ -754,7 +795,14 @@ func _refresh_continue() -> void:
 ## The reason this exists: three bugs in this scene got past every number and were
 ## caught only by looking at a rendered frame. Every screen M12 adds needs the same
 ## treatment, and it cannot get it unless a script can ask for one by name.
-func _open_named_screen(name: String) -> void:
+func _open_named_screen(spec: String) -> void:
+	# **A screen with tabs is more than one screen to look at.** `--screen
+	# reference:2` opens the third of them, for the same reason `--pitch`, `--hour`
+	# and `--at` exist: a capture you cannot aim is a check that answers without
+	# looking, and four fifths of the reference could not be rendered at all.
+	var parts := spec.split(":")
+	var name := parts[0]
+	var page := int(parts[1]) if parts.size() > 1 else 0
 	match name:
 		"menu":
 			_set_screen(Screen.MENU)
@@ -765,6 +813,7 @@ func _open_named_screen(name: String) -> void:
 			_open_stacked(Screen.SETTINGS, Screen.MENU)
 		"reference":
 			_open_stacked(Screen.REFERENCE, Screen.MENU)
+			reference.show_page(page)
 		"radio":
 			_open_stacked(Screen.RADIO, Screen.MENU)
 		"saves":

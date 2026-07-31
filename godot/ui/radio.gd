@@ -13,18 +13,22 @@ extends CanvasLayer
 ## Because the retrofit is the expensive part. A radio bolted on after the fact
 ## needs a bus, a volume control, a place in the pause menu, a way to survive a
 ## save and somewhere to put the transport -- and every one of those is cheaper
-## now, while the surrounding screens are being written, than later. What it
-## costs today is this file honestly saying there is nothing to play.
+## now, while the surrounding screens are being written, than later. What it costs
+## today is this file honestly saying there is nothing to play.
 ##
 ## It reads `user://radio` for `.ogg` and `.wav` files, so dropping a track in
 ## makes it appear with no code change. That is the whole content-drop claim, and
 ## the empty state below is what it looks like until somebody does.
 
-const Style := preload("res://ui/theme.gd")
+const P := preload("res://ui/palette.gd")
+const Parts := preload("res://ui/parts.gd")
+const Sheet := preload("res://ui/sheet.gd")
 
 ## Where composed tracks go. Under `user://` rather than in the project, so a
 ## track can be added to an installed game.
 const DIR := "user://radio"
+
+const COLUMNS := [["programme", 5.0], ["", 1.2, HORIZONTAL_ALIGNMENT_RIGHT]]
 
 signal closed
 
@@ -39,63 +43,43 @@ var _current := -1
 
 func _ready() -> void:
 	layer = 12
-	add_child(Style.backdrop(0.95))
 
 	_player = AudioStreamPlayer.new()
 	_player.bus = "Radio"
 	_player.finished.connect(_on_finished)
 	add_child(_player)
 
-	var margin := MarginContainer.new()
-	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 72)
-	margin.add_theme_constant_override("margin_right", 72)
-	margin.add_theme_constant_override("margin_top", 36)
-	margin.add_theme_constant_override("margin_bottom", 28)
-	add_child(margin)
+	var sheet: Dictionary = Sheet.build(
+		self,
+		"The State Radio",
+		"State Committee for Broadcasting",
+		"The programme, in name order."
+	)
+	var body: VBoxContainer = sheet["body"]
 
-	var rows := VBoxContainer.new()
-	rows.add_theme_constant_override("separation", 12)
-	margin.add_child(rows)
+	_now_playing = Parts.say("silent", "Stamp")
+	body.add_child(_now_playing)
 
-	rows.add_child(Style.heading("THE STATE RADIO", Style.SIZE_TITLE))
-	_now_playing = Style.body("", Style.ACCENT_HOT)
-	rows.add_child(_now_playing)
-	rows.add_child(Style.divider())
+	var table := VBoxContainer.new()
+	table.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	table.add_theme_constant_override("separation", 0)
+	body.add_child(table)
+	Parts.head(table, COLUMNS)
+	_list = Parts.scroller(table)
 
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	rows.add_child(scroll)
-	_list = VBoxContainer.new()
-	_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_list.add_theme_constant_override("separation", 4)
-	scroll.add_child(_list)
-
-	rows.add_child(Style.divider())
-	var footer := HBoxContainer.new()
-	footer.add_theme_constant_override("separation", 8)
+	Sheet.close_button(sheet["footer"], "BACK", func(): closed.emit())
 
 	# Held rather than dropped, because `_rebuild` disables them when there is
 	# nothing to play. A transport that responds to nothing is the same lie the
-	# empty state below exists to refuse, and the main menu already answers it
-	# the same way by disabling Continue with no republic in progress.
-	_stop_button = Style.button("Stop")
+	# empty state exists to refuse, and the main menu answers it the same way by
+	# disabling Continue with no republic in progress.
+	_stop_button = Parts.button("STOP")
 	_stop_button.pressed.connect(_stop)
-	footer.add_child(_stop_button)
+	sheet["footer"].add_child(_stop_button)
 
-	_next_button = Style.button("Next")
+	_next_button = Parts.button("NEXT")
 	_next_button.pressed.connect(_on_finished)
-	footer.add_child(_next_button)
-
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	footer.add_child(spacer)
-
-	var back := Style.button("Back")
-	back.pressed.connect(func(): closed.emit())
-	footer.add_child(back)
-	rows.add_child(footer)
+	sheet["footer"].add_child(_next_button)
 
 
 func open() -> void:
@@ -133,34 +117,30 @@ func _rebuild() -> void:
 		_next_button.disabled = silent
 
 	if silent:
-		# The honest empty state. Not a placeholder track and not a fake
-		# playlist: this build genuinely has no music, and saying where music
-		# would go is more use to a player than pretending.
-		_list.add_child(Style.body("The programme is empty.", Style.INK))
-		_list.add_child(Style.paragraph(
-			"The State Radio Orchestra has not yet recorded anything. Composed "
-			+ "tracks placed in the folder below appear here, in name order.",
-			Style.INK_DIM
+		# The honest empty state. Not a placeholder track and not a fake playlist:
+		# this build genuinely has no music, and saying where music would go is
+		# more use to a player than pretending.
+		_list.add_child(Parts.gap(P.GAP_WIDE))
+		_list.add_child(Parts.say("The programme is empty.", "Small"))
+		_list.add_child(Parts.prose(
+			"The State Radio Orchestra has not yet recorded anything. Composed tracks "
+			+ "placed in the folder below appear here, in name order.",
+			"Faint"
 		))
-		var gap := Control.new()
-		gap.custom_minimum_size = Vector2(0, 8)
-		_list.add_child(gap)
-		_list.add_child(Style.small(
-			ProjectSettings.globalize_path(DIR), Style.INK_FAINT
-		))
-		_now_playing.text = "silent"
+		_list.add_child(Parts.gap(P.GAP))
+		_list.add_child(Parts.say(ProjectSettings.globalize_path(DIR), "Figure"))
+		_now_playing.text = "SILENT"
 		return
 
 	for i in _tracks.size():
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 12)
-		var title := Style.body(_title_of(_tracks[i]), Style.INK)
-		title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(title)
-		var play := Style.button("Play", i == _current)
+		var line := Parts.row(_list, i % 2 == 1)
+		line.add_child(Parts.cell(Parts.say(_title_of(_tracks[i]), "Small"), COLUMNS[0][1]))
+		var actions := HBoxContainer.new()
+		actions.alignment = BoxContainer.ALIGNMENT_END
+		var play := Parts.button("PLAY", "Primary" if i == _current else "")
 		play.pressed.connect(_play.bind(i))
-		row.add_child(play)
-		_list.add_child(row)
+		actions.add_child(play)
+		line.add_child(Parts.cell(actions, COLUMNS[1][1]))
 
 
 ## A file name as a title. Underscores to spaces, extension dropped.
@@ -173,19 +153,19 @@ func _play(index: int) -> void:
 		return
 	var stream := load("%s/%s" % [DIR, _tracks[index]])
 	if stream == null or not (stream is AudioStream):
-		_now_playing.text = "%s could not be played" % _tracks[index]
+		_now_playing.text = "%s COULD NOT BE PLAYED" % _tracks[index].to_upper()
 		return
 	_current = index
 	_player.stream = stream
 	_player.play()
-	_now_playing.text = "now playing: %s" % _title_of(_tracks[index])
+	_now_playing.text = "NOW PLAYING: %s" % _title_of(_tracks[index]).to_upper()
 	_rebuild()
 
 
 func _stop() -> void:
 	_player.stop()
 	_current = -1
-	_now_playing.text = "silent"
+	_now_playing.text = "SILENT"
 	_rebuild()
 
 

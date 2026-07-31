@@ -6,11 +6,18 @@ extends CanvasLayer
 ## looking at the thing they are thinking about. A full wash would hide the
 ## republic that prompted the pause.
 ##
+## **Not a sheet**, for the same reason the menu is not one: it is a card over
+## the world rather than a page of paperwork, and a title block on it would cover
+## the republic it exists to keep visible. It carries the type and the red rule
+## and nothing else.
+##
 ## It does not pause the simulation itself -- `main.gd` sets the speed to zero and
 ## remembers what it was, because speed is the republic's state and this is a
 ## screen. A screen that owned the clock would be a second place the clock lives.
 
-const Style := preload("res://ui/theme.gd")
+const P := preload("res://ui/palette.gd")
+const Parts := preload("res://ui/parts.gd")
+const Sheet := preload("res://ui/sheet.gd")
 
 signal resumed
 signal save_pressed
@@ -28,60 +35,58 @@ var _abandon_armed := false
 
 func _ready() -> void:
 	layer = 11
-	add_child(Style.backdrop(0.72))
+	add_child(Sheet.backdrop(0.68))
 
 	var centre := CenterContainer.new()
 	centre.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(centre)
 
-	# `Style.card` and not a bare Panel: see the note on that helper. A Panel here
-	# reported zero height, so the whole overlay collapsed to a line.
-	var panel := Style.card(Style.PAPER_RAISED, Style.RULE, 22)
-	panel.custom_minimum_size = Vector2(360, 0)
+	# A `PanelContainer` and not a bare `Panel`: a Panel reports no minimum size
+	# from anchored children, so the whole overlay once collapsed to a line with
+	# every node present and every label carrying its text. Only the rendered
+	# frame showed it.
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(380, 0)
 	centre.add_child(panel)
 
 	var column := VBoxContainer.new()
-	column.add_theme_constant_override("separation", 7)
-	Style.card_body(panel).add_child(column)
+	column.add_theme_constant_override("separation", 6)
+	panel.add_child(column)
 
-	_title = Style.heading("PAUSED", Style.SIZE_HEAD)
+	_title = Parts.say("PAUSED", "Section")
 	column.add_child(_title)
-	_subtitle = Style.small("", Style.INK_DIM)
+	_subtitle = Parts.say("", "Small")
 	column.add_child(_subtitle)
 
-	var gap := Control.new()
-	gap.custom_minimum_size = Vector2(0, 10)
-	column.add_child(gap)
+	var rule := Panel.new()
+	rule.custom_minimum_size = Vector2(0, 2)
+	var stamp := StyleBoxFlat.new()
+	stamp.bg_color = P.RED
+	rule.add_theme_stylebox_override("panel", stamp)
+	column.add_child(rule)
+	column.add_child(Parts.gap(P.GAP_TIGHT))
 
-	var resume := Style.button("Resume", true)
+	var resume := Parts.button("RESUME", "Primary")
 	resume.pressed.connect(func(): resumed.emit())
 	column.add_child(resume)
 
-	var save := Style.button("Save")
-	save.pressed.connect(func(): save_pressed.emit())
-	column.add_child(save)
+	for choice in [
+		["SAVE", func(): save_pressed.emit()],
+		["LOAD", func(): load_pressed.emit()],
+		["REFERENCE", func(): reference_pressed.emit()],
+		["THE STATE RADIO", func(): radio_pressed.emit()],
+		["SETTINGS", func(): settings_pressed.emit()],
+	]:
+		var b := Parts.button(String(choice[0]))
+		b.pressed.connect(choice[1])
+		column.add_child(b)
 
-	var load_button := Style.button("Load")
-	load_button.pressed.connect(func(): load_pressed.emit())
-	column.add_child(load_button)
-
-	var reference := Style.button("Reference")
-	reference.pressed.connect(func(): reference_pressed.emit())
-	column.add_child(reference)
-
-	var radio := Style.button("The State Radio")
-	radio.pressed.connect(func(): radio_pressed.emit())
-	column.add_child(radio)
-
-	var settings := Style.button("Settings")
-	settings.pressed.connect(func(): settings_pressed.emit())
-	column.add_child(settings)
-
-	column.add_child(Style.divider())
+	column.add_child(Parts.gap(P.GAP_TIGHT))
 
 	# Abandoning throws away everything since the last save, so it confirms in
-	# place. It is the one irreversible thing on this panel.
-	_abandon = Style.button("Abandon the posting")
+	# place. It is the one irreversible thing on this panel, and the standing rule
+	# is that only irreversible things confirm at all.
+	_abandon = Parts.button("ABANDON THE POSTING", "Quiet")
 	_abandon.pressed.connect(_on_abandon)
 	column.add_child(_abandon)
 
@@ -89,7 +94,7 @@ func _ready() -> void:
 ## Name the republic being paused, so the panel is about somewhere.
 func show_for(republic: Republic) -> void:
 	_abandon_armed = false
-	_abandon.text = "Abandon the posting"
+	_abandon.text = "ABANDON THE POSTING"
 	var name: String = republic.republic_name()
 	_title.text = name.to_upper() if name != "" else "PAUSED"
 	_subtitle.text = "%s  ·  %d people  ·  %d buildings" % [
@@ -102,4 +107,4 @@ func _on_abandon() -> void:
 		abandon_pressed.emit()
 		return
 	_abandon_armed = true
-	_abandon.text = "Abandon? Unsaved work is lost"
+	_abandon.text = "ABANDON? UNSAVED WORK IS LOST"

@@ -30,9 +30,9 @@ use godot::prelude::*;
 pub mod audio;
 pub mod build_info;
 pub mod marshal;
-pub mod reference;
 pub mod republic;
 pub mod shelf;
+pub mod tables;
 pub mod terrain_mesh;
 pub mod views;
 
