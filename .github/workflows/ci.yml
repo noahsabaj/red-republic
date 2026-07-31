@@ -182,6 +182,58 @@ jobs:
             exit 1
           fi
 
+  # The gate for `game/`, the Godot project the port is building.
+  #
+  # `cargo test` cannot see a line of it, so without this job the whole port is
+  # unchecked. It replaces the Rust gate for everything that has moved across,
+  # and it runs on Linux for the same reason `loads` does: "do the tests pass"
+  # is not an OS-specific question.
+  #
+  # This job is where the checksum guard earns its keep. `game/data/manifest.json`
+  # carries the balance table out of `crates/sim`, and `tests/test_tables.gd`
+  # rehashes every number in it and refuses to run if the hash moved — so a
+  # table that arrives one ulp out fails here rather than becoming a republic
+  # that quietly diverges from the one its seed promised.
+  port:
+    runs-on: ubuntu-latest
+    # A GDScript parse error hangs rather than fails, exactly as in `loads`.
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch Godot
+        run: |
+          curl -sSLo godot.zip \
+            https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_linux.x86_64.zip
+          unzip -q godot.zip
+          mv Godot_v4.7.1-stable_linux.x86_64 godot-bin
+          chmod +x godot-bin
+
+      # Twice, and only the second believed — a resource that references an
+      # asset can only resolve on a pass after the one that imported it. Same
+      # rule as `loads`, and it bites on a virgin checkout, which CI always is.
+      - name: Import
+        run: |
+          ./godot-bin --headless --import --path game 2>&1 | tee first-import.log || true
+          ./godot-bin --headless --import --path game 2>&1 | tee import.log
+          if grep -qiE "Parse Error|Failed to load script" import.log; then
+            echo "::error::the Godot project does not parse — see the log above"
+            exit 1
+          fi
+
+      - name: Test
+        run: |
+          ./godot-bin --headless --path game --script res://tests/harness.gd 2>&1 | tee test.log
+          # The harness exits non-zero on failure, but a GDScript parse error can
+          # take the whole run down before it ever reports — in which case the
+          # log has no verdict at all. Absence of "ok" is the failure this catches,
+          # and it is the one that otherwise reads as success.
+          if ! grep -q "^ok$" test.log; then
+            echo "::error::the port's test suite did not report success"
+            exit 1
+          fi
+
   # Does it install on a machine that has never heard of Rust or Godot?
   #
   # This is the one condition in the goal with no automatic check, and it is the
