@@ -170,6 +170,17 @@ func _ready() -> void:
 		_set_screen(Screen.MENU)
 
 
+## Point the camera where a capture run asked for, after everything that frames
+## it has finished framing it.
+func _apply_view_flags() -> void:
+	if _view_at.x >= 0.0:
+		rig.frame_map(_extent, _view_at.x, _view_at.y)
+	if _view_distance > 0.0:
+		rig.set_distance(_view_distance)
+	if _view_pitch > 0.0:
+		rig.set_pitch(_view_pitch)
+
+
 ## Found the constants above, for a run with no founding screen.
 func _found_default() -> void:
 	republic.found(SEED, EXTENT_M, CLIMATE)
@@ -184,10 +195,7 @@ func _found_default() -> void:
 		republic.advance_days(_advance_days)
 	if _start_hour >= 0.0:
 		republic.advance_to_hour(_start_hour)
-	if _view_distance > 0.0:
-		rig.set_distance(_view_distance)
-	if _view_pitch > 0.0:
-		rig.set_pitch(_view_pitch)
+	_apply_view_flags()
 	match _start_overlay:
 		"going": _overlay = Overlays.Mode.GOING
 		"tracks": _overlay = Overlays.Mode.WEAR
@@ -673,6 +681,11 @@ func _open_named_screen(name: String) -> void:
 			if _start_hour >= 0.0:
 				republic.advance_to_hour(_start_hour)
 			_enter_republic()
+			# **After `_enter_republic`, not before.** Entering frames the camera
+			# on the republic, so the first version of `--at` was applied and
+			# then silently undone — a capture flag that reaches nothing, which
+			# is the whole thing `--at` exists to stop happening.
+			_apply_view_flags()
 			_set_screen(Screen.PLAYING)
 		"labour":
 			# Needs a republic with workplaces standing in it: on a blank map the
@@ -966,6 +979,19 @@ func _read_arguments() -> void:
 			"--hour":
 				if i + 1 < args.size():
 					_start_hour = float(args[i + 1])
+			"--at":
+				# Where to point the camera, in map metres: `--at 900,2400`.
+				#
+				# **A capture you cannot aim is a check that answers without
+				# looking.** The water work landed with the camera framed on the
+				# republic and the river running along the far edge of the map,
+				# so the only frames available of a brand-new water shader had it
+				# forty pixels wide and edge-on. Same lesson as `--hour` and as
+				# `--pitch` before it, for the third time.
+				if i + 1 < args.size():
+					var parts := args[i + 1].split(",")
+					if parts.size() == 2:
+						_view_at = Vector2(float(parts[0]), float(parts[1]))
 			"--advance":
 				if i + 1 < args.size():
 					_advance_days = int(args[i + 1])
@@ -1045,6 +1071,8 @@ var _sun_set_once := false
 ## The hour a capture run should stand at, or negative for whatever the founding
 ## gave it. See `Republic::advance_to_hour` for why this exists at all.
 var _start_hour := -1.0
+## Where a capture run should point the camera, or negative for the republic.
+var _view_at := Vector2(-1.0, -1.0)
 
 
 ## Swing the sun, and take the light down with it.
