@@ -47,7 +47,7 @@ public static class Systems
         new("weather", [MutationKind.Weather], Weather),
         new("sanitation", [MutationKind.Waste], Sanitation),
         new("pollution", [MutationKind.Pollution], Pollution),
-        new("labour", [MutationKind.Staff, MutationKind.Employ], Labour),
+        new("labour", [MutationKind.Staff, MutationKind.Employ, MutationKind.Consume], Labour),
         new("contracts", [MutationKind.Contract, MutationKind.Money], ContractsPass),
         new("loans", [MutationKind.Loan, MutationKind.Money], LoansPass),
         new("wages", [MutationKind.Money], Wages),
@@ -475,6 +475,15 @@ public static class Systems
 
         var taken = new bool[world.Citizens.Count];
 
+        // What the depots can carry today, fixed for the whole pass rather than
+        // recomputed per workplace: it is one fleet serving the republic, not a
+        // fresh allowance for every factory. Read off yesterday's staffing,
+        // because a depot staffed yesterday is what runs buses this morning —
+        // deriving it from the staffing this pass is about to decide would let a
+        // depot carry its own drivers to work.
+        var services = Transport.Services(world);
+        var seatsUsed = 0;
+
         foreach (var b in order)
         {
             if (!world.Buildings.IsBuilt(b))
@@ -485,42 +494,84 @@ public static class Systems
 
             var wanted = world.Buildings.Jobs(b);
             var bar = (Education)t.BSchooling[world.Buildings.KindAt(b)];
-            var hired = 0;
 
+            // Whether getting here means being out in the dark. A place running
+            // more than a day shift needs a lit way in or a seat on something,
+            // and that is the join between the roster and the street lamps:
+            // without it, lighting a road would be a decoration nothing read.
+            var dark = world.Buildings.WorksAfterDark(b);
+
+            // Rank: walkers first, then by journey time, then by id. A seat spent
+            // on somebody who could have walked is a seat denied to somebody who
+            // could not.
+            var candidates = new List<(int Rank, double Time, int Citizen, Commute How)>();
             foreach (var c in free)
             {
-                if (hired >= wanted)
-                {
-                    break;
-                }
-
                 if (taken[c] || world.Citizens.EducationAt(c) < bar)
                 {
                     continue;
                 }
 
-                // A job is only a job if there is a way to get to it.
                 var home = world.Buildings.IndexOf(world.Citizens.HomeAt(c));
                 if (home < 0)
                 {
                     continue;
                 }
 
-                var distance = Units.Distance(
+                var how = Transport.ReachAt(
+                    world,
                     world.Buildings.XAt(home), world.Buildings.YAt(home),
-                    world.Buildings.XAt(b), world.Buildings.YAt(b));
+                    world.Buildings.XAt(b), world.Buildings.YAt(b),
+                    services, dark);
 
-                if (distance > t.MaxWalkM)
+                if (how is null)
                 {
-                    // Beyond walking: it needs a seat, and seats are the bus
-                    // depot's business. Until one carries them, this is not a
-                    // job they can hold.
                     continue;
+                }
+
+                candidates.Add((how.Value.IsCarried ? 1 : 0, how.Value.Time, c, how.Value));
+            }
+
+            candidates.Sort((x, y) =>
+            {
+                var byRank = x.Rank.CompareTo(y.Rank);
+                if (byRank != 0)
+                {
+                    return byRank;
+                }
+
+                var byTime = x.Time.CompareTo(y.Time);
+                return byTime != 0 ? byTime : x.Citizen.CompareTo(y.Citizen);
+            });
+
+            var hired = 0;
+            foreach (var (_, _, c, how) in candidates)
+            {
+                if (hired >= wanted)
+                {
+                    break;
+                }
+
+                if (how.IsCarried)
+                {
+                    var at = services.FindIndex(s => (int)s.Medium == how.Medium);
+
+                    // That service is full. Everyone behind this candidate is
+                    // either also a rider or ranked worse, so keep scanning
+                    // rather than stopping — a nearer rider might still be a
+                    // walker for a later workplace.
+                    if (at < 0 || services[at].Seats <= 0)
+                    {
+                        continue;
+                    }
+
+                    services[at] = services[at] with { Seats = services[at].Seats - 1 };
+                    seatsUsed++;
                 }
 
                 taken[c] = true;
                 hired++;
-                world.Citizens.SetWorkplace(c, world.Buildings.IdAt(b), Commute.OnFoot(distance, t));
+                world.Citizens.SetWorkplace(c, world.Buildings.IdAt(b), how);
             }
 
             mutations.Add(Mutation.Staff(b, hired));
@@ -533,6 +584,14 @@ public static class Systems
             {
                 world.Citizens.SetWorkplace(c, -1, Commute.None);
             }
+        }
+
+        // And the depots burn for what they carried. A commute is an ongoing
+        // cost against the same refinery output everything else wants.
+        var fuel = t.ResourceIndex("Fuel");
+        foreach (var (depot, tonnes) in Transport.FuelBurn(world, seatsUsed))
+        {
+            mutations.Add(Mutation.Consume(depot, fuel, tonnes));
         }
 
         return mutations;
