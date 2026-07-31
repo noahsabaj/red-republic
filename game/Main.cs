@@ -25,6 +25,7 @@ namespace RedRepublic;
 public partial class Main : Node3D
 {
     private Tables? _tables;
+    private Sim.World? _world;
     private Terrain? _terrain;
 
     public override void _Ready()
@@ -53,14 +54,67 @@ public partial class Main : Node3D
         // A seed a person can type. The founding shelf will own this properly;
         // for now it is what makes `--check` exercise worldgen rather than only
         // the table.
-        _terrain = Terrain.Generate(1961, 3000.0, _tables);
+        _world = Sim.World.Found(new WorldSpec(1961, 3000.0, 0), _tables);
+        _terrain = _world.Terrain;
         GD.Print($"founded on a {_terrain.Cells}-cell map, "
             + $"{_terrain.FractionOf(Surface.Water) * 100.0:F1}% water");
 
         if (check)
         {
             GetTree().Quit();
+            return;
         }
+
+        // Where the posting actually is, which the geology decides — so it is
+        // routinely nowhere near the middle of the map, and opening on the
+        // centre means opening on empty ground with the town off the edge of
+        // interest.
+        var (atX, atZ) = Scenario.Site(_world);
+        var scenery = new World.Scenery(World.Look.Default) { Name = "Scenery" };
+        AddChild(scenery);
+        scenery.Raise(_world, atX, atZ);
+
+        // `--shot` captures one frame and quits. It aims the camera itself,
+        // because the sky is only visible below about twenty-five degrees and a
+        // capture that cannot tilt cannot photograph it at all.
+        var shot = System.Array.IndexOf(args, "--shot");
+        if (shot >= 0 && shot + 1 < args.Length)
+        {
+            Capture(scenery, args, args[shot + 1]);
+        }
+    }
+
+    /// <summary>
+    /// Take one frame and quit.
+    /// </summary>
+    /// <remarks>
+    /// <b>Never under <c>--headless</c>.</b> It waits for a frame that never
+    /// arrives and spins silently for ever. And the point of it is that somebody
+    /// <i>looks</i> at the image: Godot culls back faces, so geometry wound the
+    /// wrong way renders as nothing at all — which reads as "not built yet" and
+    /// never as "inside out", and no number in the run says otherwise.
+    /// </remarks>
+    private void Capture(World.Scenery scenery, string[] args, string path)
+    {
+        var pitch = Argument(args, "--pitch", 50.0f);
+        var distance = Argument(args, "--at", 900.0f);
+        scenery.Aim(pitch, distance);
+
+        RenderingServer.FramePostDraw += () =>
+        {
+            var image = GetViewport().GetTexture().GetImage();
+            var why = image.SavePng(path);
+            GD.Print(why == Error.Ok ? $"shot {path}" : $"could not write {path}: {why}");
+            GetTree().Quit(why == Error.Ok ? 0 : 1);
+        };
+    }
+
+    private static float Argument(string[] args, string name, float fallback)
+    {
+        var at = System.Array.IndexOf(args, name);
+        return at >= 0 && at + 1 < args.Length && float.TryParse(args[at + 1], out var value)
+            ? value
+            : fallback;
     }
 
     /// <summary>
