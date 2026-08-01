@@ -27,7 +27,7 @@ param(
     # The Inno Setup compiler.
     [string]$Iscc = $env:ISCC,
 
-    # Skip the installer and leave the exported build in dist/staging.
+    # Skip the installer and leave the playable export in build/.
     [switch]$NoInstaller
 )
 
@@ -35,6 +35,15 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $GameDir = Join-Path $Root 'game'
 $Dist = Join-Path $Root 'dist'
+
+# Where the playable export lands.
+#
+# `build/<Game>.exe` beside a `data_<Game>_windows_x86_64` folder is the layout
+# every other Godot project on this machine uses, and a game that puts its
+# runnable build somewhere else is one you have to go looking for. The installer
+# is a different artifact and stays in `dist/`: one folder you run, one folder
+# you hand to somebody.
+$Build = Join-Path $Root 'build'
 
 function Step([string]$what) { Write-Host "==> $what" -ForegroundColor Cyan }
 function Die([string]$why) { Write-Host "!!  $why" -ForegroundColor Red; exit 1 }
@@ -97,7 +106,7 @@ if ($importLog -match 'Parse Error|Failed to load|Cannot get class') {
 
 # ---- export -------------------------------------------------------------------
 
-$staging = Join-Path $Dist 'staging'
+$staging = $Build
 if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
@@ -155,7 +164,7 @@ if ($now -ne $was) {
 # ---- installer ----------------------------------------------------------------
 
 if ($NoInstaller) {
-    Step "done — the exported build is in $staging"
+    Step "done — run it from $exe"
     exit 0
 }
 
