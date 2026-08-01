@@ -165,7 +165,7 @@ public sealed partial class MenuScreen : Screen
     /// somebody else's enum. The three that a player can actually do something
     /// about are named; the rest say so rather than pretending.
     /// </remarks>
-    private static string Trouble(Error why) => why switch
+    internal static string Trouble(Error why) => why switch
     {
         Error.FileNoPermission => "the folder this game saves into cannot be written to",
         Error.FileCantOpen or Error.FileCantWrite =>

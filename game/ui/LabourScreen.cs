@@ -102,7 +102,7 @@ public sealed partial class LabourScreen : Screen
             line.AddChild(Parts.Cell(Parts.Say(t.BName[kind]), 2.0f));
 
             var standing = Parts.Press(
-                $"{Republic.Buildings.PriorityAt(b)}", "Quiet");
+                Words.Of(Republic.Buildings.PriorityAt(b)), "Quiet");
             standing.Pressed += () => Cycle(id, Republic.Buildings.PriorityAt(b));
             line.AddChild(Parts.Cell(standing, 1.0f));
 
@@ -232,7 +232,7 @@ public sealed partial class LabourScreen : Screen
         foreach (var stage in Enum.GetValues<LifeStage>())
         {
             var line = Parts.Row(_people, at++ % 2 == 1);
-            line.AddChild(Parts.Cell(Parts.Say($"{stage}"), 2.0f));
+            line.AddChild(Parts.Cell(Parts.Say(Words.Of(stage)), 2.0f));
             line.AddChild(Parts.Cell(
                 Parts.Figure($"{Republic.Citizens.ByStage(stage)}"),
                 1.0f, HorizontalAlignment.Right));
@@ -241,7 +241,7 @@ public sealed partial class LabourScreen : Screen
         foreach (var taught in Enum.GetValues<Education>())
         {
             var line = Parts.Row(_people, at++ % 2 == 1);
-            line.AddChild(Parts.Cell(Parts.Say($"{taught}"), 2.0f));
+            line.AddChild(Parts.Cell(Parts.Say(Words.Of(taught)), 2.0f));
             line.AddChild(Parts.Cell(
                 Parts.Figure($"{Republic.Citizens.ByEducation(taught)}"),
                 1.0f, HorizontalAlignment.Right));

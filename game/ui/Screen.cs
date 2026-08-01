@@ -27,6 +27,9 @@ public abstract partial class Screen : Control
     /// <summary>What the screen is called, stamped at the top.</summary>
     protected abstract string Title { get; }
 
+    /// <summary>The same, for the shell's key hint. One name, so they agree.</summary>
+    public string Named => Title;
+
     /// <summary>One line saying what it is for. Empty for a screen that needs none.</summary>
     protected virtual string Blurb => "";
 
@@ -137,20 +140,52 @@ public abstract partial class Screen : Control
     private void Raise() => Build(_body);
 
     /// <summary>
-    /// Empty a container and its pooled children.
+    /// Empty a container and its children, keeping the reader's place.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// For the lists whose length is a property of the republic rather than of a
     /// roster — the buildings standing, the tenders on the table — where pooling
     /// would mean holding rows for a republic that has since demolished them.
+    /// </para>
+    /// <para>
+    /// <b>The scroll offset is put back.</b> These rebuild four times a second,
+    /// so a sixty-four row catalogue jumped to the top every quarter second and
+    /// scrolling it was a fight with the instrument's own clock.
+    /// </para>
     /// </remarks>
     protected static void Clear(Node into)
     {
         ArgumentNullException.ThrowIfNull(into);
+
+        var scroll = into.GetParent() as ScrollContainer;
+        var wasAt = scroll?.ScrollVertical ?? 0;
+
         foreach (var child in into.GetChildren())
         {
             into.RemoveChild(child);
             child.QueueFree();
         }
+
+        if (scroll is not null && wasAt > 0)
+        {
+            // After the rebuild has been laid out, or the container does not yet
+            // know it is long enough to scroll and clamps the offset to nothing.
+            scroll.CallDeferred(ScrollContainer.MethodName.SetVScroll, wasAt);
+        }
     }
+
+    /// <summary>
+    /// Whether the player is in the middle of using this screen.
+    /// </summary>
+    /// <remarks>
+    /// A screen rebuilds its lists from scratch, which frees every control in
+    /// them — including the one under the cursor. On the instrument's quarter
+    /// second clock that is a button that can be freed between being pressed and
+    /// being released, and a text field that loses what is being typed into it.
+    /// The timed refresh stands down while somebody is working; a refresh after
+    /// a command still happens, because that is the one the player asked for.
+    /// </remarks>
+    public bool InUse => GetViewport()?.GuiGetFocusOwner() is { } focused
+        && IsAncestorOf(focused);
 }

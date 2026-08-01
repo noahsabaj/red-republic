@@ -112,7 +112,7 @@ public sealed partial class Inspector : PanelContainer
         {
             Line("staff", $"{_world.Buildings.StaffAt(b)} / {_world.Buildings.Jobs(b)}");
             Line("crews", $"{_world.Buildings.ShiftsAt(b)}");
-            Line("standing", $"{_world.Buildings.PriorityAt(b)}");
+            Line("standing", Words.Of(_world.Buildings.PriorityAt(b)));
             Line("working day", $"{_world.Buildings.HoursAt(b):F1} h");
         }
 
@@ -175,7 +175,7 @@ public sealed partial class Inspector : PanelContainer
             Stepper("working day", $"{_world.Buildings.HoursAt(b):F1} h",
                 by => Ask(Command.SetBuildingHours(id, _world.Buildings.HoursAt(b) + by)));
 
-            Choice("standing", _world.Buildings.PriorityAt(b).ToString(), () =>
+            Choice("standing", Words.Of(_world.Buildings.PriorityAt(b)), () =>
             {
                 var next = _world.Buildings.PriorityAt(b) switch
                 {
@@ -221,7 +221,7 @@ public sealed partial class Inspector : PanelContainer
             foreach (var market in new[] { Market.East, Market.West })
             {
                 var bloc = market;
-                Choice($"hire from the {market}", $"{t.HiringFee * 10:F0} for ten",
+                Choice($"hire from the {Words.Of(market)}", $"{t.HiringFee * 10:F0} for ten",
                     () => Ask(Command.HireForeign(bloc, id, 10)));
             }
         }

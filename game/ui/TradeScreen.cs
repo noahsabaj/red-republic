@@ -106,8 +106,8 @@ public sealed partial class TradeScreen : Screen
 
             line.AddChild(Parts.Cell(Parts.Figure($"{i + 1}"), 0.4f, HorizontalAlignment.Right));
             line.AddChild(Parts.Cell(Parts.Say(t.ResourceNames[rule.Resource]), 1.6f));
-            line.AddChild(Parts.Cell(Parts.Say($"{rule.Market}"), 1.2f));
-            line.AddChild(Parts.Cell(Parts.Say($"{rule.Action}"), 0.8f));
+            line.AddChild(Parts.Cell(Parts.Say(Words.Brief(rule.Market)), 1.2f));
+            line.AddChild(Parts.Cell(Parts.Say(Words.Of(rule.Action)), 0.8f));
 
             var buttons = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
             buttons.AddThemeConstantOverride("separation", 2);
@@ -122,7 +122,11 @@ public sealed partial class TradeScreen : Screen
             down.Pressed += () => Move(at, at + 1);
             buttons.AddChild(down);
 
-            var drop = Parts.Press("✕", "Step");
+            // A multiplication sign rather than U+2715, which none of the six
+            // faces this game ships carries: it rendered as whatever the system
+            // fallback had, or as a hollow box, on a button three characters
+            // wide. The mark a reader sees has to be one the type has.
+            var drop = Parts.Press("×", "Step");
             drop.Pressed += () =>
             {
                 Ask(Command.RemoveTradeRule(at));

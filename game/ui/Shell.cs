@@ -169,7 +169,34 @@ public sealed partial class Shell : CanvasLayer
         Add(Key.M, menu);
         _menu = menu;
 
+        _hud.Keys(Hint());
         _hud.Refresh(world, Speeds[_speed].Name);
+    }
+
+    /// <summary>
+    /// What the keys do, read off the bindings themselves.
+    /// </summary>
+    /// <remarks>
+    /// So the line the player is shown cannot disagree with what the keys
+    /// actually do. Named by the screen's own title, so adding a screen adds
+    /// its key to the hint and nothing has to remember to.
+    /// </remarks>
+    private string Hint()
+    {
+        var keys = new List<string>
+        {
+            "WASD pan", "drag to orbit", "wheel to zoom",
+        };
+
+        foreach (var (key, screen) in _byKey)
+        {
+            keys.Add($"{key} {screen.Named.ToLowerInvariant()}");
+        }
+
+        keys.Add("Space pause");
+        keys.Add($"1-{Speeds.Length - 1} speed");
+        keys.Add("Esc back");
+        return string.Join(" · ", keys);
     }
 
     /// <summary>Show one building, or nothing. What clicking the ground does.</summary>
@@ -222,7 +249,11 @@ public sealed partial class Shell : CanvasLayer
 
         _sinceRefresh = 0.0;
         _hud.Refresh(_world, Speeds[_speed].Name);
-        _open?.Refresh();
+        if (_open is { InUse: false })
+        {
+            _open.Refresh();
+        }
+
         _inspector.Refresh();
         Ticked?.Invoke();
     }

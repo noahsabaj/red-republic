@@ -50,10 +50,15 @@ public sealed partial class Hud : CanvasLayer
     /// The order the census hands them back in. Named here rather than read
     /// across the boundary because these are labels, not simulation facts.
     /// </summary>
+    // Named through the same place every screen names them. This panel used to
+    // keep its own roster and the screens printed the identifiers, so the
+    // population read "Pupils" here and "Pupil" on the labour screen — two
+    // answers to one question, drifting as a second copy always does.
     private static readonly string[] StageNames =
-        ["Infants", "Pupils", "Students", "Workers", "Retired"];
+        [.. System.Linq.Enumerable.Select(Enum.GetValues<LifeStage>(), Words.Of)];
 
-    private static readonly string[] LearningNames = ["Unschooled", "Schooled", "Graduates"];
+    private static readonly string[] LearningNames =
+        [.. System.Linq.Enumerable.Select(Enum.GetValues<Education>(), Words.Of)];
 
     /// <summary>
     /// The rows of the left-hand panel, in order. A section of nothing continues
@@ -406,8 +411,22 @@ public sealed partial class Hud : CanvasLayer
         _hint = Parts.Say("", "Faint");
         panel.AddChild(_hint);
 
-        _hintKeys = "WASD pan · drag to orbit · wheel to zoom · "
-            + "B build · L labour · T trade · F finance · J journal · Esc menu";
+        WriteHint();
+    }
+
+    /// <summary>
+    /// The keys, as the shell has actually bound them.
+    /// </summary>
+    /// <remarks>
+    /// <b>Handed in rather than written here.</b> This was a hand-typed line
+    /// and it had already drifted: it omitted the reference screen, the pause
+    /// key and all four speeds — in a game whose whole thesis is real time, and
+    /// on the one line that exists to explain the game to somebody who has just
+    /// opened it.
+    /// </remarks>
+    public void Keys(string hint)
+    {
+        _hintKeys = hint;
         WriteHint();
     }
 

@@ -107,7 +107,7 @@ public sealed partial class FinanceScreen : Screen
             Refresh();
         };
 
-        line.AddChild(Parts.Cell(Parts.Say($"Owed to the {market}"), 1.6f));
+        line.AddChild(Parts.Cell(Parts.Say($"Owed to the {Words.Of(market)}"), 1.6f));
         line.AddChild(Parts.Cell(pay, 1.0f));
         line.AddChild(Parts.Cell(all, 1.0f));
     }
@@ -153,7 +153,7 @@ public sealed partial class FinanceScreen : Screen
                 var line = Parts.Row(_ladders, alt);
                 alt = !alt;
 
-                line.AddChild(Parts.Cell(Parts.Say($"{market}"), 1.0f));
+                line.AddChild(Parts.Cell(Parts.Say(Words.Brief(market)), 1.0f));
                 line.AddChild(Parts.Cell(
                     Parts.Figure(Parts.Thousands(terms.Principal)), 1.2f, HorizontalAlignment.Right));
                 line.AddChild(Parts.Cell(
@@ -198,7 +198,7 @@ public sealed partial class FinanceScreen : Screen
             any = true;
             var line = Parts.Row(_tenders, offer.Id % 2 == 1);
             line.AddChild(Parts.Cell(
-                Parts.Say($"{offer.Market}: {t.ResourceNames[offer.Resource]}"), 1.8f));
+                Parts.Say($"{Words.Brief(offer.Market)}: {t.ResourceNames[offer.Resource]}"), 1.8f));
             line.AddChild(Parts.Cell(
                 Parts.Figure(Parts.Clean(offer.Tonnes)), 0.9f, HorizontalAlignment.Right));
             line.AddChild(Parts.Cell(
@@ -235,7 +235,7 @@ public sealed partial class FinanceScreen : Screen
             {
                 line.AddChild(Parts.Cell(
                     Parts.Say(
-                        $"{offer.State} · {Parts.Clean(offer.Delivered)} delivered", "Small"),
+                        $"{Words.Of(offer.State)} · {Parts.Clean(offer.Delivered)} delivered", "Small"),
                     1.4f, HorizontalAlignment.Right));
             }
         }
