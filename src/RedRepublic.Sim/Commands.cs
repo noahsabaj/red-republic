@@ -20,6 +20,19 @@ public enum CommandKind
     ContractBuild,
 
     Demolish,
+
+    /// <summary>
+    /// Call off a way or a span that has been ordered but not finished.
+    /// </summary>
+    /// <remarks>
+    /// <b>A misclick is otherwise permanent.</b> A run ordered across the map
+    /// draws a gang and every lorry the republic has until it is done, and
+    /// there was no way to stop it — which is a thing the game this one is
+    /// measured against has had since its first release. What has already been
+    /// delivered to the site is lost with it, exactly as the contents of a
+    /// demolished building are: the gravel is on the ground out there.
+    /// </remarks>
+    CancelWorks,
     OrderRoad,
     OrderLine,
     RecallCrew,
@@ -69,6 +82,10 @@ public sealed record Command(
         new(CommandKind.ContractBuild, kind, (int)market, X: x, Y: y);
 
     public static Command Demolish(int building) => new(CommandKind.Demolish, building);
+
+    /// <summary>Call off a way or a span that is under construction.</summary>
+    public static Command CancelWorks(Destination site) =>
+        new(CommandKind.CancelWorks, (int)site.Kind, site.Id);
 
     /// <summary>
     /// Order a power line or a heat main. It is a site until the crew and the
@@ -195,6 +212,7 @@ public static class Commands
             CommandKind.Place => Place(world, command),
             CommandKind.ContractBuild => ContractBuild(world, command),
             CommandKind.Demolish => Demolish(world, command),
+            CommandKind.CancelWorks => CancelWorks(world, command),
             CommandKind.SetShifts => SetShifts(world, command),
             CommandKind.SetPriority => SetPriority(world, command),
             CommandKind.SetNationalShiftHours => SetNationalHours(world, command),
@@ -664,11 +682,11 @@ public static class Commands
             return Outcome.No("there is no such building");
         }
 
-        // Two refusals, and both exist to make an orphaned crew unrepresentable
-        // rather than to detect one afterwards: pulling down a site with a gang
-        // on it, or an office whose gangs are out, would leave people belonging
-        // to a building that no longer exists — and no amount of tidying up
-        // afterwards answers "so where are they now?".
+        // Three refusals, and all of them exist to make an orphaned thing
+        // unrepresentable rather than to detect one afterwards: pulling down a
+        // site with a gang on it, or an office whose gangs are out, would leave
+        // people belonging to a building that no longer exists — and no amount
+        // of tidying up afterwards answers "so where are they now?".
         if (world.Crews.WorkingAt(Destination.Building(c.A)) is not null)
         {
             return Outcome.No("there is a crew on that site");
@@ -679,9 +697,83 @@ public static class Commands
             return Outcome.No("that office has crews out");
         }
 
+        // And the same for what it keeps in its yard. A garage's vehicles
+        // belong to it and go with it; one that is out on a job does not, so
+        // the yard is pulled down when they are all home. Without this a
+        // republic demolished a depot and rebuilt it for a second free fleet,
+        // over and over.
+        var parked = new List<int>();
+        foreach (var v in world.Fleet.OfGarage(c.A))
+        {
+            if (world.Fleet.StateAt(v) != VehicleState.Idle)
+            {
+                return Outcome.No("that garage has vehicles out on the road");
+            }
+
+            parked.Add(v);
+        }
+
+        // Backwards, so removing one does not shift the next out from under us.
+        parked.Sort();
+        for (var v = parked.Count - 1; v >= 0; v--)
+        {
+            world.Fleet.RemoveAt(parked[v]);
+        }
+
         world.Buildings.Demolish(c.A);
         world.Grid.Detach(c.A);
         world.BuildPolicy.Forget(Destination.Building(c.A));
+        return Outcome.Ok();
+    }
+
+    /// <summary>
+    /// Call off a way or a span that has been ordered but not finished.
+    /// </summary>
+    /// <remarks>
+    /// The same refusal a demolition makes, and for the same reason: a gang
+    /// working a site that stopped existing is people belonging to nowhere.
+    /// Call them off first, which is what <see cref="CommandKind.RecallCrew"/>
+    /// is for.
+    /// </remarks>
+    private static Outcome CancelWorks(World world, Command c)
+    {
+        var site = new Destination((DestinationKind)c.A, c.B, 0.0, 0.0);
+        if (world.Crews.WorkingAt(site) is not null)
+        {
+            return Outcome.No("there is a crew on that site; call them off first");
+        }
+
+        switch (site.Kind)
+        {
+            case DestinationKind.RoadSite:
+                {
+                    var run = world.RoadWorks.Get(site.Id);
+                    if (run is null)
+                    {
+                        return Outcome.No("there is no such run under construction");
+                    }
+
+                    world.RoadWorks.Finish(run);
+                    break;
+                }
+
+            case DestinationKind.LineSite:
+                {
+                    var span = world.LineWorks.Get(site.Id);
+                    if (span is null)
+                    {
+                        return Outcome.No("there is no such span under construction");
+                    }
+
+                    world.LineWorks.Finish(span);
+                    break;
+                }
+
+            default:
+                return Outcome.No("a building is pulled down rather than called off");
+        }
+
+        world.BuildPolicy.Forget(site);
         return Outcome.Ok();
     }
 

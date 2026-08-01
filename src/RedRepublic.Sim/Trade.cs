@@ -249,7 +249,21 @@ public sealed class Treasury
 
     public double Of(Market market) => _held[(int)market];
 
-    public void Add(Market market, double amount) => _held[(int)market] += amount;
+    /// <summary>
+    /// Money in or out, and it never goes below nothing.
+    /// </summary>
+    /// <remarks>
+    /// <b>A shortfall is a smaller payment, never a debt</b> — the rule
+    /// <see cref="Take"/> already followed and the stockpiles follow, and the
+    /// rule the loans table states outright: there is no overdraft, which is
+    /// what makes an advance a decision rather than a formality. This was an
+    /// unclamped <c>+=</c>, and every negative amount in the republic came
+    /// through it — fines, wages, a contractor's daily bill — so a purse could
+    /// and did go below zero while a tested rule said it could not. The guard
+    /// passed because it tested <see cref="Take"/>, which no system used.
+    /// </remarks>
+    public void Add(Market market, double amount) =>
+        _held[(int)market] = Math.Max(0.0, _held[(int)market] + amount);
 
     /// <summary>
     /// Take what is there, up to what was asked. Returns what was actually
