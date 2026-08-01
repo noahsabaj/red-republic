@@ -250,7 +250,12 @@ public sealed class GroundTests
             lattice.WearIn(0, t.WearPerPass);
         }
 
-        Assert.True(lattice.WearAt(0) >= t.PromoteAt);
+        // Most of the way to a made track, which is what fifty laden passes is
+        // authored to buy. The figure it used to be compared against —
+        // `promote_at`, a threshold at which a worn corridor became a road on
+        // its own — has gone: nothing read it, and building the mechanic it
+        // implies is not a gap to close but a game to invent.
+        Assert.True(lattice.WearAt(0) >= 0.8);
 
         // Abandoned, it goes back to field.
         for (var day = 0; day < 200; day++)

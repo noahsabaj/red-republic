@@ -378,6 +378,15 @@ public sealed class Tables
     // ---- people, and the journeys they make ----
 
     /// <summary>How far somebody will walk to work before they need carrying.</summary>
+    /// <summary>
+    /// How likely somebody in the worst health is to die on a day, at the
+    /// reference age. Authored, because how long people live is balance.
+    /// </summary>
+    public double FrailtyPerDay { get; private set; }
+
+    /// <summary>The age the daily odds above are quoted at.</summary>
+    public double FrailtyReferenceAge { get; private set; }
+
     public double MaxWalkM { get; private set; }
 
     /// <summary>How far from a road a building can be and still be reached.</summary>
@@ -480,9 +489,6 @@ public sealed class Tables
 
     public double WearFadePerDay { get; private set; }
 
-    /// <summary>Where a worn corridor becomes a track on the map.</summary>
-    public double PromoteAt { get; private set; }
-
     public double SnowBlocksMm { get; private set; }
 
     /// <summary>
@@ -501,7 +507,6 @@ public sealed class Tables
     /// The shortest run of worn cells worth calling a road. Below that it is a
     /// gateway, not a route.
     /// </summary>
-    public int MinTrackCells { get; private set; }
 
     private double[] _going = [];
 
@@ -1052,6 +1057,8 @@ public sealed class Tables
 
         var p = m.GetProperty("people");
         MaxWalkM = p.GetProperty("max_walk_m").GetDouble();
+        FrailtyPerDay = p.GetProperty("frailty_per_day").GetDouble();
+        FrailtyReferenceAge = p.GetProperty("frailty_reference_age").GetDouble();
         RoadAccessM = p.GetProperty("road_access_m").GetDouble();
         WalkKph = p.GetProperty("walk_kph").GetDouble();
         WorkingAgeFrom = p.GetProperty("working_age")[0].GetInt32();
@@ -1102,12 +1109,10 @@ public sealed class Tables
         Drowned = g.GetProperty("drowned").GetDouble();
         WearPerPass = g.GetProperty("wear_per_pass").GetDouble();
         WearFadePerDay = g.GetProperty("wear_fade_per_day").GetDouble();
-        PromoteAt = g.GetProperty("promote_at").GetDouble();
         SnowBlocksMm = g.GetProperty("snow_blocks_mm").GetDouble();
         SnowDrag = g.GetProperty("snow_drag").GetDouble();
         WearRelief = g.GetProperty("wear_relief").GetDouble();
         GroundCellSize = g.GetProperty("cell_size").GetDouble();
-        MinTrackCells = g.GetProperty("min_track_cells").GetInt32();
 
         // `null` in the table means impassable. JSON has no infinity, and
         // writing a large finite number instead would make water something a
@@ -1261,12 +1266,10 @@ public sealed class Tables
         h.Push(Drowned);
         h.Push(WearPerPass);
         h.Push(WearFadePerDay);
-        h.Push(PromoteAt);
         h.Push(SnowBlocksMm);
         h.Push(SnowDrag);
         h.Push(WearRelief);
         h.Push(GroundCellSize);
-        h.Push(MinTrackCells);
         foreach (var v in _going)
         {
             h.Push(v);

@@ -272,6 +272,16 @@ public static class Busy
             }
         }
 
+        // And an instruction about where sites buy what the republic cannot
+        // make. The customs house the founding opened is on the nearest post,
+        // so that is the post the policy names — goods land there and the
+        // lorries still have to fetch them.
+        var through = world.Frontier.NearestCrossing(built.CentreX, built.CentreY, null);
+        if (through is not null)
+        {
+            world.Issue(Command.SetImportPolicy(null, through.Value.Id));
+        }
+
         // An advance that will not be repaid, so the loans pass has a default
         // to settle rather than a term nobody reaches.
         if (!world.Issue(Command.TakeLoan(Market.West, 0)).Accepted)

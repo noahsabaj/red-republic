@@ -52,6 +52,7 @@ public static class Systems
         new("loans", [MutationKind.Loan, MutationKind.Money], LoansPass),
         new("wages", [MutationKind.Money], Wages),
         new("contracting", [MutationKind.Money], Contracting),
+        new("imports", [MutationKind.Money, MutationKind.Produce], Imports),
         new("contentment", [MutationKind.Contentment], ContentmentPass),
         new("schooling", [MutationKind.Schooling], Schooling),
         new("demography", [MutationKind.Demography], Demography),
@@ -863,18 +864,33 @@ public static class Systems
                 continue;
             }
 
-            var content = world.Buildings.ContentmentAt(b).Overall(t);
+            var here = world.Buildings.ContentmentAt(b);
+            var content = here.Overall(t);
 
             // Loyalty follows contentment slowly, so one bad winter does not
             // empty a town and one good month does not fill it.
             var loyalty = world.Citizens.LoyaltyAt(c);
             world.Citizens.SetLoyalty(c, loyalty + ((content - loyalty) * t.LoyaltyDrift));
 
-            // Health settles where the care does. Without a doctor in reach it
-            // settles low rather than falling for ever.
+            // <b>Health settles where the care is, and the floor is the care.</b>
+            // It used to apply to everybody, everywhere, which made total famine
+            // cost about five per cent of the adults a year — the mildest
+            // consequence in the game where it should be the sharpest. A
+            // republic with no clinic in reach has no floor under it at all;
+            // one with a hospital next door has the whole of it. Nobody is kept
+            // alive by a doctor they cannot get to.
+            var cared = Math.Clamp(here.Health, 0.0, 1.0);
+            var target = Math.Max(t.HealthUnserved * cared, content);
+
+            // And what the republic sells them. Drink lifts contentment and
+            // costs health, which is what makes a distillery a decision rather
+            // than free goodwill; the player's control over it is whether to
+            // build one and whether to keep it stocked.
+            target -= t.AlcoholHealthCost * Math.Clamp(world.Buildings.DrinkAt(b), 0.0, 1.0);
+
             var health = world.Citizens.HealthAt(c);
-            var target = Math.Max(t.HealthUnserved, content);
-            world.Citizens.SetHealth(c, health + ((target - health) * t.HealthDrift));
+            world.Citizens.SetHealth(
+                c, health + ((Math.Clamp(target, 0.0, 1.0) - health) * t.HealthDrift));
             moved++;
         }
 
@@ -1082,6 +1098,198 @@ public static class Systems
     }
 
     /// <summary>
+    /// Buying in what the republic cannot make yet.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This shortens no build.</b> It answers where a tonne of brick comes
+    /// from in a republic with no brickworks: the goods land at a customs house
+    /// on the post the policy names, and your lorries still have to fetch them.
+    /// A post with no customs house on it receives nothing, which is what makes
+    /// opening one a decision.
+    /// </para>
+    /// <para>
+    /// Only what nothing in the republic makes. The point of a policy is the
+    /// gap before the materials chain exists, not a permanent alternative to
+    /// building one — and a republic that could buy its own bricks cheaper than
+    /// firing them would never fire any.
+    /// </para>
+    /// <para>
+    /// The bill is bought once. <see cref="BuildPolicy.Allowance"/> is what says
+    /// so, and it was called by nothing at all: the command was accepted,
+    /// journalled and saved, and no pass ever landed a purchase. A control
+    /// wired to nothing is the worst form of a fact the player cannot see.
+    /// </para>
+    /// </remarks>
+    private static List<Mutation> Imports(World world)
+    {
+        var t = world.Tables;
+        var mutations = new List<Mutation>();
+
+        // What the republic can already make for itself, so a policy does not
+        // quietly become the way it gets everything.
+        var makes = new bool[t.Resources.Length];
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (!world.Buildings.IsBuilt(b))
+            {
+                continue;
+            }
+
+            foreach (var r in t.Outputs.KeysOf(world.Buildings.KindAt(b)))
+            {
+                makes[r] = true;
+            }
+        }
+
+        foreach (var (site, x, y) in SitesInOrder(world, wantingMaterials: false))
+        {
+            var post = world.BuildPolicy.CrossingFor(site);
+            if (post is null || world.Frontier.Get(post.Value) is not { } crossing)
+            {
+                continue;
+            }
+
+            var house = CustomsAt(world, crossing);
+            if (house < 0)
+            {
+                continue;
+            }
+
+            foreach (var (resource, bill, outstanding) in Wanted(world, site))
+            {
+                if (makes[resource] || outstanding <= 0.0)
+                {
+                    continue;
+                }
+
+                var allowed = world.BuildPolicy.Allowance(site, resource, bill);
+                var room = world.Buildings.IntakeCapacity(house, resource)
+                    - world.Buildings.Stock.Get(house, resource);
+
+                var price = crossing.Bloc == Market.East
+                    ? t.ResourcePriceEast[resource]
+                    : t.ResourcePriceWest[resource];
+
+                var affordable = price > 0.0 ? world.Treasury.Of(crossing.Bloc) / price : 0.0;
+                var bought = Math.Min(
+                    Math.Min(outstanding, allowed), Math.Min(Math.Max(room, 0.0), affordable));
+
+                if (bought <= 0.0)
+                {
+                    continue;
+                }
+
+                world.BuildPolicy.RecordPurchase(site, resource, bought);
+                mutations.Add(Mutation.Produce(house, resource, bought));
+                mutations.Add(Mutation.Money(crossing.Bloc, -bought * price));
+            }
+        }
+
+        return mutations;
+    }
+
+    /// <summary>A staffed customs house on a post, or -1.</summary>
+    private static int CustomsAt(World world, BorderCrossing post)
+    {
+        var t = world.Tables;
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (!world.Buildings.IsBuilt(b)
+                || t.BuildingIds[world.Buildings.KindAt(b)] != "Customs")
+            {
+                continue;
+            }
+
+            if (Units.Distance(
+                world.Buildings.XAt(b), world.Buildings.YAt(b), post.X, post.Y) <= t.CustomsRange)
+            {
+                return b;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>What one site's bill still wants, and what the whole bill was.</summary>
+    private static List<(int Resource, double Bill, double Outstanding)> Wanted(
+        World world, Destination site)
+    {
+        var t = world.Tables;
+        var wanted = new List<(int, double, double)>();
+
+        switch (site.Kind)
+        {
+            case DestinationKind.Building:
+                {
+                    var b = world.Buildings.IndexOf(site.Id);
+                    if (b < 0 || world.Buildings.IsBuilt(b))
+                    {
+                        break;
+                    }
+
+                    var kind = world.Buildings.KindAt(b);
+                    var res = t.Materials.KeysOf(kind);
+                    var qty = t.Materials.ValuesOf(kind);
+                    for (var i = 0; i < res.Length; i++)
+                    {
+                        wanted.Add((res[i], qty[i], world.Buildings.MaterialOutstanding(b, res[i])));
+                    }
+
+                    break;
+                }
+
+            case DestinationKind.RoadSite:
+                {
+                    var run = world.RoadWorks.Get(site.Id);
+                    if (run is null)
+                    {
+                        break;
+                    }
+
+                    var at = world.RoadWorks.IndexOf(run.Id);
+                    var left = 1.0 - run.Progress(t);
+                    for (var r = 0; r < t.Resources.Length; r++)
+                    {
+                        var bill = run.Wants(r, t);
+                        if (bill > 0.0)
+                        {
+                            wanted.Add((r, bill,
+                                (bill * left) - world.RoadWorks.Stock.Get(at, r)));
+                        }
+                    }
+
+                    break;
+                }
+
+            case DestinationKind.LineSite:
+                {
+                    var span = world.LineWorks.Get(site.Id);
+                    if (span is null)
+                    {
+                        break;
+                    }
+
+                    var at = world.LineWorks.IndexOf(span.Id);
+                    var left = 1.0 - span.Progress(t);
+                    foreach (var bill in t.Utilities[span.Kind].Materials)
+                    {
+                        var whole = bill.Tonnes * span.Kilometres;
+                        wanted.Add((bill.Resource, whole,
+                            (whole * left) - world.LineWorks.Stock.Get(at, bill.Resource)));
+                    }
+
+                    break;
+                }
+
+            default:
+                break;
+        }
+
+        return wanted;
+    }
+
+    /// <summary>
     /// Who is born and who dies.
     /// </summary>
     /// <remarks>
@@ -1107,10 +1315,14 @@ public static class Systems
                 world.Citizens.SetAge(c, world.Citizens.AgeAt(c) + 1);
             }
 
+            // How likely somebody is to die today. Two authored figures rather
+            // than two literals in the middle of a pass: how long people live
+            // is balance, and the checksum on the table did not cover it.
             var age = world.Citizens.AgeAt(c);
             var frailty = age >= t.Oldest
                 ? 1.0
-                : (1.0 - world.Citizens.HealthAt(c)) * 0.0004 * (age / 40.0);
+                : (1.0 - world.Citizens.HealthAt(c)) * t.FrailtyPerDay
+                    * (age / t.FrailtyReferenceAge);
 
             if (world.Rng.NextDouble() < frailty)
             {
@@ -3174,6 +3386,12 @@ public static class Systems
     /// see and cannot rely on.
     /// </para>
     /// <para>
+    /// <paramref name="wantingMaterials"/> is false for the one caller that is
+    /// asking the opposite question — the import pass, which is looking for
+    /// sites that do <i>not</i> have their bill and is the reason they might
+    /// get one.
+    /// </para>
+    /// <para>
     /// Buildings and lines are ranked <b>together</b>. A building's id is its
     /// place in the order; a span carries the count as it stood when it was
     /// ordered, and ties go to the building, because the building holding that
@@ -3182,7 +3400,8 @@ public static class Systems
     /// factory in the republic.
     /// </para>
     /// </remarks>
-    private static List<(Destination Site, double X, double Y)> SitesInOrder(World world)
+    private static List<(Destination Site, double X, double Y)> SitesInOrder(
+        World world, bool wantingMaterials = true)
     {
         var queue = new List<(long Ordered, int Tie, Destination Site, double X, double Y)>();
 
@@ -3197,7 +3416,7 @@ public static class Systems
                 continue;
             }
 
-            if (!world.Buildings.HasMaterials(b))
+            if (wantingMaterials && !world.Buildings.HasMaterials(b))
             {
                 continue;
             }
@@ -3209,7 +3428,7 @@ public static class Systems
 
         foreach (var road in world.RoadWorks.Sites)
         {
-            if (!world.RoadWorks.HasMaterials(road))
+            if (wantingMaterials && !world.RoadWorks.HasMaterials(road))
             {
                 continue;
             }
@@ -3221,7 +3440,7 @@ public static class Systems
 
         foreach (var line in world.LineWorks.Sites)
         {
-            if (!world.LineWorks.HasMaterials(line))
+            if (wantingMaterials && !world.LineWorks.HasMaterials(line))
             {
                 continue;
             }
@@ -3268,6 +3487,7 @@ public static class Systems
 
         // Groups that ran out of patience.
         var gone = world.Migration.GiveUp(today, t);
+        var left = Leave(world);
 
         // How the republic looks from outside: what it offers the people already
         // living in it, weighted by how many that is — one wretched outpost does
@@ -3334,9 +3554,49 @@ public static class Systems
             }
         }
 
-        return arrived + gone.Count > 0
-            ? [new Mutation(MutationKind.Migration, arrived, gone.Count, -1, 0.0, 0.0)]
+        return arrived + gone.Count + left > 0
+            ? [new Mutation(MutationKind.Migration, arrived, gone.Count, -1, left, 0.0)]
             : [];
+    }
+
+    /// <summary>
+    /// Who has had enough and gone.
+    /// </summary>
+    /// <remarks>
+    /// <b>Contentment was a one-way valve.</b> Loyalty was computed every day,
+    /// saved with every republic and read by nothing, while the table authored
+    /// the two figures that decide when somebody leaves — so a republic could
+    /// fail its people for a decade and lose nobody, and the only cost of a
+    /// cold, hungry, unserved estate was that no new settlers came. People
+    /// leaving is what makes the middle of a decade a fight rather than a
+    /// plateau.
+    /// <para>
+    /// Backwards, so removing somebody does not skip the next; and one at a
+    /// time rather than as a wave, because loyalty already moves slowly and a
+    /// cliff in it would empty a town over one bad winter.
+    /// </para>
+    /// </remarks>
+    private static int Leave(World world)
+    {
+        var t = world.Tables;
+        var odds = t.EmigrationOdds / SimClock.DaysPerYear;
+        var left = 0;
+
+        for (var c = world.Citizens.Count - 1; c >= 0; c--)
+        {
+            if (world.Citizens.LoyaltyAt(c) >= t.LoyaltyLeaves)
+            {
+                continue;
+            }
+
+            if (world.Rng.NextDouble() < odds)
+            {
+                world.Citizens.RemoveAt(c);
+                left++;
+            }
+        }
+
+        return left;
     }
 
     /// <summary>
