@@ -51,7 +51,7 @@ internal static class Program
             $"seed {seed} · {years} years · 6 km republic · {tables.Climates[climate].Name}");
         Console.WriteLine(
             $"posted at ({cx:F0} m, {cy:F0} m) · nothing built · "
-            + $"{Scenario.GrantRoubles:F0} roubles");
+            + $"{Scenario.GrantRoubles(tables):F0} roubles");
         Console.WriteLine(
             $"coal in the ground at founding: {world.Geology.RemainingOf(Mineral.Coal):F0} t");
         Console.WriteLine();

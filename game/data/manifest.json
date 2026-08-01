@@ -1,5 +1,5 @@
 {
-  "checksum": "c3dd2dd3b68a6ca2",
+  "checksum": "53ba84eab4225b65",
   "resources": ["Coal", "IronOre", "Steel", "Oil", "Fuel", "Bitumen", "Chemicals", "Wood", "Planks", "Gravel", "Bricks", "Cement", "Concrete", "PrefabPanel", "Asphalt", "Crops", "Food", "Clothes", "Alcohol", "Machinery", "Electronics", "Waste"],
   "forms": ["Aggregate", "Liquid", "Bulk", "Open", "Covered"],
   "needs": ["Health", "Culture", "Schooling", "Safety"],
@@ -2155,7 +2155,7 @@
     "river_catchment": 0.1,
     "broad_catchment": 0.25
   },
-  "rules": { "builders_per_site": 10, "machinery_per_builder_day": 0.02, "contractor_days": 18.0, "contractor_rate": 340.0, "food_per_citizen": 0.015, "clothes_per_citizen": 0.004, "alcohol_per_citizen": 0.0015, "electronics_per_citizen": 0.0006, "service_radius_m": 800.0, "transformer_range_m": 450.0, "smoke_radius_m": 600.0, "worn_efficiency": 0.5, "growing_min_c": 5.0, "growing_warm_c": 18.0, "drought_below": 0.35, "drought_floor": 0.25, "watered_at": 0.85, "watered_yield": 1.15, "resupply_at_days": 3.0, "min_load_t": 2.0, "bog_span": 1.2, "worst_odds": 0.6, "dig_out": 0.35, "refuel_range_m": 300.0, "oldest": 105, "births_per_pair_year": 0.22, "births_need": 0.45, "arrival_odds": 0.15, "plough_at": 0.25 },
+  "rules": { "builders_per_site": 10, "machinery_per_builder_day": 0.02, "contractor_days": 18.0, "contractor_rate": 340.0, "food_per_citizen": 0.015, "clothes_per_citizen": 0.004, "alcohol_per_citizen": 0.0015, "electronics_per_citizen": 0.0006, "service_radius_m": 800.0, "transformer_range_m": 450.0, "smoke_radius_m": 600.0, "worn_efficiency": 0.5, "growing_min_c": 5.0, "growing_warm_c": 18.0, "drought_below": 0.35, "drought_floor": 0.25, "watered_at": 0.85, "watered_yield": 1.15, "resupply_at_days": 3.0, "opening_grant": 2500000.0, "urgency_site": 2.0, "urgency_empty": 3.0, "urgency_low": 1.0, "urgency_shop": 2.5, "urgency_order": 1.5, "shop_keeps": 0.5, "min_load_t": 2.0, "bog_span": 1.2, "worst_odds": 0.6, "dig_out": 0.35, "refuel_range_m": 300.0, "oldest": 105, "births_per_pair_year": 0.22, "births_need": 0.45, "arrival_odds": 0.15, "plough_at": 0.25 },
   "roadworks": { "junction_spacing_m": 200.0, "junction_merge_m": 20.0, "min_road_m": 50.0, "lamp_labour": 35.0, "lamp_mw_per_km": 0.02, "lamp_materials": [["Steel", 6.0], ["Electronics", 1.5]] },
   "grades": [
     { "grade": "Dirt", "name": "Dirt Track", "carries": "Road", "speed_kph": 25.0, "labour": 25.0, "lamps": false, "materials": [] },

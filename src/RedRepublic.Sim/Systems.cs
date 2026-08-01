@@ -1573,7 +1573,7 @@ public static class Systems
                     - world.LineWorks.Stock.Get(i, bill.Resource);
                 if (outstanding > 1e-9)
                 {
-                    wanted.Add((Destination.LineSite(line.Id), bill.Resource, outstanding, 2.0));
+                    wanted.Add((Destination.LineSite(line.Id), bill.Resource, outstanding, t.UrgencySite));
                 }
             }
         }
@@ -1598,7 +1598,7 @@ public static class Systems
                     {
                         // A site the republic is waiting on outranks a topped-up
                         // works: the building is not there yet.
-                        wanted.Add((Destination.Building(world.Buildings.IdAt(b)), res[i], outstanding, 2.0));
+                        wanted.Add((Destination.Building(world.Buildings.IdAt(b)), res[i], outstanding, t.UrgencySite));
                     }
                 }
 
@@ -1621,7 +1621,7 @@ public static class Systems
                         // An empty bin is a stall; a low one is only a warning.
                         wanted.Add((
                             Destination.Building(world.Buildings.IdAt(b)),
-                            inputs[i], short_, held <= 0.0 ? 3.0 : 1.0));
+                            inputs[i], short_, held <= 0.0 ? t.UrgencyEmpty : t.UrgencyLow));
                     }
                 }
             }
@@ -1631,11 +1631,12 @@ public static class Systems
             // nothing and sells nothing, so the standing order is its demand.
             foreach (var r in t.Sells.KeysOf(kind))
             {
-                var target = t.BStorage[kind] * 0.5;
+                var target = t.BStorage[kind] * t.ShopKeeps;
                 var held = world.Buildings.Stock.Get(b, r);
                 if (target - held > t.MinLoad)
                 {
-                    wanted.Add((Destination.Building(world.Buildings.IdAt(b)), r, target - held, 2.5));
+                    wanted.Add((
+                        Destination.Building(world.Buildings.IdAt(b)), r, target - held, t.UrgencyShop));
                 }
             }
 
@@ -1647,7 +1648,8 @@ public static class Systems
                     var held = world.Buildings.Stock.Get(b, r);
                     if (ordered - held > t.MinLoad)
                     {
-                        wanted.Add((Destination.Building(world.Buildings.IdAt(b)), r, ordered - held, 1.5));
+                        wanted.Add((
+                            Destination.Building(world.Buildings.IdAt(b)), r, ordered - held, t.UrgencyOrder));
                     }
                 }
             }
@@ -1854,7 +1856,7 @@ public static class Systems
             {
                 if (r == resource)
                 {
-                    keep = Math.Max(keep, t.BStorage[kind] * 0.5);
+                    keep = Math.Max(keep, t.BStorage[kind] * t.ShopKeeps);
                 }
             }
 

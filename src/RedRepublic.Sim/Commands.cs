@@ -801,6 +801,15 @@ public static class Commands
 
     private static Outcome SetPriority(World world, Command c)
     {
+        // A standing nothing answers to is refused rather than cast. A command
+        // arrives from outside the simulation — from a save, from a replay,
+        // from a screen with a bug in it — and `(Priority)9` sorts ahead of
+        // everything for ever with nothing anywhere to say so.
+        if (!Enum.IsDefined((Priority)c.B))
+        {
+            return Outcome.No("that is not a standing the labour plan recognises");
+        }
+
         if (world.Buildings.IndexOf(c.A) < 0)
         {
             return Outcome.No("there is no such building");

@@ -99,7 +99,7 @@ public sealed class FoundingTests
 
         Assert.Equal(0, world.Buildings.Count);
         Assert.Equal(0, world.Citizens.Count);
-        Assert.Equal(Scenario.GrantRoubles, world.Treasury.Of(Market.East));
+        Assert.Equal(Scenario.GrantRoubles(T), world.Treasury.Of(Market.East));
 
         // Roubles only. Everything Western is out of reach until the republic has
         // exported something for hard currency, and that is the opening move.

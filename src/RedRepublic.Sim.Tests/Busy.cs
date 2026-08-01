@@ -52,8 +52,8 @@ public static class Busy
         var built = Scenario.Town(world, Scenario.Settlers);
         var notes = new List<string>();
 
-        world.Treasury.Add(Market.East, Scenario.GrantRoubles);
-        world.Treasury.Add(Market.West, Scenario.GrantRoubles);
+        world.Treasury.Add(Market.East, Scenario.GrantRoubles(T));
+        world.Treasury.Add(Market.West, Scenario.GrantRoubles(T));
 
         // Materials for the sites, and machinery for the gangs. A republic that
         // cannot feed its own building programme reaches none of the passes

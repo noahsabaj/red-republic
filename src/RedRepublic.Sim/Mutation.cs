@@ -121,11 +121,20 @@ public enum MutationKind
     /// <summary>Rubbish thrown away.</summary>
     Waste,
 
-    /// <summary>A machine worn out.</summary>
+    /// <summary>
+    /// A machine worn out.
+    /// </summary>
+    /// <remarks>
+    /// <b>The one word here reserved for a system that is not built.</b> The
+    /// table authors <c>wear</c> on every building and a <c>worn_efficiency</c>
+    /// beside it, and nothing reads either: machines never wear out, so
+    /// machinery is a thing bought once and never again, and a Machine Works
+    /// has no standing demand to serve. That is a parity gap rather than a
+    /// defect — the game this one is measured against has maintenance — and it
+    /// is left named rather than deleted because deleting it would take the
+    /// authored figures with it and hide the gap instead of stating it.
+    /// </remarks>
     WearMachinery,
-
-    /// <summary>A site opened, or a line energised.</summary>
-    Commissioned,
 
     /// <summary>A plough cleared a stretch of ground.</summary>
     Ploughed,

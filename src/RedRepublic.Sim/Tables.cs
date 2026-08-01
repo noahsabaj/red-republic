@@ -206,6 +206,32 @@ public sealed class Tables
 
     public double ResupplyAtDays { get; private set; }
 
+    /// <summary>The rouble grant a posting opens with.</summary>
+    public double OpeningGrant { get; private set; }
+
+    // How the freight ranking orders what the republic is short of. These were
+    // literals inside the pass that reads them, which is the one place balance
+    // may not live: what a player is really deciding when they set a priority is
+    // where their haulage goes, and it was not in the table the checksum covers.
+
+    /// <summary>A site the republic is waiting on. The building is not there yet.</summary>
+    public double UrgencySite { get; private set; }
+
+    /// <summary>A works with an empty bin: a stall rather than a warning.</summary>
+    public double UrgencyEmpty { get; private set; }
+
+    /// <summary>A works running low. It is still running.</summary>
+    public double UrgencyLow { get; private set; }
+
+    /// <summary>A shop with empty shelves — people go without before a factory does.</summary>
+    public double UrgencyShop { get; private set; }
+
+    /// <summary>A terminal below its standing order.</summary>
+    public double UrgencyOrder { get; private set; }
+
+    /// <summary>What share of its storage a shop is kept stocked to.</summary>
+    public double ShopKeeps { get; private set; }
+
     /// <summary>The smallest load worth sending a lorry for.</summary>
     public double MinLoad { get; private set; }
 
@@ -940,6 +966,13 @@ public sealed class Tables
         WateredAt = ru.GetProperty("watered_at").GetDouble();
         WateredYield = ru.GetProperty("watered_yield").GetDouble();
         ResupplyAtDays = ru.GetProperty("resupply_at_days").GetDouble();
+        OpeningGrant = ru.GetProperty("opening_grant").GetDouble();
+        UrgencySite = ru.GetProperty("urgency_site").GetDouble();
+        UrgencyEmpty = ru.GetProperty("urgency_empty").GetDouble();
+        UrgencyLow = ru.GetProperty("urgency_low").GetDouble();
+        UrgencyShop = ru.GetProperty("urgency_shop").GetDouble();
+        UrgencyOrder = ru.GetProperty("urgency_order").GetDouble();
+        ShopKeeps = ru.GetProperty("shop_keeps").GetDouble();
         MinLoad = ru.GetProperty("min_load_t").GetDouble();
         BogSpan = ru.GetProperty("bog_span").GetDouble();
         WorstOdds = ru.GetProperty("worst_odds").GetDouble();
@@ -1424,6 +1457,13 @@ public sealed class Tables
         h.Push(WateredAt);
         h.Push(WateredYield);
         h.Push(ResupplyAtDays);
+        h.Push(OpeningGrant);
+        h.Push(UrgencySite);
+        h.Push(UrgencyEmpty);
+        h.Push(UrgencyLow);
+        h.Push(UrgencyShop);
+        h.Push(UrgencyOrder);
+        h.Push(ShopKeeps);
         h.Push(MinLoad);
         h.Push(BogSpan);
         h.Push(WorstOdds);

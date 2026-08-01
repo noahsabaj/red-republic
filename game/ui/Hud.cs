@@ -317,16 +317,34 @@ public sealed partial class Hud : CanvasLayer
         // right and setting only the right offset leaves the left one at zero, so
         // the panel is zero pixels wide and draws nothing — with no error, and no
         // way to tell it from a panel that was never added. Both edges are given.
-        panel.SetAnchorsPreset(Control.LayoutPreset.TopRight);
+        panel.SetAnchorsPreset(Control.LayoutPreset.RightWide);
         panel.OffsetLeft = -242.0f;
         panel.OffsetRight = -12.0f;
         panel.OffsetTop = 56.0f;
-        panel.OffsetBottom = 700.0f;
+
+        // Clear of the key hint along the bottom, and stretched to whatever
+        // height the window has: this was pinned at seven hundred pixels, so
+        // twenty-two resources and eight rows of population ran off the end of a
+        // 900-line window with no way to see the rest. Anchored and scrolled,
+        // it fits any window and says so by scrolling.
+        panel.OffsetBottom = -52.0f;
         AddChild(panel);
 
-        var column = new VBoxContainer();
+        var scroll = new ScrollContainer
+        {
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
+        };
+
+        panel.AddChild(scroll);
+
+        var column = new VBoxContainer
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+
         column.AddThemeConstantOverride("separation", 1);
-        panel.AddChild(column);
+        scroll.AddChild(column);
 
         column.AddChild(Parts.Say("STORES", "Stamp"));
         for (var r = 0; r < _t.Resources.Length; r++)

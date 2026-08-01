@@ -179,6 +179,31 @@ public sealed class ExposureTests
             + " — either wire one up, or put it on NoControlYet with a line saying why");
     }
 
+    /// <summary>
+    /// Every verb the journal can be asked to narrate has a sentence.
+    /// </summary>
+    /// <remarks>
+    /// <b>A save records how its republic came to be</b>, and the journal screen
+    /// is where a player reads it. Its switch ends in a fallback saying it
+    /// cannot name what happened — which is a page of history that says nothing,
+    /// and which nothing would have reported: a verb added without a sentence
+    /// simply started producing it.
+    /// </remarks>
+    [Fact]
+    public void Every_verb_the_journal_can_be_handed_has_a_sentence()
+    {
+        var game = GameSource();
+        var unnamed = Enum.GetValues<CommandKind>()
+            .Where(kind => !game.Contains($"CommandKind.{kind} =>", StringComparison.Ordinal))
+            .Select(kind => kind.ToString())
+            .ToList();
+
+        Assert.True(
+            unnamed.Count == 0,
+            "the journal has no sentence for these and would print its fallback: "
+            + string.Join(", ", unnamed));
+    }
+
     /// <summary>The verb work list only shrinks, for the same reason.</summary>
     [Fact]
     public void The_verb_work_list_names_nothing_that_is_already_offered()
