@@ -27,12 +27,30 @@ public sealed partial class BuildScreen : Screen
     private VBoxContainer _catalogue = null!;
     private VBoxContainer _going = null!;
     private VBoxContainer _ways = null!;
+    private VBoxContainer _orders = null!;
+    private Button _contract = null!;
+    private Button _lamps = null!;
 
     /// <summary>What the player has chosen to place, or -1.</summary>
     public int Chosen { get; private set; } = -1;
 
-    /// <summary>Raised when the player picks something, so the world can site it.</summary>
-    public event Action<int>? Picked;
+    /// <summary>
+    /// Which bloc's firm the next building goes to, or null for the republic's
+    /// own crews.
+    /// </summary>
+    /// <remarks>
+    /// <b>The opening move, and it had no control at all.</b> A blank map has no
+    /// Construction Office, no crews and no materials, so an ordinary site is
+    /// one nothing can ever work — the founding's own remarks say the republic
+    /// starts by contracting a Bloc firm, and the player could not.
+    /// </remarks>
+    public Market? Contractor { get; private set; }
+
+    /// <summary>Raised when the player picks a building, so the world can site it.</summary>
+    public event Action<int, Market?>? Picked;
+
+    /// <summary>Raised when the player picks a way or a line to draw.</summary>
+    public event Action<Cursor, int, bool>? Drawing;
 
     protected override string Title => "Construction";
 
@@ -59,6 +77,80 @@ public sealed partial class BuildScreen : Screen
         _going = Parts.Scroller(right);
         _ways = new VBoxContainer();
         right.AddChild(_ways);
+
+        _orders = new VBoxContainer();
+        right.AddChild(_orders);
+        Orders();
+    }
+
+    /// <summary>
+    /// Who builds it, and what else can be ordered.
+    /// </summary>
+    /// <remarks>
+    /// Built once rather than refreshed: the grades and the utilities are a
+    /// table, not a republic, so nothing here changes while the game runs.
+    /// </remarks>
+    private void Orders()
+    {
+        var t = Republic.Tables;
+
+        _orders.AddChild(Parts.Gap(Palette.GapWide));
+        _orders.AddChild(Parts.Say("WHO BUILDS IT", "Section"));
+        _orders.AddChild(Parts.Prose(
+            "Your own crews cost labour and materials and no money. A Bloc firm "
+            + "brings both and charges several times what a builder-day costs.",
+            "Faint"));
+
+        var who = Parts.Row(_orders);
+        _contract = Parts.Toggle();
+        _contract.Toggled += on =>
+        {
+            Contractor = on ? Market.East : null;
+            _contract.Text = on ? "EAST" : "OUR CREWS";
+        };
+
+        _contract.Text = "OUR CREWS";
+        who.AddChild(Parts.Cell(Parts.Say("contracted to"), 1.6f));
+        who.AddChild(Parts.Cell(_contract, 1.0f));
+
+        _orders.AddChild(Parts.Gap(Palette.GapWide));
+        _orders.AddChild(Parts.Say("ORDER A WAY", "Section"));
+        _orders.AddChild(Parts.Prose(
+            "Two clicks: where it starts and where it ends. Nothing routes over "
+            + "it until the last builder-day lands.", "Faint"));
+
+        var lit = Parts.Row(_orders);
+        _lamps = Parts.Toggle();
+        _lamps.Toggled += on => _lamps.Text = Parts.Word(on);
+        lit.AddChild(Parts.Cell(Parts.Say("street lighting"), 1.6f));
+        lit.AddChild(Parts.Cell(_lamps, 1.0f));
+
+        for (var grade = 0; grade < t.Grades.Length; grade++)
+        {
+            var line = Parts.Row(_orders, grade % 2 == 1);
+            var at = grade;
+            var pick = Parts.Press(t.Grades[grade].Name, "Quiet");
+            pick.Pressed += () => Drawing?.Invoke(Cursor.Way, at, _lamps.ButtonPressed);
+
+            line.AddChild(Parts.Cell(pick, 2.0f));
+            line.AddChild(Parts.Cell(
+                Parts.Figure($"{t.Grades[grade].SpeedKph:F0} km/h"), 1.0f, HorizontalAlignment.Right));
+        }
+
+        _orders.AddChild(Parts.Gap(Palette.GapWide));
+        _orders.AddChild(Parts.Say("STRING A LINE", "Section"));
+
+        for (var utility = 0; utility < t.Utilities.Length; utility++)
+        {
+            var line = Parts.Row(_orders, utility % 2 == 1);
+            var at = utility;
+            var pick = Parts.Press(t.Utilities[utility].Name, "Quiet");
+            pick.Pressed += () => Drawing?.Invoke(Cursor.Span, at, false);
+
+            line.AddChild(Parts.Cell(pick, 2.0f));
+            line.AddChild(Parts.Cell(
+                Parts.Figure($"{t.Utilities[utility].Reach:F0} m"), 1.0f, HorizontalAlignment.Right));
+        }
     }
 
     private void Catalogue()
@@ -81,7 +173,7 @@ public sealed partial class BuildScreen : Screen
             pick.Pressed += () =>
             {
                 Chosen = at;
-                Picked?.Invoke(at);
+                Picked?.Invoke(at, Contractor);
                 Refresh();
             };
 
@@ -176,6 +268,7 @@ public sealed partial class BuildScreen : Screen
                 Parts.Say($"{t.Grades[run.Grade].Name}, {run.Kilometres:F2} km"), 2.0f));
             line.AddChild(Parts.Cell(
                 Parts.Figure($"{run.Progress(t) * 100.0:F0}%"), 0.8f, HorizontalAlignment.Right));
+            line.AddChild(Parts.Cell(CallOff(Destination.RoadSite(run.Id)), 0.9f));
         }
 
         foreach (var span in Republic.LineWorks.Sites)
@@ -185,11 +278,33 @@ public sealed partial class BuildScreen : Screen
                 Parts.Say($"{t.Utilities[span.Kind].Name}, {span.Kilometres:F2} km"), 2.0f));
             line.AddChild(Parts.Cell(
                 Parts.Figure($"{span.Progress(t) * 100.0:F0}%"), 0.8f, HorizontalAlignment.Right));
+            line.AddChild(Parts.Cell(CallOff(Destination.LineSite(span.Id)), 0.9f));
         }
 
         if (Republic.RoadWorks.Sites.Count + Republic.LineWorks.Sites.Count == 0)
         {
             _ways.AddChild(Parts.Prose("No way or line is being laid.", "Faint"));
         }
+    }
+
+    /// <summary>
+    /// The button that calls a run off.
+    /// </summary>
+    /// <remarks>
+    /// Not gated behind a confirmation. What the republic has already delivered
+    /// to the site is lost with it, which is a consequence rather than a trap —
+    /// and the refusal, if a gang is on it, arrives in the simulation's own
+    /// words.
+    /// </remarks>
+    private Button CallOff(Destination site)
+    {
+        var button = Parts.Press("Call off", "Quiet");
+        button.Pressed += () =>
+        {
+            Ask(Command.CancelWorks(site));
+            Refresh();
+        };
+
+        return button;
     }
 }

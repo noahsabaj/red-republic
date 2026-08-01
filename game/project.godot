@@ -36,6 +36,7 @@ theme/custom="res://ui/theme.tres"
 window/size/viewport_width=1600
 window/size/viewport_height=900
 
+
 ; Vsync OFF by default during development, and this is not a preference.
 ;
 ; With it on, every frame measurement comes back as exactly 16.67 ms whatever

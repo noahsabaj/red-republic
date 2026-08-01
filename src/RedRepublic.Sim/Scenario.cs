@@ -54,7 +54,8 @@ public sealed class StartingBase
 public static class Scenario
 {
     /// <summary>
-    /// The grant a posting opens with, in roubles.
+    /// The grant a posting opens with, in roubles — read from the table, which
+    /// is where balance lives.
     /// </summary>
     /// <remarks>
     /// <b>Roubles only, and that is the opening move.</b> A republic starts
@@ -65,7 +66,8 @@ public static class Scenario
     /// the first thing that matters about a posting, rather than a detail that
     /// surfaces hours in.
     /// </remarks>
-    public const double GrantRoubles = 2_500_000.0;
+    public static double GrantRoubles(Tables tables) =>
+        (tables ?? throw new ArgumentNullException(nameof(tables))).OpeningGrant;
 
     /// <summary>
     /// The population a <i>test</i> town is stood up with.
@@ -100,7 +102,7 @@ public static class Scenario
     {
         ArgumentNullException.ThrowIfNull(world);
         var centre = Site(world);
-        world.Treasury.Add(Market.East, GrantRoubles);
+        world.Treasury.Add(Market.East, GrantRoubles(world.Tables));
         return centre;
     }
 

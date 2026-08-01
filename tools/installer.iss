@@ -10,7 +10,8 @@
 ; PrivilegesRequired=lowest, into {localappdata}\Programs. A game is not system
 ; software: installing it needs no administrator, and asking for elevation is
 ; both a worse first thirty seconds for a stranger and a UAC prompt that cannot
-; be answered by the CI job that checks a clean-machine install actually works.
+; be answered by the packaging job in CI, which exports the game and compiles
+; this on a Windows runner every time the tree changes.
 ; The cost is that it installs for the current user only, which for a game is the
 ; behaviour anybody would have expected anyway.
 ;
@@ -60,7 +61,9 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
 LicenseFile={#RootDir}\LICENSE
-SetupIconFile={#RootDir}\godot\icon.ico
+; The icon lives beside the project it belongs to. It used to be read from a
+; `godot/` folder, which the port to a C# project deleted.
+SetupIconFile={#RootDir}\game\icon.ico
 UninstallDisplayIcon={app}\{#ExeName}
 UninstallDisplayName={#AppName} {#AppVersion}
 

@@ -50,6 +50,18 @@ public readonly record struct Contentment(
         "Safety",
     ];
 
+    // Where each want sits in Names and Parts. Named rather than written as
+    // numbers at the call site, so reordering the breakdown is one edit here
+    // instead of a hunt through the passes that fill it in.
+    public const int ProvisionsSlot = 0;
+    public const int WarmthSlot = 1;
+    public const int HealthSlot = 2;
+    public const int CultureSlot = 3;
+    public const int SchoolingSlot = 4;
+    public const int WorkSlot = 5;
+    public const int CleanlinessSlot = 6;
+    public const int SafetySlot = 7;
+
     /// <summary>A home nobody has done anything for.</summary>
     public static Contentment Nothing { get; }
 

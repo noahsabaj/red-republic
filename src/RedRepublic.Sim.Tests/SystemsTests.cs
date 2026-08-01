@@ -103,6 +103,72 @@ public sealed class SystemsTests
         }
     }
 
+    /// <summary>
+    /// <b>And a system may not claim more than it changes.</b> This is the other
+    /// half, and the half that rots: a write-set wider than its system's
+    /// behaviour tells you nothing about what wrote a value, and nothing about a
+    /// system that emitted something it declares reveals a declaration nothing
+    /// ever reaches.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Checked against a republic driven into every corner rather than against a
+    /// month of ordinary life — a declaration is only claiming too much if
+    /// <i>nothing the republic can do</i> reaches it, so the fixture below is
+    /// deliberately busy: a working town, foreign builders, an advance defaulted
+    /// on, a tender failed, standing trade rules, a road and a span under
+    /// construction, and a year of weather so the ploughs have snow to clear.
+    /// </para>
+    /// <para>
+    /// A failure here is one of two findings and never a flake: either the
+    /// declaration is wider than the behaviour, or the fixture stopped reaching
+    /// something it used to reach. Both want a person.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void No_system_claims_more_than_it_changes()
+    {
+        var world = Busy.Republic(out var report);
+        var emitted = new Dictionary<string, HashSet<MutationKind>>();
+
+        var day = 0;
+        foreach (var (skip, live) in Busy.Schedule)
+        {
+            world.Clock.AdvanceBy(skip * SimClock.TicksPerDay);
+            for (var i = 0; i < live; i++, day++)
+            {
+                Busy.Nudge(world, day);
+                for (var tick = 0; tick < SimClock.TicksPerDay; tick++)
+                {
+                    if (world.Clock.IsDayBoundary)
+                    {
+                        Record(world, Systems.Daily, emitted);
+                    }
+
+                    Record(world, Systems.PerTick, emitted);
+                    world.Clock.Advance();
+                }
+            }
+        }
+
+        var unreached = new List<string>();
+        foreach (var system in Systems.Daily.Concat(Systems.PerTick))
+        {
+            var actual = emitted.GetValueOrDefault(system.Name, []);
+            foreach (var kind in system.Writes)
+            {
+                if (!actual.Contains(kind))
+                {
+                    unreached.Add($"`{system.Name}` declares {kind} and never emitted one");
+                }
+            }
+        }
+
+        Assert.True(
+            unreached.Count == 0,
+            string.Join("\n", unreached) + "\n" + report);
+    }
+
     private static void Record(
         World world, IReadOnlyList<SimSystem> systems, Dictionary<string, HashSet<MutationKind>> into)
     {
@@ -129,27 +195,59 @@ public sealed class SystemsTests
     [Fact]
     public void The_same_seed_runs_the_same_republic()
     {
-        static (long Ticks, double Snow, double Moisture, double Purse) RunAWeek(ulong seed)
-        {
-            var world = World.Found(new WorldSpec(seed, 1200.0, 1), Fixtures.Tables);
-            world.Issue(Command.ContractBuild(
-                Fixtures.Tables.BuildingIndex("CoalMine"), 400.0, 400.0, Market.East));
-
-            for (var tick = 0; tick < SimClock.TicksPerDay * 7; tick++)
-            {
-                world.Tick();
-            }
-
-            return (world.Clock.Ticks, world.Ground.Snow, world.Ground.Moisture,
-                world.Treasury.Of(Market.East));
-        }
-
         var first = RunAWeek(1961);
         var second = RunAWeek(1961);
-        var different = RunAWeek(1962);
 
         Assert.Equal(first, second);
-        Assert.NotEqual(first.Snow == 0.0 && first.Moisture == different.Moisture, true);
+    }
+
+    /// <summary>
+    /// And a different seed is a different republic.
+    /// </summary>
+    /// <remarks>
+    /// <b>The half of determinism that rots quietly.</b> "Same seed, same world"
+    /// passes perfectly for a generator that ignores its seed, so it says nothing
+    /// on its own. This is the other half, and it compares the <i>ground</i>
+    /// rather than a week of weather: two seeds in one climate share a calendar,
+    /// so their snow and their thaw are the same by design and asserting they
+    /// differ would be asserting about the weather rather than about the seed.
+    /// </remarks>
+    [Fact]
+    public void A_different_seed_is_a_different_republic()
+    {
+        var here = World.Found(new WorldSpec(1961, 1200.0, 1), T);
+        var elsewhere = World.Found(new WorldSpec(1962, 1200.0, 1), T);
+
+        var differences = 0;
+        for (var i = 0; i < here.Terrain.Height.Length; i++)
+        {
+            if (here.Terrain.Height[i] != elsewhere.Terrain.Height[i])
+            {
+                differences++;
+            }
+        }
+
+        // Nearly all of it, not merely some of it: a generator that seeded only
+        // one of its octaves would still differ in a handful of cells.
+        Assert.True(
+            differences > here.Terrain.Height.Length * 0.9,
+            $"two seeds shared {here.Terrain.Height.Length - differences} of "
+            + $"{here.Terrain.Height.Length} cells of ground");
+    }
+
+    private static (long Ticks, double Snow, double Moisture, double Purse) RunAWeek(ulong seed)
+    {
+        var world = World.Found(new WorldSpec(seed, 1200.0, 1), T);
+        world.Issue(Command.ContractBuild(
+            T.BuildingIndex("CoalMine"), 400.0, 400.0, Market.East));
+
+        for (var tick = 0; tick < SimClock.TicksPerDay * 7; tick++)
+        {
+            world.Tick();
+        }
+
+        return (world.Clock.Ticks, world.Ground.Snow, world.Ground.Moisture,
+            world.Treasury.Of(Market.East));
     }
 
     /// <summary>

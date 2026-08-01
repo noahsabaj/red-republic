@@ -440,7 +440,7 @@ public static class ThemeBuilder
     /// referenced a generated <c>.png</c> would be a theme with a loose file
     /// beside it that nothing regenerates.
     /// </remarks>
-    private static Texture2D Mark(Color colour, int wide, int tall)
+    private static GradientTexture2D Mark(Color colour, int wide, int tall)
     {
         var ramp = new Gradient();
         ramp.SetColor(0, colour);

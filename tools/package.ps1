@@ -124,6 +124,34 @@ if ($check -match 'SCRIPT ERROR|Unhandled exception|unauthored') {
 if ($check -notmatch 'tables ok') { Die 'the exported build has no balance table in it' }
 if ($check -notmatch 'founded ')  { Die 'the exported build could not found a republic' }
 
+# ---- the version ---------------------------------------------------------------
+
+# The game project carries it, and everything else is stamped from it.
+#
+# It is not enough to write it once: the exported executable's version resource
+# comes from `game/export_presets.cfg`, which Godot reads and .NET does not, so
+# a build shipped a Windows file version of 1.0.0.0 while the project said 2.0.0
+# and nothing anywhere disagreed out loud. The preset is a committed artifact
+# stamped from the project, checked the same way the theme and the balance
+# checksum are.
+$csproj = [xml](Get-Content (Join-Path $GameDir 'RedRepublic.csproj'))
+$appVersion = $csproj.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+if (-not $appVersion) { Die 'game/RedRepublic.csproj carries no <Version>, so the installer has none' }
+
+$fileVersion = $appVersion
+while (($fileVersion -split '\.').Count -lt 4) { $fileVersion += '.0' }
+
+$presets = Join-Path $GameDir 'export_presets.cfg'
+$was = Get-Content $presets -Raw
+$now = $was `
+    -replace 'application/file_version="[^"]*"', "application/file_version=`"$fileVersion`"" `
+    -replace 'application/product_version="[^"]*"', "application/product_version=`"$fileVersion`""
+
+if ($now -ne $was) {
+    Set-Content $presets $now -NoNewline
+    Die "game/export_presets.cfg carried a different version; it has been stamped to $fileVersion — commit it and run this again"
+}
+
 # ---- installer ----------------------------------------------------------------
 
 if ($NoInstaller) {
@@ -131,14 +159,13 @@ if ($NoInstaller) {
     exit 0
 }
 
-# The version comes from the game project, so there is one copy of it and the
-# executable, the installer and the About line cannot disagree.
-$csproj = [xml](Get-Content (Join-Path $GameDir 'RedRepublic.csproj'))
-$appVersion = $csproj.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
-if (-not $appVersion) { Die 'game/RedRepublic.csproj carries no <Version>, so the installer has none' }
 
 Step "compiling the installer for $appVersion"
-& $Iscc "/DAppVersion=$appVersion" "/DStageDir=$staging" "/DOutDir=$Dist" (Join-Path $PSScriptRoot 'installer.iss')
+# RootDir as well, which the script has always failed to pass: installer.iss
+# #errors without it, and its message tells you to run this script -- the one
+# that just did not define it. Nobody could have built an installer since the
+# port, and nothing said so, because packaging is outside CI.
+& $Iscc "/DAppVersion=$appVersion" "/DStageDir=$staging" "/DOutDir=$Dist" "/DRootDir=$Root" (Join-Path $PSScriptRoot 'installer.iss')
 if ($LASTEXITCODE -ne 0) { Die "iscc exited $LASTEXITCODE" }
 
 Step "done — the installer is in $Dist"

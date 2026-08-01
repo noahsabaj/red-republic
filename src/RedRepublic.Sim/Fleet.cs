@@ -118,10 +118,13 @@ public readonly record struct Job(
     public static Job Recover(int casualty) =>
         new(JobKind.Recover, -1, default, -1, 0.0, casualty);
 
-    public static Job Ferry(Destination to, int heads) =>
-        new(JobKind.Ferry, -1, to, -1, 0.0, heads);
+    /// <summary>Go and get that gang, and take them out to that site.</summary>
+    public static Job Ferry(Destination to, int party) =>
+        new(JobKind.Ferry, -1, to, -1, 0.0, party);
 
-    public static Job Collect(int party) => new(JobKind.Collect, -1, default, -1, 0.0, party);
+    /// <summary>Go and get that gang, and bring them back to the office.</summary>
+    public static Job Collect(int party, int office) =>
+        new(JobKind.Collect, -1, Destination.Building(office), -1, 0.0, party);
 
     public static Job Settle(int group, int to) =>
         new(JobKind.Settle, -1, Destination.Building(to), -1, 0.0, group);

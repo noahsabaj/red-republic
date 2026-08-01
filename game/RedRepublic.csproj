@@ -23,6 +23,16 @@
     <RootNamespace>RedRepublic</RootNamespace>
 
     <!--
+      A warning that is not an error is a warning nobody reads. This half of the
+      tree went without it for the life of the port and collected five live
+      null-dereference warnings in the process, every one of them on a Godot
+      lookup that can genuinely return null.
+    -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <Deterministic>true</Deterministic>
+
+    <!--
       The one copy of the version. The executable's resource, the installer's
       name and whatever the game says about itself all come from here, so they
       cannot disagree — which is the failure a second copy always eventually

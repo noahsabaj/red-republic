@@ -53,7 +53,8 @@ uniform float cloud_altitude = 0.12;
 // global every lit window reads.
 //
 // **The sky has to be told, and cannot work it out.** `LIGHT0_DIRECTION` is the
-// only thing it has, and at night `main.gd` deliberately points that at a moon:
+// only thing it has, and at night `world/Scenery.cs` swings it below the horizon
+// and takes its energy down with it:
 // a DirectionalLight below the horizon lights the underside of the world and
 // nothing else, so the light is mirrored back up, made cold and made faint.
 // That is the right answer for the ground and it leaves the sky computing a

@@ -61,10 +61,17 @@ public sealed class Party
     public Market? HiredFrom { get; internal set; }
 
     /// <summary>
-    /// Standing somewhere with no site, no bus and nowhere to be: the failure
-    /// the recall command and the collect job exist to prevent.
+    /// Standing somewhere with no site and no bus: the state the collect job
+    /// exists to end.
     /// </summary>
-    public bool IsStranded => Working is null && Riding is null && HiredFrom is null;
+    /// <remarks>
+    /// <b>Foreign hands at a post are stranded too.</b> This used to exclude
+    /// them — <see cref="HiredFrom"/> being set read as "on their way in" — and
+    /// nothing in the republic ever set out for them, so twenty builders paid
+    /// for on day one stood at the frontier for a decade while the office read
+    /// as fully committed to them. Being hired is not being fetched.
+    /// </remarks>
+    public bool IsStranded => Working is null && Riding is null;
 }
 
 /// <summary>Every gang the republic has out, and every foreign hand on the payroll.</summary>

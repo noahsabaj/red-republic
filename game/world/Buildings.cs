@@ -67,15 +67,30 @@ public sealed partial class Buildings : Node3D
     /// Put every building where the republic says it is.
     /// </summary>
     /// <remarks>
-    /// Rebuilt only when the count changes or a site advances, because a
-    /// transform buffer rewritten every frame costs more than the simulation
+    /// Rebuilt only when the count changes or a site visibly advances, because
+    /// a transform buffer rewritten every frame costs more than the simulation
     /// does and nothing on it moves.
     /// </remarks>
     public void Refresh(Sim.World world)
     {
         ArgumentNullException.ThrowIfNull(world);
 
-        var stamp = world.Buildings.Count + (int)(world.Clock.DayIndex % 1024 * 4096);
+        // <b>What is actually on screen, not what day it is.</b> The stamp used
+        // to change once a day, so a site rose in twenty-four steps — at speed
+        // one that is a building frozen for a real day at a time, in the one
+        // place a player watches construction happen and against this class's
+        // own promise that the moment a building tops out is visible.
+        var stamp = world.Buildings.Count;
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (!world.Buildings.IsBuilt(b))
+            {
+                // Sixty-fourths of the way up: finer than an eye can see move
+                // and coarse enough that a buffer is not rewritten for nothing.
+                stamp = (stamp * 31) + (int)(world.Buildings.Progress(b) * 64.0);
+            }
+        }
+
         if (stamp == _drawn)
         {
             return;

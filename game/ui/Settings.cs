@@ -76,5 +76,12 @@ public static class Settings
 
         AudioServer.SetBusVolumeDb(
             0, Volume <= 0.0f ? -80.0f : Mathf.LinearToDb(Volume));
+
+        // A floor under the window. The instrument panels are laid out in
+        // pixels — a column down each side and a hint along the bottom — and
+        // below about this there is no room between them for the map. Nothing
+        // enforced one, so a player could drag the window down to a strip and
+        // the game had no opinion about it.
+        DisplayServer.WindowSetMinSize(new Vector2I(1280, 720));
     }
 }

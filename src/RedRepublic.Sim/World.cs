@@ -227,9 +227,18 @@ public sealed class World
 /// Every accepted command, in the order it was issued.
 /// </summary>
 /// <remarks>
-/// A save records how its republic came to be, which is what makes a replay
-/// possible at all. Refused commands are not recorded: replaying a no-op is not
-/// replay.
+/// <para>
+/// A save records what the player decided, in the order they decided it.
+/// Refused commands are not recorded: replaying a no-op is not replay.
+/// </para>
+/// <para>
+/// <b>It is the player's half of the inputs, not all of them.</b> A posting's
+/// seed, its size and its climate are on the spec, and the opening grant is
+/// scenario setup rather than play — so replaying this journal against a bare
+/// republic reproduces every decision and none of the founding. That is the
+/// honest description; a save restores state, and this is what makes "same seed
+/// and same inputs" have an <i>inputs</i> at all.
+/// </para>
 /// </remarks>
 public sealed class Journal
 {

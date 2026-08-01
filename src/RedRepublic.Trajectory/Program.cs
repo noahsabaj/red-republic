@@ -51,18 +51,18 @@ internal static class Program
             $"seed {seed} · {years} years · 6 km republic · {tables.Climates[climate].Name}");
         Console.WriteLine(
             $"posted at ({cx:F0} m, {cy:F0} m) · nothing built · "
-            + $"{Scenario.GrantRoubles:F0} roubles");
+            + $"{Scenario.GrantRoubles(tables):F0} roubles");
         Console.WriteLine(
             $"coal in the ground at founding: {world.Geology.RemainingOf(Mineral.Coal):F0} t");
         Console.WriteLine();
 
         Console.WriteLine(
             $"{"date",10} {"pop",4} {"empl",5} {"fed%",5} {"degC",6} {"warm%",6} "
-            + $"{"coal",8} {"food",8} {"fuel",7} {"lorries",7} {"road km",8} "
-            + $"{"grid km",8} {"money",10} {"dark",5} {"crew/wait",10} {"cont%",6} "
-            + $"{"waiting",8}");
+            + $"{"coal",8} {"food",8} {"steel",7} {"lorries",7} {"road km",8} "
+            + $"{"grid km",8} {"money",10} {"dark",5} {"crew/idle",10} {"sites",5} "
+            + $"{"cont%",6} {"smoke%",7} {"stuck",5} {"waiting",8}");
 
-        var fuel = tables.ResourceIndex("Fuel");
+        var steel = tables.ResourceIndex("Steel");
         var coal = tables.ResourceIndex("Coal");
         var food = tables.ResourceIndex("Food");
         var power = tables.UtilityIndex("Power");
@@ -89,11 +89,12 @@ internal static class Program
                 + $"{world.Citizens.Count,4} {employed,5} {fed * 100.0,4:F0}% "
                 + $"{world.Climate.MeanOn(world.Clock.DayOfYear),6:F1} "
                 + $"{warm * 100.0,5:F0}% "
-                + $"{Held(world, coal),8:F0} {Held(world, food),8:F0} {Held(world, fuel),7:F1} "
+                + $"{Held(world, coal),8:F0} {Held(world, food),8:F0} {Held(world, steel),7:F1} "
                 + $"{world.Fleet.Count,7} {world.Roads.TotalLength() / 1000.0,8:F1} "
                 + $"{world.Grid.LengthOf(power) / 1000.0,8:F1} "
                 + $"{world.Treasury.Of(Market.East),10:F0} {dark,5} "
-                + $"{crew,4}/{waiting,-5} {content * 100.0,5:F0}% "
+                + $"{crew,4}/{waiting,-5} {Sites(world),5} {content * 100.0,5:F0}% "
+                + $"{Smoke(world) * 100.0,6:F0}% {world.Fleet.Bogged(),5} "
                 + $"{world.Migration.HeadsWaiting(),8}");
 
             foreach (var line in director.Drain())
@@ -108,7 +109,89 @@ internal static class Program
             $"{world.Buildings.Count} buildings · {world.Citizens.Count} people · "
             + $"{world.Roads.SegmentCount} road segments · {world.Grid.Count} spans");
 
+        // What every building is doing, and why it is not doing more.
+        //
+        // A column of flat lines says a republic stopped; it never says which
+        // thing stopped it, and reading the trajectory is the whole point of
+        // running it. "No staff" is actionable and "coal went flat in year two"
+        // is a fortnight of guessing.
+        Console.WriteLine();
+        Console.WriteLine(
+            $"{"building",-22} {"staff",9} {"lit",4} {"warm",5} {"stalled",9}");
+
+        foreach (var b in Order(world))
+        {
+            var kind = world.Buildings.KindAt(b);
+            var stall = Systems.StallReason(world, b);
+            Console.WriteLine(
+                $"{tables.BName[kind],-22} "
+                + $"{world.Buildings.StaffAt(b),4}/{world.Buildings.Jobs(b),-4} "
+                + $"{(tables.BPowerDraw[kind] > 0.0 ? world.Buildings.PoweredAt(b) ? "yes" : "no" : "-"),4} "
+                + $"{(tables.BHeat[kind] > 0.0 ? world.Buildings.HeatedAt(b) ? "yes" : "no" : "-"),5} "
+                + $"{(world.Buildings.IsBuilt(b) ? stall == Stall.None ? "" : stall.ToString() : "building"),9}");
+        }
+
         return 0;
+    }
+
+    /// <summary>
+    /// How dirty the air is where people actually live.
+    /// </summary>
+    /// <remarks>
+    /// Over the estates rather than over the map: three and a half thousand
+    /// cells of empty countryside would average any works in the republic away
+    /// to nothing, and it is the block downwind of the coking plant that the
+    /// figure is about.
+    /// </remarks>
+    private static double Smoke(World world)
+    {
+        var over = 0.0;
+        var homes = 0;
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (!world.Buildings.IsBuilt(b)
+                || world.Tables.BResidents[world.Buildings.KindAt(b)] == 0)
+            {
+                continue;
+            }
+
+            homes++;
+            over += world.Lattice.PollutionNear(
+                world.Buildings.XAt(b), world.Buildings.YAt(b));
+        }
+
+        return homes == 0 ? 0.0 : over / homes;
+    }
+
+    /// <summary>
+    /// How much the republic has under construction — buildings, ways and spans
+    /// together, because they compete for the same gangs and the same lorries.
+    /// </summary>
+    /// <summary>Buildings in commissioning order — the order they were placed.</summary>
+    private static List<int> Order(World world)
+    {
+        var order = new List<int>();
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            order.Add(b);
+        }
+
+        order.Sort((a, b) => world.Buildings.IdAt(a).CompareTo(world.Buildings.IdAt(b)));
+        return order;
+    }
+
+    private static int Sites(World world)
+    {
+        var open = world.RoadWorks.Sites.Count + world.LineWorks.Sites.Count;
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (!world.Buildings.IsBuilt(b))
+            {
+                open++;
+            }
+        }
+
+        return open;
     }
 
     private static double Held(World world, int resource)
@@ -203,27 +286,30 @@ internal static class Program
     }
 
     /// <summary>
-    /// Builders out from their offices, and how many are standing about waiting.
+    /// Builders out from their offices, and how many of them are doing nothing.
     /// </summary>
     /// <remarks>
-    /// The second number is the friction one: a gang with nowhere to be is people
-    /// the republic is paying to stand in a field, and it is invisible in every
-    /// other column here.
+    /// The second number is the friction one: a gang that is neither on a site
+    /// nor on a bus is people the republic is paying to stand about, and it is
+    /// invisible in every other column here. It reads high for two very
+    /// different reasons — nothing has fetched them yet, or there is nothing
+    /// for them to build — and the <c>sites</c> column beside it is what tells
+    /// those apart.
     /// </remarks>
-    private static (int Out, int Waiting) Crews(World world)
+    private static (int Out, int Idle) Crews(World world)
     {
         var heads = 0;
-        var stranded = 0;
+        var idle = 0;
         foreach (var party in world.Crews.All)
         {
             heads += party.Heads;
             if (party.IsStranded)
             {
-                stranded += party.Heads;
+                idle += party.Heads;
             }
         }
 
-        return (heads, stranded);
+        return (heads, idle);
     }
 
     /// <summary>

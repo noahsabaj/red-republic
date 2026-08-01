@@ -62,7 +62,10 @@ public static class Saves
         using var reading = FileAccess.Open(file, FileAccess.ModeFlags.Read);
         if (reading is null)
         {
-            why = $"{FileAccess.GetOpenError()}";
+            // The engine's own error name is a symbol out of somebody else's
+            // enum, not a sentence: "FileCantOpen" is what a player was shown
+            // when a save would not open.
+            why = MenuScreen.Trouble(FileAccess.GetOpenError());
             return null;
         }
 

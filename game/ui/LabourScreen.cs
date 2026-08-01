@@ -26,6 +26,7 @@ namespace RedRepublic.Ui;
 public sealed partial class LabourScreen : Screen
 {
     private VBoxContainer _workplaces = null!;
+    private VBoxContainer _rules = null!;
     private VBoxContainer _people = null!;
     private Label _hours = null!;
 
@@ -37,6 +38,8 @@ public sealed partial class LabourScreen : Screen
 
     public override void Refresh()
     {
+        Rules();
+
         Workplaces();
         People();
         _hours.Text = $"{Republic.Buildings.Shifts.National:F1} h";
@@ -53,8 +56,10 @@ public sealed partial class LabourScreen : Screen
         national.AddChild(Parts.Cell(Parts.Stepper(Hours, 0.5), 0.8f));
 
         var columns = Parts.Columns(body);
-        _workplaces = Parts.Scroller(
-            Parts.Section(columns, "Workplaces", "Standing, roster and who turned up.", 2.0f));
+        var work = Parts.Section(columns, "Workplaces", "Standing, roster and who turned up.", 2.0f);
+        _rules = new VBoxContainer();
+        work.AddChild(_rules);
+        _workplaces = Parts.Scroller(work);
         _people = Parts.Scroller(
             Parts.Section(columns, "The population", "By stage of life and by schooling.", 1.0f));
     }
@@ -62,18 +67,11 @@ public sealed partial class LabourScreen : Screen
     private void Hours(double by)
     {
         var asked = Republic.Buildings.Shifts.National + by;
-        var outcome = Republic.Issue(Command.SetNationalShiftHours(asked));
-        if (outcome.Accepted)
-        {
-            Refresh();
-        }
-        else
-        {
-            // A refusal carries a sentence the simulation wrote. It is shown
-            // rather than swallowed, because a control that silently does nothing
-            // is worse than one that says why.
-            _hours.TooltipText = outcome.Refusal;
-        }
+        // A refusal carries a sentence the simulation wrote, and it goes where
+        // the player is already looking rather than into a tooltip they would
+        // have to go hunting for.
+        Ask(Command.SetNationalShiftHours(asked));
+        Refresh();
     }
 
     private void Workplaces()
@@ -104,7 +102,7 @@ public sealed partial class LabourScreen : Screen
             line.AddChild(Parts.Cell(Parts.Say(t.BName[kind]), 2.0f));
 
             var standing = Parts.Press(
-                $"{Republic.Buildings.PriorityAt(b)}", "Quiet");
+                Words.Of(Republic.Buildings.PriorityAt(b)), "Quiet");
             standing.Pressed += () => Cycle(id, Republic.Buildings.PriorityAt(b));
             line.AddChild(Parts.Cell(standing, 1.0f));
 
@@ -131,6 +129,72 @@ public sealed partial class LabourScreen : Screen
         }
     }
 
+    /// <summary>
+    /// Exceptions to the national working day, by kind of workplace.
+    /// </summary>
+    /// <remarks>
+    /// <i>"Doctors work twelve."</i> A rule about a kind covers every such
+    /// building including ones not yet built, which is the difference between a
+    /// policy and a batch edit — and it is the difference a planned economy is
+    /// about. The verb existed and nothing offered it, so the only roster a
+    /// player could set was the whole republic's or one building at a time.
+    /// </remarks>
+    private void Rules()
+    {
+        Clear(_rules);
+        var t = Republic.Tables;
+
+        _rules.AddChild(Parts.Say("RULES BY KIND", "Section"));
+        _rules.AddChild(Parts.Prose(
+            "An exception to the national day, for every workplace of a kind — "
+            + "including the ones not built yet.", "Faint"));
+
+        var standing = Republic.Buildings.Shifts.KindRules;
+        foreach (var (kind, hours) in standing)
+        {
+            var line = Parts.Row(_rules);
+            var at = kind;
+            line.AddChild(Parts.Cell(Parts.Say(t.BName[kind]), 2.0f));
+            line.AddChild(Parts.Cell(
+                Parts.Figure($"{hours:F1} h"), 0.8f, HorizontalAlignment.Right));
+            line.AddChild(Parts.Cell(
+                Parts.Stepper(by => Ask(Command.SetKindHours(at, Hours(at) + by)), 0.5), 0.9f));
+
+            var clear = Parts.Press("Clear", "Quiet");
+            clear.Pressed += () =>
+            {
+                Ask(Command.SetKindHours(at, null));
+                Refresh();
+            };
+
+            line.AddChild(Parts.Cell(clear, 0.9f));
+        }
+
+        // Somewhere to start one. The first kind with a workplace standing and
+        // no rule of its own — a control the player uses once per rule rather
+        // than a list of sixty-four.
+        var next = Parts.Press("Set a rule for a kind", "Quiet");
+        next.Pressed += () =>
+        {
+            for (var b = 0; b < Republic.Buildings.Count; b++)
+            {
+                var kind = Republic.Buildings.KindAt(b);
+                if (t.BWorkers[kind] > 0 && Republic.Buildings.Shifts.OfKind(kind) is null)
+                {
+                    Ask(Command.SetKindHours(kind, Republic.Buildings.Shifts.National));
+                    Refresh();
+                    return;
+                }
+            }
+        };
+
+        _rules.AddChild(next);
+        _rules.AddChild(Parts.Gap(Palette.GapWide));
+    }
+
+    private double Hours(int kind) =>
+        Republic.Buildings.Shifts.OfKind(kind) ?? Republic.Buildings.Shifts.National;
+
     private void Cycle(int building, Priority now)
     {
         var next = now switch
@@ -140,7 +204,7 @@ public sealed partial class LabourScreen : Screen
             _ => Priority.First,
         };
 
-        Republic.Issue(Command.SetPriority(building, next));
+        Ask(Command.SetPriority(building, next));
         Refresh();
     }
 
@@ -152,7 +216,7 @@ public sealed partial class LabourScreen : Screen
             return;
         }
 
-        Republic.Issue(Command.SetShifts(building, Republic.Buildings.ShiftsAt(i) + by));
+        Ask(Command.SetShifts(building, Republic.Buildings.ShiftsAt(i) + by));
         Refresh();
     }
 
@@ -168,7 +232,7 @@ public sealed partial class LabourScreen : Screen
         foreach (var stage in Enum.GetValues<LifeStage>())
         {
             var line = Parts.Row(_people, at++ % 2 == 1);
-            line.AddChild(Parts.Cell(Parts.Say($"{stage}"), 2.0f));
+            line.AddChild(Parts.Cell(Parts.Say(Words.Of(stage)), 2.0f));
             line.AddChild(Parts.Cell(
                 Parts.Figure($"{Republic.Citizens.ByStage(stage)}"),
                 1.0f, HorizontalAlignment.Right));
@@ -177,7 +241,7 @@ public sealed partial class LabourScreen : Screen
         foreach (var taught in Enum.GetValues<Education>())
         {
             var line = Parts.Row(_people, at++ % 2 == 1);
-            line.AddChild(Parts.Cell(Parts.Say($"{taught}"), 2.0f));
+            line.AddChild(Parts.Cell(Parts.Say(Words.Of(taught)), 2.0f));
             line.AddChild(Parts.Cell(
                 Parts.Figure($"{Republic.Citizens.ByEducation(taught)}"),
                 1.0f, HorizontalAlignment.Right));

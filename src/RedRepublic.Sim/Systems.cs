@@ -52,12 +52,15 @@ public static class Systems
         new("loans", [MutationKind.Loan, MutationKind.Money], LoansPass),
         new("wages", [MutationKind.Money], Wages),
         new("contracting", [MutationKind.Money], Contracting),
+        new("imports", [MutationKind.Money, MutationKind.Produce], Imports),
         new("contentment", [MutationKind.Contentment], ContentmentPass),
         new("schooling", [MutationKind.Schooling], Schooling),
         new("demography", [MutationKind.Demography], Demography),
         new("migration", [MutationKind.Migration], MigrationPass),
         new("tourism", [MutationKind.Money], TourismPass),
-        new("crews", [MutationKind.Crew], CrewsPass),
+        // Dispatch as well as Crew: a gang too far to walk is a gang that needs
+        // a bus, and deciding that is the same decision as posting them.
+        new("crews", [MutationKind.Crew, MutationKind.Dispatch], CrewsPass),
         new("morale", [MutationKind.Morale], Morale),
         new("tracks", [MutationKind.Wear], Tracks),
     ];
@@ -79,8 +82,16 @@ public static class Systems
         new("production", [MutationKind.Extract, MutationKind.Consume, MutationKind.Produce], Production),
         new("households", [MutationKind.Consume], Households),
         new("commissioning", [MutationKind.Commission], Commissioning),
-        new("fleet", [MutationKind.Arrive, MutationKind.Transfer], FleetPass),
-        new("dispatch", [MutationKind.Dispatch], Dispatch),
+        // Migration and Tourism as well as the haulage kinds: a coach setting a
+        // party down is the fleet finishing a journey *and* the moment those
+        // people become residents or guests, and one pass carries out both.
+        new("fleet", [
+            MutationKind.Arrive, MutationKind.Transfer,
+            MutationKind.Migration, MutationKind.Tourism,
+            MutationKind.Crew, MutationKind.Bog], FleetPass),
+        // Bog as well: the tows go out from here, and a casualty freeing itself
+        // while one is being considered is the same pass deciding it.
+        new("dispatch", [MutationKind.Dispatch, MutationKind.Bog], Dispatch),
         new("trade", [MutationKind.Consume, MutationKind.Produce, MutationKind.Money], Trade),
 
         // Before dispatch: goods a belt has already moved are goods no lorry
@@ -91,8 +102,10 @@ public static class Systems
 
         // After settling, and sharing its coaches: somebody who wants to live
         // here outranks somebody visiting, and the schedule is what says so.
-        new("touring", [MutationKind.Tourism, MutationKind.Dispatch], Touring),
-        new("clearing", [MutationKind.Ploughed], Clearing),
+        // Dispatch only: this pass sends coaches out, and a party becoming
+        // guests is something the *fleet* carries out when one arrives.
+        new("touring", [MutationKind.Dispatch], Touring),
+        new("clearing", [MutationKind.Ploughed, MutationKind.Dispatch], Clearing),
     ];
 
     /// <summary>
@@ -199,9 +212,20 @@ public static class Systems
 
                 case MutationKind.Crew:
                 case MutationKind.Migration:
+                case MutationKind.Tourism:
                 case MutationKind.Ploughed:
+                case MutationKind.Bog:
                     // Movements the pass carries out where it decides them;
                     // the mutation records that it happened.
+                    break;
+
+                case MutationKind.Employ:
+                case MutationKind.Contract:
+                case MutationKind.Loan:
+                    // Censuses of what the pass settled: the workplaces, the
+                    // tenders and the advances are written where they are
+                    // decided, because each is one transaction, and the
+                    // mutation is how the journal sees the day it happened.
                     break;
 
                 case MutationKind.Weather:
@@ -219,6 +243,10 @@ public static class Systems
 
                 case MutationKind.Pollution:
                     world.Lattice.Foul(m.Subject, m.Amount);
+                    break;
+
+                case MutationKind.Wear when m.Subject < 0:
+                    world.Lattice.Fade(m.Amount);
                     break;
 
                 case MutationKind.Wear:
@@ -588,12 +616,26 @@ public static class Systems
         }
 
         // Anyone the pass did not place holds no job today.
+        var placed = 0;
         for (var c = 0; c < world.Citizens.Count; c++)
         {
-            if (!taken[c])
+            if (taken[c])
+            {
+                placed++;
+            }
+            else
             {
                 world.Citizens.SetWorkplace(c, -1, Commute.None);
             }
+        }
+
+        // A census of who holds a job and how they get there. The workplace and
+        // its journey are written above, because a job without a way to reach it
+        // is not a job and the two must never land apart; this records that the
+        // day's roster was decided, and how many it placed.
+        if (placed > 0)
+        {
+            mutations.Add(new Mutation(MutationKind.Employ, placed, seatsUsed, -1, 0.0, 0.0));
         }
 
         // And the depots burn for what they carried. A commute is an ongoing
@@ -610,9 +652,19 @@ public static class Systems
     private static List<Mutation> ContractsPass(World world)
     {
         var mutations = new List<Mutation>();
+        var settled = 0;
         foreach (var (market, fine) in world.Contracts.Settle(world.Clock.DayIndex))
         {
+            settled++;
             mutations.Add(Mutation.Money(market, -fine));
+        }
+
+        // What the sweep settled. The tender's own books are closed inside
+        // Settle, because a tender marked failed that was never fined would be
+        // half a transaction; this is the day's record of it.
+        if (settled > 0)
+        {
+            mutations.Add(new Mutation(MutationKind.Contract, settled, 0, -1, 0.0, 0.0));
         }
 
         return mutations;
@@ -621,11 +673,18 @@ public static class Systems
     private static List<Mutation> LoansPass(World world)
     {
         var mutations = new List<Mutation>();
+        var defaulted = 0;
         foreach (var loan in world.Loans.Overdue(world.Clock.DayIndex))
         {
             var fine = world.Loans.Default(loan);
             world.Contracts.Sour(loan.Market, world.Tables.DefaultRelations);
+            defaulted++;
             mutations.Add(Mutation.Money(loan.Market, -fine));
+        }
+
+        if (defaulted > 0)
+        {
+            mutations.Add(new Mutation(MutationKind.Loan, defaulted, 0, -1, 0.0, 0.0));
         }
 
         return mutations;
@@ -664,8 +723,46 @@ public static class Systems
     /// </remarks>
     private static List<Mutation> ContentmentPass(World world)
     {
+        var t = world.Tables;
         var census = world.Citizens.CensusByHome();
         var homes = 0;
+
+        // Every place that serves anybody, gathered once. Asking each home which
+        // institutions reach it by walking the whole building list per home is a
+        // republic squared, and the answer is the same for all of them.
+        var serving = new List<(double X, double Y, int[] Slots, double[] Cover)>();
+        for (var s = 0; s < world.Buildings.Count; s++)
+        {
+            var kind = world.Buildings.KindAt(s);
+            if (t.Serves.LengthOf(kind) == 0 || !world.Buildings.IsBuilt(s))
+            {
+                continue;
+            }
+
+            // Staffed and lit, or it serves nobody. A clinic with no doctor is a
+            // building, and this is what makes staffing it the decision rather
+            // than putting it up — the same rule every works already lives by.
+            var manned = world.Buildings.Staffing(s);
+            if (manned <= 0.0
+                || (t.BPowerDraw[kind] > 0.0 && !world.Buildings.PoweredAt(s)))
+            {
+                continue;
+            }
+
+            var needs = t.Serves.KeysOf(kind);
+            var cover = t.Serves.ValuesOf(kind);
+            var slots = new int[needs.Length];
+            var scaled = new double[cover.Length];
+            for (var i = 0; i < cover.Length; i++)
+            {
+                slots[i] = t.NeedSlot[needs[i]];
+                scaled[i] = cover[i] * manned;
+            }
+
+            serving.Add((world.Buildings.XAt(s), world.Buildings.YAt(s), slots, scaled));
+        }
+
+        var refuse = t.ResourceIndex("Waste");
 
         foreach (var (homeId, row) in census)
         {
@@ -680,20 +777,63 @@ public static class Systems
             // Work is the share of working-age residents holding a job — the
             // figure the labour pass has just decided.
             var work = row.WorkingAge == 0 ? 1.0 : (double)row.Employed / row.WorkingAge;
+
+            // What reaches this estate. Cover adds up across institutions and
+            // stops at one, so a clinic and a pharmacy together answer a want a
+            // clinic alone only half answers — which is why the table authors
+            // shares rather than flags.
+            var served = new double[Contentment.Names.Length];
+            var hx = world.Buildings.XAt(b);
+            var hy = world.Buildings.YAt(b);
+            foreach (var (sx, sy, slots, cover) in serving)
+            {
+                if (Units.Distance(sx, sy, hx, hy) > t.ServiceRadius)
+                {
+                    continue;
+                }
+
+                for (var i = 0; i < slots.Length; i++)
+                {
+                    served[slots[i]] += cover[i];
+                }
+            }
+
             world.Buildings.SetProvisioned(b, world.Buildings.ProvisionedAt(b));
             world.Buildings.SetContentment(b, new Contentment(
                 world.Buildings.ProvisionedAt(b),
                 world.Buildings.HeatedAt(b) ? 1.0 : WarmthNotNeeded(world),
-                0.0,
-                0.0,
-                0.0,
+                Math.Clamp(served[Contentment.HealthSlot], 0.0, 1.0),
+                Math.Clamp(served[Contentment.CultureSlot], 0.0, 1.0),
+                Math.Clamp(served[Contentment.SchoolingSlot], 0.0, 1.0),
                 work,
-                0.0,
-                0.0,
+                Cleanliness(world, b, refuse),
+                Math.Clamp(served[Contentment.SafetySlot], 0.0, 1.0),
                 world.Buildings.ComfortedAt(b)));
         }
 
         return homes > 0 ? [new Mutation(MutationKind.Contentment, homes, 0, -1, 0.0, 0.0)] : [];
+    }
+
+    /// <summary>
+    /// How clean it is to live here.
+    /// </summary>
+    /// <remarks>
+    /// Two physical facts and nothing else: the refuse piled up in the block
+    /// itself, which a lorry has to take to a tip, and the smoke in the air over
+    /// it, which is a question of where the works were sited. Both are things
+    /// that exist somewhere and that the player fixes by building something —
+    /// the alternative, a cleanliness figure with no place in the world, is the
+    /// smell this rule exists to catch.
+    /// </remarks>
+    private static double Cleanliness(World world, int home, int refuse)
+    {
+        var held = world.Buildings.Stock.Get(home, refuse);
+        var holds = world.Buildings.StorageCap(home);
+        var piled = holds <= 0.0 ? 0.0 : Math.Clamp(held / holds, 0.0, 1.0);
+        var smoke = world.Lattice.PollutionNear(
+            world.Buildings.XAt(home), world.Buildings.YAt(home));
+
+        return Math.Clamp((1.0 - piled) * (1.0 - smoke), 0.0, 1.0);
     }
 
     /// <summary>
@@ -724,18 +864,33 @@ public static class Systems
                 continue;
             }
 
-            var content = world.Buildings.ContentmentAt(b).Overall(t);
+            var here = world.Buildings.ContentmentAt(b);
+            var content = here.Overall(t);
 
             // Loyalty follows contentment slowly, so one bad winter does not
             // empty a town and one good month does not fill it.
             var loyalty = world.Citizens.LoyaltyAt(c);
             world.Citizens.SetLoyalty(c, loyalty + ((content - loyalty) * t.LoyaltyDrift));
 
-            // Health settles where the care does. Without a doctor in reach it
-            // settles low rather than falling for ever.
+            // <b>Health settles where the care is, and the floor is the care.</b>
+            // It used to apply to everybody, everywhere, which made total famine
+            // cost about five per cent of the adults a year — the mildest
+            // consequence in the game where it should be the sharpest. A
+            // republic with no clinic in reach has no floor under it at all;
+            // one with a hospital next door has the whole of it. Nobody is kept
+            // alive by a doctor they cannot get to.
+            var cared = Math.Clamp(here.Health, 0.0, 1.0);
+            var target = Math.Max(t.HealthUnserved * cared, content);
+
+            // And what the republic sells them. Drink lifts contentment and
+            // costs health, which is what makes a distillery a decision rather
+            // than free goodwill; the player's control over it is whether to
+            // build one and whether to keep it stocked.
+            target -= t.AlcoholHealthCost * Math.Clamp(world.Buildings.DrinkAt(b), 0.0, 1.0);
+
             var health = world.Citizens.HealthAt(c);
-            var target = Math.Max(t.HealthUnserved, content);
-            world.Citizens.SetHealth(c, health + ((target - health) * t.HealthDrift));
+            world.Citizens.SetHealth(
+                c, health + ((Math.Clamp(target, 0.0, 1.0) - health) * t.HealthDrift));
             moved++;
         }
 
@@ -745,13 +900,12 @@ public static class Systems
     /// <summary>A day of packing fading out of the ground.</summary>
     /// <remarks>
     /// Without this every line any lorry ever drove is permanent, and the map
-    /// fills with the ghosts of routes nobody uses. A corridor has to be kept.
+    /// fills with the ghosts of routes nobody uses. A corridor has to be
+    /// <i>kept</i>, which is what makes a track something the republic has
+    /// rather than something it once did.
     /// </remarks>
-    private static List<Mutation> Tracks(World world)
-    {
-        world.Lattice.Fade(world.Tables.WearFadePerDay);
-        return [];
-    }
+    private static List<Mutation> Tracks(World world) =>
+        [Mutation.Faded(world.Tables.WearFadePerDay)];
 
 
     /// <summary>
@@ -799,6 +953,14 @@ public static class Systems
         {
             return taken;
         }
+
+        // What this pass has already taken off each shelf. The stock it reads is
+        // yesterday's until the writer runs, so without this every home in reach
+        // of one shop is served the same tonne: ten estates sharing a single
+        // tonne all read as provisioned, and a republic starves with a full
+        // green bar. Provisioning feeds contentment, births and migration, so
+        // the mistake hides itself in all three.
+        var offShelf = new Dictionary<(int Shop, int Resource), double>();
 
         var alcohol = t.ResourceIndex("Alcohol");
         var wants = new[]
@@ -859,11 +1021,15 @@ public static class Systems
                         break;
                     }
 
-                    var off = Math.Min(world.Buildings.Stock.Get(shop, resource), outstanding);
+                    var key = (shop, resource);
+                    var onShelf = world.Buildings.Stock.Get(shop, resource)
+                        - offShelf.GetValueOrDefault(key);
+                    var off = Math.Min(Math.Max(onShelf, 0.0), outstanding);
                     if (off > 0.0)
                     {
                         outstanding -= off;
                         got += off;
+                        offShelf[key] = offShelf.GetValueOrDefault(key) + off;
                         taken.Add(Mutation.Consume(shop, resource, off));
                     }
                 }
@@ -932,6 +1098,198 @@ public static class Systems
     }
 
     /// <summary>
+    /// Buying in what the republic cannot make yet.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This shortens no build.</b> It answers where a tonne of brick comes
+    /// from in a republic with no brickworks: the goods land at a customs house
+    /// on the post the policy names, and your lorries still have to fetch them.
+    /// A post with no customs house on it receives nothing, which is what makes
+    /// opening one a decision.
+    /// </para>
+    /// <para>
+    /// Only what nothing in the republic makes. The point of a policy is the
+    /// gap before the materials chain exists, not a permanent alternative to
+    /// building one — and a republic that could buy its own bricks cheaper than
+    /// firing them would never fire any.
+    /// </para>
+    /// <para>
+    /// The bill is bought once. <see cref="BuildPolicy.Allowance"/> is what says
+    /// so, and it was called by nothing at all: the command was accepted,
+    /// journalled and saved, and no pass ever landed a purchase. A control
+    /// wired to nothing is the worst form of a fact the player cannot see.
+    /// </para>
+    /// </remarks>
+    private static List<Mutation> Imports(World world)
+    {
+        var t = world.Tables;
+        var mutations = new List<Mutation>();
+
+        // What the republic can already make for itself, so a policy does not
+        // quietly become the way it gets everything.
+        var makes = new bool[t.Resources.Length];
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (!world.Buildings.IsBuilt(b))
+            {
+                continue;
+            }
+
+            foreach (var r in t.Outputs.KeysOf(world.Buildings.KindAt(b)))
+            {
+                makes[r] = true;
+            }
+        }
+
+        foreach (var (site, x, y) in SitesInOrder(world, wantingMaterials: false))
+        {
+            var post = world.BuildPolicy.CrossingFor(site);
+            if (post is null || world.Frontier.Get(post.Value) is not { } crossing)
+            {
+                continue;
+            }
+
+            var house = CustomsAt(world, crossing);
+            if (house < 0)
+            {
+                continue;
+            }
+
+            foreach (var (resource, bill, outstanding) in Wanted(world, site))
+            {
+                if (makes[resource] || outstanding <= 0.0)
+                {
+                    continue;
+                }
+
+                var allowed = world.BuildPolicy.Allowance(site, resource, bill);
+                var room = world.Buildings.IntakeCapacity(house, resource)
+                    - world.Buildings.Stock.Get(house, resource);
+
+                var price = crossing.Bloc == Market.East
+                    ? t.ResourcePriceEast[resource]
+                    : t.ResourcePriceWest[resource];
+
+                var affordable = price > 0.0 ? world.Treasury.Of(crossing.Bloc) / price : 0.0;
+                var bought = Math.Min(
+                    Math.Min(outstanding, allowed), Math.Min(Math.Max(room, 0.0), affordable));
+
+                if (bought <= 0.0)
+                {
+                    continue;
+                }
+
+                world.BuildPolicy.RecordPurchase(site, resource, bought);
+                mutations.Add(Mutation.Produce(house, resource, bought));
+                mutations.Add(Mutation.Money(crossing.Bloc, -bought * price));
+            }
+        }
+
+        return mutations;
+    }
+
+    /// <summary>A staffed customs house on a post, or -1.</summary>
+    private static int CustomsAt(World world, BorderCrossing post)
+    {
+        var t = world.Tables;
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (!world.Buildings.IsBuilt(b)
+                || t.BuildingIds[world.Buildings.KindAt(b)] != "Customs")
+            {
+                continue;
+            }
+
+            if (Units.Distance(
+                world.Buildings.XAt(b), world.Buildings.YAt(b), post.X, post.Y) <= t.CustomsRange)
+            {
+                return b;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>What one site's bill still wants, and what the whole bill was.</summary>
+    private static List<(int Resource, double Bill, double Outstanding)> Wanted(
+        World world, Destination site)
+    {
+        var t = world.Tables;
+        var wanted = new List<(int, double, double)>();
+
+        switch (site.Kind)
+        {
+            case DestinationKind.Building:
+                {
+                    var b = world.Buildings.IndexOf(site.Id);
+                    if (b < 0 || world.Buildings.IsBuilt(b))
+                    {
+                        break;
+                    }
+
+                    var kind = world.Buildings.KindAt(b);
+                    var res = t.Materials.KeysOf(kind);
+                    var qty = t.Materials.ValuesOf(kind);
+                    for (var i = 0; i < res.Length; i++)
+                    {
+                        wanted.Add((res[i], qty[i], world.Buildings.MaterialOutstanding(b, res[i])));
+                    }
+
+                    break;
+                }
+
+            case DestinationKind.RoadSite:
+                {
+                    var run = world.RoadWorks.Get(site.Id);
+                    if (run is null)
+                    {
+                        break;
+                    }
+
+                    var at = world.RoadWorks.IndexOf(run.Id);
+                    var left = 1.0 - run.Progress(t);
+                    for (var r = 0; r < t.Resources.Length; r++)
+                    {
+                        var bill = run.Wants(r, t);
+                        if (bill > 0.0)
+                        {
+                            wanted.Add((r, bill,
+                                (bill * left) - world.RoadWorks.Stock.Get(at, r)));
+                        }
+                    }
+
+                    break;
+                }
+
+            case DestinationKind.LineSite:
+                {
+                    var span = world.LineWorks.Get(site.Id);
+                    if (span is null)
+                    {
+                        break;
+                    }
+
+                    var at = world.LineWorks.IndexOf(span.Id);
+                    var left = 1.0 - span.Progress(t);
+                    foreach (var bill in t.Utilities[span.Kind].Materials)
+                    {
+                        var whole = bill.Tonnes * span.Kilometres;
+                        wanted.Add((bill.Resource, whole,
+                            (whole * left) - world.LineWorks.Stock.Get(at, bill.Resource)));
+                    }
+
+                    break;
+                }
+
+            default:
+                break;
+        }
+
+        return wanted;
+    }
+
+    /// <summary>
     /// Who is born and who dies.
     /// </summary>
     /// <remarks>
@@ -957,10 +1315,14 @@ public static class Systems
                 world.Citizens.SetAge(c, world.Citizens.AgeAt(c) + 1);
             }
 
+            // How likely somebody is to die today. Two authored figures rather
+            // than two literals in the middle of a pass: how long people live
+            // is balance, and the checksum on the table did not cover it.
             var age = world.Citizens.AgeAt(c);
             var frailty = age >= t.Oldest
                 ? 1.0
-                : (1.0 - world.Citizens.HealthAt(c)) * 0.0004 * (age / 40.0);
+                : (1.0 - world.Citizens.HealthAt(c)) * t.FrailtyPerDay
+                    * (age / t.FrailtyReferenceAge);
 
             if (world.Rng.NextDouble() < frailty)
             {
@@ -1027,11 +1389,10 @@ public static class Systems
             }
         }
 
-        if (schools.Count == 0)
-        {
-            return [];
-        }
-
+        // Not an early return. A republic that has just pulled its university
+        // down still has to let the people inside it out; leaving the loop
+        // unrun would freeze every enrolment as it stood on the day the roof
+        // came off.
         var places = new int[schools.Count];
         for (var i = 0; i < schools.Count; i++)
         {
@@ -1046,18 +1407,29 @@ public static class Systems
                 && age >= t.UniversityAgeFrom && age < t.UniversityAgeTo
                 && world.Citizens.EducationAt(c) == Education.Schooled;
 
+            // <b>Studying is a state of today, not a mark on a life.</b> It is
+            // set from scratch every day, so somebody who has graduated, aged
+            // out, or simply found no place this morning is available for work
+            // this morning. Written the other way round it never came off: a
+            // seventeen-year-old enrolled once read as a student at forty, out
+            // of the workforce for ever, and every Graduate-gated works in the
+            // republic was unstaffable by construction — building a Polytechnic
+            // destroyed your labour force.
             if (!wantsSchool && !wantsUniversity)
             {
+                world.Citizens.SetStudying(c, false);
                 continue;
             }
 
             var home = world.Buildings.IndexOf(world.Citizens.HomeAt(c));
             if (home < 0)
             {
+                world.Citizens.SetStudying(c, false);
                 continue;
             }
 
             var wanted = wantsUniversity ? 1 : 0;
+            var enrolled = false;
             for (var i = 0; i < schools.Count; i++)
             {
                 if (schools[i].Teaches != wanted || places[i] <= 0)
@@ -1077,10 +1449,14 @@ public static class Systems
 
                 places[i]--;
                 world.Citizens.AddSchoolDay(c);
-                world.Citizens.SetStudying(c, wantsUniversity);
+                enrolled = true;
                 taught++;
                 break;
             }
+
+            // Only a university place keeps somebody out of the workforce. A
+            // child is not working because they are a child.
+            world.Citizens.SetStudying(c, enrolled && wantsUniversity);
         }
 
         return taught > 0 ? [new Mutation(MutationKind.Schooling, taught, 0, -1, 0.0, 0.0)] : [];
@@ -1197,7 +1573,7 @@ public static class Systems
                     - world.LineWorks.Stock.Get(i, bill.Resource);
                 if (outstanding > 1e-9)
                 {
-                    wanted.Add((Destination.LineSite(line.Id), bill.Resource, outstanding, 2.0));
+                    wanted.Add((Destination.LineSite(line.Id), bill.Resource, outstanding, t.UrgencySite));
                 }
             }
         }
@@ -1222,7 +1598,7 @@ public static class Systems
                     {
                         // A site the republic is waiting on outranks a topped-up
                         // works: the building is not there yet.
-                        wanted.Add((Destination.Building(world.Buildings.IdAt(b)), res[i], outstanding, 2.0));
+                        wanted.Add((Destination.Building(world.Buildings.IdAt(b)), res[i], outstanding, t.UrgencySite));
                     }
                 }
 
@@ -1245,7 +1621,7 @@ public static class Systems
                         // An empty bin is a stall; a low one is only a warning.
                         wanted.Add((
                             Destination.Building(world.Buildings.IdAt(b)),
-                            inputs[i], short_, held <= 0.0 ? 3.0 : 1.0));
+                            inputs[i], short_, held <= 0.0 ? t.UrgencyEmpty : t.UrgencyLow));
                     }
                 }
             }
@@ -1255,11 +1631,12 @@ public static class Systems
             // nothing and sells nothing, so the standing order is its demand.
             foreach (var r in t.Sells.KeysOf(kind))
             {
-                var target = t.BStorage[kind] * 0.5;
+                var target = t.BStorage[kind] * t.ShopKeeps;
                 var held = world.Buildings.Stock.Get(b, r);
                 if (target - held > t.MinLoad)
                 {
-                    wanted.Add((Destination.Building(world.Buildings.IdAt(b)), r, target - held, 2.5));
+                    wanted.Add((
+                        Destination.Building(world.Buildings.IdAt(b)), r, target - held, t.UrgencyShop));
                 }
             }
 
@@ -1271,7 +1648,8 @@ public static class Systems
                     var held = world.Buildings.Stock.Get(b, r);
                     if (ordered - held > t.MinLoad)
                     {
-                        wanted.Add((Destination.Building(world.Buildings.IdAt(b)), r, ordered - held, 1.5));
+                        wanted.Add((
+                            Destination.Building(world.Buildings.IdAt(b)), r, ordered - held, t.UrgencyOrder));
                     }
                 }
             }
@@ -1478,7 +1856,7 @@ public static class Systems
             {
                 if (r == resource)
                 {
-                    keep = Math.Max(keep, t.BStorage[kind] * 0.5);
+                    keep = Math.Max(keep, t.BStorage[kind] * t.ShopKeeps);
                 }
             }
 
@@ -1506,6 +1884,11 @@ public static class Systems
     {
         var t = world.Tables;
         var mutations = new List<Mutation>();
+
+        // The tows go out first: a lorry stuck in a field is a lorry and a load
+        // both out of the republic's reach, which outranks any run still to be
+        // made.
+        Recover(world, mutations);
 
         var idle = new List<int>();
         for (var v = 0; v < world.Fleet.Count; v++)
@@ -1559,10 +1942,15 @@ public static class Systems
                     continue;
                 }
 
-                world.Fleet.SetJob(v, Job.Haul(
-                    world.Buildings.IdAt(from), consignee, resource, load));
-                world.Fleet.SetJourney(v, journey);
-                world.Fleet.SetState(v, VehicleState.Fetching);
+                var haul = Job.Haul(world.Buildings.IdAt(from), consignee, resource, load);
+                if (!SetOut(world, v, journey, haul, VehicleState.Fetching))
+                {
+                    // No diesel within reach of where it stands. The claim goes
+                    // back so another lorry can take the run.
+                    claimed.Remove((consignee, resource));
+                    continue;
+                }
+
                 mutations.Add(new Mutation(
                     MutationKind.Dispatch, v, from, resource, load, 0.0));
                 break;
@@ -1570,6 +1958,71 @@ public static class Systems
         }
 
         return mutations;
+    }
+
+    /// <summary>
+    /// Send a tow to anything stuck.
+    /// </summary>
+    /// <remarks>
+    /// <b>Nothing digs itself out on the day it sticks.</b> A vehicle waits for
+    /// the ground to firm up under it or for something to come and pull it out,
+    /// and which of those happens first is the whole reason a Motor Depot keeps
+    /// a recovery vehicle. One tow per casualty, nearest first.
+    /// </remarks>
+    private static void Recover(World world, List<Mutation> mutations)
+    {
+        var t = world.Tables;
+
+        var coming = new HashSet<int>();
+        for (var v = 0; v < world.Fleet.Count; v++)
+        {
+            var job = world.Fleet.JobAt(v);
+            if (job.Kind == JobKind.Recover)
+            {
+                coming.Add(job.Subject);
+            }
+        }
+
+        for (var casualty = 0; casualty < world.Fleet.Count; casualty++)
+        {
+            if (!world.Fleet.IsBogged(casualty)
+                || coming.Contains(world.Fleet.IdAt(casualty)))
+            {
+                continue;
+            }
+
+            var x = world.Fleet.XAt(casualty);
+            var y = world.Fleet.YAt(casualty);
+
+            // It may free itself first: the ground dries, or the driver digs.
+            // Rolled before a tow is sent, so a republic with no recovery
+            // vehicle at all is delayed rather than permanently down a lorry.
+            if (world.Rng.NextDouble() < t.DigOut * (1.0 - world.Ground.Softness))
+            {
+                world.Fleet.Unbog(casualty);
+                mutations.Add(new Mutation(MutationKind.Bog, casualty, 0, -1, 0.0, 0.0));
+                continue;
+            }
+
+            var tow = Nearest(world, "Recovery", x, y);
+            if (tow < 0)
+            {
+                continue;
+            }
+
+            var out_ = Plan(world, tow, world.Fleet.XAt(tow), world.Fleet.YAt(tow), x, y);
+            if (out_ is null)
+            {
+                continue;
+            }
+
+            if (SetOut(world, tow, out_, Job.Recover(world.Fleet.IdAt(casualty)),
+                VehicleState.Fetching))
+            {
+                coming.Add(world.Fleet.IdAt(casualty));
+                mutations.Add(new Mutation(MutationKind.Dispatch, tow, casualty, -1, x, y));
+            }
+        }
     }
 
     /// <summary>
@@ -1600,9 +2053,23 @@ public static class Systems
                 continue;
             }
 
+            // A leg is over: it burned what it burned, and the ground either
+            // took it or did not. Both are charged here rather than at dispatch,
+            // because a trip that ends halfway across a field still cost the
+            // diesel it used getting there.
+            Burn(world, v, journey.LegDistance);
+            Pack(world, v, journey, mutations);
+            world.Fleet.SetPosition(v, journey.LegToX, journey.LegToY);
+            if (!GroundTakesIt(world, v, journey.Leg))
+            {
+                world.Fleet.Bog(v, world.Clock.DayIndex);
+                mutations.Add(new Mutation(MutationKind.Bog, v, 1, -1, 0.0, 0.0));
+                continue;
+            }
+
             if (!journey.OnLastLeg)
             {
-                journey.Advance(world.Fleet.SpeedOfLeg(v, Drag(world)), t);
+                journey.Advance(world.Fleet.SpeedOfLeg(v, Drag(world, v)), t);
                 continue;
             }
 
@@ -1643,6 +2110,87 @@ public static class Systems
 
                         world.Fleet.SetJourney(v, onward);
                         world.Fleet.SetState(v, VehicleState.Delivering);
+                        break;
+                    }
+
+                // A bus that has reached its gang takes them aboard and drives
+                // on. The same two beats as a coach and a party of settlers,
+                // and for the same reason: builders standing in a field are
+                // people the office has lost the use of until something fetches
+                // them.
+                case VehicleState.Fetching when job.Kind is JobKind.Ferry or JobKind.Collect:
+                    {
+                        var gang = world.Crews.Get(job.Subject);
+                        var to = gang is null ? null : Where(world, job.To);
+                        var onward = to is null
+                            ? null
+                            : Plan(world, v, world.Fleet.XAt(v), world.Fleet.YAt(v),
+                                to.Value.X, to.Value.Y);
+
+                        if (gang is null || onward is null)
+                        {
+                            GoHome(world, v);
+                            break;
+                        }
+
+                        gang.Riding = v;
+                        world.Fleet.SetJourney(v, onward);
+                        world.Fleet.SetState(v, VehicleState.Delivering);
+                        break;
+                    }
+
+                // And sets them down. A gang put down on a site starts work; one
+                // put down at its office is simply home, and foreign hands stop
+                // being foreign hands on their way in the moment they get there.
+                case VehicleState.Delivering when job.Kind is JobKind.Ferry or JobKind.Collect:
+                    {
+                        var gang = world.Crews.Get(job.Subject);
+                        if (gang is not null)
+                        {
+                            gang.Riding = null;
+                            gang.X = world.Fleet.XAt(v);
+                            gang.Y = world.Fleet.YAt(v);
+
+                            if (job.Kind == JobKind.Ferry && Where(world, job.To) is not null)
+                            {
+                                gang.Working = job.To;
+                            }
+
+                            if (job.To.Kind == DestinationKind.Building
+                                && job.To.Id == gang.Office)
+                            {
+                                gang.HiredFrom = null;
+                            }
+
+                            mutations.Add(new Mutation(
+                                MutationKind.Crew, gang.Heads, job.Subject, -1, 0.0, 0.0));
+                        }
+
+                        GoHome(world, v);
+                        break;
+                    }
+
+                // A plough has reached the far end of its round. Nothing is
+                // loaded and nothing is set down — the clearing happened along
+                // the way, cell by cell, which is what makes it something to
+                // watch rather than a number going down.
+                case VehicleState.Fetching when job.Kind == JobKind.Plough:
+                    GoHome(world, v);
+                    break;
+
+                // A tow reaching its casualty pulls it out. There is nothing to
+                // load and nothing to set down: the work is arriving.
+                case VehicleState.Fetching when job.Kind == JobKind.Recover:
+                    {
+                        var casualty = world.Fleet.IndexOf(job.Subject);
+                        if (casualty >= 0)
+                        {
+                            world.Fleet.Unbog(casualty);
+                            mutations.Add(new Mutation(
+                                MutationKind.Bog, casualty, 0, -1, 0.0, 0.0));
+                        }
+
+                        GoHome(world, v);
                         break;
                     }
 
@@ -1717,9 +2265,35 @@ public static class Systems
                         break;
                     }
 
+                // Home. Whatever it could not set down comes off here rather
+                // than riding round the republic for ever — a consignee that
+                // filled up while a lorry was on its way to it used to mean
+                // eight tonnes of coal that existed, belonged to nobody and
+                // could never be reached again.
+                case VehicleState.Returning:
+                    {
+                        var garage = world.Buildings.IndexOf(world.Fleet.HomeAt(v));
+                        if (garage >= 0)
+                        {
+                            for (var r = 0; r < t.Resources.Length; r++)
+                            {
+                                var aboard = world.Fleet.Cargo.Get(v, r);
+                                if (aboard > 0.0)
+                                {
+                                    world.Fleet.Cargo.Take(v, r, aboard);
+                                    world.Buildings.Stock.Add(garage, r, aboard);
+                                    mutations.Add(Mutation.Transfer(
+                                        v, world.Buildings.IdAt(garage), r, aboard));
+                                }
+                            }
+                        }
+
+                        Park(world, v);
+                        break;
+                    }
+
                 default:
-                    world.Fleet.SetState(v, VehicleState.Idle);
-                    world.Fleet.SetJob(v, Job.None);
+                    Park(world, v);
                     break;
             }
         }
@@ -1962,9 +2536,12 @@ public static class Systems
                 continue;
             }
 
-            world.Fleet.SetJob(coach, Job.Settle(group.Id, world.Buildings.IdAt(bed)));
-            world.Fleet.SetJourney(coach, out_);
-            world.Fleet.SetState(coach, VehicleState.Fetching);
+            if (!SetOut(world, coach, out_, Job.Settle(group.Id, world.Buildings.IdAt(bed)),
+                VehicleState.Fetching))
+            {
+                continue;
+            }
+
             booked[world.Buildings.IdAt(bed)] =
                 booked.GetValueOrDefault(world.Buildings.IdAt(bed)) + t.ArrivalParty;
             mutations.Add(new Mutation(MutationKind.Dispatch, coach, bed, -1, 0.0, 0.0));
@@ -2027,9 +2604,12 @@ public static class Systems
                 continue;
             }
 
-            world.Fleet.SetJob(coach, Job.Tour(visit.Id, world.Buildings.IdAt(hotel)));
-            world.Fleet.SetJourney(coach, out_);
-            world.Fleet.SetState(coach, VehicleState.Fetching);
+            if (!SetOut(world, coach, out_, Job.Tour(visit.Id, world.Buildings.IdAt(hotel)),
+                VehicleState.Fetching))
+            {
+                continue;
+            }
+
             mutations.Add(new Mutation(MutationKind.Dispatch, coach, hotel, -1, 0.0, 0.0));
         }
 
@@ -2222,12 +2802,203 @@ public static class Systems
         ys.Add(toY);
         limits.Add(-1.0);
 
+        // A train cannot drive to the mine.
+        //
+        // Anything whose cross-country speed is authored as zero does not leave
+        // its network at all, and this is where that is refused rather than
+        // where it is papered over: a leg with no speed falls to the minimum leg
+        // length, which is one tick — so a locomotive with no rail beside it
+        // would haul a hundred and twenty tonnes anywhere on the map instantly,
+        // for free. No route is the honest answer, and every caller already
+        // knows what to do with one.
+        var crossCountry = Units.KphToMps(t.VCrossCountryKph[kind]);
+        if (crossCountry <= 0.0)
+        {
+            for (var leg = 0; leg < limits.Count; leg++)
+            {
+                if (limits[leg] < 0.0
+                    && Units.Distance(xs[leg], ys[leg], xs[leg + 1], ys[leg + 1]) > 0.0)
+                {
+                    return null;
+                }
+            }
+        }
+
         var first = Units.Distance(xs[0], ys[0], xs[1], ys[1]);
         var speed = limits[0] >= 0.0
             ? Math.Min(Units.KphToMps(t.VOnRoadKph[kind]), limits[0])
-            : Units.KphToMps(t.VCrossCountryKph[kind]);
+            : crossCountry;
 
         return Journey.Begin(xs, ys, limits, world.Clock.Ticks, Journey.LegTicks(first, speed, t));
+    }
+
+    /// <summary>
+    /// A vehicle takes a job, fuels for it and sets out — or does not go.
+    /// </summary>
+    /// <remarks>
+    /// <b>One transaction, and the reason <see cref="MutationKind.Dispatch"/>
+    /// carries both halves.</b> A lorry that accepted a job without the diesel
+    /// to finish it strands itself somewhere with a load nobody can reach, so
+    /// the tank is filled here or the trip does not happen. Every pass that
+    /// sends a vehicle anywhere goes through this; there is no other way to put
+    /// one on the road.
+    /// </remarks>
+    private static bool SetOut(World world, int v, Journey journey, Job job, VehicleState state)
+    {
+        if (!Fuelled(world, v, journey))
+        {
+            return false;
+        }
+
+        world.Fleet.SetJob(v, job);
+        world.Fleet.SetJourney(v, journey);
+        world.Fleet.SetState(v, state);
+        return true;
+    }
+
+    /// <summary>
+    /// Whether it has the fuel for the trip, filling up if there is a tank
+    /// within reach of where it stands.
+    /// </summary>
+    /// <remarks>
+    /// There <i>and back</i>: reaching the yard and not getting home again is
+    /// the same failure one leg later. A trolleybus takes its power off the
+    /// wire and is authored at no fuel a kilometre, so it is never held up.
+    /// </remarks>
+    private static bool Fuelled(World world, int v, Journey journey)
+    {
+        var t = world.Tables;
+        var kind = world.Fleet.KindAt(v);
+        var perKm = t.VFuelPerKm[kind];
+        if (perKm <= 0.0)
+        {
+            return true;
+        }
+
+        var need = journey.Distance / 1000.0 * perKm * 2.0;
+        if (world.Fleet.FuelAt(v) + 1e-12 >= need)
+        {
+            return true;
+        }
+
+        // Somewhere holding diesel, near enough to pull in at: its own yard, a
+        // filling station, a tank farm. Nearest first, ties by id.
+        var fuel = t.ResourceIndex("Fuel");
+        var pump = -1;
+        var nearest = t.RefuelRange;
+        for (var b = 0; b < world.Buildings.Count; b++)
+        {
+            if (!world.Buildings.IsBuilt(b) || world.Buildings.Stock.Get(b, fuel) <= 0.0)
+            {
+                continue;
+            }
+
+            var gap = Units.Distance(
+                world.Buildings.XAt(b), world.Buildings.YAt(b),
+                world.Fleet.XAt(v), world.Fleet.YAt(v));
+
+            if (gap <= nearest)
+            {
+                nearest = gap;
+                pump = b;
+            }
+        }
+
+        if (pump < 0)
+        {
+            return false;
+        }
+
+        var room = t.VTank[kind] - world.Fleet.FuelAt(v);
+        var drawn = world.Buildings.Stock.Take(pump, fuel, room);
+        world.Fleet.SetFuel(v, world.Fleet.FuelAt(v) + drawn);
+        return world.Fleet.FuelAt(v) + 1e-12 >= need;
+    }
+
+    /// <summary>
+    /// What driving over open ground packs into it.
+    /// </summary>
+    /// <remarks>
+    /// <b>A track is the ghost of a route somebody kept driving.</b> Only off
+    /// the road, because a made way is already made; the cells a lorry crosses
+    /// firm up under it, and the going improves for the next one. That is what
+    /// the fade in <c>tracks</c> is the other half of — a corridor nobody uses
+    /// grows back over, and a desire line the republic never got round to
+    /// surfacing is visible on the map as the thing it is.
+    /// </remarks>
+    private static void Pack(World world, int v, Journey journey, List<Mutation> mutations)
+    {
+        if (journey.LegOnRoad(journey.Leg))
+        {
+            return;
+        }
+
+        var t = world.Tables;
+        var from = world.Lattice.CellOf(journey.LegFromX, journey.LegFromY);
+        var to = world.Lattice.CellOf(journey.LegToX, journey.LegToY);
+
+        // The ends of the leg rather than every cell between them: a mutation
+        // per cell of a two-kilometre crossing is machinery for a difference
+        // nobody can see, and the ends are where a route actually gets used
+        // over and over.
+        if (from >= 0)
+        {
+            mutations.Add(Mutation.Wear(from, t.WearPerPass));
+        }
+
+        if (to >= 0 && to != from)
+        {
+            mutations.Add(Mutation.Wear(to, t.WearPerPass));
+        }
+    }
+
+    /// <summary>What a leg costs out of the tank.</summary>
+    private static void Burn(World world, int v, double metres)
+    {
+        var perKm = world.Tables.VFuelPerKm[world.Fleet.KindAt(v)];
+        if (perKm > 0.0)
+        {
+            world.Fleet.SetFuel(v, world.Fleet.FuelAt(v) - (metres / 1000.0 * perKm));
+        }
+    }
+
+    /// <summary>
+    /// Whether the ground took it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only off the road, because a made way is what a made way is <i>for</i>.
+    /// Three authored figures decide it and they are deliberately separate: how
+    /// soft the going is today, what the vehicle can handle, and how much worse
+    /// a full load makes it. A heavy lorry loaded to the sides on saturated
+    /// ground is the case this exists to punish, and the answer to it is a road.
+    /// </para>
+    /// <para>
+    /// Rolled once per off-road leg rather than per tick: a long leg is one
+    /// crossing, and rolling per tick would make the odds a function of how far
+    /// apart the waypoints happened to fall.
+    /// </para>
+    /// </remarks>
+    private static bool GroundTakesIt(World world, int v, int leg)
+    {
+        var t = world.Tables;
+        var journey = world.Fleet.JourneyAt(v);
+        if (journey is null || journey.LegOnRoad(leg))
+        {
+            return true;
+        }
+
+        var kind = world.Fleet.KindAt(v);
+        var capacity = t.VCapacity[kind];
+        var laden = capacity > 0.0
+            ? Math.Clamp(world.Fleet.Cargo.Total(v) / capacity, 0.0, 1.0)
+            : 0.0;
+
+        var exposure = world.Ground.Softness * (1.0 + (t.VLoadPenalty[kind] * laden));
+        var risk = Math.Clamp(
+            (exposure - t.VGround[kind]) / t.BogSpan, 0.0, t.WorstOdds);
+
+        return risk <= 0.0 || world.Rng.NextDouble() >= risk;
     }
 
     private static double SpeedBetween(Network network, int a, int b)
@@ -2247,12 +3018,24 @@ public static class Systems
     /// How much the going slows a vehicle today.
     /// </summary>
     /// <remarks>
-    /// One figure for the whole republic, because it does not rain on half a
-    /// ten-kilometre map. Where it is worse than average is a property of the
-    /// surface, and that is on the lattice.
+    /// The weather is one figure for the whole republic, because it does not
+    /// rain on half a ten-kilometre map. Where the ground is <i>better</i> than
+    /// that is a property of the surface and lives on the lattice: a corridor
+    /// that has been driven often enough to pack down carries faster than
+    /// virgin field, which is what makes a desire line worth having and what the
+    /// fade in <c>tracks</c> takes away again when nobody uses it.
     /// </remarks>
-    private static double Drag(World world) =>
-        1.0 + (world.Ground.Softness * (world.Tables.MudDrag - 1.0));
+    private static double Drag(World world, int v)
+    {
+        var t = world.Tables;
+        var packed = world.Lattice.CellOf(world.Fleet.XAt(v), world.Fleet.YAt(v)) is var cell
+            && cell >= 0
+                ? world.Lattice.WearAt(cell)
+                : 0.0;
+
+        var mud = world.Ground.Softness * (t.MudDrag - 1.0);
+        return 1.0 + (mud * (1.0 - (t.WearRelief * packed)));
+    }
 
 
     /// <summary>
@@ -2319,6 +3102,15 @@ public static class Systems
             return mutations;
         }
 
+        // What this pass has already committed. The stock and the treasury it
+        // reads are yesterday's until the writer runs, so two rules naming the
+        // same resource would each be sold the same tonne — one clamped Consume
+        // and two full payments, which is money minted out of nothing and
+        // reachable from the trade screen today. Two buy rules would each spend
+        // the whole purse the same way.
+        var sold = new Dictionary<(int Building, int Resource), double>();
+        var spent = new Dictionary<Market, double>();
+
         foreach (var rule in world.TradeRules)
         {
             for (var h = 0; h < houses.Count; h++)
@@ -2335,24 +3127,27 @@ public static class Systems
 
                 if (rule.Action == TradeAction.Sell)
                 {
-                    var held = world.Buildings.Stock.Get(building, rule.Resource);
-                    var sold = Math.Min(held, cleared[h]);
-                    if (sold <= 0.0)
+                    var key = (building, rule.Resource);
+                    var held = world.Buildings.Stock.Get(building, rule.Resource)
+                        - sold.GetValueOrDefault(key);
+                    var going = Math.Min(Math.Max(held, 0.0), cleared[h]);
+                    if (going <= 0.0)
                     {
                         continue;
                     }
 
-                    cleared[h] -= sold;
-                    mutations.Add(Mutation.Consume(building, rule.Resource, sold));
-                    mutations.Add(Mutation.Money(rule.Market, sold * price));
+                    cleared[h] -= going;
+                    sold[key] = sold.GetValueOrDefault(key) + going;
+                    mutations.Add(Mutation.Consume(building, rule.Resource, going));
+                    mutations.Add(Mutation.Money(rule.Market, going * price));
                 }
                 else
                 {
                     var room = world.Buildings.IntakeCapacity(building, rule.Resource)
                         - world.Buildings.Stock.Get(building, rule.Resource);
-                    var affordable = price > 0.0
-                        ? world.Treasury.Of(rule.Market) / price
-                        : 0.0;
+                    var purse = world.Treasury.Of(rule.Market)
+                        - spent.GetValueOrDefault(rule.Market);
+                    var affordable = price > 0.0 ? Math.Max(purse, 0.0) / price : 0.0;
                     var bought = Math.Min(Math.Min(cleared[h], Math.Max(0.0, room)), affordable);
                     if (bought <= 0.0)
                     {
@@ -2360,6 +3155,7 @@ public static class Systems
                     }
 
                     cleared[h] -= bought;
+                    spent[rule.Market] = spent.GetValueOrDefault(rule.Market) + (bought * price);
                     mutations.Add(Mutation.Produce(building, rule.Resource, bought));
                     mutations.Add(Mutation.Money(rule.Market, -bought * price));
                 }
@@ -2382,6 +3178,19 @@ public static class Systems
     {
         var t = world.Tables;
         var sent = 0;
+        var mutations = new List<Mutation>();
+
+        // Gangs a bus is already on its way for, so two buses are not sent for
+        // one gang and a gang halfway to a site is not re-posted to another.
+        var spokenFor = new HashSet<int>();
+        for (var v = 0; v < world.Fleet.Count; v++)
+        {
+            var job = world.Fleet.JobAt(v);
+            if (job.Kind is JobKind.Ferry or JobKind.Collect)
+            {
+                spokenFor.Add(job.Subject);
+            }
+        }
 
         for (var office = 0; office < world.Buildings.Count; office++)
         {
@@ -2396,22 +3205,14 @@ public static class Systems
             }
 
             var officeId = world.Buildings.IdAt(office);
+            var ox = world.Buildings.XAt(office);
+            var oy = world.Buildings.YAt(office);
 
             // Its own people <b>and</b> whatever it has hired from abroad. A
             // republic that bought twenty builders and could not put them on a
             // site would have paid a placement fee for nothing.
             var staff = world.Buildings.StaffAt(office) + world.Crews.HiredAt(officeId);
-            // A gang this office already has and is not using costs nothing to
-            // post: its heads are counted against the establishment either way.
-            // Requiring spare capacity for it is what left twenty hired builders
-            // standing at a frontier post for three years while the office read
-            // as fully committed to them.
-            var idle = Idle(world, officeId);
             var out_ = world.Crews.Posted(officeId);
-            if (idle is null && staff - out_ < t.BuildersPerSite)
-            {
-                continue;
-            }
 
             // The first site with no gang on it, in commissioning order.
             foreach (var (site, x, y) in SitesInOrder(world))
@@ -2421,42 +3222,158 @@ public static class Systems
                     continue;
                 }
 
-                // The gang it already has before anybody new off its own staff:
+                // A gang it already has before anybody new off its own staff:
                 // the hands it hired from abroad, or one that has finished a
-                // site. Without this a republic that bought twenty builders
-                // leaves them standing at the frontier post it hired them to.
-                var party = idle;
-                if (party is not null)
+                // site. Nearest first, so the shortest journey is the one made.
+                var party = Nearest(world, officeId, spokenFor, x, y);
+
+                if (party is null)
+                {
+                    if (staff - out_ < t.BuildersPerSite)
+                    {
+                        break; // nobody left to draw on
+                    }
+
+                    // Drawn off the office's own staff, and standing in its
+                    // yard. Not at the site: builders do not appear where the
+                    // work is, which is the whole reason a Construction Office
+                    // keeps buses.
+                    party = world.Crews.Send(officeId, t.BuildersPerSite, ox, oy);
+                    out_ += party.Heads;
+                }
+
+                // Near enough to walk, and they walk — the same rule the
+                // settlers already live by, and what keeps a compact republic
+                // from needing a bus for every kerbstone.
+                if (Units.Distance(party.X, party.Y, x, y) <= t.MaxWalkM)
                 {
                     party.X = x;
                     party.Y = y;
-                }
-                else
-                {
-                    party = world.Crews.Send(officeId, t.BuildersPerSite, x, y);
+                    party.Working = site;
+                    party.HiredFrom = null;
+                    sent++;
+                    continue;
                 }
 
-                party.Working = site;
-                sent++;
-                break;
+                // Too far to walk. It wants a bus, and until one comes the gang
+                // stands where it is: this is the visible cost of hiring hands
+                // at a frontier post two valleys away.
+                if (Carry(world, officeId, party, site, x, y, mutations))
+                {
+                    spokenFor.Add(party.Id);
+                }
+            }
+
+            // And anybody left standing about with nowhere to be comes home. An
+            // office that cannot fetch its own gangs back is one whose builders
+            // leak away a site at a time.
+            foreach (var party in world.Crews.OfOffice(officeId))
+            {
+                if (!party.IsStranded || spokenFor.Contains(party.Id))
+                {
+                    continue;
+                }
+
+                if (Units.Distance(party.X, party.Y, ox, oy) <= t.MaxWalkM)
+                {
+                    party.X = ox;
+                    party.Y = oy;
+                    party.HiredFrom = null;
+                    continue;
+                }
+
+                if (Carry(world, officeId, party, Destination.Building(officeId), ox, oy, mutations))
+                {
+                    spokenFor.Add(party.Id);
+                }
             }
         }
 
-        return sent > 0 ? [new Mutation(MutationKind.Crew, sent, 0, -1, 0.0, 0.0)] : [];
+        if (sent > 0)
+        {
+            mutations.Add(new Mutation(MutationKind.Crew, sent, 0, -1, 0.0, 0.0));
+        }
+
+        return mutations;
     }
 
-    /// <summary>A gang of this office with nothing to do, or <c>null</c>.</summary>
-    private static Party? Idle(World world, int office)
+    /// <summary>
+    /// Send a bus for a gang. False if the office has none free, or none that
+    /// can reach them.
+    /// </summary>
+    private static bool Carry(
+        World world, int officeId, Party party, Destination to, double toX, double toY,
+        List<Mutation> mutations)
     {
+        var bus = OwnVehicle(world, officeId, "Crew");
+        if (bus < 0)
+        {
+            return false;
+        }
+
+        var out_ = Plan(
+            world, bus, world.Fleet.XAt(bus), world.Fleet.YAt(bus), party.X, party.Y);
+        if (out_ is null)
+        {
+            return false;
+        }
+
+        var job = to.Kind == DestinationKind.Building && to.Id == officeId
+            ? Job.Collect(party.Id, officeId)
+            : Job.Ferry(to, party.Id);
+
+        if (!SetOut(world, bus, out_, job, VehicleState.Fetching))
+        {
+            return false;
+        }
+
+        mutations.Add(new Mutation(MutationKind.Dispatch, bus, party.Id, -1, toX, toY));
+        return true;
+    }
+
+    /// <summary>
+    /// A gang of this office standing about, nearest to a point first. Ties on
+    /// id, so the same republic sends the same gang twice running.
+    /// </summary>
+    private static Party? Nearest(
+        World world, int office, HashSet<int> spokenFor, double x, double y)
+    {
+        Party? best = null;
+        var nearest = double.PositiveInfinity;
+
         foreach (var party in world.Crews.OfOffice(office))
         {
-            if (party.Working is null && party.Riding is null)
+            if (party.Working is not null || party.Riding is not null
+                || spokenFor.Contains(party.Id))
             {
-                return party;
+                continue;
+            }
+
+            var gap = Units.Distance(party.X, party.Y, x, y);
+            if (gap < nearest || (gap == nearest && best is not null && party.Id < best.Id))
+            {
+                nearest = gap;
+                best = party;
             }
         }
 
-        return null;
+        return best;
+    }
+
+    /// <summary>An idle vehicle of a role kept by one garage, or -1.</summary>
+    private static int OwnVehicle(World world, int garage, string role)
+    {
+        var t = world.Tables;
+        foreach (var v in world.Fleet.OfGarage(garage))
+        {
+            if (world.Fleet.StateAt(v) == VehicleState.Idle
+                && t.VRole[world.Fleet.KindAt(v)] == role)
+            {
+                return v;
+            }
+        }
+
+        return -1;
     }
 
     /// <summary>
@@ -2471,6 +3388,12 @@ public static class Systems
     /// see and cannot rely on.
     /// </para>
     /// <para>
+    /// <paramref name="wantingMaterials"/> is false for the one caller that is
+    /// asking the opposite question — the import pass, which is looking for
+    /// sites that do <i>not</i> have their bill and is the reason they might
+    /// get one.
+    /// </para>
+    /// <para>
     /// Buildings and lines are ranked <b>together</b>. A building's id is its
     /// place in the order; a span carries the count as it stood when it was
     /// ordered, and ties go to the building, because the building holding that
@@ -2479,7 +3402,8 @@ public static class Systems
     /// factory in the republic.
     /// </para>
     /// </remarks>
-    private static List<(Destination Site, double X, double Y)> SitesInOrder(World world)
+    private static List<(Destination Site, double X, double Y)> SitesInOrder(
+        World world, bool wantingMaterials = true)
     {
         var queue = new List<(long Ordered, int Tie, Destination Site, double X, double Y)>();
 
@@ -2494,7 +3418,7 @@ public static class Systems
                 continue;
             }
 
-            if (!world.Buildings.HasMaterials(b))
+            if (wantingMaterials && !world.Buildings.HasMaterials(b))
             {
                 continue;
             }
@@ -2506,7 +3430,7 @@ public static class Systems
 
         foreach (var road in world.RoadWorks.Sites)
         {
-            if (!world.RoadWorks.HasMaterials(road))
+            if (wantingMaterials && !world.RoadWorks.HasMaterials(road))
             {
                 continue;
             }
@@ -2518,7 +3442,7 @@ public static class Systems
 
         foreach (var line in world.LineWorks.Sites)
         {
-            if (!world.LineWorks.HasMaterials(line))
+            if (wantingMaterials && !world.LineWorks.HasMaterials(line))
             {
                 continue;
             }
@@ -2565,6 +3489,7 @@ public static class Systems
 
         // Groups that ran out of patience.
         var gone = world.Migration.GiveUp(today, t);
+        var left = Leave(world);
 
         // How the republic looks from outside: what it offers the people already
         // living in it, weighted by how many that is — one wretched outpost does
@@ -2631,9 +3556,49 @@ public static class Systems
             }
         }
 
-        return arrived + gone.Count > 0
-            ? [new Mutation(MutationKind.Migration, arrived, gone.Count, -1, 0.0, 0.0)]
+        return arrived + gone.Count + left > 0
+            ? [new Mutation(MutationKind.Migration, arrived, gone.Count, -1, left, 0.0)]
             : [];
+    }
+
+    /// <summary>
+    /// Who has had enough and gone.
+    /// </summary>
+    /// <remarks>
+    /// <b>Contentment was a one-way valve.</b> Loyalty was computed every day,
+    /// saved with every republic and read by nothing, while the table authored
+    /// the two figures that decide when somebody leaves — so a republic could
+    /// fail its people for a decade and lose nobody, and the only cost of a
+    /// cold, hungry, unserved estate was that no new settlers came. People
+    /// leaving is what makes the middle of a decade a fight rather than a
+    /// plateau.
+    /// <para>
+    /// Backwards, so removing somebody does not skip the next; and one at a
+    /// time rather than as a wave, because loyalty already moves slowly and a
+    /// cliff in it would empty a town over one bad winter.
+    /// </para>
+    /// </remarks>
+    private static int Leave(World world)
+    {
+        var t = world.Tables;
+        var odds = t.EmigrationOdds / SimClock.DaysPerYear;
+        var left = 0;
+
+        for (var c = world.Citizens.Count - 1; c >= 0; c--)
+        {
+            if (world.Citizens.LoyaltyAt(c) >= t.LoyaltyLeaves)
+            {
+                continue;
+            }
+
+            if (world.Rng.NextDouble() < odds)
+            {
+                world.Citizens.RemoveAt(c);
+                left++;
+            }
+        }
+
+        return left;
     }
 
     /// <summary>
@@ -2706,9 +3671,11 @@ public static class Systems
         }
 
         var swept = 0;
+        var mutations = new List<Mutation>();
+
         for (var v = 0; v < world.Fleet.Count; v++)
         {
-            if (t.VRole[world.Fleet.KindAt(v)] != "Plough" || world.Fleet.IsBogged(v))
+            if (t.VRole[world.Fleet.KindAt(v)] != "Clearance" || world.Fleet.IsBogged(v))
             {
                 continue;
             }
@@ -2719,9 +3686,60 @@ public static class Systems
                 world.Lattice.Clear(cell);
                 swept++;
             }
+
+            // An idle plough is a plough clearing nothing. Send it out to the
+            // most buried junction on the network it can reach: the round is
+            // the work, so everything it drives over on the way comes clear
+            // too, which is why this sends it *somewhere* rather than to a
+            // list of cells.
+            if (world.Fleet.StateAt(v) == VehicleState.Idle)
+            {
+                Sweep(world, v, mutations);
+            }
         }
 
-        return swept > 0 ? [new Mutation(MutationKind.Ploughed, swept, 0, -1, 0.0, 0.0)] : [];
+        if (swept > 0)
+        {
+            mutations.Add(new Mutation(MutationKind.Ploughed, swept, 0, -1, 0.0, 0.0));
+        }
+
+        return mutations;
+    }
+
+    /// <summary>Point a plough at the most buried junction it can reach.</summary>
+    private static void Sweep(World world, int v, List<Mutation> mutations)
+    {
+        var t = world.Tables;
+        var roads = world.Roads;
+        var worst = -1;
+        var deepest = t.PloughAt;
+
+        for (var n = 0; n < roads.NodeCount; n++)
+        {
+            var buried = 1.0 - world.Lattice.ClearedNear(roads.NodeX(n), roads.NodeY(n));
+            if (buried > deepest)
+            {
+                deepest = buried;
+                worst = n;
+            }
+        }
+
+        if (worst < 0)
+        {
+            return;
+        }
+
+        var out_ = Plan(
+            world, v, world.Fleet.XAt(v), world.Fleet.YAt(v),
+            roads.NodeX(worst), roads.NodeY(worst));
+
+        if (out_ is not null
+            && SetOut(world, v, out_, Job.Plough(roads.NodeX(worst), roads.NodeY(worst)),
+                VehicleState.Fetching))
+        {
+            mutations.Add(new Mutation(
+                MutationKind.Dispatch, v, worst, -1, roads.NodeX(worst), roads.NodeY(worst)));
+        }
     }
 
     // ---- per tick ----
@@ -3212,24 +4230,34 @@ public static class Systems
                 continue;
             }
 
-            // Inputs first: a works with an empty bin makes nothing, and the
-            // shortfall is a stall rather than a smaller batch.
+            // Inputs first, and <b>what is in the bin decides the batch</b>. An
+            // empty bin is a stall; a bin with less than a tick's draw in it is
+            // a short run. Asking only whether there is <i>any</i> is what let a
+            // trickle of ore sustain a steel mill at its full rate for ever —
+            // a works reading as healthy while the republic starved it, which
+            // hides scarcity exactly when the player most needs to see it.
             var inputs = t.Inputs.KeysOf(kind);
             var draws = t.Inputs.ValuesOf(kind);
-            var starved = false;
+            var fed = 1.0;
             for (var i = 0; i < inputs.Length; i++)
             {
-                if (!world.Buildings.Stock.Has(b, inputs[i]))
+                var wanted = draws[i] * activity * perTick;
+                if (wanted <= 0.0)
                 {
-                    starved = true;
-                    break;
+                    continue;
                 }
+
+                fed = Math.Min(fed, world.Buildings.Stock.Get(b, inputs[i]) / wanted);
             }
 
-            if (starved)
+            if (fed <= 0.0)
             {
                 continue;
             }
+
+            // Never more than the roster and the machinery allow: a full bin
+            // does not make a works work harder than it is staffed to.
+            activity *= Math.Min(fed, 1.0);
 
             for (var i = 0; i < inputs.Length; i++)
             {

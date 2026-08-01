@@ -308,6 +308,21 @@ public sealed class Lattice
     public void Clear(int index) => _cleared[index] = 1.0f;
 
     /// <summary>
+    /// Put one cell back exactly as it was — what a load does.
+    /// </summary>
+    /// <remarks>
+    /// The three fields a republic writes into the ground over its life. The
+    /// surface going is not among them: that is sampled from the terrain, which
+    /// is a pure function of the seed and is regenerated rather than stored.
+    /// </remarks>
+    public void Restore(int index, double wear, double pollution, double cleared)
+    {
+        _wear[index] = (float)wear;
+        _pollution[index] = (float)pollution;
+        _cleared[index] = (float)cleared;
+    }
+
+    /// <summary>
     /// Snow falling on everything, <paramref name="by"/> being the share of
     /// clearance it undoes.
     /// </summary>

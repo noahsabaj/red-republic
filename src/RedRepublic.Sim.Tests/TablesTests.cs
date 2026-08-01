@@ -150,4 +150,43 @@ public sealed class TablesTests
         var ex = Assert.Throws<InvalidDataException>(() => Tables.Load(broken));
         Assert.Contains("Aggregate", ex.Message, StringComparison.Ordinal);
     }
+    /// <summary>
+    /// <b>The checksum covers the shape of the table, not only its figures.</b>
+    /// </summary>
+    /// <remarks>
+    /// It hashed numbers alone, so a resource could change form, a vehicle could
+    /// change medium and a bill of materials could swap brick for steel at the
+    /// same tonnage, and the stated checksum still matched. That is a proof
+    /// about a table's prices dressed up as a proof about the table — and the
+    /// claim beside it is "byte for byte".
+    /// </remarks>
+    [Fact]
+    public void A_table_re_pointed_at_different_things_is_a_different_table()
+    {
+        var json = File.ReadAllText(
+            Path.Combine(Fixtures.RepoRoot, "game", "data", "manifest.json"));
+
+        var was = Tables.Load(json).ChecksumGot;
+
+        foreach (var (from, to) in new[]
+        {
+            // A form: the same coal, in a tank instead of a bay.
+            ("\"Coal\": { \"name\": \"Coal\", \"form\": \"Aggregate\"",
+             "\"Coal\": { \"name\": \"Coal\", \"form\": \"Liquid\""),
+
+            // A medium: a locomotive that drives on the road.
+            ("\"Locomotive\": { \"name\": \"Locomotive\", \"role\": \"Freight\", \"medium\": \"Rail\"",
+             "\"Locomotive\": { \"name\": \"Locomotive\", \"role\": \"Freight\", \"medium\": \"Road\""),
+        })
+        {
+            Assert.Contains(from, json, StringComparison.Ordinal);
+            var edited = json.Replace(from, to, StringComparison.Ordinal);
+            var now = Tables.Load(edited, verify: false).ChecksumGot;
+
+            Assert.True(
+                now != was,
+                $"re-pointing `{from[..20]}...` left the checksum unchanged");
+        }
+    }
+
 }

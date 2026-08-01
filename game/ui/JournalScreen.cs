@@ -81,8 +81,9 @@ public sealed partial class JournalScreen : Screen
         return c.Kind switch
         {
             CommandKind.Place => $"commissioned a {Kind(c.A)}",
-            CommandKind.ContractBuild => $"contracted a {Kind(c.A)} to the {(Market)c.B}",
+            CommandKind.ContractBuild => $"contracted a {Kind(c.A)} to the {Words.Of((Market)c.B)}",
             CommandKind.Demolish => "pulled a building down",
+            CommandKind.CancelWorks => "called a run off",
             CommandKind.OrderRoad =>
                 $"ordered {Length(c)} of {t.Grades[Math.Clamp(c.A, 0, t.Grades.Length - 1)].Name}",
             CommandKind.OrderLine =>
@@ -92,21 +93,26 @@ public sealed partial class JournalScreen : Screen
             CommandKind.ClearImportPolicy => "put a site back on the republic's policy",
             CommandKind.SetStandingOrder =>
                 $"told a store to keep {Parts.Clean(c.Amount)} t of {Goods(c.B)}",
-            CommandKind.HireForeign => $"hired {c.C} builders from the {(Market)c.A}",
+            CommandKind.HireForeign => $"hired {c.C} builders from the {Words.Of((Market)c.A)}",
             CommandKind.AcceptContract => "accepted a tender",
             CommandKind.DeclineContract => "declined a tender",
             CommandKind.AddTradeRule =>
-                $"told the customs houses to {(TradeAction)c.C} {Goods(c.A)} with the {(Market)c.B}",
+                $"told the customs houses to {Words.Of((TradeAction)c.C)} {Goods(c.A)} "
+                + $"with the {Words.Of((Market)c.B)}",
             CommandKind.RemoveTradeRule => "withdrew a trade rule",
             CommandKind.MoveTradeRule => "changed the order the trade rules are served in",
-            CommandKind.TakeLoan => $"took an advance from the {(Market)c.A}",
-            CommandKind.RepayLoan => $"repaid the {(Market)c.A}",
+            CommandKind.TakeLoan => $"took an advance from the {Words.Of((Market)c.A)}",
+            CommandKind.RepayLoan => $"repaid the {Words.Of((Market)c.A)}",
             CommandKind.SetNationalShiftHours =>
                 $"set the working day to {Parts.Clean(c.Amount)} hours",
             CommandKind.SetShiftHours => "set an exception to the working day",
             CommandKind.SetShifts => $"put a workplace on {c.B} crews",
-            CommandKind.SetPriority => $"set a workplace's standing to {(Priority)c.B}",
+            CommandKind.SetPriority => $"set a workplace's standing to {Words.Of((Priority)c.B)}",
             CommandKind.NameRepublic => $"named the republic {c.Text}",
+            // Not a fallback anybody should ever read. A verb with no sentence
+            // here is a page of a republic's history that says nothing, and
+            // `ExposureTests` fails the build rather than letting it ship —
+            // this line is what a player sees if that guard is ever removed.
             _ => "did something the journal cannot name",
         };
     }

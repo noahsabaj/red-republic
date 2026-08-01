@@ -40,6 +40,20 @@ public sealed class Tables
     /// </summary>
     public static readonly string[] Media = ["Road", "Rail", "Tram", "Metro", "Water", "Air"];
 
+    /// <summary>
+    /// The vehicle roles the simulation asks for by name, and every one of them
+    /// has to be a role something is actually authored with.
+    /// </summary>
+    /// <remarks>
+    /// A role named in a pass and in nothing in the table is the exact shape of
+    /// an unauthored case landing silently in a fallback: the pass finds nothing,
+    /// does nothing, and reports nothing. The republic's ploughs sat out three
+    /// winters that way, because the pass asked for "Plough" and the table
+    /// authors "Clearance". Checked at load, so the next such typo refuses to
+    /// start rather than quietly switching a system off.
+    /// </remarks>
+    public static readonly string[] AskedRoles = ["Freight", "Passenger", "Crew", "Clearance", "Recovery"];
+
     public static readonly string[] Minerals = ["Coal", "IronOre", "Oil", "Gravel", "Groundwater"];
 
     public static readonly string[] Teaching = ["School", "University"];
@@ -57,6 +71,18 @@ public sealed class Tables
 
     public string[] Forms { get; private set; } = [];
     public string[] Needs { get; private set; } = [];
+
+    /// <summary>
+    /// Which want each authored need answers — an index into
+    /// <see cref="Contentment.Names"/>, resolved once at load.
+    /// </summary>
+    /// <remarks>
+    /// The join between a building's <c>serves</c> row and the wellbeing
+    /// breakdown, made at load so a need the breakdown has no room for fails the
+    /// manifest instead of quietly serving nobody — which is exactly the shape
+    /// of an unauthored case landing in a fallback.
+    /// </remarks>
+    public int[] NeedSlot { get; private set; } = [];
     public string[] Education { get; private set; } = [];
     public string[] Priorities { get; private set; } = [];
 
@@ -179,6 +205,32 @@ public sealed class Tables
     public double WateredYield { get; private set; }
 
     public double ResupplyAtDays { get; private set; }
+
+    /// <summary>The rouble grant a posting opens with.</summary>
+    public double OpeningGrant { get; private set; }
+
+    // How the freight ranking orders what the republic is short of. These were
+    // literals inside the pass that reads them, which is the one place balance
+    // may not live: what a player is really deciding when they set a priority is
+    // where their haulage goes, and it was not in the table the checksum covers.
+
+    /// <summary>A site the republic is waiting on. The building is not there yet.</summary>
+    public double UrgencySite { get; private set; }
+
+    /// <summary>A works with an empty bin: a stall rather than a warning.</summary>
+    public double UrgencyEmpty { get; private set; }
+
+    /// <summary>A works running low. It is still running.</summary>
+    public double UrgencyLow { get; private set; }
+
+    /// <summary>A shop with empty shelves — people go without before a factory does.</summary>
+    public double UrgencyShop { get; private set; }
+
+    /// <summary>A terminal below its standing order.</summary>
+    public double UrgencyOrder { get; private set; }
+
+    /// <summary>What share of its storage a shop is kept stocked to.</summary>
+    public double ShopKeeps { get; private set; }
 
     /// <summary>The smallest load worth sending a lorry for.</summary>
     public double MinLoad { get; private set; }
@@ -352,6 +404,15 @@ public sealed class Tables
     // ---- people, and the journeys they make ----
 
     /// <summary>How far somebody will walk to work before they need carrying.</summary>
+    /// <summary>
+    /// How likely somebody in the worst health is to die on a day, at the
+    /// reference age. Authored, because how long people live is balance.
+    /// </summary>
+    public double FrailtyPerDay { get; private set; }
+
+    /// <summary>The age the daily odds above are quoted at.</summary>
+    public double FrailtyReferenceAge { get; private set; }
+
     public double MaxWalkM { get; private set; }
 
     /// <summary>How far from a road a building can be and still be reached.</summary>
@@ -454,9 +515,6 @@ public sealed class Tables
 
     public double WearFadePerDay { get; private set; }
 
-    /// <summary>Where a worn corridor becomes a track on the map.</summary>
-    public double PromoteAt { get; private set; }
-
     public double SnowBlocksMm { get; private set; }
 
     /// <summary>
@@ -475,7 +533,6 @@ public sealed class Tables
     /// The shortest run of worn cells worth calling a road. Below that it is a
     /// gateway, not a route.
     /// </summary>
-    public int MinTrackCells { get; private set; }
 
     private double[] _going = [];
 
@@ -539,11 +596,14 @@ public sealed class Tables
     public static Tables Load(string json) => Load(json, verify: true);
 
     /// <summary>
-    /// The same, with the option of not checking the stated checksum — which
-    /// only <see cref="Restamp"/> takes, because it is the thing that writes
-    /// a new one.
+    /// The same, with the option of not checking the stated checksum.
     /// </summary>
-    private static Tables Load(string json, bool verify)
+    /// <remarks>
+    /// <see cref="Restamp"/> takes it because it is the thing that writes a new
+    /// one, and the suite takes it to ask what a deliberately edited table
+    /// hashes to. Not public: a caller outside is a caller skipping the check.
+    /// </remarks>
+    internal static Tables Load(string json, bool verify)
     {
         var t = new Tables();
         using var doc = JsonDocument.Parse(json);
@@ -552,6 +612,12 @@ public sealed class Tables
         t.Resources = Strings(m, "resources");
         t.Forms = Strings(m, "forms");
         t.Needs = Strings(m, "needs");
+        t.NeedSlot = new int[t.Needs.Length];
+        for (var i = 0; i < t.Needs.Length; i++)
+        {
+            t.NeedSlot[i] = IndexIn(Contentment.Names, t.Needs[i]);
+        }
+
         t.Education = Strings(m, "education");
         t.Priorities = Strings(m, "priorities");
 
@@ -705,8 +771,21 @@ public sealed class Tables
             VCrossCountryKph[v] = d.GetProperty("cross_country_kph").GetDouble();
             VFuelPerKm[v] = d.GetProperty("fuel_per_km").GetDouble();
             VTank[v] = d.GetProperty("tank_t").GetDouble();
+
             VGround[v] = d.GetProperty("ground").GetDouble();
             VLoadPenalty[v] = d.GetProperty("load_penalty").GetDouble();
+        }
+
+        // Every role a pass asks for is a role something answers to.
+        foreach (var role in AskedRoles)
+        {
+            if (Array.IndexOf(VRole, role) < 0)
+            {
+                throw new InvalidDataException(
+                    $"the simulation dispatches on the vehicle role \"{role}\" and nothing "
+                    + $"in the manifest is authored with it; it authors "
+                    + $"[{string.Join(", ", VRole.Distinct().Order())}]");
+            }
         }
     }
 
@@ -887,6 +966,13 @@ public sealed class Tables
         WateredAt = ru.GetProperty("watered_at").GetDouble();
         WateredYield = ru.GetProperty("watered_yield").GetDouble();
         ResupplyAtDays = ru.GetProperty("resupply_at_days").GetDouble();
+        OpeningGrant = ru.GetProperty("opening_grant").GetDouble();
+        UrgencySite = ru.GetProperty("urgency_site").GetDouble();
+        UrgencyEmpty = ru.GetProperty("urgency_empty").GetDouble();
+        UrgencyLow = ru.GetProperty("urgency_low").GetDouble();
+        UrgencyShop = ru.GetProperty("urgency_shop").GetDouble();
+        UrgencyOrder = ru.GetProperty("urgency_order").GetDouble();
+        ShopKeeps = ru.GetProperty("shop_keeps").GetDouble();
         MinLoad = ru.GetProperty("min_load_t").GetDouble();
         BogSpan = ru.GetProperty("bog_span").GetDouble();
         WorstOdds = ru.GetProperty("worst_odds").GetDouble();
@@ -1007,6 +1093,8 @@ public sealed class Tables
 
         var p = m.GetProperty("people");
         MaxWalkM = p.GetProperty("max_walk_m").GetDouble();
+        FrailtyPerDay = p.GetProperty("frailty_per_day").GetDouble();
+        FrailtyReferenceAge = p.GetProperty("frailty_reference_age").GetDouble();
         RoadAccessM = p.GetProperty("road_access_m").GetDouble();
         WalkKph = p.GetProperty("walk_kph").GetDouble();
         WorkingAgeFrom = p.GetProperty("working_age")[0].GetInt32();
@@ -1057,12 +1145,10 @@ public sealed class Tables
         Drowned = g.GetProperty("drowned").GetDouble();
         WearPerPass = g.GetProperty("wear_per_pass").GetDouble();
         WearFadePerDay = g.GetProperty("wear_fade_per_day").GetDouble();
-        PromoteAt = g.GetProperty("promote_at").GetDouble();
         SnowBlocksMm = g.GetProperty("snow_blocks_mm").GetDouble();
         SnowDrag = g.GetProperty("snow_drag").GetDouble();
         WearRelief = g.GetProperty("wear_relief").GetDouble();
         GroundCellSize = g.GetProperty("cell_size").GetDouble();
-        MinTrackCells = g.GetProperty("min_track_cells").GetInt32();
 
         // `null` in the table means impassable. JSON has no infinity, and
         // writing a large finite number instead would make water something a
@@ -1142,15 +1228,82 @@ public sealed class Tables
     private string Checksum()
     {
         var h = new Fnv1a();
+
+        // <b>The shape of the table, not only its figures.</b> This hashed
+        // numbers alone, so a resource could change form, a vehicle could change
+        // medium, a building could change what it taps or teaches or serves, and
+        // the checksum would still match — which is a proof about a table's
+        // prices that says nothing about the table. Every index below names a
+        // row in a roster, and a roster reordered is a different manifest even
+        // when every number in it is the same.
+        h.Push(Resources.Length);
+        h.Push(BuildingCount);
+        h.Push(VehicleCount);
+        h.Push(Forms.Length);
+        h.Push(Needs.Length);
+        h.Push(Grades.Length);
+        h.Push(Utilities.Length);
+
+        for (var i = 0; i < NeedSlot.Length; i++)
+        {
+            h.Push(NeedSlot[i]);
+        }
+
         for (var r = 0; r < Resources.Length; r++)
         {
             h.Push(ResourcePriceEast[r]);
             h.Push(ResourcePriceWest[r]);
             h.Push(ResourceIsComfort[r]);
+            h.Push(ResourceForm[r]);
+            h.Push(ResourceFromMineral[r]);
         }
 
         for (var b = 0; b < BuildingCount; b++)
         {
+            h.Push(BPriority[b]);
+            h.Push(BSchooling[b]);
+            h.Push(BTeaches[b]);
+            h.Push(BTaps[b]);
+            h.Push(BMedium[b]);
+
+            // Which resource, need, form or vehicle a row names, and not only
+            // how much of it: a bill of materials that changed brick for steel
+            // and kept the tonnage was invisible here.
+            foreach (var k in Inputs.KeysOf(b))
+            {
+                h.Push(k);
+            }
+
+            foreach (var k in Outputs.KeysOf(b))
+            {
+                h.Push(k);
+            }
+
+            foreach (var k in Materials.KeysOf(b))
+            {
+                h.Push(k);
+            }
+
+            foreach (var k in Serves.KeysOf(b))
+            {
+                h.Push(k);
+            }
+
+            foreach (var k in Establishment.KeysOf(b))
+            {
+                h.Push(k);
+            }
+
+            foreach (var k in Sells.KeysOf(b))
+            {
+                h.Push(k);
+            }
+
+            foreach (var k in Admits.KeysOf(b))
+            {
+                h.Push(k);
+            }
+
             h.Push(BWidth[b]);
             h.Push(BDepth[b]);
             h.Push(BWorkers[b]);
@@ -1216,12 +1369,10 @@ public sealed class Tables
         h.Push(Drowned);
         h.Push(WearPerPass);
         h.Push(WearFadePerDay);
-        h.Push(PromoteAt);
         h.Push(SnowBlocksMm);
         h.Push(SnowDrag);
         h.Push(WearRelief);
         h.Push(GroundCellSize);
-        h.Push(MinTrackCells);
         foreach (var v in _going)
         {
             h.Push(v);
@@ -1270,6 +1421,12 @@ public sealed class Tables
 
         for (var v = 0; v < VehicleCount; v++)
         {
+            // What it travels on, and what it is for. A locomotive re-authored
+            // as a road vehicle is a different game and was not a different
+            // table.
+            h.Push(VMedium[v]);
+            h.PushBytes(System.Text.Encoding.UTF8.GetBytes(VRole[v]));
+
             h.Push(VCapacity[v]);
             h.Push(VSeats[v]);
             h.Push(VOnRoadKph[v]);
@@ -1300,6 +1457,13 @@ public sealed class Tables
         h.Push(WateredAt);
         h.Push(WateredYield);
         h.Push(ResupplyAtDays);
+        h.Push(OpeningGrant);
+        h.Push(UrgencySite);
+        h.Push(UrgencyEmpty);
+        h.Push(UrgencyLow);
+        h.Push(UrgencyShop);
+        h.Push(UrgencyOrder);
+        h.Push(ShopKeeps);
         h.Push(MinLoad);
         h.Push(BogSpan);
         h.Push(WorstOdds);
