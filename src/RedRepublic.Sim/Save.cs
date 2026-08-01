@@ -42,7 +42,7 @@ public static class Save
     /// refused with a sentence rather than read as garbage — the failure mode
     /// that costs a player their republic is the one that half-works.
     /// </remarks>
-    public const int Version = 2;
+    public const int Version = 3;
 
     public static byte[] Write(World world)
     {
@@ -51,6 +51,15 @@ public static class Save
 
         w.Bytes(Magic);
         w.Int(Version);
+
+        // Which balance table this republic was played against.
+        //
+        // Every figure in the file is a consequence of it, so a manifest edited
+        // and re-stamped since silently shifts the ground under every save the
+        // player already has: the same seed, the same journal and a different
+        // republic. The version number cannot see that — the layout is
+        // unchanged — so the table's own checksum goes in beside it.
+        w.String(world.Tables.ChecksumGot);
 
         // What the world was founded on, so the terrain and geology can be
         // regenerated rather than stored. A million cells of height is thirty
@@ -72,6 +81,39 @@ public static class Save
         w.Double(world.Ground.Water);
         w.Double(world.Ground.Snow);
         w.Double(world.Ground.Frost);
+
+        // What is left in the ground, and what the republic has done to the
+        // surface of it.
+        //
+        // <b>Both are regenerated from the seed on load, and both are wrong.</b>
+        // A seam mined half out came back full, a corridor worn into a track
+        // came back virgin, a valley under a decade of smoke came back clean,
+        // and a January reload ploughed the whole map. Exhaustion is the
+        // longest-running pressure in the economy and it could not survive a
+        // session boundary — which is a save-scum exploit against the one
+        // thing the decade is meant to be a fight with.
+        //
+        // Layer by layer rather than as a total: a deposit is worked from the
+        // top down and where the working face is decides what the next tonne
+        // costs.
+        w.Int(world.Geology.All.Count);
+        foreach (var deposit in world.Geology.All)
+        {
+            w.Int(deposit.Id);
+            w.Int(deposit.Layers.Length);
+            foreach (var layer in deposit.Layers)
+            {
+                w.Double(layer.Remaining);
+            }
+        }
+
+        w.Int(world.Lattice.Cells);
+        for (var cell = 0; cell < world.Lattice.Cells * world.Lattice.Cells; cell++)
+        {
+            w.Double(world.Lattice.WearAt(cell));
+            w.Double(world.Lattice.PollutionAt(cell));
+            w.Double(world.Lattice.ClearedAt(cell));
+        }
 
         w.Double(world.Treasury.Of(Market.East));
         w.Double(world.Treasury.Of(Market.West));
@@ -422,6 +464,14 @@ public static class Save
                 $"that save was written by version {version} and this build reads {Version}");
         }
 
+        var against = r.String();
+        if (!string.Equals(against, tables.ChecksumGot, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "that republic was played against a different balance table "
+                + $"({against}); this build carries {tables.ChecksumGot}");
+        }
+
         var seed = r.ULong();
         var extent = r.Double();
         var climate = r.Int();
@@ -438,6 +488,34 @@ public static class Save
             Snow = r.Double(),
             Frost = r.Double(),
         };
+
+        var deposits = r.Int();
+        for (var i = 0; i < deposits; i++)
+        {
+            var deposit = world.Geology.Get(r.Int());
+            var layers = r.Int();
+            for (var layer = 0; layer < layers; layer++)
+            {
+                var left = r.Double();
+                if (deposit is not null && layer < deposit.Layers.Length)
+                {
+                    deposit.Layers[layer].Remaining = left;
+                }
+            }
+        }
+
+        var cells = r.Int();
+        if (cells != world.Lattice.Cells)
+        {
+            throw new InvalidDataException(
+                $"that save carries a {cells}-cell lattice and this map has "
+                + $"{world.Lattice.Cells}");
+        }
+
+        for (var cell = 0; cell < cells * cells; cell++)
+        {
+            world.Lattice.Restore(cell, r.Double(), r.Double(), r.Double());
+        }
 
         world.Treasury.Set(Market.East, r.Double());
         world.Treasury.Set(Market.West, r.Double());
@@ -768,8 +846,25 @@ public static class Save
         private readonly byte[] _bytes = bytes;
         private int _at;
 
+        /// <summary>
+        /// The next <paramref name="count"/> bytes, or a refusal.
+        /// </summary>
+        /// <remarks>
+        /// <b>A truncated file is an input to decline, not a reason to bring
+        /// the game down.</b> Only the first eight bytes used to be checked, so
+        /// a save cut short by a full disk or a flipped bit sailed past the
+        /// magic and the version and then threw an index-out-of-range out of
+        /// the middle of a load — which reaches the player as a crash where the
+        /// refusal path beside it exists to reach them as a sentence.
+        /// </remarks>
         internal ReadOnlySpan<byte> Bytes(int count)
         {
+            if (count < 0 || _at + count > _bytes.Length)
+            {
+                throw new InvalidDataException(
+                    "that save is cut short — it ends part-way through a republic");
+            }
+
             var span = _bytes.AsSpan(_at, count);
             _at += count;
             return span;
@@ -788,6 +883,11 @@ public static class Save
         internal string String()
         {
             var length = Int();
+            if (length < 0)
+            {
+                throw new InvalidDataException("that save carries a string of negative length");
+            }
+
             return System.Text.Encoding.UTF8.GetString(Bytes(length));
         }
     }

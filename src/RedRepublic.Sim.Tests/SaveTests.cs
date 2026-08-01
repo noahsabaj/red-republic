@@ -31,6 +31,11 @@ public sealed class SaveTests
         world.Issue(Command.NameRepublic("Novaya Zarya"));
         world.Treasury.Add(Market.East, 2_500_000.0);
 
+        // A working pit, so the file has a half-mined seam to carry. Without
+        // one the geology in a save is a table of untouched numbers, which
+        // round-trips perfectly whether or not the format stores it at all.
+        var pit = Finish(world, Site(world, "CoalMine", Market.East));
+
         var home = Finish(world, Site(world, "Apartment", Market.East));
         var office = Finish(world, Site(world, "ConstructionOffice", Market.East));
         var garage = Finish(world, Site(world, "MotorDepot", Market.East));
@@ -38,6 +43,12 @@ public sealed class SaveTests
         Site(world, "Sawmill", Market.East);
 
         world.Issue(Command.SetPriority(world.Buildings.IdAt(home), Priority.First));
+        if (pit >= 0)
+        {
+            world.Issue(Command.SetPriority(world.Buildings.IdAt(pit), Priority.First));
+            world.Buildings.SetPowered(pit, true);
+        }
+
         world.Issue(Command.SetStandingOrder(
             world.Buildings.IdAt(depot), T.ResourceIndex("Planks"), 40.0));
         world.Issue(Command.SetShifts(world.Buildings.IdAt(office), 2));
@@ -162,6 +173,27 @@ public sealed class SaveTests
                 .Append(w.Buildings.Shifts.National.ToString("R", null)).Append('|')
                 .Append(w.BuildPolicy.Global).Append('|')
                 .Append(w.BuildPolicy.Overrides).Append('|');
+
+            // What is left in the ground, and what the republic has done to the
+            // surface of it. Both were regenerated from the seed on load — a
+            // mined seam came back full and a January reload ploughed the whole
+            // map — and this fingerprint could not see either, exactly as its
+            // own remarks predicted.
+            foreach (var deposit in w.Geology.All)
+            {
+                text.Append(deposit.Id).Append(':')
+                    .Append(deposit.Remaining.ToString("R", null)).Append(';');
+            }
+
+            text.Append('|');
+            for (var cell = 0; cell < w.Lattice.Cells * w.Lattice.Cells; cell++)
+            {
+                text.Append(w.Lattice.WearAt(cell).ToString("R", null)).Append(',')
+                    .Append(w.Lattice.PollutionAt(cell).ToString("R", null)).Append(',')
+                    .Append(w.Lattice.ClearedAt(cell).ToString("R", null)).Append(';');
+            }
+
+            text.Append('|');
 
             for (var b = 0; b < w.Buildings.Count; b++)
             {
@@ -354,5 +386,99 @@ public sealed class SaveTests
         bytes[4] = 99;
         var refused = Assert.Throws<InvalidDataException>(() => Save.Read(bytes, T));
         Assert.Contains("99", refused.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A save cut short is refused with a sentence too.
+    /// </summary>
+    /// <remarks>
+    /// A full disk, a pulled cable or a flipped bit gets past the magic and the
+    /// version and then runs off the end of the buffer part-way through a
+    /// republic. That reached the player as a crash, where the refusal path
+    /// beside it exists to reach them as a sentence they can act on.
+    /// </remarks>
+    [Fact]
+    public void A_save_cut_short_is_refused_rather_than_crashing()
+    {
+        var whole = Save.Write(Lived(days: 3));
+
+        foreach (var share in new[] { 0.25, 0.5, 0.75, 0.99 })
+        {
+            var cut = whole[..(int)(whole.Length * share)];
+            var refused = Assert.Throws<InvalidDataException>(() => Save.Read(cut, T));
+            Assert.NotEmpty(refused.Message);
+        }
+    }
+
+    /// <summary>
+    /// <b>A save carries what the republic has done to its land.</b>
+    /// </summary>
+    /// <remarks>
+    /// Geology and the traversal lattice are both regenerated from the seed on
+    /// load, which is right for the shape of the ground and wrong for what has
+    /// been taken out of it: a seam mined half out came back full, a corridor
+    /// worn into a track came back virgin, a valley under a decade of smoke came
+    /// back clean, and reloading in January ploughed the entire map. Exhaustion
+    /// is the longest-running pressure in the economy, and it could not survive a
+    /// session boundary.
+    /// </remarks>
+    [Fact]
+    public void A_save_carries_the_ground_the_republic_has_used()
+    {
+        var world = Lived(days: 3);
+
+        // Work the land in every way the file has to carry.
+        var seam = world.Geology.All[0];
+        seam.Extract(seam.Remaining * 0.5);
+        world.Lattice.WearIn(12, 0.75);
+        world.Lattice.Foul(12, 0.5);
+        world.Lattice.Bury(0.6);
+
+        var left = seam.Remaining;
+        Assert.True(left > 0.0, "the fixture should leave something in the ground");
+
+        var loaded = Save.Read(Save.Write(world), T);
+        var reloaded = loaded.Geology.Get(seam.Id);
+
+        Assert.NotNull(reloaded);
+        Assert.Equal(
+            BitConverter.DoubleToUInt64Bits(left),
+            BitConverter.DoubleToUInt64Bits(reloaded.Remaining));
+
+        Assert.Equal(
+            BitConverter.DoubleToUInt64Bits(world.Lattice.WearAt(12)),
+            BitConverter.DoubleToUInt64Bits(loaded.Lattice.WearAt(12)));
+        Assert.Equal(
+            BitConverter.DoubleToUInt64Bits(world.Lattice.PollutionAt(12)),
+            BitConverter.DoubleToUInt64Bits(loaded.Lattice.PollutionAt(12)));
+        Assert.Equal(
+            BitConverter.DoubleToUInt64Bits(world.Lattice.ClearedAt(12)),
+            BitConverter.DoubleToUInt64Bits(loaded.Lattice.ClearedAt(12)));
+    }
+
+    /// <summary>
+    /// A republic played against a different balance table is refused.
+    /// </summary>
+    /// <remarks>
+    /// Every figure in a save is a consequence of the table it was played
+    /// against, and the version number cannot see a manifest edit: the layout is
+    /// unchanged, so the file loads and the republic quietly becomes a different
+    /// one. The table's own checksum goes in the header, and a mismatch is a
+    /// sentence rather than a mystery.
+    /// </remarks>
+    [Fact]
+    public void A_save_played_against_another_balance_table_is_refused()
+    {
+        var bytes = Save.Write(World.Found(new WorldSpec(1, 1200.0, 0), T));
+
+        // The checksum sits right after the magic and the version, as a
+        // length-prefixed string. Corrupting one character of it is exactly
+        // what a re-stamped manifest does to every save already on disk.
+        var at = Array.IndexOf(bytes, (byte)T.ChecksumGot[0], 8);
+        Assert.True(at > 0, "the header should carry the table's checksum");
+        bytes[at] = (byte)(bytes[at] == (byte)'a' ? 'b' : 'a');
+
+        var refused = Assert.Throws<InvalidDataException>(() => Save.Read(bytes, T));
+        Assert.Contains("balance table", refused.Message, StringComparison.Ordinal);
     }
 }
