@@ -42,8 +42,15 @@ jobs:
       # The trajectory asserts nothing — reading it is the point. It runs here so
       # a change that leaves the republic inert shows up in a log somebody can
       # read, rather than only when somebody thinks to run it.
+      # A decade rather than three years, and on the taiga as well as the
+      # plains. The third finish condition is about a republic surviving ten
+      # years, and a run that stops at three cannot see the wall that arrives in
+      # year five. It costs a minute and prints a table somebody can read.
       - name: Play the opening
-        run: dotnet run --project src/RedRepublic.Trajectory -c Release -- 1961 3 plains
+        run: dotnet run --project src/RedRepublic.Trajectory -c Release -- 1961 10 plains
+
+      - name: Play a harder one
+        run: dotnet run --project src/RedRepublic.Trajectory -c Release -- 7 10 taiga
 
   # Does the game actually load?
   #
@@ -139,3 +146,55 @@ jobs:
             echo "::error::the manifest's checksum is stale — run --stamp-balance and commit it"
             exit 1
           fi
+
+  # Can a stranger install it?
+  #
+  # **The finish condition nothing checked.** Packaging lived entirely outside
+  # CI, so `tools/package.ps1` sat broken for the whole of the port — it never
+  # passed `RootDir`, which `installer.iss` #errors without, and pointed at an
+  # icon in a folder the port had deleted. Nobody could have built an installer,
+  # and nothing anywhere said so.
+  #
+  # Windows on purpose: this is a Windows-only product, and the only other job
+  # that opens the editor runs on Linux. An export path that has never been run
+  # on the platform it ships to is an export path that has not been tested.
+  packages:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Fetch Godot and its export templates
+        shell: pwsh
+        run: |
+          $base = 'https://github.com/godotengine/godot/releases/download/4.7.1-stable'
+          curl.exe -sSLo godot.zip "$base/Godot_v4.7.1-stable_mono_win64.zip"
+          Expand-Archive godot.zip -DestinationPath godot
+          curl.exe -sSLo templates.tpz "$base/Godot_v4.7.1-stable_mono_export_templates.tpz"
+          Expand-Archive templates.tpz -DestinationPath templates
+          $into = "$env:APPDATA\Godot\export_templates.7.1.stable.mono"
+          New-Item -ItemType Directory -Force $into | Out-Null
+          Copy-Item templates	emplates\* $into -Recurse -Force
+
+      # No installer: Inno Setup is not on the runner, and what is being tested
+      # here is the export and the staging, which is where the breakage was.
+      - name: Package
+        shell: pwsh
+        run: |
+          $godot = (Get-ChildItem godot -Recurse -Filter 'Godot_v4.7.1-stable_mono_win64.exe').FullName
+          pwsh tools/package.ps1 -NoInstaller -Godot $godot
+
+      # And the export preset's version resource agrees with the project, which
+      # package.ps1 stamps rather than assumes.
+      - name: The version is stamped
+        shell: pwsh
+        run: |
+          if (-not (git diff --quiet game/export_presets.cfg)) {
+            Write-Error 'game/export_presets.cfg carries a stale version — run tools/package.ps1 and commit it'
+            exit 1
+          }

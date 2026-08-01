@@ -570,11 +570,14 @@ public sealed class Tables
     public static Tables Load(string json) => Load(json, verify: true);
 
     /// <summary>
-    /// The same, with the option of not checking the stated checksum — which
-    /// only <see cref="Restamp"/> takes, because it is the thing that writes
-    /// a new one.
+    /// The same, with the option of not checking the stated checksum.
     /// </summary>
-    private static Tables Load(string json, bool verify)
+    /// <remarks>
+    /// <see cref="Restamp"/> takes it because it is the thing that writes a new
+    /// one, and the suite takes it to ask what a deliberately edited table
+    /// hashes to. Not public: a caller outside is a caller skipping the check.
+    /// </remarks>
+    internal static Tables Load(string json, bool verify)
     {
         var t = new Tables();
         using var doc = JsonDocument.Parse(json);
@@ -1192,15 +1195,82 @@ public sealed class Tables
     private string Checksum()
     {
         var h = new Fnv1a();
+
+        // <b>The shape of the table, not only its figures.</b> This hashed
+        // numbers alone, so a resource could change form, a vehicle could change
+        // medium, a building could change what it taps or teaches or serves, and
+        // the checksum would still match — which is a proof about a table's
+        // prices that says nothing about the table. Every index below names a
+        // row in a roster, and a roster reordered is a different manifest even
+        // when every number in it is the same.
+        h.Push(Resources.Length);
+        h.Push(BuildingCount);
+        h.Push(VehicleCount);
+        h.Push(Forms.Length);
+        h.Push(Needs.Length);
+        h.Push(Grades.Length);
+        h.Push(Utilities.Length);
+
+        for (var i = 0; i < NeedSlot.Length; i++)
+        {
+            h.Push(NeedSlot[i]);
+        }
+
         for (var r = 0; r < Resources.Length; r++)
         {
             h.Push(ResourcePriceEast[r]);
             h.Push(ResourcePriceWest[r]);
             h.Push(ResourceIsComfort[r]);
+            h.Push(ResourceForm[r]);
+            h.Push(ResourceFromMineral[r]);
         }
 
         for (var b = 0; b < BuildingCount; b++)
         {
+            h.Push(BPriority[b]);
+            h.Push(BSchooling[b]);
+            h.Push(BTeaches[b]);
+            h.Push(BTaps[b]);
+            h.Push(BMedium[b]);
+
+            // Which resource, need, form or vehicle a row names, and not only
+            // how much of it: a bill of materials that changed brick for steel
+            // and kept the tonnage was invisible here.
+            foreach (var k in Inputs.KeysOf(b))
+            {
+                h.Push(k);
+            }
+
+            foreach (var k in Outputs.KeysOf(b))
+            {
+                h.Push(k);
+            }
+
+            foreach (var k in Materials.KeysOf(b))
+            {
+                h.Push(k);
+            }
+
+            foreach (var k in Serves.KeysOf(b))
+            {
+                h.Push(k);
+            }
+
+            foreach (var k in Establishment.KeysOf(b))
+            {
+                h.Push(k);
+            }
+
+            foreach (var k in Sells.KeysOf(b))
+            {
+                h.Push(k);
+            }
+
+            foreach (var k in Admits.KeysOf(b))
+            {
+                h.Push(k);
+            }
+
             h.Push(BWidth[b]);
             h.Push(BDepth[b]);
             h.Push(BWorkers[b]);
@@ -1318,6 +1388,12 @@ public sealed class Tables
 
         for (var v = 0; v < VehicleCount; v++)
         {
+            // What it travels on, and what it is for. A locomotive re-authored
+            // as a road vehicle is a different game and was not a different
+            // table.
+            h.Push(VMedium[v]);
+            h.PushBytes(System.Text.Encoding.UTF8.GetBytes(VRole[v]));
+
             h.Push(VCapacity[v]);
             h.Push(VSeats[v]);
             h.Push(VOnRoadKph[v]);

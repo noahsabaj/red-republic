@@ -1,5 +1,5 @@
 {
-  "checksum": "651fae58042bd61c",
+  "checksum": "c3dd2dd3b68a6ca2",
   "resources": ["Coal", "IronOre", "Steel", "Oil", "Fuel", "Bitumen", "Chemicals", "Wood", "Planks", "Gravel", "Bricks", "Cement", "Concrete", "PrefabPanel", "Asphalt", "Crops", "Food", "Clothes", "Alcohol", "Machinery", "Electronics", "Waste"],
   "forms": ["Aggregate", "Liquid", "Bulk", "Open", "Covered"],
   "needs": ["Health", "Culture", "Schooling", "Safety"],
