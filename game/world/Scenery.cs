@@ -56,7 +56,7 @@ public sealed partial class Scenery : Node3D
     /// The step is the terrain's own cell size, so the search is as fine as the
     /// map it is searching.
     /// </remarks>
-    public (double X, double Y)? GroundUnder(Viewport viewport, Vector2 at, Terrain terrain)
+    public static (double X, double Y)? GroundUnder(Viewport viewport, Vector2 at, Terrain terrain)
     {
         ArgumentNullException.ThrowIfNull(viewport);
         ArgumentNullException.ThrowIfNull(terrain);
@@ -110,13 +110,13 @@ public sealed partial class Scenery : Node3D
 
         foreach (var surface in new[] { "grass", "forest", "rock", "shore" })
         {
-            _ground.SetShaderParameter($"{surface}_colour", Texture(surface, "colour"));
-            _ground.SetShaderParameter($"{surface}_normal", Texture(surface, "normal"));
-            _ground.SetShaderParameter($"{surface}_rough", Texture(surface, "roughness"));
+            Map(_ground, $"{surface}_colour", surface, "colour");
+            Map(_ground, $"{surface}_normal", surface, "normal");
+            Map(_ground, $"{surface}_rough", surface, "roughness");
         }
 
-        _ground.SetShaderParameter("snow_colour", Texture("snow", "colour"));
-        _ground.SetShaderParameter("snow_normal", Texture("snow", "normal"));
+        Map(_ground, "snow_colour", "snow", "colour");
+        Map(_ground, "snow_normal", "snow", "normal");
         _ground.SetShaderParameter("water_colour", _look.Water);
         _ground.SetShaderParameter("contour_strength", _look.ContourStrength);
         _ground.SetShaderParameter("map_extent", (float)terrain.Extent);
@@ -138,10 +138,27 @@ public sealed partial class Scenery : Node3D
     /// normal map, it just lights everything at the wrong angle. The importer is
     /// what settles it, from the <c>.import</c> files beside the images.
     /// </remarks>
-    private static Texture2D? Texture(string surface, string channel) =>
-        ResourceLoader.Exists($"res://art/textures/{surface}_{channel}.jpg")
-            ? GD.Load<Texture2D>($"res://art/textures/{surface}_{channel}.jpg")
-            : null;
+    /// <remarks>
+    /// A map that did not import is left <i>unset</i> rather than set to null.
+    /// The shader has its own fallback for a sampler nobody bound and it looks
+    /// like untextured ground; handing the parameter a null is a different
+    /// thing entirely, and on a machine where one file failed to import it is
+    /// the difference between a flat-shaded hillside and a crash on load.
+    /// </remarks>
+    private static void Map(ShaderMaterial material, string parameter, string surface, string channel)
+    {
+        var path = $"res://art/textures/{surface}_{channel}.jpg";
+        if (!ResourceLoader.Exists(path))
+        {
+            return;
+        }
+
+        var texture = GD.Load<Texture2D>(path);
+        if (texture is not null)
+        {
+            material.SetShaderParameter(parameter, texture);
+        }
+    }
 
     private void Sky()
     {

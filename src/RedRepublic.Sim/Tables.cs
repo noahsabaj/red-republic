@@ -40,6 +40,20 @@ public sealed class Tables
     /// </summary>
     public static readonly string[] Media = ["Road", "Rail", "Tram", "Metro", "Water", "Air"];
 
+    /// <summary>
+    /// The vehicle roles the simulation asks for by name, and every one of them
+    /// has to be a role something is actually authored with.
+    /// </summary>
+    /// <remarks>
+    /// A role named in a pass and in nothing in the table is the exact shape of
+    /// an unauthored case landing silently in a fallback: the pass finds nothing,
+    /// does nothing, and reports nothing. The republic's ploughs sat out three
+    /// winters that way, because the pass asked for "Plough" and the table
+    /// authors "Clearance". Checked at load, so the next such typo refuses to
+    /// start rather than quietly switching a system off.
+    /// </remarks>
+    public static readonly string[] AskedRoles = ["Freight", "Passenger", "Crew", "Clearance", "Recovery"];
+
     public static readonly string[] Minerals = ["Coal", "IronOre", "Oil", "Gravel", "Groundwater"];
 
     public static readonly string[] Teaching = ["School", "University"];
@@ -57,6 +71,18 @@ public sealed class Tables
 
     public string[] Forms { get; private set; } = [];
     public string[] Needs { get; private set; } = [];
+
+    /// <summary>
+    /// Which want each authored need answers — an index into
+    /// <see cref="Contentment.Names"/>, resolved once at load.
+    /// </summary>
+    /// <remarks>
+    /// The join between a building's <c>serves</c> row and the wellbeing
+    /// breakdown, made at load so a need the breakdown has no room for fails the
+    /// manifest instead of quietly serving nobody — which is exactly the shape
+    /// of an unauthored case landing in a fallback.
+    /// </remarks>
+    public int[] NeedSlot { get; private set; } = [];
     public string[] Education { get; private set; } = [];
     public string[] Priorities { get; private set; } = [];
 
@@ -552,6 +578,12 @@ public sealed class Tables
         t.Resources = Strings(m, "resources");
         t.Forms = Strings(m, "forms");
         t.Needs = Strings(m, "needs");
+        t.NeedSlot = new int[t.Needs.Length];
+        for (var i = 0; i < t.Needs.Length; i++)
+        {
+            t.NeedSlot[i] = IndexIn(Contentment.Names, t.Needs[i]);
+        }
+
         t.Education = Strings(m, "education");
         t.Priorities = Strings(m, "priorities");
 
@@ -705,8 +737,21 @@ public sealed class Tables
             VCrossCountryKph[v] = d.GetProperty("cross_country_kph").GetDouble();
             VFuelPerKm[v] = d.GetProperty("fuel_per_km").GetDouble();
             VTank[v] = d.GetProperty("tank_t").GetDouble();
+
             VGround[v] = d.GetProperty("ground").GetDouble();
             VLoadPenalty[v] = d.GetProperty("load_penalty").GetDouble();
+        }
+
+        // Every role a pass asks for is a role something answers to.
+        foreach (var role in AskedRoles)
+        {
+            if (Array.IndexOf(VRole, role) < 0)
+            {
+                throw new InvalidDataException(
+                    $"the simulation dispatches on the vehicle role \"{role}\" and nothing "
+                    + $"in the manifest is authored with it; it authors "
+                    + $"[{string.Join(", ", VRole.Distinct().Order())}]");
+            }
         }
     }
 

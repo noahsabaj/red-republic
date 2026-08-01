@@ -194,6 +194,19 @@ public readonly record struct Mutation(
 
     public static Mutation Wear(int cell, double amount) =>
         new(MutationKind.Wear, cell, 0, -1, amount, 0.0);
+
+    /// <summary>
+    /// A day of packing fading out of the whole lattice.
+    /// </summary>
+    /// <remarks>
+    /// The other half of <see cref="MutationKind.Wear"/>, which is one kind
+    /// carrying both because they are one thing: what traffic wore in, and what
+    /// faded out of it. No subject, because there is no one cell — it touches
+    /// every one of them, and a mutation per cell would be ten thousand entries
+    /// a day to say one thing.
+    /// </remarks>
+    public static Mutation Faded(double by) =>
+        new(MutationKind.Wear, -1, 0, -1, by, 0.0);
 }
 
 /// <summary>

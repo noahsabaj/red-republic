@@ -245,8 +245,12 @@ public sealed class PeopleTests
         var crews = new Crews();
         var party = crews.Send(office: 5, heads: 10, x: 0.0, y: 0.0, from: Market.West);
 
-        // On their way in, they are not stranded — they are expected.
-        Assert.False(party.IsStranded);
+        // <b>Being hired is not being fetched.</b> They are standing at a post
+        // with no site and no bus, which is stranded — a bus has to go for them
+        // exactly as it would for a gang coming off a finished site. Reading
+        // "hired" as "on their way in" is what left twenty paid-for builders at
+        // the frontier for a decade while nothing in the republic set out.
+        Assert.True(party.IsStranded);
         Assert.Equal(Market.West, party.HiredFrom);
 
         crews.Hire(office: 5, from: Market.West, heads: 10);
@@ -262,6 +266,7 @@ public sealed class PeopleTests
         // Once they reach the office they are simply the office's crew.
         party.HiredFrom = null;
         Assert.True(party.IsStranded);
+        Assert.Equal(10, crews.HiredAt(5));
     }
 
     /// <summary>

@@ -49,7 +49,7 @@ public partial class Main : Node3D
             return;
         }
 
-        var at = _scenery.GroundUnder(GetViewport(), click.Position, _world.Terrain);
+        var at = World.Scenery.GroundUnder(GetViewport(), click.Position, _world.Terrain);
         if (at is null)
         {
             return;

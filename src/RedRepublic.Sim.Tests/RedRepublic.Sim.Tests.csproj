@@ -5,6 +5,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+
+    <!--
+      A warning that is not an error is a warning nobody reads — and in a test
+      project that is worse than elsewhere, because the analyzer warnings xUnit
+      ships are about assertions that do not assert what they look like they
+      assert. One of those sat green in this suite for the life of the port.
+    -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
   </PropertyGroup>
 
   <ItemGroup>

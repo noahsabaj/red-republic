@@ -537,6 +537,14 @@ public static class Commands
 
     private static Outcome ContractBuild(World world, Command c)
     {
+        // Which bloc's firm, checked before the ground is: the contractor is read
+        // every day of the build to bill a treasury, and a market nothing answers
+        // to would bring the republic down on the tick rather than here.
+        if (!Enum.IsDefined((Market)c.B))
+        {
+            return Outcome.No("there is no such bloc to contract with");
+        }
+
         var placed = Place(world, c);
         if (!placed.Accepted)
         {
@@ -578,20 +586,9 @@ public static class Commands
             return "the ground there will not take it";
         }
 
-        var probe = world.Buildings.Add(kind, x, y);
-        try
+        if (world.Buildings.WouldOverlap(kind, x, y))
         {
-            for (var other = 0; other < world.Buildings.Count; other++)
-            {
-                if (other != probe && world.Buildings.Overlaps(probe, other))
-                {
-                    return "something already stands there";
-                }
-            }
-        }
-        finally
-        {
-            world.Buildings.Demolish(world.Buildings.IdAt(probe));
+            return "something already stands there";
         }
 
         if (t.BTaps[kind] >= 0 && world.Geology.TappableAt(x, y).Count == 0)

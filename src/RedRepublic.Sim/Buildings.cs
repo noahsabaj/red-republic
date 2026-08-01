@@ -441,6 +441,35 @@ public sealed class Buildings
         return ax0 < bx1 && bx0 < ax1 && ay0 < by1 && by0 < ay1;
     }
 
+    /// <summary>
+    /// Whether a footprint of this kind, centred here, would touch anything
+    /// already standing.
+    /// </summary>
+    /// <remarks>
+    /// Asked of a rectangle rather than of a building that was briefly added and
+    /// pulled down again. A probe is a real commissioning: it mints an id, and a
+    /// <i>refused</i> placement that burned one is a state change nothing
+    /// journalled — which breaks both "a refused command changes nothing" and the
+    /// build queue's ordering, because the commissioning number is its key.
+    /// </remarks>
+    public bool WouldOverlap(int kind, double x, double y)
+    {
+        var hw = _t.BWidth[kind] / 2.0;
+        var hd = _t.BDepth[kind] / 2.0;
+        var (ax0, ay0, ax1, ay1) = (x - hw, y - hd, x + hw, y + hd);
+
+        for (var i = 0; i < Count; i++)
+        {
+            var (bx0, by0, bx1, by1) = Bounds(i);
+            if (ax0 < bx1 && bx0 < ax1 && ay0 < by1 && by0 < ay1)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public double StorageCap(int i) => _t.BStorage[_kind[i]];
 
     /// <summary>
