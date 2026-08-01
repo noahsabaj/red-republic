@@ -80,6 +80,13 @@ public static class Palette
     /// <summary>A heading inside a table, and a stamp.</summary>
     public static Color Ochre { get; } = new(0.769f, 0.635f, 0.290f);
 
+    /// <summary>
+    /// What the republic paints its lorries. One shade for the whole fleet:
+    /// telling a coach from a heavy lorry is the silhouette's job, and it is
+    /// sized off the table for exactly that reason.
+    /// </summary>
+    public static Color Vehicle { get; } = new(0.427f, 0.451f, 0.400f);
+
     /// <summary>Something is wrong and the player can act on it.</summary>
     public static Color Alarm { get; } = new(0.886f, 0.463f, 0.361f);
 

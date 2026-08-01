@@ -24,6 +24,7 @@ public sealed partial class Scenery : Node3D
     private readonly Look _look;
     private ShaderMaterial _ground = null!;
     private Buildings _buildings = null!;
+    private Vehicles _vehicles = null!;
     private DirectionalLight3D _sun = null!;
     private CameraRig _rig = null!;
 
@@ -39,6 +40,10 @@ public sealed partial class Scenery : Node3D
         _buildings = new Buildings { Name = "Buildings" };
         AddChild(_buildings);
         _buildings.Raise(world.Tables, world.Terrain);
+
+        _vehicles = new Vehicles { Name = "Vehicles" };
+        AddChild(_vehicles);
+        _vehicles.Raise(world.Tables, world.Terrain);
 
         Sky();
         Sun();
@@ -89,7 +94,64 @@ public sealed partial class Scenery : Node3D
     }
 
     /// <summary>Put the buildings where the republic says they are.</summary>
-    public void Refresh(Sim.World world) => _buildings.Refresh(world);
+    public void Refresh(Sim.World world)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        _buildings.Refresh(world);
+        _vehicles.Refresh(world);
+        Weather(world);
+    }
+
+    /// <summary>
+    /// What the republic is actually like today, on the ground and in the sky.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The world was contradicting the simulation, which is worse than not
+    /// showing it.</b> A January republic under an instrument panel reading
+    /// "100% snow" rendered as green summer at a permanent mid-morning, because
+    /// <c>snow_amount</c> and the <c>night</c> shader global were both declared,
+    /// both read, and written by nothing — their comments credited a
+    /// <c>main.gd</c> that died in the port — and the sun was placed once at
+    /// startup and never moved again.
+    /// </para>
+    /// <para>
+    /// The sky follows the light rather than being painted, so moving the sun is
+    /// the whole of a day and a night: the scattering reddens at the horizon and
+    /// the clouds go dark on their own.
+    /// </para>
+    /// </remarks>
+    private void Weather(Sim.World world)
+    {
+        _ground.SetShaderParameter("snow_amount", (float)Math.Clamp(world.Ground.Snow, 0.0, 1.0));
+
+        // Where the sun is, from the clock. A day is one turn of the bearing and
+        // one arc of elevation, floored below the horizon so a winter night is
+        // genuinely dark rather than a dimmer noon.
+        var share = (float)(world.Clock.TimeOfDay / 86_400.0);
+        // Zero on the horizon at six and at eighteen, highest at noon, lowest
+        // at midnight — a quarter turn behind the share of the day, which is
+        // the whole of the arc.
+        var elevation = _look.SunElevation * Mathf.Sin(Mathf.Tau * (share - 0.25f));
+
+        _sun.RotationDegrees = new Vector3(
+            -Mathf.Max(elevation, -12.0f),
+            _look.SunAzimuth + (share * 360.0f),
+            0.0f);
+
+        // And it goes out at night. A directional light left burning below the
+        // horizon lights the underside of everything.
+        var daylight = Mathf.Clamp(elevation / 8.0f, 0.0f, 1.0f);
+        _sun.LightEnergy = _look.SunEnergy * Mathf.Max(daylight, 0.05f);
+
+        // How dark it is, for everything that reads it: the sky's night mix and
+        // the emission on a hundred and thirty building materials, which is why
+        // it is a shader global rather than a parameter on each of them. It was
+        // declared in the project, read by two shaders, and written by nothing —
+        // so every window in the republic was dark at midnight and the sky
+        // computed a scattering solution for a sun that had set.
+        RenderingServer.GlobalShaderParameterSet("night", 1.0f - daylight);
+    }
 
     /// <summary>Aim the camera. Capture runs use this.</summary>
     public void Aim(float pitchDegrees, float distance)

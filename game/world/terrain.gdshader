@@ -5,7 +5,7 @@ shader_type spatial;
 // The mesh carries the surface kind in vertex COLOR as a one-hot channel --
 // red grass, green forest, blue rock, and water as the absence of all three --
 // rather than a finished tone. That is deliberate and unchanged: it keeps what
-// the ground looks like out of Rust, so the art direction can change without
+// the ground looks like out of the simulation, so the art direction can change without
 // recompiling the simulation's renderer.
 //
 // What changed is everything downstream of that. This used to select one of four
@@ -68,8 +68,8 @@ uniform vec3 water_colour : source_color = vec3(0.10, 0.17, 0.22);
 
 group_uniforms weather;
 // How much snow is lying, 0 to 1. Driven from the simulation's own ground model
-// by `main.gd`, so a January frame is white because the republic is actually
-// under snow rather than because somebody set a winter flag.
+// by `world/Scenery.cs`, so a January frame is white because the republic is
+// actually under snow rather than because somebody set a winter flag.
 uniform float snow_amount : hint_range(0.0, 1.0) = 0.0;
 
 group_uniforms survey;
