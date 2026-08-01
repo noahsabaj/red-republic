@@ -29,6 +29,7 @@ public sealed partial class MenuScreen : Screen
     private Label _said = null!;
     private HSlider _volume = null!;
     private Button _fullscreen = null!;
+    private LineEdit _name = null!;
     private Button _vsync = null!;
 
     protected override string Title => "Council of Ministers";
@@ -41,6 +42,11 @@ public sealed partial class MenuScreen : Screen
 
     public override void Refresh()
     {
+        if (!_name.HasFocus())
+        {
+            _name.Text = Republic.Name;
+        }
+
         Listing();
         _volume.Value = Settings.Volume;
         _fullscreen.ButtonPressed = Settings.Fullscreen;
@@ -56,6 +62,22 @@ public sealed partial class MenuScreen : Screen
 
         // ---- the republic ----
         var left = Parts.Section(columns, "This republic", "", 1.0f);
+
+        // <b>The second beat of founding, and nothing offered it.</b> A name is
+        // an input like any other: it is journalled, so a replayed republic
+        // comes back called what the player called it. Without a control every
+        // save was written as "Unnamed" and two on one day overwrote each other.
+        var naming = Parts.Row(left);
+        naming.AddChild(Parts.Cell(Parts.Say("Called"), 1.0f));
+        _name = new LineEdit
+        {
+            PlaceholderText = "Novaya Zarya",
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+        };
+
+        _name.TextSubmitted += text => Ask(Command.NameRepublic(text));
+        _name.FocusExited += () => Ask(Command.NameRepublic(_name.Text));
+        naming.AddChild(Parts.Cell(_name, 2.0f));
 
         var save = Parts.Press("Save the republic", "Primary");
         save.Pressed += Save;
@@ -121,15 +143,37 @@ public sealed partial class MenuScreen : Screen
     {
         var name = Republic.Name.Length > 0 ? Republic.Name : "Unnamed";
         var date = Republic.Clock.Date;
-        var file = $"{Sanitise(name)}-{date.Year:0000}{date.Month:00}{date.Day:00}.rrsv";
+
+        // The tick as well as the date. Two saves on one day used to be one
+        // file, and the second silently replaced the first — which is the
+        // failure mode that costs a player a republic.
+        var file = $"{Sanitise(name)}-{date.Year:0000}{date.Month:00}{date.Day:00}"
+            + $"-{Republic.Clock.Ticks % SimClock.TicksPerDay:0000}.rrsv";
 
         var why = Saves.Write(file, Republic);
-        _said.Text = why == Error.Ok
-            ? $"saved as {file}"
-            : $"could not save: {why}";
+        _said.Text = why == Error.Ok ? $"saved as {file}" : Trouble(why);
 
         Listing();
     }
+
+    /// <summary>
+    /// What went wrong with a file, in words.
+    /// </summary>
+    /// <remarks>
+    /// The engine's own error names are not sentences and were being printed
+    /// straight at the player: "could not save: FileCantWrite" is a symbol from
+    /// somebody else's enum. The three that a player can actually do something
+    /// about are named; the rest say so rather than pretending.
+    /// </remarks>
+    private static string Trouble(Error why) => why switch
+    {
+        Error.FileNoPermission => "the folder this game saves into cannot be written to",
+        Error.FileCantOpen or Error.FileCantWrite =>
+            "the file could not be written — the disk may be full",
+        Error.FileNotFound => "that republic is no longer on file",
+        Error.FileCorrupt or Error.InvalidData => "that file is not a republic this build can read",
+        _ => "the file could not be written",
+    };
 
     private void Listing()
     {

@@ -58,13 +58,23 @@ public partial class Main : Node3D
         // Nothing on the cursor: the click is asking what is there. The pick
         // comes from the simulation, because the rule about what ground a
         // building occupies is the same rule placement answers to.
-        if (_shell.Placing < 0)
+        if (_shell.Doing == Ui.Cursor.Idle)
         {
             _shell.Inspect(_world.Buildings.At(at.Value.X, at.Value.Y));
             return;
         }
 
-        var outcome = _world.Issue(Command.Place(_shell.Placing, at.Value.X, at.Value.Y));
+        var (x, y) = at.Value;
+
+        // A run and a span want two clicks, because they are lines. The first
+        // sets an end and the panel says so; the second orders it.
+        if (_shell.Doing is Ui.Cursor.Way or Ui.Cursor.Span && _shell.Anchor is null)
+        {
+            _shell.Anchored(x, y, "Click the far end, Esc to stop");
+            return;
+        }
+
+        var outcome = Order(x, y);
         if (outcome.Accepted)
         {
             _shell.StopPlacing();
@@ -74,6 +84,29 @@ public partial class Main : Node3D
         {
             _shell.Refused(outcome.Refusal);
         }
+    }
+
+    /// <summary>
+    /// Ask the republic for whatever is on the cursor.
+    /// </summary>
+    /// <remarks>
+    /// Every branch goes through <c>Issue</c> and prints what comes back. This
+    /// file never decides whether something may stand somewhere.
+    /// </remarks>
+    private Outcome Order(double x, double y)
+    {
+        var from = _shell!.Anchor ?? (X: x, Y: y);
+        return _shell.Doing switch
+        {
+            Ui.Cursor.Building when _shell.Contracted is { } bloc =>
+                _world!.Issue(Command.ContractBuild(_shell.Kind, x, y, bloc)),
+            Ui.Cursor.Building => _world!.Issue(Command.Place(_shell.Kind, x, y)),
+            Ui.Cursor.Way => _world!.Issue(
+                Command.OrderRoad(from.X, from.Y, x, y, _shell.Kind, _shell.Lamps)),
+            Ui.Cursor.Span => _world!.Issue(
+                Command.OrderLine(_shell.Kind, from.X, from.Y, x, y)),
+            _ => Outcome.No(""),
+        };
     }
 
     public override void _Ready()

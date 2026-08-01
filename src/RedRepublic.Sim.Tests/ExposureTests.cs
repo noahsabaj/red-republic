@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.RegularExpressions;
 
 namespace RedRepublic.Sim.Tests;
 
@@ -48,9 +49,6 @@ public sealed class ExposureTests
         // Visitors, and what draws them.
         "Tourism",
 
-        // Where sites buy what the republic cannot make.
-        "BuildPolicy",
-
         // What the republic was founded on. There is no founding screen, so the
         // seed and the size are not a player's to choose yet.
         "Spec",
@@ -74,6 +72,15 @@ public sealed class ExposureTests
     ];
 
     /// <summary>
+    /// Verbs a player has and no screen offers yet.
+    /// </summary>
+    /// <remarks>
+    /// The same kind of work list as <see cref="NotYetReached"/>, meant to reach
+    /// nothing for the same reason.
+    /// </remarks>
+    private static readonly string[] NoControlYet = [];
+
+    /// <summary>
     /// Every fact a republic has is read by the game, or is on the work list
     /// saying it is not.
     /// </summary>
@@ -93,7 +100,7 @@ public sealed class ExposureTests
 
         foreach (var fact in typeof(World).GetProperties(BindingFlags.Public | BindingFlags.Instance))
         {
-            if (game.Contains($".{fact.Name}", StringComparison.Ordinal))
+            if (Reaches(game, fact.Name))
             {
                 continue;
             }
@@ -122,15 +129,125 @@ public sealed class ExposureTests
     public void The_work_list_names_nothing_that_is_already_reached()
     {
         var game = GameSource();
-        var stale = NotYetReached
-            .Where(name => game.Contains($".{name}", StringComparison.Ordinal))
-            .ToList();
+        var stale = NotYetReached.Where(name => Reaches(game, name)).ToList();
 
         Assert.True(
             stale.Count == 0,
             "these are on the work list and are reached after all: "
             + string.Join(", ", stale)
             + " — delete their lines");
+    }
+
+    /// <summary>
+    /// Every verb a player has is on a screen, or is on the work list saying it
+    /// is not.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The other half of condition one, and nothing guarded it.</b> This file
+    /// checked the nouns — what a republic <i>is</i> — and never the verbs, so
+    /// thirteen of the twenty-three things a player can ask for reached no
+    /// control anywhere, including the two the founding's own remarks name as
+    /// the opening: contract a Bloc firm, and hire foreign workers. The journal
+    /// narrated orders the player could not give.
+    /// </para>
+    /// <para>
+    /// Which factory makes which verb is derived rather than listed. A
+    /// hand-written map is a second place for the answer to live, and the one
+    /// that rots: a verb renamed would quietly stop being checked.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Every_verb_a_player_has_reaches_a_control_or_is_on_the_work_list()
+    {
+        var game = GameSource();
+        var unreached = new List<string>();
+
+        foreach (var kind in Enum.GetValues<CommandKind>())
+        {
+            if (!Offered(game, kind))
+            {
+                unreached.Add(kind.ToString());
+            }
+        }
+
+        var missing = unreached.Except(NoControlYet).ToList();
+        Assert.True(
+            missing.Count == 0,
+            "a player can ask for these and no screen offers them: "
+            + string.Join(", ", missing)
+            + " — either wire one up, or put it on NoControlYet with a line saying why");
+    }
+
+    /// <summary>The verb work list only shrinks, for the same reason.</summary>
+    [Fact]
+    public void The_verb_work_list_names_nothing_that_is_already_offered()
+    {
+        var game = GameSource();
+        var stale = NoControlYet
+            .Where(name => Offered(game, Enum.Parse<CommandKind>(name)))
+            .ToList();
+
+        Assert.True(
+            stale.Count == 0,
+            "these are on the verb work list and are offered after all: "
+            + string.Join(", ", stale) + " — delete their lines");
+    }
+
+    /// <summary>Whether any screen issues a verb.</summary>
+    private static bool Offered(string game, CommandKind kind)
+    {
+        foreach (var factory in FactoriesFor(kind))
+        {
+            if (game.Contains($"Command.{factory}(", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Which of <see cref="Command"/>'s named constructors produce a verb.
+    /// </summary>
+    /// <remarks>
+    /// Found by building one of each with default arguments and reading what
+    /// came out — the only way to be sure the answer stays true when a
+    /// constructor is renamed. Safe to call them all: a named constructor fills
+    /// in fields and refuses nothing, because refusal is
+    /// <see cref="Commands.CarryOut"/>'s business and needs a republic.
+    /// </remarks>
+    private static List<string> FactoriesFor(CommandKind kind)
+    {
+        var made = new List<string>();
+        foreach (var factory in typeof(Command).GetMethods(BindingFlags.Public | BindingFlags.Static))
+        {
+            if (factory.ReturnType != typeof(Command))
+            {
+                continue;
+            }
+
+            var arguments = factory.GetParameters().Select(Blank).ToArray();
+            if (factory.Invoke(null, arguments) is Command command && command.Kind == kind)
+            {
+                made.Add(factory.Name);
+            }
+        }
+
+        return made;
+    }
+
+    private static object? Blank(ParameterInfo p)
+    {
+        if (p.ParameterType == typeof(string))
+        {
+            return "";
+        }
+
+        return p.ParameterType.IsValueType && Nullable.GetUnderlyingType(p.ParameterType) is null
+            ? Activator.CreateInstance(p.ParameterType)
+            : null;
     }
 
     /// <summary>
@@ -154,6 +271,25 @@ public sealed class ExposureTests
             referenced.Count == 0,
             "the simulation references the engine: " + string.Join(", ", referenced));
     }
+
+    /// <summary>
+    /// Whether a screen reads a fact <i>off a republic</i>.
+    /// </summary>
+    /// <remarks>
+    /// <b>The receiver is the whole check.</b> This used to look for the name
+    /// after a dot anywhere in the game's source, which meant every fact whose
+    /// name is an ordinary word was permanently satisfied by something else
+    /// entirely: <c>Name</c> by <c>node.Name</c>, <c>Grid</c> by a container,
+    /// <c>Clock</c> by anything at all. Deleting the screen that showed one
+    /// would not have failed this guard — a guard passing without reaching its
+    /// subject, in the file whose whole job is to notice that.
+    /// <para>
+    /// The three receivers are the three ways the game holds a republic: the
+    /// root's own field, a local, and the property every screen inherits.
+    /// </para>
+    /// </remarks>
+    private static bool Reaches(string game, string fact) =>
+        Regex.IsMatch(game, $@"\b(_?world|Republic)\.{Regex.Escape(fact)}\b");
 
     /// <summary>
     /// Every C# source file under <c>game/</c>, as one string.

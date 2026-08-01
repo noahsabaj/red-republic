@@ -33,6 +33,33 @@ public abstract partial class Screen : Control
     /// <summary>The republic this screen reads. Never written except through a command.</summary>
     protected Sim.World Republic { get; private set; } = null!;
 
+    /// <summary>
+    /// Say what the republic refused, or clear it with an empty string.
+    /// </summary>
+    /// <remarks>
+    /// <b>A refusal is a sentence the simulation wrote, and throwing it away is
+    /// the one thing a screen must not do with it.</b> Seven of the ten places
+    /// that issued a command discarded what came back — the trade screen, the
+    /// roster steppers, the finance screen — so the screens most likely to be
+    /// told no were the ones that said nothing, which restores exactly the
+    /// mystery the architecture rule exists to prevent.
+    /// </remarks>
+    public event Action<string>? Refused;
+
+    /// <summary>
+    /// Ask the republic for something, and print what it says if it says no.
+    /// </summary>
+    /// <remarks>
+    /// The one path a screen issues through, so a discarded refusal is a thing
+    /// somebody has to go out of their way to write.
+    /// </remarks>
+    protected Sim.Outcome Ask(Sim.Command command)
+    {
+        var outcome = Republic.Issue(command);
+        Refused?.Invoke(outcome.Accepted ? "" : outcome.Refusal);
+        return outcome;
+    }
+
     /// <summary>Open the screen over a republic, building it the first time.</summary>
     public void Open(Sim.World republic)
     {

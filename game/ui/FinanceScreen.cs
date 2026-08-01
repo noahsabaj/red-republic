@@ -21,6 +21,7 @@ namespace RedRepublic.Ui;
 public sealed partial class FinanceScreen : Screen
 {
     private VBoxContainer _ladders = null!;
+    private VBoxContainer _repayments = null!;
     private VBoxContainer _tenders = null!;
     private Label _east = null!;
     private Label _west = null!;
@@ -64,10 +65,51 @@ public sealed partial class FinanceScreen : Screen
         west.AddChild(_owedWest);
 
         var columns = Parts.Columns(body);
-        _ladders = Parts.Scroller(
-            Parts.Section(columns, "Advances on offer", "One at a time, per bloc.", 1.2f));
+        var advances = Parts.Section(columns, "Advances on offer", "One at a time, per bloc.", 1.2f);
+        _repayments = new VBoxContainer();
+        advances.AddChild(_repayments);
+        _ladders = Parts.Scroller(advances);
         _tenders = Parts.Scroller(
             Parts.Section(columns, "Tenders", "Bulk orders the blocs have put on the table.", 1.4f));
+    }
+
+    /// <summary>
+    /// Paying an advance back, in tenths of what is outstanding.
+    /// </summary>
+    /// <remarks>
+    /// <b>Nothing offered this.</b> A republic could take an advance and had no
+    /// way to clear it, so every loan ran to term and defaulted — which burns
+    /// the creditor for good, and was the only outcome an advance ever had.
+    /// </remarks>
+    private void Repayment(VBoxContainer into, Market market)
+    {
+        var loan = Republic.Loans.Of(market);
+        if (loan is null)
+        {
+            return;
+        }
+
+        var line = Parts.Row(into);
+        var bloc = market;
+        var tenth = Math.Max(1.0, Math.Round(loan.Outstanding / 10.0));
+
+        var pay = Parts.Press($"Repay {Parts.Thousands(tenth)}", "Quiet");
+        pay.Pressed += () =>
+        {
+            Ask(Command.RepayLoan(bloc, tenth));
+            Refresh();
+        };
+
+        var all = Parts.Press("Clear it", "Primary");
+        all.Pressed += () =>
+        {
+            Ask(Command.RepayLoan(bloc, loan.Outstanding));
+            Refresh();
+        };
+
+        line.AddChild(Parts.Cell(Parts.Say($"Owed to the {market}"), 1.6f));
+        line.AddChild(Parts.Cell(pay, 1.0f));
+        line.AddChild(Parts.Cell(all, 1.0f));
     }
 
     private string Owed(Market market)
@@ -86,6 +128,12 @@ public sealed partial class FinanceScreen : Screen
 
     private void Ladders()
     {
+        Clear(_repayments);
+        foreach (var market in Enum.GetValues<Market>())
+        {
+            Repayment(_repayments, market);
+        }
+
         Clear(_ladders);
         Parts.Head(
             _ladders,
@@ -117,10 +165,13 @@ public sealed partial class FinanceScreen : Screen
                 var take = Parts.Press("Take", "Quiet");
                 var bloc = market;
                 var rung = tier;
-                take.Disabled = Republic.Loans.CanTake(market, tier, out _) != LoanError.None;
+                // Not disabled into silence. A greyed button says "no" and
+                // never says why, and the simulation has six different reasons
+                // it might — already owing, defaulted on, no such tier. Let it
+                // be pressed, and let it answer.
                 take.Pressed += () =>
                 {
-                    Republic.Issue(Command.TakeLoan(bloc, rung));
+                    Ask(Command.TakeLoan(bloc, rung));
                     Refresh();
                 };
 
@@ -165,14 +216,14 @@ public sealed partial class FinanceScreen : Screen
                 var accept = Parts.Press("Accept", "Primary");
                 accept.Pressed += () =>
                 {
-                    Republic.Issue(Command.AcceptContract(id));
+                    Ask(Command.AcceptContract(id));
                     Refresh();
                 };
 
                 var decline = Parts.Press("Decline", "Quiet");
                 decline.Pressed += () =>
                 {
-                    Republic.Issue(Command.DeclineContract(id));
+                    Ask(Command.DeclineContract(id));
                     Refresh();
                 };
 

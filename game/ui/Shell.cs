@@ -5,6 +5,22 @@ using RedRepublic.Sim;
 
 namespace RedRepublic.Ui;
 
+/// <summary>What the player is doing with the cursor.</summary>
+/// <remarks>
+/// A building is one click and a way is two, which is the whole reason this is
+/// a state rather than a building kind: a run and a span are lines, and a line
+/// has two ends.
+/// </remarks>
+public enum Cursor
+{
+    /// <summary>Clicking asks what is there.</summary>
+    Idle,
+
+    Building,
+    Way,
+    Span,
+}
+
 /// <summary>
 /// The interface: the instrument panel, the screens, and which one is open.
 /// </summary>
@@ -53,8 +69,30 @@ public sealed partial class Shell : CanvasLayer
     private double _carried;
     private double _sinceRefresh;
 
-    /// <summary>What the player has chosen to place, or -1.</summary>
-    public int Placing { get; private set; } = -1;
+    /// <summary>What the cursor is for at the moment.</summary>
+    public Cursor Doing { get; private set; } = Cursor.Idle;
+
+    /// <summary>
+    /// What is on the cursor: a building kind, a grade of way, or a kind of
+    /// line, depending on <see cref="Doing"/>.
+    /// </summary>
+    public int Kind { get; private set; } = -1;
+
+    /// <summary>Which bloc's firm is building it, or null for the republic's own crews.</summary>
+    public Market? Contracted { get; private set; }
+
+    /// <summary>Whether the way being drawn carries street lighting.</summary>
+    public bool Lamps { get; private set; }
+
+    /// <summary>
+    /// The first end of a run, once the player has clicked it.
+    /// </summary>
+    /// <remarks>
+    /// A way and a span are the two things ordered by <i>two</i> clicks rather
+    /// than one, because they are the two things that are a line rather than a
+    /// place.
+    /// </remarks>
+    public (double X, double Y)? Anchor { get; private set; }
 
     /// <summary>
     /// Raised when the republic has moved on, so the world can redraw.
@@ -78,6 +116,7 @@ public sealed partial class Shell : CanvasLayer
         _world = world;
 
         _inspector = new Inspector { Name = "Inspector" };
+        _inspector.Refused += why => _hud.Refused(why);
         AddChild(_inspector);
 
         _hud = new Hud { Name = "Hud" };
@@ -85,10 +124,30 @@ public sealed partial class Shell : CanvasLayer
         _hud.Raise(world.Tables);
 
         var build = new BuildScreen();
-        build.Picked += kind =>
+        build.Picked += (kind, contractor) =>
         {
-            Placing = kind;
-            _hud.Placing($"Placing a {world.Tables.BName[kind]} — click the ground, Esc to stop");
+            Doing = Cursor.Building;
+            Kind = kind;
+            Contracted = contractor;
+            Anchor = null;
+            _hud.Placing(contractor is null
+                ? $"Placing a {world.Tables.BName[kind]} — click the ground, Esc to stop"
+                : $"Contracting a {world.Tables.BName[kind]} to the {contractor} — "
+                    + "click the ground, Esc to stop");
+            Shut();
+        };
+
+        build.Drawing += (what, kind, lamps) =>
+        {
+            Doing = what;
+            Kind = kind;
+            Contracted = null;
+            Lamps = lamps;
+            Anchor = null;
+            _hud.Placing(what == Cursor.Way
+                ? $"Laying {world.Tables.Grades[kind].Name} — click where it starts, Esc to stop"
+                : $"Stringing a {world.Tables.Utilities[kind].Name} — "
+                    + "click where it starts, Esc to stop");
             Shut();
         };
 
@@ -119,11 +178,23 @@ public sealed partial class Shell : CanvasLayer
     /// <summary>Tell the player what the republic said no to.</summary>
     public void Refused(string why) => _hud.Refused(why);
 
-    /// <summary>Stop placing. What Escape does when a building is on the cursor.</summary>
+    /// <summary>Stop placing. What Escape does when something is on the cursor.</summary>
     public void StopPlacing()
     {
-        Placing = -1;
+        Doing = Cursor.Idle;
+        Kind = -1;
+        Contracted = null;
+        Anchor = null;
         _hud.Placing("");
+    }
+
+    /// <summary>
+    /// The first end of a run is down; say so and wait for the second.
+    /// </summary>
+    public void Anchored(double x, double y, string say)
+    {
+        Anchor = (x, y);
+        _hud.Placing(say);
     }
 
     public override void _Process(double delta)
@@ -169,7 +240,7 @@ public sealed partial class Shell : CanvasLayer
             {
                 Shut();
             }
-            else if (Placing >= 0)
+            else if (Doing != Cursor.Idle)
             {
                 StopPlacing();
             }
@@ -203,6 +274,10 @@ public sealed partial class Shell : CanvasLayer
 
     private void Add(Key key, Screen screen)
     {
+        // Every screen's refusals go to the same place, so a screen cannot
+        // quietly be the one that throws them away.
+        screen.Refused += why => _hud.Refused(why);
+
         AddChild(screen);
         _screens.Add(screen);
         _byKey[key] = screen;

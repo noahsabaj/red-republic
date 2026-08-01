@@ -77,7 +77,7 @@ public sealed partial class TradeScreen : Screen
 
     private void Add()
     {
-        var outcome = Republic.Issue(Command.AddTradeRule(
+        var outcome = Ask(Command.AddTradeRule(
             _resource.Selected, (Market)_market.Selected, (TradeAction)_action.Selected));
 
         if (outcome.Accepted)
@@ -125,7 +125,7 @@ public sealed partial class TradeScreen : Screen
             var drop = Parts.Press("✕", "Step");
             drop.Pressed += () =>
             {
-                Republic.Issue(Command.RemoveTradeRule(at));
+                Ask(Command.RemoveTradeRule(at));
                 Refresh();
             };
 
@@ -143,7 +143,7 @@ public sealed partial class TradeScreen : Screen
 
     private void Move(int from, int to)
     {
-        Republic.Issue(Command.MoveTradeRule(from, to));
+        Ask(Command.MoveTradeRule(from, to));
         Refresh();
     }
 
